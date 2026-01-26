@@ -64,16 +64,21 @@ reportUnknownArgumentType = false
 reportUnknownVariableType = false
 
 [tool.pytest.ini_options]
-testpaths = [
-    "packages/bo-engine/tests",
-    "packages/bo-mcp-server/tests",
-]
+# Note: Run tests per-package to avoid conftest.py collisions
+# e.g., cd packages/bo-engine && uv run pytest
 addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 timeout = 120  # 2 minutes per test - prevents CI hangs
+xfail_strict = true  # Fail if xfail test unexpectedly passes (catch when features are implemented)
 markers = [
     "postgres: marks tests as requiring PostgreSQL (deselect with '-m \"not postgres\"')",
     "slow: marks tests as slow (> 30 seconds), skip in quick CI with '-m \"not slow\"'",
     "smoke: marks tests as smoke tests for critical path, run with '-m smoke'",
+    "docker: marks tests as requiring Docker containers (deselect with '-m \"not docker\"')",
+    "nightly: marks tests for nightly CI runs only (statistical/stochastic tests)",
+    "tutorial: marks tests that reproduce BoTorch tutorial results",
+    "deterministic: marks tests that require deterministic torch operations",
+    "xfail_validation: xfail tests for input validation (roadmap item)",
+    "xfail_reproducibility: xfail tests for reproducibility features (roadmap item)",
 ]

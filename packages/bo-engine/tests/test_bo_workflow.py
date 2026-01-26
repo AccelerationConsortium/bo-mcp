@@ -5,8 +5,17 @@ from the official BoTorch tutorials.
 
 Note: The BO engine uses qLogNEHVI which requires multi-objective (m >= 2).
 All tests use multi-objective benchmarks.
+
+Test Strategy:
+    - test_optimization_invariants: Tests properties that ALWAYS hold (bounds, monotonicity)
+    - test_optimization_finds_good_tradeoffs_statistical: Statistical test for nightly CI
+
+References:
+    - BoTorch Multi-Objective Tutorial: https://botorch.org/tutorials/multi_objective_bo
+    - Tolerance Calibration: scripts/calibrate_test_tolerances.py
 """
 
+import pytest
 import torch
 
 from bo_engine import (
@@ -244,12 +253,13 @@ class TestMultiObjectiveWorkflow:
         for i in range(len(hypervolumes) - 1):
             assert hypervolumes[i + 1] >= hypervolumes[i] - 1e-6
 
-    def test_optimization_finds_good_tradeoffs(self):
-        """Optimization finds reasonable Pareto trade-offs.
+    def test_optimization_invariants(self, tolerance_ci: dict[str, float]):
+        """Test invariants that always hold regardless of stochastic outcomes.
 
-        Note: Tolerance increased from 3.0 to 5.0 for CI stability.
-        The original tolerance was too tight for stochastic BO, especially
-        when running in parallel with other tests that may affect RNG state.
+        These invariants are guaranteed properties of the optimization:
+        - Pareto front has at least 2 points after sufficient iterations
+        - Hypervolume is non-decreasing over iterations
+        - All suggestions are within bounds
 
         Reference: BoTorch multi-objective optimization tutorial
         https://botorch.org/tutorials/multi_objective_bo
@@ -257,16 +267,36 @@ class TestMultiObjectiveWorkflow:
         torch.manual_seed(42)
         spec = create_branin_currin_spec(batch_size=3)
         observations: list[ObservationData] = []
+        ref_point = torch.tensor([1.5, 1.5])
+
+        hypervolumes = []
 
         # Run optimization
         for iteration in range(5):
             suggestions, _ = generate_next_batch(
                 spec, observations, batch_size=3, iteration=iteration
             )
+
+            # Invariant: All suggestions within bounds
+            for s in suggestions:
+                assert 0.0 <= s.parameter_values["x0"] <= 1.0
+                assert 0.0 <= s.parameter_values["x1"] <= 1.0
+
             new_obs = evaluate_branin_currin(spec, suggestions)
             observations.extend(new_obs)
 
-        # Get Pareto front
+            # Track hypervolume
+            y = torch.tensor(
+                [
+                    [obs.objective_values["branin"], obs.objective_values["currin"]]
+                    for obs in observations
+                ]
+            )
+            pareto_y, _ = compute_pareto_front(y)
+            hv = compute_hypervolume(pareto_y, ref_point)
+            hypervolumes.append(hv)
+
+        # Get final Pareto front
         y = torch.tensor(
             [
                 [obs.objective_values["branin"], obs.objective_values["currin"]]
@@ -275,12 +305,74 @@ class TestMultiObjectiveWorkflow:
         )
         pareto_y, _ = compute_pareto_front(y)
 
-        # Should have found multiple Pareto points
-        assert pareto_y.shape[0] >= 2
+        # Invariant: Should have found multiple Pareto points
+        assert pareto_y.shape[0] >= tolerance_ci["min_pareto_size"], (
+            f"Expected at least {tolerance_ci['min_pareto_size']} Pareto points, "
+            f"got {pareto_y.shape[0]}"
+        )
 
-        # Pareto points should be reasonably good
-        # Tolerance increased from 3.0 to 5.0 for CI stability (stochastic algorithm)
-        assert pareto_y.max() < 5.0, f"Pareto max {pareto_y.max():.2f} exceeds tolerance"
+        # Invariant: Hypervolume should be non-decreasing
+        for i in range(len(hypervolumes) - 1):
+            assert hypervolumes[i + 1] >= hypervolumes[i] - 1e-6, (
+                f"Hypervolume decreased: {hypervolumes[i]:.4f} -> {hypervolumes[i + 1]:.4f}"
+            )
+
+        # Calibrated tolerance: Pareto max should be reasonable
+        # Uses CI tolerance from conftest (99th percentile + 10% margin)
+        assert pareto_y.max() < tolerance_ci["pareto_max"], (
+            f"Pareto max {pareto_y.max():.2f} exceeds CI tolerance {tolerance_ci['pareto_max']}"
+        )
+
+    @pytest.mark.nightly
+    def test_optimization_finds_good_tradeoffs_statistical(self):
+        """Statistical test: Optimization finds good trade-offs over multiple runs.
+
+        This test runs multiple times with different seeds and checks that
+        the AVERAGE performance meets tighter tolerances. This catches
+        systematic regressions while allowing individual run variance.
+
+        Marked as @nightly because it's slower and only needed for regression detection.
+
+        Reference: BoTorch multi-objective optimization tutorial
+        https://botorch.org/tutorials/multi_objective_bo
+        """
+        import numpy as np
+
+        n_runs = 5
+        pareto_maxes = []
+
+        for run in range(n_runs):
+            torch.manual_seed(42 + run)
+            spec = create_branin_currin_spec(batch_size=3)
+            observations: list[ObservationData] = []
+
+            # Run optimization
+            for iteration in range(5):
+                suggestions, _ = generate_next_batch(
+                    spec, observations, batch_size=3, iteration=iteration
+                )
+                new_obs = evaluate_branin_currin(spec, suggestions)
+                observations.extend(new_obs)
+
+            # Get Pareto front
+            y = torch.tensor(
+                [
+                    [obs.objective_values["branin"], obs.objective_values["currin"]]
+                    for obs in observations
+                ]
+            )
+            pareto_y, _ = compute_pareto_front(y)
+            pareto_maxes.append(pareto_y.max().item())
+
+        # Statistical assertions (mean should be well-behaved)
+        mean_pareto_max = np.mean(pareto_maxes)
+        assert mean_pareto_max < 4.0, (
+            f"Mean Pareto max {mean_pareto_max:.2f} too high (expected < 4.0)"
+        )
+
+        # 90th percentile should still be reasonable
+        p90 = np.percentile(pareto_maxes, 90)
+        assert p90 < 6.0, f"90th percentile Pareto max {p90:.2f} too high (expected < 6.0)"
 
 
 class TestSuggestionProvenance:

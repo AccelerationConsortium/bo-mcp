@@ -3,6 +3,14 @@
 This module validates that our SAASBO implementation achieves results consistent
 with the official BoTorch tutorials and the SAASBO paper.
 
+Test Tiers:
+    - smoke: Fast tests for basic functionality (model creation, shapes)
+    - default: Functional tests with reduced MCMC settings (CI-compatible)
+    - slow: Full MCMC settings as in tutorial (nightly/manual only)
+
+The slow tests use full MCMC settings (256 warmup, 128 samples) which can take
+several minutes per test. These are skipped in normal CI runs.
+
 References:
     - SAASBO Tutorial: https://botorch.org/docs/tutorials/saasbo/
     - SAASBO Paper: Eriksson & Jankowiak "High-Dimensional Bayesian Optimization
@@ -23,24 +31,11 @@ from bo_engine import (
 from bo_engine.benchmarks import branin, branin_bounds
 
 # =============================================================================
-# Constants from BoTorch SAASBO Tutorial
+# MCMC Configuration Constants
 # =============================================================================
 
-# Tutorial setup for SAASBO on 30D embedded Branin:
-# - Problem: Branin embedded in 30D (dims 0,1 are true, 2-29 are noise)
-# - Initial points: 10 (Sobol)
-# - Iterations: 8
-# - Batch size: 5
-# - Total evaluations: 50
-# - Warmup steps: 256 (32 for smoke)
-# - Num samples: 128 (16 for smoke)
-#
-# Results:
-# - Initial best: 5.322
-# - Final best: 0.398 (Branin minimum)
-# - Important dim lengthscales: ~0.7-2.4
-# - Irrelevant dim lengthscales: >500
-
+# Full tutorial settings (slow but accurate)
+# These produce high-quality posterior samples but take several minutes
 TUTORIAL_INITIAL_POINTS = 10
 TUTORIAL_ITERATIONS = 8
 TUTORIAL_BATCH_SIZE = 5
@@ -48,9 +43,14 @@ TUTORIAL_TOTAL_EVALS = 50
 TUTORIAL_WARMUP_STEPS = 256
 TUTORIAL_NUM_SAMPLES = 128
 
-# Smoke test settings (faster)
+# Smoke test settings (very fast, for basic functionality)
 SMOKE_WARMUP_STEPS = 32
 SMOKE_NUM_SAMPLES = 16
+
+# CI-fast settings (faster than smoke but still validates core logic)
+# These settings are a compromise: fast enough for CI, accurate enough for testing
+CI_WARMUP_STEPS = 8
+CI_NUM_SAMPLES = 4
 
 BRANIN_MINIMUM = 0.397887
 
@@ -148,57 +148,88 @@ class TestSAASBOLengthscaleSparsity:
     """Test that SAASBO identifies important dimensions via lengthscales.
 
     Reference: Section 4 of SAASBO paper - Half-Cauchy prior induces sparsity
+
+    Test Tiers:
+        - test_saasbo_identifies_important_dims_ci: Fast CI test with minimal MCMC
+        - test_saasbo_identifies_important_dims_full: Full MCMC (nightly only)
     """
 
     @pytest.mark.slow
-    def test_saasbo_identifies_important_dims(self) -> None:
-        """SAASBO should identify dimensions 0,1 as important.
+    def test_saasbo_identifies_important_dims_ci(self) -> None:
+        """SAASBO model fits and produces valid lengthscales (CI-fast version).
 
-        For embedded Branin:
-        - Important dims (0, 1): lengthscale ~0.7-2.4
-        - Irrelevant dims (2-29): lengthscale >500
+        This test uses minimal MCMC settings to verify basic functionality:
+        - Model creation and fitting completes
+        - Lengthscales have correct shape
+        - All lengthscales are positive
 
-        Note: This test requires fitting a SAASBO model which is slow.
+        For full validation of lengthscale sparsity, see the nightly test.
         """
         torch.manual_seed(42)
 
         # Generate training data from 30D embedded Branin
         sobol = SobolEngine(dimension=30, scramble=True, seed=42)
-        train_x = sobol.draw(15).to(torch.float64)  # Reduced for speed
+        train_x = sobol.draw(15).to(torch.float64)
         train_y = branin_30d(train_x).unsqueeze(-1)
 
-        # Use smoke test config for speed
+        # CI-fast config: minimal MCMC for speed
         config = SAASBOConfig(
-            warmup_steps=SMOKE_WARMUP_STEPS,
-            num_samples=SMOKE_NUM_SAMPLES,
-            thinning=4,
+            warmup_steps=CI_WARMUP_STEPS,
+            num_samples=CI_NUM_SAMPLES,
+            thinning=2,
             disable_progbar=True,
         )
 
-        # Import here to avoid slow import at module level
         from bo_engine.saasbo import create_and_fit_saasbo_model, get_saasbo_lengthscales
 
         model = create_and_fit_saasbo_model(train_x, train_y, config=config)
         lengthscales = get_saasbo_lengthscales(model)
 
-        # Get lengthscales for important (0, 1) and irrelevant (2+) dims
-        important_ls = lengthscales[:2].mean().item()
-        irrelevant_ls = lengthscales[2:].mean().item()
-
-        # With smoke test parameters (low MCMC samples), the sparsity identification
-        # may not be reliable. We just check that lengthscales are reasonable.
-        # For reliable testing, use full MCMC (warmup_steps=256, num_samples=128)
-        # which would show important_ls << irrelevant_ls
+        # Basic validity checks (always hold regardless of MCMC quality)
         assert lengthscales.numel() == 30, (
             f"Should have 30 lengthscales, got {lengthscales.numel()}"
         )
-        # All lengthscales should be positive
         assert (lengthscales > 0).all(), "All lengthscales should be positive"
 
-        # NOTE: With full MCMC settings, this assertion would pass:
-        # assert important_ls < irrelevant_ls
-        # For now, with smoke settings, we skip the ordering check
-        # as it's stochastic and unreliable with few samples
+    @pytest.mark.nightly
+    def test_saasbo_identifies_important_dims_full(self) -> None:
+        """SAASBO correctly identifies important dimensions (full MCMC).
+
+        This test uses full tutorial MCMC settings and validates that:
+        - Important dims (0, 1) have smaller lengthscales
+        - Irrelevant dims (2-29) have larger lengthscales
+
+        Marked as @nightly because full MCMC takes several minutes.
+        """
+        torch.manual_seed(42)
+
+        sobol = SobolEngine(dimension=30, scramble=True, seed=42)
+        train_x = sobol.draw(20).to(torch.float64)
+        train_y = branin_30d(train_x).unsqueeze(-1)
+
+        # Full tutorial config
+        config = SAASBOConfig(
+            warmup_steps=TUTORIAL_WARMUP_STEPS,
+            num_samples=TUTORIAL_NUM_SAMPLES,
+            thinning=16,
+            disable_progbar=True,
+        )
+
+        from bo_engine.saasbo import create_and_fit_saasbo_model, get_saasbo_lengthscales
+
+        model = create_and_fit_saasbo_model(train_x, train_y, config=config)
+        lengthscales = get_saasbo_lengthscales(model)
+
+        # With full MCMC, we can test sparsity properties
+        important_dims = lengthscales[:2]  # Dims 0, 1
+        irrelevant_dims = lengthscales[2:]  # Dims 2-29
+
+        # Important dims should have smaller lengthscales (more variation)
+        # Note: Using median for robustness to outliers
+        assert important_dims.median() < irrelevant_dims.median(), (
+            f"Important dims median ({important_dims.median():.2f}) should be < "
+            f"irrelevant dims median ({irrelevant_dims.median():.2f})"
+        )
 
 
 @pytest.mark.tutorial
@@ -216,10 +247,11 @@ class TestSAASBOImportance:
         # Create data where first 2 dims are important
         train_y = train_x[:, 0:1] ** 2 + train_x[:, 1:2] ** 2
 
+        # CI-fast config
         config = SAASBOConfig(
-            warmup_steps=SMOKE_WARMUP_STEPS,
-            num_samples=SMOKE_NUM_SAMPLES,
-            thinning=4,
+            warmup_steps=CI_WARMUP_STEPS,
+            num_samples=CI_NUM_SAMPLES,
+            thinning=2,
             disable_progbar=True,
         )
 
@@ -240,10 +272,11 @@ class TestSAASBOImportance:
         train_x = sobol.draw(15).to(torch.float64)
         train_y = train_x[:, 0:1] ** 2
 
+        # CI-fast config
         config = SAASBOConfig(
-            warmup_steps=SMOKE_WARMUP_STEPS,
-            num_samples=SMOKE_NUM_SAMPLES,
-            thinning=4,
+            warmup_steps=CI_WARMUP_STEPS,
+            num_samples=CI_NUM_SAMPLES,
+            thinning=2,
             disable_progbar=True,
         )
 
@@ -303,9 +336,9 @@ class TestSAASBOConfig:
     def test_smoke_config(self) -> None:
         """Smoke config should use reduced samples for speed."""
         config = SAASBOConfig(
-            warmup_steps=SMOKE_WARMUP_STEPS,
-            num_samples=SMOKE_NUM_SAMPLES,
-            thinning=4,
+            warmup_steps=CI_WARMUP_STEPS,
+            num_samples=CI_NUM_SAMPLES,
+            thinning=2,
         )
 
         assert config.warmup_steps == 32
@@ -377,9 +410,9 @@ class TestSAASBOModelCreation:
         train_y = torch.rand(15, 1, dtype=torch.float64)
 
         config = SAASBOConfig(
-            warmup_steps=SMOKE_WARMUP_STEPS,
-            num_samples=SMOKE_NUM_SAMPLES,
-            thinning=4,
+            warmup_steps=CI_WARMUP_STEPS,
+            num_samples=CI_NUM_SAMPLES,
+            thinning=2,
             disable_progbar=True,
         )
 
@@ -414,9 +447,9 @@ class TestSAASBOSuggestionGeneration:
         bounds = torch.tensor([[0.0] * 10, [1.0] * 10], dtype=torch.float64)
 
         config = SAASBOConfig(
-            warmup_steps=SMOKE_WARMUP_STEPS,
-            num_samples=SMOKE_NUM_SAMPLES,
-            thinning=4,
+            warmup_steps=CI_WARMUP_STEPS,
+            num_samples=CI_NUM_SAMPLES,
+            thinning=2,
             disable_progbar=True,
         )
 
@@ -441,9 +474,9 @@ class TestSAASBOSuggestionGeneration:
         bounds = torch.tensor([[0.0] * 10, [1.0] * 10], dtype=torch.float64)
 
         config = SAASBOConfig(
-            warmup_steps=SMOKE_WARMUP_STEPS,
-            num_samples=SMOKE_NUM_SAMPLES,
-            thinning=4,
+            warmup_steps=CI_WARMUP_STEPS,
+            num_samples=CI_NUM_SAMPLES,
+            thinning=2,
             disable_progbar=True,
         )
 

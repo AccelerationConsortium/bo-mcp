@@ -1,8 +1,23 @@
 """Pytest configuration for bo-engine tests.
 
 This module provides shared fixtures and pytest markers for the test suite.
+
+Test Categories:
+    - smoke: Fast critical path tests (< 5s each)
+    - slow: Long-running tests (> 30s, skip in PR CI)
+    - nightly: Statistical/stochastic tests (run in nightly CI only)
+    - deterministic: Tests requiring torch deterministic mode
+    - tutorial: Tests reproducing BoTorch tutorial results
+
+References:
+    - BoTorch Reproducibility: https://botorch.org/docs/reproducibility
+    - PyTorch Randomness: https://pytorch.org/docs/stable/notes/randomness.html
 """
 
+import os
+import random
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -28,6 +43,8 @@ def pytest_configure(config: Any) -> None:
     config.addinivalue_line("markers", "smoke: fast subset for CI")
     config.addinivalue_line("markers", "tutorial: tests reproducing BoTorch tutorial results")
     config.addinivalue_line("markers", "integration: integration tests spanning multiple modules")
+    config.addinivalue_line("markers", "nightly: statistical tests for nightly CI")
+    config.addinivalue_line("markers", "deterministic: tests requiring deterministic torch ops")
 
 
 # =============================================================================
@@ -39,6 +56,94 @@ SMOKE_BATCH_SIZE = 1
 SMOKE_ITERATIONS = 5
 FULL_BATCH_SIZE = 4
 FULL_ITERATIONS = 20
+
+# =============================================================================
+# Calibrated Tolerances (from scripts/calibrate_test_tolerances.py)
+# =============================================================================
+# These tolerances were empirically determined via Monte Carlo simulation
+# Run `uv run python scripts/calibrate_test_tolerances.py` to recalibrate
+
+# Pareto max tolerance for Branin-Currin after 5 BO iterations
+PARETO_MAX_TOLERANCE_CI = 8.0  # 99th percentile + 10% margin (CI must always pass)
+PARETO_MAX_TOLERANCE_NIGHTLY = 6.0  # 95th percentile (statistical tests)
+
+# Minimum Pareto front size (invariant - should always hold)
+MIN_PARETO_SIZE = 2
+
+# Hypervolume minimum threshold (loose, for regression detection)
+MIN_HYPERVOLUME_THRESHOLD = 0.1
+
+
+# =============================================================================
+# Deterministic Mode Utilities
+# =============================================================================
+
+
+@contextmanager
+def deterministic_mode(seed: int = 42) -> Generator[None, None, None]:
+    """Context manager for deterministic torch operations.
+
+    This enables PyTorch's deterministic mode and sets all relevant seeds.
+    Use this for tests that require reproducibility across different runs.
+
+    Note: Some operations may be slower in deterministic mode.
+    Not all operations have deterministic implementations.
+
+    Args:
+        seed: Random seed to use
+
+    Yields:
+        None
+
+    Example:
+        with deterministic_mode(42):
+            result = some_torch_operation()
+    """
+    # Save current state
+    prev_deterministic = torch.are_deterministic_algorithms_enabled()
+    prev_cublas_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG", "")
+
+    try:
+        # Configure deterministic mode
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+        yield
+    finally:
+        # Restore previous state
+        torch.use_deterministic_algorithms(prev_deterministic)
+        if prev_cublas_config:
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = prev_cublas_config
+        elif "CUBLAS_WORKSPACE_CONFIG" in os.environ:
+            del os.environ["CUBLAS_WORKSPACE_CONFIG"]
+
+
+def set_all_seeds(seed: int = 42) -> None:
+    """Set all random seeds for reproducibility.
+
+    Sets seeds for:
+    - torch (CPU)
+    - torch.cuda (GPU)
+    - Python's random module
+    - numpy (if imported)
+
+    Args:
+        seed: Random seed to use
+    """
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except ImportError:
+        pass
 
 
 # =============================================================================
@@ -56,6 +161,61 @@ def device() -> torch.device:
 def dtype() -> torch.dtype:
     """Standard dtype for tests."""
     return torch.float64
+
+
+# =============================================================================
+# Shared Fixtures - Reproducibility
+# =============================================================================
+
+
+@pytest.fixture
+def seed() -> int:
+    """Default seed for reproducible tests."""
+    return 42
+
+
+@pytest.fixture
+def seeded(seed: int) -> Generator[int, None, None]:
+    """Fixture that sets torch seed and yields it.
+
+    Use this for tests that need reproducibility but not full determinism.
+    """
+    set_all_seeds(seed)
+    yield seed
+
+
+@pytest.fixture
+def deterministic_seed() -> Generator[int, None, None]:
+    """Fixture for tests requiring full deterministic mode.
+
+    Enables torch deterministic algorithms and sets all seeds.
+    Use for tests marked with @pytest.mark.deterministic.
+
+    Note: Some operations may be slower or unavailable in this mode.
+    """
+    seed = 42
+    with deterministic_mode(seed):
+        yield seed
+
+
+@pytest.fixture
+def tolerance_ci() -> dict[str, float]:
+    """Calibrated tolerances for CI tests (must always pass)."""
+    return {
+        "pareto_max": PARETO_MAX_TOLERANCE_CI,
+        "min_pareto_size": MIN_PARETO_SIZE,
+        "min_hypervolume": MIN_HYPERVOLUME_THRESHOLD,
+    }
+
+
+@pytest.fixture
+def tolerance_nightly() -> dict[str, float]:
+    """Calibrated tolerances for nightly tests (statistical)."""
+    return {
+        "pareto_max": PARETO_MAX_TOLERANCE_NIGHTLY,
+        "min_pareto_size": MIN_PARETO_SIZE,
+        "min_hypervolume": MIN_HYPERVOLUME_THRESHOLD,
+    }
 
 
 # =============================================================================

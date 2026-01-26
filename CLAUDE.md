@@ -54,6 +54,29 @@ from bo_mcp_server.tools.create_campaign import create_campaign
 - put all imports at the top of a file, don't put them within functions
 - do not use wild card imports ever
 - for exception handling, always try to use specific exceptions rather than just "Exception". If you don't use a specific one, justify your decision when you summarize your activities
+
+## Testing Guidelines
+
+See [TESTING.md](TESTING.md) for the complete testing strategy. Key points:
+
+- **Fast tests:** `uv run pytest -m "not slow and not nightly"` - run on every PR
+- **Slow tests:** `uv run pytest -m slow` - run on main branch only (MCMC-based)
+- **Nightly tests:** `uv run pytest -m nightly` - statistical tests run nightly
+
+### Handling Stochastic Tests
+
+BO algorithms are inherently stochastic. Tests should use:
+
+1. **Invariant assertions** that always hold (bounds, monotonicity)
+2. **Calibrated tolerances** from `scripts/calibrate_test_tolerances.py`
+3. **Statistical testing** with `@pytest.mark.nightly` for mean/percentile checks
+
+### Test Markers
+
+- `@pytest.mark.slow` - Tests > 30s (MCMC, cross-validation)
+- `@pytest.mark.nightly` - Statistical tests (multiple seeds)
+- `@pytest.mark.smoke` - Fast critical path tests
+- `@pytest.mark.tutorial` - BoTorch tutorial reproduction
 <!-- - all async code uses SQLAlchemy 2.0 async patterns with `async_sessionmaker`
 
 ## Running the Project

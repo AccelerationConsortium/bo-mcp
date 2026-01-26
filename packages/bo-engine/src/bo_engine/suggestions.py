@@ -14,6 +14,7 @@ from __future__ import annotations
 import random
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor
 from torch.quasirandom import SobolEngine
@@ -179,6 +180,7 @@ def generate_next_batch(
     batch_size: int | None = None,
     iteration: int = 0,
     turbo_state: TurboState | None = None,
+    rng: np.random.Generator | None = None,
 ) -> tuple[list[SuggestionResult], TurboState | None]:
     """Generate next batch of suggestions using Bayesian Optimization.
 
@@ -192,6 +194,8 @@ def generate_next_batch(
         batch_size: Number of suggestions to generate (default: spec.batch_size)
         iteration: Current iteration number
         turbo_state: Optional TuRBO state for trust region optimization
+        rng: Optional NumPy random generator for deterministic behavior.
+            Create with np.random.default_rng(seed) for reproducibility.
 
     Returns:
         Tuple of (List of SuggestionResult objects, Updated TurboState or None)
@@ -200,11 +204,18 @@ def generate_next_batch(
         batch_size = spec.batch_size
 
     # Generate random seed for reproducibility (not for crypto)
-    random_seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
+    if rng is not None:
+        random_seed = int(rng.integers(0, MAX_RANDOM_SEED))
+    else:
+        random_seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
     torch.manual_seed(random_seed)
 
     # If not enough data, fall back to initial design
-    min_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters)
+    # Use initial_design_size if specified to control when BO starts
+    if spec.initial_design_size is not None:
+        min_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters, spec.initial_design_size)
+    else:
+        min_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters)
     if len(observations) < min_data:
         designs = generate_initial_design(spec, batch_size)
         suggestions = [

@@ -341,8 +341,8 @@ class TestSAASBOConfig:
             thinning=2,
         )
 
-        assert config.warmup_steps == 32
-        assert config.num_samples == 16
+        assert config.warmup_steps == CI_WARMUP_STEPS
+        assert config.num_samples == CI_NUM_SAMPLES
 
 
 @pytest.mark.tutorial

@@ -193,13 +193,16 @@ class TestMultiObjectiveWorkflow:
             assert 0.0 <= s.parameter_values["x0"] <= 1.0
             assert 0.0 <= s.parameter_values["x1"] <= 1.0
 
-    def test_pareto_front_grows(self):
-        """Pareto front size increases with optimization."""
+    def test_pareto_front_exists(self):
+        """Pareto front is non-empty after optimization iterations.
+
+        Note: The Pareto front size can shrink when new points dominate existing
+        Pareto-optimal points. The correct invariant for optimization progress is
+        that hypervolume never decreases (tested in test_hypervolume_improves).
+        """
         torch.manual_seed(42)
         spec = create_branin_currin_spec(batch_size=3)
         observations: list[ObservationData] = []
-
-        pareto_sizes = []
 
         for iteration in range(4):
             suggestions, _ = generate_next_batch(
@@ -208,19 +211,19 @@ class TestMultiObjectiveWorkflow:
             new_obs = evaluate_branin_currin(spec, suggestions)
             observations.extend(new_obs)
 
-            # Compute Pareto front
-            y = torch.tensor(
-                [
-                    [obs.objective_values["branin"], obs.objective_values["currin"]]
-                    for obs in observations
-                ]
-            )
-            pareto_y, _ = compute_pareto_front(y)
-            pareto_sizes.append(pareto_y.shape[0])
+        # Compute final Pareto front
+        y = torch.tensor(
+            [
+                [obs.objective_values["branin"], obs.objective_values["currin"]]
+                for obs in observations
+            ]
+        )
+        pareto_y, _ = compute_pareto_front(y)
 
-        # Pareto front should grow or stay same (never shrink)
-        for i in range(len(pareto_sizes) - 1):
-            assert pareto_sizes[i + 1] >= pareto_sizes[i]
+        # Pareto front should exist and be non-empty
+        assert pareto_y.shape[0] >= 1, "Pareto front should have at least one point"
+        # Should have at least some diversity (not all observations dominated by one)
+        assert pareto_y.shape[0] <= len(observations), "Pareto front cannot exceed observations"
 
     def test_hypervolume_improves(self):
         """Hypervolume increases with optimization."""

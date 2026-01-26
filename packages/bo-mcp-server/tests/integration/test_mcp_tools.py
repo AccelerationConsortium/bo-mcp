@@ -15,7 +15,10 @@ class TestValidateIntake:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason="Response structure differs: standard verbosity returns 'spec_summary' not 'spec' - see IMPLEMENTATION_PLAN.md"
+        reason=(
+            "Response structure differs: standard verbosity returns 'spec_summary' "
+            "not 'spec' - see IMPLEMENTATION_PLAN.md"
+        )
     )
     async def test_validate_intake_success(self):
         """Valid intake data passes validation."""
@@ -731,7 +734,10 @@ class TestSubmitResultsBatchOperations:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason="partial_results key with UUIDs feature not yet implemented - see IMPLEMENTATION_PLAN.md"
+        reason=(
+            "partial_results key with UUIDs feature not yet implemented "
+            "- see IMPLEMENTATION_PLAN.md"
+        )
     )
     async def test_partial_results_contains_result_ids(self, setup_database):
         """Partial results contain actual result IDs for successful saves."""
@@ -1606,7 +1612,9 @@ class TestAgentUsabilityDiagnostics:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason="hyperparameters key with sub-fields not yet implemented - see IMPLEMENTATION_PLAN.md"
+        reason=(
+            "hyperparameters key with sub-fields not yet implemented - see IMPLEMENTATION_PLAN.md"
+        )
     )
     async def test_diagnostics_includes_hyperparameters(self, setup_database):
         """Diagnostics include GP hyperparameters when model is fitted."""

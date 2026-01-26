@@ -524,7 +524,6 @@ class TestTurboLengthscaleWeighting:
         state = TurboState(dim=3, batch_size=2, length=0.5, best_value=train_y.max().item())
 
         tr_lb, tr_ub = get_turbo_bounds(state, train_x, train_y, model)
-        tr_widths = tr_ub - tr_lb
 
         # The bounds computation should succeed
         assert tr_lb.shape == (3,)

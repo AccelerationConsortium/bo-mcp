@@ -90,7 +90,8 @@ class TestBraninOptimization:
             x = torch.tensor([[x1_opt, x2_opt]], dtype=torch.float64)
             y = branin(x)
             assert y.item() == pytest.approx(BRANIN_GLOBAL_MINIMUM, rel=0.01), (
-                f"Branin({x1_opt:.4f}, {x2_opt:.4f}) = {y.item():.4f}, expected {BRANIN_GLOBAL_MINIMUM}"
+                f"Branin({x1_opt:.4f}, {x2_opt:.4f}) = {y.item():.4f}, "
+                f"expected {BRANIN_GLOBAL_MINIMUM}"
             )
 
     @pytest.mark.smoke

@@ -213,17 +213,13 @@ class TestOptimizedCrossValidation:
 
         This validates the computational benefit of using K-fold for large N.
         """
-        torch.manual_seed(42)
-        bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
-
         # Larger dataset
         n_points = 50
-        train_x = torch.rand(n_points, 1, dtype=torch.float64)
-        train_y = torch.sin(2 * math.pi * train_x) + 0.1 * torch.randn(n_points, 1)
+        dim = 1
 
         # Estimate times for different methods
-        time_loo = estimate_cv_time(n_points, 1, method="batch_loo")
-        time_kfold = estimate_cv_time(n_points, 1, method="kfold", k_folds=5)
+        time_loo = estimate_cv_time(n_points, dim, method="batch_loo")
+        time_kfold = estimate_cv_time(n_points, dim, method="kfold", k_folds=5)
 
         # K-fold should be faster (fewer model fits)
         assert time_kfold < time_loo, (
@@ -302,7 +298,8 @@ class TestCVCalibration:
         assert not math.isnan(metrics.r_squared), "CV metrics should be computable"
         # R^2 should be lower than for smooth functions (typically < 0.95)
         assert metrics.r_squared < 0.98, (
-            f"R^2 ({metrics.r_squared:.3f}) should indicate difficulty fitting high-frequency signal"
+            f"R^2 ({metrics.r_squared:.3f}) should indicate difficulty "
+            "fitting high-frequency signal"
         )
 
 
@@ -359,7 +356,8 @@ class TestCVForRealBenchmarks:
         # Even with 60 points in 6D, R^2 might be negative for LOO-CV
         # Just ensure the coverage is reasonable (model uncertainty is calibrated)
         assert metrics.coverage_95 > 0.5, (
-            f"Coverage ({metrics.coverage_95:.2%}) should indicate reasonable uncertainty calibration"
+            f"Coverage ({metrics.coverage_95:.2%}) should indicate "
+            "reasonable uncertainty calibration"
         )
 
 
@@ -388,9 +386,7 @@ class TestCVMetricsComputation:
         metrics = compute_loo_cv_metrics(train_x, train_y, bounds)
 
         # For a well-fit function, RMSE should be small (< 0.1)
-        assert metrics.rmse < 0.1, (
-            f"RMSE ({metrics.rmse:.4f}) should be small for easy-to-fit data"
-        )
+        assert metrics.rmse < 0.1, f"RMSE ({metrics.rmse:.4f}) should be small for easy-to-fit data"
         assert metrics.rmse >= 0, "RMSE should be non-negative"
 
     @pytest.mark.smoke

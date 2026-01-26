@@ -92,10 +92,7 @@ class TestPostgresConnection:
         expected_tables = {"users", "campaign_specs", "campaigns", "suggestions", "results"}
 
         result = await postgres_session.execute(
-            text(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public'"
-            )
+            text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
         )
         actual_tables = {row[0] for row in result.fetchall()}
 
@@ -185,9 +182,7 @@ class TestPostgresCampaignLifecycle:
     """Integration tests for full campaign lifecycle with PostgreSQL."""
 
     @pytest.mark.asyncio
-    async def test_create_campaign_with_spec(
-        self, postgres_session: AsyncSession
-    ) -> None:
+    async def test_create_campaign_with_spec(self, postgres_session: AsyncSession) -> None:
         """Test creating a campaign with its specification in PostgreSQL.
 
         Reference: Tests foreign key relationships work correctly.
@@ -203,6 +198,7 @@ class TestPostgresCampaignLifecycle:
 
         # Create spec
         spec_repo = CampaignSpecRepository(postgres_session)
+        spec_id = uuid4()
         spec = CampaignSpec(
             name="Test Spec",
             description="Integration test specification",
@@ -218,12 +214,12 @@ class TestPostgresCampaignLifecycle:
             ],
             batch_size=2,
         )
-        await spec_repo.save(spec)
+        await spec_repo.save(spec, spec_id)
 
         # Create campaign
         campaign_repo = CampaignRepository(postgres_session)
         campaign = Campaign(
-            spec=spec,
+            spec_id=spec_id,
             owner_id=user.id,
         )
         await campaign_repo.save(campaign)
@@ -232,14 +228,12 @@ class TestPostgresCampaignLifecycle:
         # Retrieve and verify
         retrieved = await campaign_repo.get(campaign.id)
         assert retrieved is not None
-        assert retrieved.spec.name == "Test Spec"
+        assert retrieved.spec_id == spec_id
         assert retrieved.owner_id == user.id
         assert retrieved.status == CampaignStatus.CREATED
 
     @pytest.mark.asyncio
-    async def test_cascade_delete_suggestions(
-        self, postgres_session: AsyncSession
-    ) -> None:
+    async def test_cascade_delete_suggestions(self, postgres_session: AsyncSession) -> None:
         """Test that deleting a campaign cascades to suggestions.
 
         Reference: PostgreSQL CASCADE behavior verification.
@@ -307,14 +301,14 @@ class TestPostgresJsonSerialization:
     """
 
     @pytest.mark.asyncio
-    async def test_json_parameters_round_trip(
-        self, postgres_session: AsyncSession
-    ) -> None:
+    async def test_json_parameters_round_trip(self, postgres_session: AsyncSession) -> None:
         """Test JSON parameter storage and retrieval in PostgreSQL."""
         spec = CampaignSpecModel(
             id=str(uuid4()),
             name="JSON Test",
-            parameters_json='[{"name":"x","type":"continuous","bounds":[0.0,1.0],"description":"Test param"}]',
+            parameters_json=(
+                '[{"name":"x","type":"continuous","bounds":[0.0,1.0],"description":"Test param"}]'
+            ),
             objectives_json='[{"name":"y","direction":"minimize","unit":"USD"}]',
             constraints_json='[{"type":"linear","coefficients":{"x":1.0},"bound":0.5}]',
             created_at=datetime.utcnow(),
@@ -324,12 +318,17 @@ class TestPostgresJsonSerialization:
 
         # Retrieve and verify JSON parsing
         result = await postgres_session.execute(
-            text("SELECT parameters_json, objectives_json, constraints_json FROM campaign_specs WHERE id = :id"),
+            text(
+                "SELECT parameters_json, objectives_json, constraints_json "
+                "FROM campaign_specs WHERE id = :id"
+            ),
             {"id": spec.id},
         )
         row = result.fetchone()
+        assert row is not None, "Expected row from database"
 
         import json
+
         params = json.loads(row[0])
         objectives = json.loads(row[1])
         constraints = json.loads(row[2])
@@ -340,9 +339,7 @@ class TestPostgresJsonSerialization:
         assert constraints[0]["type"] == "linear"
 
     @pytest.mark.asyncio
-    async def test_complex_nested_json(
-        self, postgres_session: AsyncSession
-    ) -> None:
+    async def test_complex_nested_json(self, postgres_session: AsyncSession) -> None:
         """Test complex nested JSON structures in PostgreSQL.
 
         Reference: Ensures deep nesting works (provenance, metadata, etc.)
@@ -382,6 +379,7 @@ class TestPostgresJsonSerialization:
 
         # Create result with nested metadata
         import json
+
         complex_metadata = {
             "experiment": {
                 "temperature": 25.5,
@@ -421,9 +419,7 @@ class TestPostgresEnumHandling:
     """
 
     @pytest.mark.asyncio
-    async def test_campaign_status_enum(
-        self, postgres_session: AsyncSession
-    ) -> None:
+    async def test_campaign_status_enum(self, postgres_session: AsyncSession) -> None:
         """Test CampaignStatus enum storage in PostgreSQL."""
         user_id = str(uuid4())
         spec_id = str(uuid4())
@@ -440,8 +436,8 @@ class TestPostgresEnumHandling:
         spec = CampaignSpecModel(
             id=spec_id,
             name="Enum Test",
-            parameters_json='[]',
-            objectives_json='[]',
+            parameters_json="[]",
+            objectives_json="[]",
             created_at=datetime.utcnow(),
         )
         postgres_session.add(spec)
@@ -478,9 +474,7 @@ class TestPostgresConcurrency:
     """
 
     @pytest.mark.asyncio
-    async def test_optimistic_locking(
-        self, postgres_session: AsyncSession
-    ) -> None:
+    async def test_optimistic_locking(self, postgres_session: AsyncSession) -> None:
         """Test optimistic locking with version field.
 
         Reference: Prevents lost updates in concurrent scenarios.
@@ -500,8 +494,8 @@ class TestPostgresConcurrency:
         spec = CampaignSpecModel(
             id=spec_id,
             name="Lock Test",
-            parameters_json='[]',
-            objectives_json='[]',
+            parameters_json="[]",
+            objectives_json="[]",
             created_at=datetime.utcnow(),
         )
         postgres_session.add(spec)
@@ -531,9 +525,7 @@ class TestPostgresBulkOperations:
     """Tests for bulk insert/update operations in PostgreSQL."""
 
     @pytest.mark.asyncio
-    async def test_bulk_insert_suggestions(
-        self, postgres_session: AsyncSession
-    ) -> None:
+    async def test_bulk_insert_suggestions(self, postgres_session: AsyncSession) -> None:
         """Test bulk inserting suggestions efficiently.
 
         Reference: Verifies repository batch operations work with PostgreSQL.

@@ -55,7 +55,7 @@ ignore = ["S101", "N806"]  # N806: X, Y are standard ML variable names
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
-include = ["packages/*/src"]
+include = ["packages/*/src", "packages/*/tests"]
 venvPath = "."
 venv = ".venv"
 # SQLAlchemy/async patterns are challenging to type strictly

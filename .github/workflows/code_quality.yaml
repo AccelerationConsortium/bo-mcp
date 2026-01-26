@@ -38,9 +38,14 @@ jobs:
     needs: [lock-file]
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - uses: ./.github/actions/setup
-      - run: uv sync --dev
-      - run: uv run pyright .
+      # Sync all workspace packages to install dependencies (torch, botorch, etc.)
+      - run: uv sync --all-packages
+      - run: uv run pyright
 
   # =============================================================================
   # Fast Tests (PR Checks) - Run on every push/PR

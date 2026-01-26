@@ -11,6 +11,7 @@ v2.3: Added GPU auto-detection and acceleration
 """
 
 from dataclasses import dataclass
+from typing import overload
 
 import torch
 from botorch.cross_validation import batch_cross_validation, gen_loo_cv_folds
@@ -566,6 +567,22 @@ def compute_loo_cv_metrics(
         mean_standardized_error=mean_std_error,
         per_fold_errors=per_fold_errors,
     )
+
+
+@overload
+def compute_loo_cv_for_model(
+    model: SingleTaskGP,
+    train_x: Tensor,
+    train_y: Tensor,
+) -> LOOCVMetrics: ...
+
+
+@overload
+def compute_loo_cv_for_model(
+    model: ModelListGP,
+    train_x: Tensor,
+    train_y: Tensor,
+) -> dict[int, LOOCVMetrics]: ...
 
 
 def compute_loo_cv_for_model(

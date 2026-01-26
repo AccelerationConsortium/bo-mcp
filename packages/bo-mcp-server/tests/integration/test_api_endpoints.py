@@ -1,6 +1,13 @@
-"""Integration tests for all API endpoints against running Docker containers."""
+"""Integration tests for all API endpoints against running Docker containers.
+
+These tests require the API server to be running locally.
+Run with: pytest -m docker
+"""
 
 import httpx
+import pytest
+
+pytestmark = pytest.mark.docker  # Mark all tests in this module
 
 BASE_URL = "http://localhost:8000"
 API_KEY = "dev-api-key-12345"

@@ -70,7 +70,9 @@ class TestSuggestionReproducibility:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason="BO suggestions not reproducible - torch.manual_seed scope insufficient (Section 3.7)"
+        reason=(
+            "BO suggestions not reproducible - torch.manual_seed scope insufficient (Section 3.7)"
+        )
     )
     async def test_bo_suggestions_deterministic_with_seed(self, setup_database):
         """BO suggestions are reproducible when using same random seed.

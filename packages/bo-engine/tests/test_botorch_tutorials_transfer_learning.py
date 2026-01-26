@@ -136,8 +136,14 @@ class TestRGPETransferLearning:
         unhelpful_weight = rgpe.weights[1].item()
         target_weight = rgpe.weights[2].item()
 
-        # Note: Target model usually gets highest weight, but helpful prior
-        # should get more weight than unhelpful
+        # Verify weights are valid (non-negative and sum to 1)
+        assert all(w >= 0 for w in [helpful_weight, unhelpful_weight, target_weight]), (
+            "All weights should be non-negative"
+        )
+        weight_sum = helpful_weight + unhelpful_weight + target_weight
+        assert abs(weight_sum - 1.0) < 1e-6, f"Weights should sum to 1, got {weight_sum}"
+
+        # Helpful prior should get more weight than unhelpful prior
         # With normalized MSE weighting, the helpful prior (same function) should
         # predict target data well
         assert helpful_weight >= unhelpful_weight * 0.3, (
@@ -181,7 +187,8 @@ class TestRGPETransferLearning:
         # Note: The GP trained on random data can sometimes fit target data well by chance,
         # especially with limited data. We just check that weights are reasonable.
         assert target_weight > 0.001 or prior_weight < 0.999, (
-            f"Weight distribution seems extreme: target={target_weight:.6f}, prior={prior_weight:.6f}"
+            f"Weight distribution seems extreme: "
+            f"target={target_weight:.6f}, prior={prior_weight:.6f}"
         )
 
 

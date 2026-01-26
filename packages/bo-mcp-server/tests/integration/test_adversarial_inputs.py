@@ -317,7 +317,10 @@ class TestConflictingConstraints:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason="Constraint validation does not include 'nonexistent' in error message - see IMPLEMENTATION_PLAN.md"
+        reason=(
+            "Constraint validation does not include 'nonexistent' in error "
+            "message - see IMPLEMENTATION_PLAN.md"
+        )
     )
     async def test_constraint_referencing_nonexistent_param(self, setup_database):
         """Constraint referencing unknown parameter should be rejected."""
@@ -636,7 +639,9 @@ class TestDuplicateAndConflictingData:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason="Duplicate parameter name validation not yet implemented - see IMPLEMENTATION_PLAN.md"
+        reason=(
+            "Duplicate parameter name validation not yet implemented - see IMPLEMENTATION_PLAN.md"
+        )
     )
     async def test_duplicate_parameter_names(self, setup_database):
         """Duplicate parameter names should be rejected."""
@@ -659,7 +664,9 @@ class TestDuplicateAndConflictingData:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason="Duplicate objective name validation not yet implemented - see IMPLEMENTATION_PLAN.md"
+        reason=(
+            "Duplicate objective name validation not yet implemented - see IMPLEMENTATION_PLAN.md"
+        )
     )
     async def test_duplicate_objective_names(self, setup_database):
         """Duplicate objective names should be rejected."""

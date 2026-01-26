@@ -28,7 +28,8 @@ pytestmark = pytest.mark.postgres
 def pytest_configure(config: Any) -> None:
     """Register the postgres marker."""
     config.addinivalue_line(
-        "markers", "postgres: marks tests as requiring PostgreSQL (deselect with '-m \"not postgres\"')"
+        "markers",
+        "postgres: marks tests as requiring PostgreSQL (deselect with '-m \"not postgres\"')",
     )
 
 
@@ -43,14 +44,17 @@ def postgres_container():
         PostgresContainer: Running PostgreSQL container with connection details.
     """
     try:
-        from testcontainers.postgres import PostgresContainer
+        from testcontainers.postgres import PostgresContainer  # type: ignore[import-not-found]
     except ImportError:
-        pytest.skip("testcontainers[postgres] not installed. Run: uv pip install testcontainers[postgres]")
+        pytest.skip(
+            "testcontainers[postgres] not installed. Run: uv pip install testcontainers[postgres]"
+        )
+        return  # unreachable, but helps type checker understand control flow
 
     with PostgresContainer(
         image="postgres:16-alpine",
         user="test_user",
-        password="test_password",
+        password="test_password",  # noqa: S106 - test container credentials
         dbname="test_bo_mcp",
     ) as postgres:
         yield postgres
@@ -109,9 +113,7 @@ async def postgres_tables(postgres_engine):
 
 
 @pytest_asyncio.fixture
-async def postgres_session(
-    postgres_engine, postgres_tables
-) -> AsyncGenerator[AsyncSession, None]:
+async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[AsyncSession, None]:
     """Create an async session for PostgreSQL integration tests.
 
     Each test gets a fresh session that is rolled back after the test,

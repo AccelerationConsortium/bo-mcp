@@ -1,0 +1,79 @@
+[project]
+name = "bo-mcp-workspace"
+version = "0.1.0"
+description = "Bayesian Optimization MCP - Monorepo workspace"
+requires-python = ">=3.11"
+readme = "README.md"
+
+# No direct dependencies - all deps are in packages
+dependencies = [
+    "plotly>=6.5.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3.1",
+    "ruff>=0.4",
+    "pyright>=1.1",
+    "pre-commit>=3.7",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3.1",
+    "ruff>=0.4",
+    "pyright>=1.1",
+    "pre-commit>=3.7",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/bo-engine",
+    "packages/bo-mcp-server",
+    "packages/bo-mcp-api",
+]
+
+[tool.uv.sources]
+bo-engine = { workspace = true }
+bo-mcp-server = { workspace = true }
+bo-mcp-api = { workspace = true }
+
+# No build-system for workspace root - it's not a package
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "B", "S", "UP"]
+ignore = ["S101", "N806"]  # N806: X, Y are standard ML variable names
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+include = ["packages/*/src"]
+venvPath = "."
+venv = ".venv"
+# SQLAlchemy/async patterns are challenging to type strictly
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+
+[tool.pytest.ini_options]
+testpaths = [
+    "packages/bo-engine/tests",
+    "packages/bo-mcp-server/tests",
+]
+addopts = "--import-mode=importlib"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 120  # 2 minutes per test - prevents CI hangs
+markers = [
+    "postgres: marks tests as requiring PostgreSQL (deselect with '-m \"not postgres\"')",
+    "slow: marks tests as slow (> 30 seconds), skip in quick CI with '-m \"not slow\"'",
+    "smoke: marks tests as smoke tests for critical path, run with '-m smoke'",
+]

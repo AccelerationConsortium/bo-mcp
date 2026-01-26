@@ -1,0 +1,72 @@
+"""Abstract repository interfaces."""
+
+from abc import ABC, abstractmethod
+from typing import Generic, TypeVar
+from uuid import UUID
+
+T = TypeVar("T")
+
+
+class Repository(ABC, Generic[T]):
+    """Abstract base repository interface.
+
+    Defines the core CRUD operations that all repositories must implement.
+    Subclasses should add domain-specific list methods as needed.
+    """
+
+    @abstractmethod
+    async def get(self, id: UUID) -> T | None:
+        """Get entity by ID.
+
+        Args:
+            id: Entity UUID
+
+        Returns:
+            Entity if found, None otherwise
+        """
+        ...
+
+    @abstractmethod
+    async def save(self, entity: T) -> T:
+        """Save entity (create or update).
+
+        Args:
+            entity: Entity to save
+
+        Returns:
+            Saved entity (may have updated fields like timestamps)
+        """
+        ...
+
+    @abstractmethod
+    async def delete(self, id: UUID) -> bool:
+        """Delete entity by ID.
+
+        Args:
+            id: Entity UUID to delete
+
+        Returns:
+            True if entity was deleted, False if not found
+        """
+        ...
+
+    @abstractmethod
+    async def list_all(self) -> list[T]:
+        """List all entities.
+
+        Returns:
+            List of all entities
+        """
+        ...
+
+
+class ConcurrentModificationError(Exception):
+    """Raised when optimistic locking detects a conflict."""
+
+    def __init__(self, entity_type: str, entity_id: UUID, expected_version: int):
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+        self.expected_version = expected_version
+        super().__init__(
+            f"{entity_type} {entity_id} was modified. Expected version {expected_version}."
+        )

@@ -1,0 +1,53 @@
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #f8f9fa;
+}
+
+.navbar-brand {
+  font-weight: 600;
+}
+
+.card {
+  box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+}
+
+.health-indicator {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin-right: 8px;
+}
+
+.health-indicator.healthy {
+  background-color: #28a745;
+}
+
+.health-indicator.warning {
+  background-color: #ffc107;
+}
+
+.health-indicator.critical {
+  background-color: #dc3545;
+}
+
+.pareto-chart {
+  min-height: 400px;
+}
+
+.suggestion-row:hover {
+  background-color: #f8f9fa;
+}
+
+.parameter-badge {
+  font-family: monospace;
+  font-size: 0.85em;
+}

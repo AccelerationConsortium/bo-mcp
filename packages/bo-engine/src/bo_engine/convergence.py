@@ -1,0 +1,265 @@
+"""Convergence and early stopping detection for Bayesian Optimization.
+
+Section 1.4 of Implementation Plan: Detects when optimization has converged
+to help users avoid wasting experimental resources.
+
+References:
+- Convergence in BO: https://arxiv.org/abs/1906.08878
+- Hypervolume improvement tracking: https://botorch.org/docs/multi_objective/
+"""
+
+from dataclasses import dataclass
+
+from bo_engine.constants import (
+    CONVERGENCE_IMPROVEMENT_THRESHOLD,
+    CONVERGENCE_MIN_OBSERVATIONS,
+    CONVERGENCE_WINDOW_SIZE,
+)
+
+
+@dataclass
+class ConvergenceReport:
+    """Report on optimization convergence status.
+
+    Attributes:
+        converged: Whether optimization appears to have converged
+        convergence_score: Score from 0 (not converged) to 1 (fully converged)
+        reason: Human-readable explanation of convergence status
+        avg_improvement: Average improvement rate in recent window
+        window_size: Window size used for detection
+        iterations_without_improvement: Number of recent iterations without improvement
+        recommendation: Suggested action based on convergence status
+    """
+
+    converged: bool
+    convergence_score: float
+    reason: str
+    avg_improvement: float
+    window_size: int
+    iterations_without_improvement: int
+    recommendation: str
+
+
+def detect_convergence(
+    metric_history: list[float],
+    window_size: int = CONVERGENCE_WINDOW_SIZE,
+    improvement_threshold: float = CONVERGENCE_IMPROVEMENT_THRESHOLD,
+    min_observations: int = CONVERGENCE_MIN_OBSERVATIONS,
+) -> ConvergenceReport:
+    """Detect optimization convergence based on metric history.
+
+    Analyzes the improvement rate over recent iterations to determine
+    if optimization has reached a point of diminishing returns.
+
+    Args:
+        metric_history: History of optimization metric (e.g., hypervolume, best value)
+                       Higher values should indicate better optimization.
+        window_size: Number of iterations to consider for recent improvement
+        improvement_threshold: Relative improvement below which convergence is detected
+        min_observations: Minimum observations before convergence can be detected
+
+    Returns:
+        ConvergenceReport with convergence analysis
+
+    Reference:
+        Section 1.4 of Implementation Plan - Early Stopping Detection
+    """
+    n = len(metric_history)
+
+    # Not enough data
+    if n < min_observations:
+        return ConvergenceReport(
+            converged=False,
+            convergence_score=0.0,
+            reason=f"Insufficient history ({n}/{min_observations} observations required)",
+            avg_improvement=0.0,
+            window_size=window_size,
+            iterations_without_improvement=0,
+            recommendation="Continue optimization to gather more data.",
+        )
+
+    # Not enough for window comparison
+    if n < window_size + 1:
+        return ConvergenceReport(
+            converged=False,
+            convergence_score=0.0,
+            reason=f"Insufficient history for window analysis ({n}/{window_size + 1} needed)",
+            avg_improvement=0.0,
+            window_size=window_size,
+            iterations_without_improvement=0,
+            recommendation="Continue optimization to enable convergence detection.",
+        )
+
+    # Compute improvements over recent window
+    recent = metric_history[-window_size:]
+    improvements = []
+    for i in range(1, len(recent)):
+        if abs(recent[i - 1]) > 1e-10:
+            improvement = (recent[i] - recent[i - 1]) / abs(recent[i - 1])
+        else:
+            improvement = 0.0 if abs(recent[i]) < 1e-10 else 1.0
+        improvements.append(improvement)
+
+    avg_improvement = sum(improvements) / len(improvements) if improvements else 0.0
+
+    # Count iterations without meaningful improvement
+    iterations_without_improvement = 0
+    for i in range(n - 1, 0, -1):
+        if abs(metric_history[i - 1]) > 1e-10:
+            rel_improvement = (metric_history[i] - metric_history[i - 1]) / abs(
+                metric_history[i - 1]
+            )
+        else:
+            rel_improvement = 0.0 if abs(metric_history[i]) < 1e-10 else 1.0
+
+        if rel_improvement > improvement_threshold:
+            break
+        iterations_without_improvement += 1
+
+    # Compute convergence score (0 = not converged, 1 = fully converged)
+    # Based on how small the average improvement is
+    if avg_improvement <= 0:
+        convergence_score = 1.0  # No improvement = converged
+    elif avg_improvement < improvement_threshold:
+        convergence_score = 1.0 - (avg_improvement / improvement_threshold)
+    else:
+        convergence_score = 0.0
+
+    # Also factor in consecutive non-improving iterations
+    stagnation_score = min(1.0, iterations_without_improvement / (2 * window_size))
+    convergence_score = max(convergence_score, stagnation_score)
+
+    converged = avg_improvement < improvement_threshold
+
+    # Generate reason and recommendation
+    if converged:
+        reason = (
+            f"Improvement rate {avg_improvement:.4f} is below threshold {improvement_threshold}"
+        )
+        recommendation = (
+            "Optimization has likely converged. Consider: "
+            "(1) accepting current best solution, "
+            "(2) reviewing if constraints are too tight, or "
+            "(3) expanding the parameter search space."
+        )
+    else:
+        reason = "Still improving"
+        recommendation = "Continue optimization to find better solutions."
+
+    if iterations_without_improvement >= window_size:
+        reason = f"No improvement in {iterations_without_improvement} consecutive iterations"
+        recommendation = (
+            f"Optimization stagnant for {iterations_without_improvement} iterations. "
+            "Consider stopping or trying different acquisition parameters."
+        )
+
+    return ConvergenceReport(
+        converged=converged,
+        convergence_score=convergence_score,
+        reason=reason,
+        avg_improvement=avg_improvement,
+        window_size=window_size,
+        iterations_without_improvement=iterations_without_improvement,
+        recommendation=recommendation,
+    )
+
+
+def detect_hypervolume_convergence(
+    hypervolume_history: list[float],
+    window_size: int = CONVERGENCE_WINDOW_SIZE,
+    improvement_threshold: float = CONVERGENCE_IMPROVEMENT_THRESHOLD,
+    min_observations: int = CONVERGENCE_MIN_OBSERVATIONS,
+) -> ConvergenceReport:
+    """Detect convergence for multi-objective optimization using hypervolume.
+
+    Wrapper around detect_convergence specifically for hypervolume metric.
+
+    Args:
+        hypervolume_history: History of hypervolume values
+        window_size: Window size for analysis
+        improvement_threshold: Threshold for convergence detection
+        min_observations: Minimum observations required
+
+    Returns:
+        ConvergenceReport with hypervolume-specific analysis
+    """
+    return detect_convergence(
+        metric_history=hypervolume_history,
+        window_size=window_size,
+        improvement_threshold=improvement_threshold,
+        min_observations=min_observations,
+    )
+
+
+def detect_single_objective_convergence(
+    best_value_history: list[float],
+    minimize: bool = True,
+    window_size: int = CONVERGENCE_WINDOW_SIZE,
+    improvement_threshold: float = CONVERGENCE_IMPROVEMENT_THRESHOLD,
+    min_observations: int = CONVERGENCE_MIN_OBSERVATIONS,
+) -> ConvergenceReport:
+    """Detect convergence for single-objective optimization.
+
+    Args:
+        best_value_history: History of running best values
+        minimize: Whether objective is being minimized
+        window_size: Window size for analysis
+        improvement_threshold: Threshold for convergence detection
+        min_observations: Minimum observations required
+
+    Returns:
+        ConvergenceReport with single-objective specific analysis
+    """
+    # For minimization, we negate so that improvement is positive
+    if minimize:
+        metric_history = [-v for v in best_value_history]
+    else:
+        metric_history = best_value_history
+
+    return detect_convergence(
+        metric_history=metric_history,
+        window_size=window_size,
+        improvement_threshold=improvement_threshold,
+        min_observations=min_observations,
+    )
+
+
+def estimate_remaining_iterations(
+    metric_history: list[float],
+    target_improvement: float,
+    max_iterations: int = 100,
+) -> int | None:
+    """Estimate iterations needed to achieve target improvement.
+
+    Based on current improvement rate, estimates how many more iterations
+    might be needed. Returns None if improvement is too slow to estimate.
+
+    Args:
+        metric_history: History of optimization metric
+        target_improvement: Target relative improvement from current best
+        max_iterations: Maximum iterations to consider
+
+    Returns:
+        Estimated iterations needed, or None if cannot estimate
+    """
+    if len(metric_history) < 5:
+        return None
+
+    # Compute recent improvement rate
+    recent = metric_history[-5:]
+    improvements = []
+    for i in range(1, len(recent)):
+        if abs(recent[i - 1]) > 1e-10:
+            improvements.append((recent[i] - recent[i - 1]) / abs(recent[i - 1]))
+
+    if not improvements:
+        return None
+
+    avg_improvement = sum(improvements) / len(improvements)
+
+    if avg_improvement <= 0:
+        return None  # Not improving
+
+    # Estimate iterations: target_improvement / avg_improvement
+    estimated = int(target_improvement / avg_improvement)
+    return min(estimated, max_iterations) if estimated > 0 else None

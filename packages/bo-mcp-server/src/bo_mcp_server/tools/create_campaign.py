@@ -1,0 +1,194 @@
+"""Create campaign tool for MCP."""
+
+import logging
+from typing import Any
+from uuid import UUID, uuid4
+
+from bo_mcp_server.domain import (
+    Campaign,
+    CampaignSpec,
+    CampaignStatus,
+    Constraint,
+    ConstraintType,
+    InputParameter,
+    Objective,
+    ParameterType,
+)
+from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.response_formatter import VerbosityLevel, format_create_campaign_response
+from bo_mcp_server.server import mcp
+from bo_mcp_server.storage import (
+    CampaignRepository,
+    CampaignSpecRepository,
+    get_session,
+)
+from bo_mcp_server.tools.validate_intake import validate_intake
+
+logger = logging.getLogger(__name__)
+
+
+@mcp.tool()
+async def create_campaign(
+    intake_data: dict[str, Any],
+    owner_id: str,
+    verbosity: str = "standard",
+) -> dict[str, Any]:
+    """Create a new optimization campaign from validated intake data.
+
+    Args:
+        intake_data: Campaign configuration (same format as validate_intake)
+        owner_id: UUID of the user creating the campaign
+        verbosity: Response verbosity level. Options:
+            - "minimal": ~30 tokens - campaign_id only
+            - "standard": ~50 tokens - includes spec_id and campaign_name
+            - "detailed": ~150 tokens - all fields including full spec summary
+
+    Returns:
+        Dictionary with:
+            - success: Boolean indicating if creation succeeded
+            - campaign_id: UUID of created campaign (if successful)
+            - spec_id: UUID of campaign spec (if successful)
+            - errors: List of error messages (if failed)
+    """
+    logger.info("Creating campaign for owner_id=%s, verbosity=%s", owner_id, verbosity)
+    logger.debug("Intake data: %s", intake_data)
+
+    # Validate verbosity parameter
+    try:
+        verbosity_level = VerbosityLevel(verbosity)
+    except ValueError:
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
+        )
+
+    # First validate the intake (use detailed verbosity to get full spec for internal use)
+    validation = await validate_intake(intake_data, verbosity="detailed")
+
+    if not validation["valid"]:
+        logger.warning("Campaign creation failed validation: %s", validation["errors"])
+        response = make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message="Intake validation failed",
+            details={"validation_errors": validation["errors"]},
+        )
+        response["campaign_id"] = None
+        response["spec_id"] = None
+        return response
+
+    # Parse owner_id
+    try:
+        owner_uuid = UUID(owner_id)
+    except ValueError:
+        logger.warning("Invalid owner_id format: %s", owner_id)
+        response = make_error_response(
+            ErrorCode.INVALID_CAMPAIGN_ID,
+            message="Invalid owner_id format",
+            details={"owner_id": owner_id},
+        )
+        response["campaign_id"] = None
+        response["spec_id"] = None
+        return response
+
+    # Reconstruct CampaignSpec from validated data
+    spec_data = validation["spec"]
+    spec = _build_spec_from_dict(spec_data)
+
+    # Generate IDs
+    spec_id = uuid4()
+    campaign_id = uuid4()
+
+    # Create campaign entity
+    campaign = Campaign(
+        id=campaign_id,
+        spec_id=spec_id,
+        owner_id=owner_uuid,
+        status=CampaignStatus.CREATED,
+    )
+
+    # Save to storage
+    async with get_session() as session:
+        spec_repo = CampaignSpecRepository(session)
+        campaign_repo = CampaignRepository(session)
+
+        await spec_repo.save(spec, spec_id)
+        await campaign_repo.save(campaign)
+
+    logger.info(
+        "Campaign created successfully: campaign_id=%s, spec_id=%s, name=%s",
+        campaign_id,
+        spec_id,
+        spec.name,
+    )
+
+    # Build full response
+    full_response: dict[str, Any] = {
+        "success": True,
+        "campaign_id": str(campaign_id),
+        "spec_id": str(spec_id),
+        "campaign_name": spec.name,
+        "errors": [],
+    }
+
+    # Add detailed info for detailed verbosity
+    if verbosity_level == VerbosityLevel.DETAILED:
+        full_response["spec_summary"] = {
+            "name": spec.name,
+            "description": spec.description,
+            "n_parameters": len(spec.parameters),
+            "n_objectives": len(spec.objectives),
+            "n_constraints": len(spec.constraints) if spec.constraints else 0,
+            "batch_size": spec.batch_size,
+            "parameter_names": [p.name for p in spec.parameters],
+            "objective_names": [o.name for o in spec.objectives],
+            "initial_design_size": spec.initial_design_size,
+        }
+
+    return format_create_campaign_response(full_response, verbosity_level)
+
+
+def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
+    """Reconstruct CampaignSpec from dictionary."""
+    parameters = [
+        InputParameter(
+            name=p["name"],
+            type=ParameterType(p["type"]),
+            bounds=tuple(p["bounds"]) if p.get("bounds") else None,
+            values=p.get("values"),
+            categories=p.get("categories"),
+            description=p.get("description", ""),
+        )
+        for p in data["parameters"]
+    ]
+
+    objectives = [
+        Objective(
+            name=o["name"],
+            direction=o["direction"],
+            unit=o.get("unit", ""),
+            target=o.get("target"),
+        )
+        for o in data["objectives"]
+    ]
+
+    constraints = [
+        Constraint(
+            type=ConstraintType(c["type"]),
+            parameters=c["parameters"],
+            value=c["value"],
+            coefficients=c.get("coefficients"),
+        )
+        for c in data.get("constraints", [])
+    ]
+
+    return CampaignSpec(
+        name=data["name"],
+        description=data.get("description", ""),
+        parameters=parameters,
+        objectives=objectives,
+        constraints=constraints,
+        batch_size=data.get("batch_size", 1),
+        max_iterations=data.get("max_iterations"),
+        initial_design_size=data.get("initial_design_size"),
+        random_seed=data.get("random_seed"),
+    )

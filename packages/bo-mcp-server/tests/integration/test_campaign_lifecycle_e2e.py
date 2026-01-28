@@ -16,7 +16,9 @@ References:
 import math
 from uuid import uuid4
 
+import numpy as np
 import pytest
+import torch
 
 
 class TestSingleObjectiveLifecycle:
@@ -560,11 +562,17 @@ class TestLongRunningLifecycle:
         3. Model-based suggestions are generated after initial design
 
         Note: Marked as slow due to multi-iteration optimization.
+        Uses fixed seed for reproducibility (BO is stochastic).
         """
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
+
+        # Set fixed seed for reproducibility - BO algorithms are stochastic
+        # and convergence depends on initial design and acquisition optimization
+        rng = np.random.default_rng(42)
+        torch.manual_seed(int(rng.integers(0, 2**31)))
 
         owner_id = str(uuid4())
 

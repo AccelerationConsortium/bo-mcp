@@ -8,6 +8,7 @@ Reference: https://alembic.sqlalchemy.org/en/latest/cookbook.html#using-asyncio-
 
 import asyncio
 import os
+import threading
 from logging.config import fileConfig
 
 from alembic import context
@@ -88,7 +89,14 @@ async def run_async_migrations() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    asyncio.run(run_async_migrations())
+    asyncio.get_running_loop()
+
+    def _run() -> None:
+        asyncio.run(run_async_migrations())
+
+    thread = threading.Thread(target=_run, name="alembic-migrations")
+    thread.start()
+    thread.join()
 
 
 if context.is_offline_mode():

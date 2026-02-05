@@ -18,9 +18,9 @@ async def main_async(transport: str, host: str, port: int) -> None:
     await init_database()
 
     if transport == "stdio":
-        await mcp.run_stdio()
+        await mcp.run_stdio_async()
     else:
-        await mcp.run_sse(host=host, port=port)
+        await mcp.run_sse_async(host=host, port=port)
 
 
 async def _verify_setup() -> None:

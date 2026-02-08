@@ -4,6 +4,9 @@ import argparse
 import asyncio
 import json
 import sys
+import dotenv
+
+dotenv.load_dotenv()
 
 from bo_mcp_server import __version__
 from bo_mcp_server.server import mcp

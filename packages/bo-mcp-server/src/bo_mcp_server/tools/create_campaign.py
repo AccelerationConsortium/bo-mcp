@@ -1,7 +1,7 @@
 """Create campaign tool for MCP."""
 
 import logging
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from bo_mcp_server.domain import (
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 async def create_campaign(
     intake_data: CampaignIntakeInput,
     owner_id: str,
-    verbosity: str = "standard",
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard",
 ) -> dict[str, Any]:
     """Create a new optimization campaign from validated intake data.
 

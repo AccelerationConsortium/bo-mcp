@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from bo_mcp_server.domain import (
     Campaign,
+    CampaignIntakeInput,
     CampaignSpec,
     CampaignStatus,
     Constraint,
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 @mcp.tool()
 async def create_campaign(
-    intake_data: dict[str, Any],
+    intake_data: CampaignIntakeInput,
     owner_id: str,
     verbosity: str = "standard",
 ) -> dict[str, Any]:

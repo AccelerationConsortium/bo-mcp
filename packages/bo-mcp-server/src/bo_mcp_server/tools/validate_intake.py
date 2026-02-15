@@ -24,27 +24,26 @@ async def validate_intake(
     """Validate campaign intake data and return validation result.
 
     Args:
-        intake_data: Dictionary containing campaign configuration:
-            - name: Campaign name (required)
-            - description: Campaign description (optional)
-            - parameters: List of parameter definitions (required)
-            - objectives: List of objective definitions (required)
-            - constraints: List of constraint definitions (optional)
-            - batch_size: Number of suggestions per batch (optional, default 1)
-            - max_iterations: Maximum iterations (optional)
-            - initial_design_size: Initial design points (optional)
-            - random_seed: Random seed for reproducibility (optional)
+        intake_data: Campaign intake payload validated via CampaignIntakeInput.
+            Includes campaign metadata, parameters, objectives, constraints,
+            and optional execution settings (batch_size, max_iterations,
+            initial_design_size, random_seed).
         verbosity: Response verbosity level. Options:
             - "minimal": ~20 tokens - valid/errors only
             - "standard": ~100 tokens - includes warnings and spec summary
             - "detailed": ~300+ tokens - full spec with all parameter details
 
     Returns:
-        Dictionary with:
-            - valid: Boolean indicating if intake is valid
-            - errors: List of error messages (if invalid)
-            - warnings: List of warning messages
-            - spec: Validated CampaignSpec as dict (if valid)
+        Dictionary shaped by verbosity:
+            - minimal: valid, errors
+            - standard: valid, errors, warnings, spec_summary
+            - detailed: valid, errors, warnings, spec (validated CampaignSpec)
+
+        On validation failure, returns:
+            - valid: False
+            - errors: List of validation messages
+            - warnings: []
+            - spec: None
     """
     intake_name = intake_data.name if isinstance(intake_data, CampaignIntakeInput) else "<no name>"
     logger.debug("Validating intake data: %s, verbosity=%s", intake_name, verbosity)

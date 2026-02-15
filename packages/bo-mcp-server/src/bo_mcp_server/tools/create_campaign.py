@@ -37,7 +37,8 @@ async def create_campaign(
     """Create a new optimization campaign from validated intake data.
 
     Args:
-        intake_data: Campaign configuration (same format as validate_intake)
+        intake_data: Campaign intake payload validated via CampaignIntakeInput
+            (same schema used by validate_intake).
         owner_id: UUID of the user creating the campaign
         verbosity: Response verbosity level. Options:
             - "minimal": ~30 tokens - campaign_id only

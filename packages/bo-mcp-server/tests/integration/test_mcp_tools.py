@@ -1511,11 +1511,11 @@ class TestAgentUsabilityDiagnostics:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id,
-            [
+            _to_result_inputs([
                 {"parameter_values": {"x": 0.2}, "objective_values": {"y": 2.0}},
                 {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
                 {"parameter_values": {"x": 0.8}, "objective_values": {"y": 1.5}},
-            ],
+            ]),
             owner_id,
         )
         await generate_suggestions(campaign_id)  # This should have uncertainty info
@@ -1550,11 +1550,11 @@ class TestAgentUsabilityDiagnostics:
         await generate_suggestions(campaign_id)  # Initial design
         await submit_results(
             campaign_id,
-            [
+            _to_result_inputs([
                 {"parameter_values": {"x": 0.1}, "objective_values": {"y": 2.0}},
                 {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
                 {"parameter_values": {"x": 0.9}, "objective_values": {"y": 1.5}},
-            ],
+            ]),
             owner_id,
         )
         await generate_suggestions(campaign_id)  # BO-based suggestions
@@ -1751,7 +1751,7 @@ class TestCompareCampaigns:
         await generate_suggestions(campaign1_id)
         await submit_results(
             campaign1_id,
-            [{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}],
+            _to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]),
             owner_id,
         )
 
@@ -1766,7 +1766,7 @@ class TestCompareCampaigns:
         await generate_suggestions(campaign2_id)
         await submit_results(
             campaign2_id,
-            [{"parameter_values": {"x": 0.3}, "objective_values": {"y": 0.8}}],
+            _to_result_inputs([{"parameter_values": {"x": 0.3}, "objective_values": {"y": 0.8}}]),
             owner_id,
         )
 
@@ -1883,7 +1883,7 @@ class TestDiscoverTransferCandidates:
         # Submit enough results to make it a transfer candidate
         await submit_results(
             source_id,
-            [
+            _to_result_inputs([
                 {
                     "parameter_values": {"temperature": 50, "pressure": 5},
                     "objective_values": {"yield": 0.8},
@@ -1896,7 +1896,7 @@ class TestDiscoverTransferCandidates:
                     "parameter_values": {"temperature": 70, "pressure": 7},
                     "objective_values": {"yield": 0.9},
                 },
-            ],
+            ]),
             owner_id,
         )
 
@@ -2413,7 +2413,7 @@ class TestVerbosityOnExistingTools:
         # Minimal - n_submitted only
         minimal = await submit_results(
             create_result["campaign_id"],
-            results_data,
+            _to_result_inputs(results_data),
             owner_id,
             verbosity="minimal",
         )

@@ -129,7 +129,7 @@ async def init_database() -> None:
 
 
 @asynccontextmanager
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_session() -> AsyncGenerator[AsyncSession]:
     """Get a database session."""
     async with async_session_factory() as session:
         try:
@@ -146,7 +146,7 @@ async def close_database() -> None:
 
 
 @asynccontextmanager
-async def lifespan() -> AsyncGenerator[None, None]:
+async def lifespan() -> AsyncGenerator[None]:
     """Context manager for database lifecycle.
 
     Usage:

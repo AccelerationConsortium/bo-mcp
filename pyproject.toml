@@ -48,14 +48,14 @@ bo-mcp-api = { workspace = true }
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "B", "S", "UP"]
 ignore = ["S101", "N806"]  # N806: X, Y are standard ML variable names
 
 [tool.pyright]
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 typeCheckingMode = "standard"
 include = ["packages/*/src", "packages/*/tests"]
 venvPath = "."

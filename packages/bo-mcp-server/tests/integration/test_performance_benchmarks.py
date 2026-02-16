@@ -17,11 +17,13 @@ from uuid import uuid4
 
 import pytest
 import torch
+
 from bo_mcp_server.domain import ResultSubmissionInput
 
 
 def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
+
 
 # Performance thresholds (in seconds)
 # These are conservative bounds to catch major regressions

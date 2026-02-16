@@ -19,6 +19,7 @@ from uuid import uuid4
 import numpy as np
 import pytest
 import torch
+
 from bo_mcp_server.domain import ResultSubmissionInput
 
 

@@ -18,6 +18,7 @@ References:
 from uuid import uuid4
 
 import pytest
+
 from bo_mcp_server.domain import ResultSubmissionInput
 
 
@@ -54,7 +55,9 @@ class TestNaNAndInfInputs:
         # Submit result with NaN objective
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("nan")}}]),
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("nan")}}]
+            ),
             submitted_by=owner_id,
         )
 
@@ -87,7 +90,9 @@ class TestNaNAndInfInputs:
         # Submit result with Inf objective
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("inf")}}]),
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("inf")}}]
+            ),
             submitted_by=owner_id,
         )
 
@@ -118,7 +123,9 @@ class TestNaNAndInfInputs:
 
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("-inf")}}]),
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("-inf")}}]
+            ),
             submitted_by=owner_id,
         )
 
@@ -148,7 +155,9 @@ class TestNaNAndInfInputs:
 
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([{"parameter_values": {"x": float("nan")}, "objective_values": {"f": 1.0}}]),
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": float("nan")}, "objective_values": {"f": 1.0}}]
+            ),
             submitted_by=owner_id,
         )
 
@@ -390,7 +399,9 @@ class TestInvalidUUIDs:
         try:
             result = await submit_results(
                 campaign_id=None,  # type: ignore
-                results=_to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"f": 1.0}}]),
+                results=_to_result_inputs(
+                    [{"parameter_values": {"x": 0.5}, "objective_values": {"f": 1.0}}]
+                ),
                 submitted_by=str(uuid4()),
             )
             assert result["success"] is False
@@ -527,7 +538,9 @@ class TestBoundaryValues:
         # Parameter at exact lower bound
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([{"parameter_values": {"x": 0.0}, "objective_values": {"f": 1.0}}]),
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 0.0}, "objective_values": {"f": 1.0}}]
+            ),
             submitted_by=owner_id,
         )
 
@@ -555,7 +568,9 @@ class TestBoundaryValues:
         # Parameter at exact upper bound
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([{"parameter_values": {"x": 1.0}, "objective_values": {"f": 1.0}}]),
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 1.0}, "objective_values": {"f": 1.0}}]
+            ),
             submitted_by=owner_id,
         )
 
@@ -585,9 +600,14 @@ class TestBoundaryValues:
 
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([
-                {"parameter_values": {"x": 1.5}, "objective_values": {"f": 1.0}}  # Outside bounds
-            ]),
+            results=_to_result_inputs(
+                [
+                    {
+                        "parameter_values": {"x": 1.5},
+                        "objective_values": {"f": 1.0},
+                    }  # Outside bounds
+                ]
+            ),
             submitted_by=owner_id,
         )
 
@@ -717,19 +737,23 @@ class TestDuplicateAndConflictingData:
         # Submit first result
         await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"f": 1.0}}]),
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 0.5}, "objective_values": {"f": 1.0}}]
+            ),
             submitted_by=owner_id,
         )
 
         # Submit near-duplicate result
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs([
-                {
-                    "parameter_values": {"x": 0.5 + 1e-9},  # Within tolerance
-                    "objective_values": {"f": 1.0},
-                }
-            ]),
+            results=_to_result_inputs(
+                [
+                    {
+                        "parameter_values": {"x": 0.5 + 1e-9},  # Within tolerance
+                        "objective_values": {"f": 1.0},
+                    }
+                ]
+            ),
             submitted_by=owner_id,
         )
 

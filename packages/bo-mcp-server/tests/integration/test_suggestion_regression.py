@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 import torch
+
 from bo_mcp_server.domain import ResultSubmissionInput
 
 
@@ -288,10 +289,12 @@ class TestMethodSelectionStability:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id,
-            _to_result_inputs([
-                {"parameter_values": {"x": 0.3}, "objective_values": {"f": 0.5}},
-                {"parameter_values": {"x": 0.7}, "objective_values": {"f": 0.8}},
-            ]),
+            _to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.3}, "objective_values": {"f": 0.5}},
+                    {"parameter_values": {"x": 0.7}, "objective_values": {"f": 0.8}},
+                ]
+            ),
             owner_id,
         )
 
@@ -333,10 +336,12 @@ class TestMethodSelectionStability:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id,
-            _to_result_inputs([
-                {"parameter_values": {"x": 0.3}, "objective_values": {"f1": 0.5, "f2": 0.8}},
-                {"parameter_values": {"x": 0.7}, "objective_values": {"f1": 0.8, "f2": 0.5}},
-            ]),
+            _to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.3}, "objective_values": {"f1": 0.5, "f2": 0.8}},
+                    {"parameter_values": {"x": 0.7}, "objective_values": {"f1": 0.8, "f2": 0.5}},
+                ]
+            ),
             owner_id,
         )
 

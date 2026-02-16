@@ -446,7 +446,7 @@ class TestApplySumConstraint:
         """Handles edge case where current sum is near zero."""
         candidates = torch.tensor(
             [
-                [1e-12, 1e-12, 0.5],
+                [0.0, 0.0, 0.5],
             ],
             dtype=torch.double,
         )
@@ -458,6 +458,7 @@ class TestApplySumConstraint:
         result = apply_sum_constraint(candidates, param_indices, target_sum)
         assert not torch.isnan(result).any()
         assert not torch.isinf(result).any()
+        assert abs(result[0, 0].item() + result[0, 1].item() - target_sum) < 1e-6
 
 
 class TestCreateConstraintsList:

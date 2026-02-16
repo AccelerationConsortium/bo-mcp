@@ -1,7 +1,7 @@
 """Campaign entity."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from bo_mcp_server.domain.campaign_spec import CampaignSpec
 
 
-class CampaignStatus(str, Enum):
+class CampaignStatus(StrEnum):
     """Campaign lifecycle status."""
 
     CREATED = "created"

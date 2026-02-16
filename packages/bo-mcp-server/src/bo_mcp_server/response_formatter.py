@@ -19,11 +19,11 @@ Usage:
     return format_diagnostics_response(full_response, VerbosityLevel(verbosity))
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class VerbosityLevel(str, Enum):
+class VerbosityLevel(StrEnum):
     """Verbosity levels for MCP tool responses.
 
     Attributes:

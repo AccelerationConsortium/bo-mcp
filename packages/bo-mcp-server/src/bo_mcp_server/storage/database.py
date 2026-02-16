@@ -95,9 +95,7 @@ def _run_alembic_migrations() -> None:
 
     alembic_cfg = Config(str(alembic_ini))
     alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
-    alembic_cfg.set_main_option(
-        "script_location", str(package_root / "migrations")
-    )
+    alembic_cfg.set_main_option("script_location", str(package_root / "migrations"))
 
     logger.info("Running Alembic migrations...")
     command.upgrade(alembic_cfg, "head")
@@ -131,7 +129,7 @@ async def init_database() -> None:
 
 
 @asynccontextmanager
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_session() -> AsyncGenerator[AsyncSession]:
     """Get a database session."""
     async with async_session_factory() as session:
         try:
@@ -148,7 +146,7 @@ async def close_database() -> None:
 
 
 @asynccontextmanager
-async def lifespan() -> AsyncGenerator[None, None]:
+async def lifespan() -> AsyncGenerator[None]:
     """Context manager for database lifecycle.
 
     Usage:

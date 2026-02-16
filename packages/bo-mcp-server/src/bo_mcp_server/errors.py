@@ -19,11 +19,11 @@ Usage:
 """
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """Error codes for MCP tool failures.
 
     Codes are organized by category:

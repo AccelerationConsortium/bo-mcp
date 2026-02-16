@@ -8,7 +8,7 @@ external Pydantic models or other frameworks.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     OutcomeConstraintModel = tuple[SingleTaskGP, float]
 
 
-class ParameterType(str, Enum):
+class ParameterType(StrEnum):
     """Type of input parameter."""
 
     CONTINUOUS = "continuous"
@@ -28,7 +28,7 @@ class ParameterType(str, Enum):
     CATEGORICAL = "categorical"
 
 
-class ConstraintType(str, Enum):
+class ConstraintType(StrEnum):
     """Type of constraint."""
 
     SUM_EQUALS = "sum_equals"
@@ -66,7 +66,7 @@ class ConstraintSpec:
     coefficients: list[float] | None = None  # For linear constraints
 
 
-class AcquisitionMethod(str, Enum):
+class AcquisitionMethod(StrEnum):
     """Acquisition function method."""
 
     AUTO = "auto"  # Automatic selection based on n_objectives

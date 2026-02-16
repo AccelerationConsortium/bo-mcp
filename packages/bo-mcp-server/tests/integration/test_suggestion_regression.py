@@ -15,6 +15,11 @@ from uuid import uuid4
 
 import pytest
 import torch
+from bo_mcp_server.domain import ResultSubmissionInput
+
+
+def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
+    return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
 class TestSuggestionReproducibility:
@@ -110,7 +115,7 @@ class TestSuggestionReproducibility:
             {"parameter_values": {"x": 0.3}, "objective_values": {"f1": 0.5, "f2": 0.8}},
             {"parameter_values": {"x": 0.7}, "objective_values": {"f1": 0.8, "f2": 0.5}},
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         gen2 = await generate_suggestions(campaign_id)
         assert gen2["success"] is True
@@ -179,7 +184,7 @@ class TestSuggestionQualityRegression:
                         },
                     }
                 )
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Check final hypervolume
         diag = await get_diagnostics(campaign_id)
@@ -238,7 +243,7 @@ class TestSuggestionQualityRegression:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Check final best value
         diag = await get_diagnostics(campaign_id)
@@ -283,10 +288,10 @@ class TestMethodSelectionStability:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id,
-            [
+            _to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"f": 0.5}},
                 {"parameter_values": {"x": 0.7}, "objective_values": {"f": 0.8}},
-            ],
+            ]),
             owner_id,
         )
 
@@ -328,10 +333,10 @@ class TestMethodSelectionStability:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id,
-            [
+            _to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"f1": 0.5, "f2": 0.8}},
                 {"parameter_values": {"x": 0.7}, "objective_values": {"f1": 0.8, "f2": 0.5}},
-            ],
+            ]),
             owner_id,
         )
 
@@ -418,7 +423,7 @@ class TestSuggestionBatchConsistency:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
     @pytest.mark.asyncio
     async def test_batch_suggestions_have_unique_provenance_indices(self, setup_database):
@@ -532,4 +537,4 @@ class TestIterationConsistency:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)

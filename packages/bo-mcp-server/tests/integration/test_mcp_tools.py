@@ -8,6 +8,11 @@ References:
 from uuid import uuid4
 
 import pytest
+from bo_mcp_server.domain import ResultSubmissionInput
+
+
+def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
+    return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
 class TestValidateIntake:
@@ -430,7 +435,7 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id="not-a-uuid",
-            results=[],
+            results=_to_result_inputs([]),
             submitted_by=str(uuid4()),
         )
 
@@ -444,7 +449,7 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id=str(uuid4()),
-            results=[],
+            results=_to_result_inputs([]),
             submitted_by="not-a-uuid",
         )
 
@@ -458,7 +463,7 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id=str(uuid4()),
-            results=[],
+            results=_to_result_inputs([]),
             submitted_by=str(uuid4()),
         )
 
@@ -472,7 +477,7 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id=str(uuid4()),
-            results=[{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}],
+            results=_to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]),
             submitted_by=str(uuid4()),
         )
 
@@ -505,10 +510,10 @@ class TestSubmitResults:
         # Submit results
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
                 {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},
-            ],
+            ]),
             submitted_by=owner_id,
         )
 
@@ -539,9 +544,9 @@ class TestSubmitResults:
         # Missing x2 parameter
         result = await submit_results(
             campaign_id=create_result["campaign_id"],
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x1": 0.5}, "objective_values": {"y": 1.0}},
-            ],
+            ]),
             submitted_by=owner_id,
         )
 
@@ -573,9 +578,9 @@ class TestSubmitResults:
         # Missing y2 objective
         result = await submit_results(
             campaign_id=create_result["campaign_id"],
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.5}, "objective_values": {"y1": 1.0}},
-            ],
+            ]),
             submitted_by=owner_id,
         )
 
@@ -589,7 +594,7 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id=str(uuid4()),
-            results=[{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}],
+            results=_to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]),
             submitted_by=str(uuid4()),
             source="invalid_source",
         )
@@ -631,11 +636,11 @@ class TestSubmitResultsBatchOperations:
         # Mix of valid and invalid results - atomic mode should reject all
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},  # Valid
                 {"parameter_values": {"x": 0.5}},  # Missing objective_values
                 {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},  # Valid
-            ],
+            ]),
             submitted_by=owner_id,
             atomic=True,  # Default, but explicit for clarity
         )
@@ -671,11 +676,11 @@ class TestSubmitResultsBatchOperations:
         # Mix of valid and invalid results
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},  # Valid (idx 0)
                 {"parameter_values": {"x": 0.5}},  # Missing objective_values (idx 1)
                 {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},  # Valid (idx 2)
-            ],
+            ]),
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
@@ -716,11 +721,11 @@ class TestSubmitResultsBatchOperations:
         # Mix of valid and invalid results
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},  # Valid
                 {"objective_values": {"y": 0.5}},  # Missing parameter_values
                 {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},  # Valid
-            ],
+            ]),
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=False,  # Default
@@ -762,10 +767,10 @@ class TestSubmitResultsBatchOperations:
 
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
                 {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},
-            ],
+            ]),
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
@@ -802,10 +807,10 @@ class TestSubmitResultsBatchOperations:
         # All results are invalid
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"objective_values": {"y": 1.5}},  # Missing parameter_values
                 {"parameter_values": {"x": 0.5}},  # Missing objective_values
-            ],
+            ]),
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
@@ -843,10 +848,10 @@ class TestSubmitResultsBatchOperations:
         # Don't specify atomic - should default to True
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
                 {"parameter_values": {"x": 0.5}},  # Invalid - missing objective
-            ],
+            ]),
             submitted_by=owner_id,
         )
 
@@ -877,10 +882,10 @@ class TestSubmitResultsBatchOperations:
         # atomic=True with continue_on_error=True - should still be atomic
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
                 {"parameter_values": {"x": 0.5}},  # Invalid
-            ],
+            ]),
             submitted_by=owner_id,
             atomic=True,
             continue_on_error=True,  # Should be ignored
@@ -967,11 +972,11 @@ class TestGetDiagnostics:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.2}, "objective_values": {"y": 2.0}},
                 {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
                 {"parameter_values": {"x": 0.8}, "objective_values": {"y": 1.5}},
-            ],
+            ]),
             submitted_by=owner_id,
         )
 
@@ -1010,11 +1015,11 @@ class TestGetDiagnostics:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id=campaign_id,
-            results=[
+            results=_to_result_inputs([
                 {"parameter_values": {"x": 0.2}, "objective_values": {"f1": 0.8, "f2": 0.3}},
                 {"parameter_values": {"x": 0.5}, "objective_values": {"f1": 0.5, "f2": 0.5}},
                 {"parameter_values": {"x": 0.8}, "objective_values": {"f1": 0.3, "f2": 0.8}},
-            ],
+            ]),
             submitted_by=owner_id,
         )
 
@@ -1463,7 +1468,7 @@ class TestEndToEndWorkflow:
             }
             for s in gen1["suggestions"]
         ]
-        submit1 = await submit_results(campaign_id, results1, owner_id)
+        submit1 = await submit_results(campaign_id, _to_result_inputs(results1), owner_id)
         assert submit1["success"] is True
 
         # 4. Generate BO-based suggestions (now with data)
@@ -1513,7 +1518,7 @@ class TestEndToEndWorkflow:
             {"parameter_values": {"x": 0.5}, "objective_values": {"f1": 0.5, "f2": 0.5}},
             {"parameter_values": {"x": 0.9}, "objective_values": {"f1": 0.9, "f2": 0.1}},
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # 3. Verify multi-objective diagnostics
         diag = await get_diagnostics(campaign_id)
@@ -1645,7 +1650,7 @@ class TestAgentUsabilityDiagnostics:
             {"parameter_values": {"x1": 0.7, "x2": 0.3}, "objective_values": {"y": 1.2}},
             {"parameter_values": {"x1": 0.9, "x2": 0.9}, "objective_values": {"y": 1.8}},
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         diag = await get_diagnostics(campaign_id)
 
@@ -1697,7 +1702,7 @@ class TestAgentUsabilityDiagnostics:
                 "objective_values": {"y": 1.5},
             },  # Infeasible
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         diag = await get_diagnostics(campaign_id)
 

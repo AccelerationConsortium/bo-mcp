@@ -1,5 +1,7 @@
 """Pydantic input models for MCP tool payloads."""
 
+from typing import Any
+
 from pydantic import BaseModel, Field, model_validator
 
 from bo_mcp_server.domain.campaign_spec import Constraint, InputParameter, Objective
@@ -30,3 +32,14 @@ class CampaignIntakeInput(BaseModel):
                     msg = f"Constraint references unknown parameter '{parameter}'"
                     raise ValueError(msg)
         return self
+
+
+class ResultSubmissionInput(BaseModel):
+    """Validated input payload for each submitted result."""
+
+    parameter_values: dict[str, Any]
+    objective_values: dict[str, float]
+    suggestion_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}

@@ -13,7 +13,13 @@ from bo_engine.types import ObservationData
 
 from bo_mcp_server.cache import diagnostics_cache
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
-from bo_mcp_server.domain import CampaignSpec, Result, ResultSource, SuggestionStatus
+from bo_mcp_server.domain import (
+    CampaignSpec,
+    Result,
+    ResultSource,
+    ResultSubmissionInput,
+    SuggestionStatus,
+)
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.response_formatter import VerbosityLevel, format_submit_results_response
 from bo_mcp_server.server import mcp
@@ -130,7 +136,7 @@ def _results_to_observations(results: list[Result]) -> list[ObservationData]:
 @mcp.tool()
 async def submit_results(
     campaign_id: str,
-    results: list[dict[str, Any]],
+    results: list[ResultSubmissionInput],
     submitted_by: str,
     source: str = "api",
     force: bool = False,
@@ -142,7 +148,7 @@ async def submit_results(
 
     Args:
         campaign_id: UUID of the campaign
-        results: List of result dictionaries, each containing:
+        results: List of result payloads, each containing:
             - parameter_values: Dict of parameter name -> value
             - objective_values: Dict of objective name -> observed value
             - suggestion_id: Optional UUID of the suggestion this result is for
@@ -293,15 +299,13 @@ async def submit_results(
             result_error: str | None = None
 
             # Validate parameter_values
-            if "parameter_values" not in r:
-                result_error = f"Result {i} missing parameter_values"
-            elif missing_params := param_names - set(r["parameter_values"].keys()):
+            if missing_params := param_names - set(r.parameter_values.keys()):
                 result_error = f"Result {i} missing parameters: {missing_params}"
 
             # Duplicate detection (Section 1.2)
             if result_error is None and not force and existing_params:
                 duplicates = detect_duplicates(
-                    new_params=r["parameter_values"],
+                    new_params=r.parameter_values,
                     existing_params=existing_params,
                     tolerance=DUPLICATE_DETECTION_TOLERANCE,
                 )
@@ -334,9 +338,7 @@ async def submit_results(
 
             # Validate objective_values
             if result_error is None:
-                if "objective_values" not in r:
-                    result_error = f"Result {i} missing objective_values"
-                elif missing_objectives := objective_names - set(r["objective_values"].keys()):
+                if missing_objectives := objective_names - set(r.objective_values.keys()):
                     result_error = f"Result {i} missing objectives: {missing_objectives}"
 
             # Handle validation error based on mode
@@ -354,13 +356,13 @@ async def submit_results(
 
             # Parse optional suggestion_id
             suggestion_id = None
-            if r.get("suggestion_id"):
+            if r.suggestion_id:
                 try:
-                    suggestion_id = UUID(r["suggestion_id"])
+                    suggestion_id = UUID(r.suggestion_id)
                     # Verify suggestion exists and belongs to campaign
                     suggestion = await suggestion_repo.get(suggestion_id)
                     if suggestion is None:
-                        warnings.append(f"Result {i}: suggestion {r['suggestion_id']} not found")
+                        warnings.append(f"Result {i}: suggestion {r.suggestion_id} not found")
                         suggestion_id = None
                     elif suggestion.campaign_id != campaign_uuid:
                         warnings.append(f"Result {i}: suggestion belongs to different campaign")
@@ -376,11 +378,11 @@ async def submit_results(
             result = Result(
                 campaign_id=campaign_uuid,
                 suggestion_id=suggestion_id,
-                parameter_values=r["parameter_values"],
-                objective_values=r["objective_values"],
+                parameter_values=r.parameter_values,
+                objective_values=r.objective_values,
                 source=result_source,
                 submitted_by=submitter_uuid,
-                metadata=r.get("metadata", {}),
+                metadata=r.metadata,
             )
             entity_to_input_index[len(result_entities)] = i
             result_entities.append(result)

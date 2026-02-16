@@ -5,6 +5,10 @@ import asyncio
 import hashlib
 import random
 
+import dotenv
+
+dotenv.load_dotenv()
+
 from bo_mcp_server.domain import User
 from bo_mcp_server.storage import UserRepository, get_session, lifespan
 from bo_mcp_server.tools.create_campaign import create_campaign

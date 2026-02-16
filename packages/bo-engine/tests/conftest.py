@@ -80,7 +80,7 @@ MIN_HYPERVOLUME_THRESHOLD = 0.1
 
 
 @contextmanager
-def deterministic_mode(seed: int = 42) -> Generator[None, None, None]:
+def deterministic_mode(seed: int = 42) -> Generator[None]:
     """Context manager for deterministic torch operations.
 
     This enables PyTorch's deterministic mode and sets all relevant seeds.
@@ -175,7 +175,7 @@ def seed() -> int:
 
 
 @pytest.fixture
-def seeded(seed: int) -> Generator[int, None, None]:
+def seeded(seed: int) -> Generator[int]:
     """Fixture that sets torch seed and yields it.
 
     Use this for tests that need reproducibility but not full determinism.
@@ -185,7 +185,7 @@ def seeded(seed: int) -> Generator[int, None, None]:
 
 
 @pytest.fixture
-def deterministic_seed() -> Generator[int, None, None]:
+def deterministic_seed() -> Generator[int]:
     """Fixture for tests requiring full deterministic mode.
 
     Enables torch deterministic algorithms and sets all seeds.

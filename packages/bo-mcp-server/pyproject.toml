@@ -52,12 +52,12 @@ packages = ["src/bo_mcp_server"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "B", "S", "UP"]
-ignore = ["S101", "N806"]
+ignore = ["S101", "N806", "UP046"]
 
 [tool.pyright]
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 typeCheckingMode = "strict"

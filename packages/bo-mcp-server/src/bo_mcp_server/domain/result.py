@@ -1,7 +1,7 @@
 """Result entity."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from bo_mcp_server.domain.utils import utcnow
 
 
-class ResultSource(str, Enum):
+class ResultSource(StrEnum):
     """Source of the result data."""
 
     GUI = "gui"  # Manual entry via web interface

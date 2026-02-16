@@ -113,7 +113,7 @@ async def postgres_tables(postgres_engine):
 
 
 @pytest_asyncio.fixture
-async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[AsyncSession, None]:
+async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[AsyncSession]:
     """Create an async session for PostgreSQL integration tests.
 
     Each test gets a fresh session that is rolled back after the test,
@@ -139,7 +139,7 @@ async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[A
 @pytest_asyncio.fixture
 async def postgres_session_committed(
     postgres_engine, postgres_tables
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Create a session that commits changes (for tests that need persistence).
 
     Use this fixture when you need changes to be visible across multiple

@@ -1,7 +1,7 @@
 """Submit results tool for MCP."""
 
 import logging
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import torch
@@ -136,7 +136,7 @@ async def submit_results(
     force: bool = False,
     atomic: bool = True,
     continue_on_error: bool = False,
-    verbosity: str = "standard",
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard",
 ) -> dict[str, Any]:
     """Submit experimental results for a campaign.
 

@@ -1,3 +1,5 @@
+# ruff: noqa: I001,E402
+# pylint: disable=wrong-import-order, wrong-import-position
 #!/usr/bin/env python3
 """Hard-coded categorical BO example for donor/acceptor fragment selection.
 
@@ -5,14 +7,13 @@ This mirrors the MCP toy workflow but uses a pre-defined objective sequence
 instead of running expensive quantum chemistry.
 """
 
+import dotenv
 import asyncio
 import hashlib
 
-import dotenv
-
 dotenv.load_dotenv()  # Load environment variables from .env if present
 
-from bo_mcp_server.domain import (
+from bo_mcp_server.domain import (  # type: ignore[import-untyped]
     CampaignIntakeInput,
     InputParameter,
     Objective,
@@ -20,31 +21,48 @@ from bo_mcp_server.domain import (
     ResultSubmissionInput,
     User,
 )
-from bo_mcp_server.storage import UserRepository, get_session, lifespan
-from bo_mcp_server.tools.create_campaign import create_campaign
-from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-from bo_mcp_server.tools.get_diagnostics import get_diagnostics
-from bo_mcp_server.tools.submit_results import submit_results
+from bo_mcp_server.storage import (  # type: ignore[import-untyped]
+    UserRepository,
+    get_session,
+    lifespan,
+)
+from bo_mcp_server.tools.create_campaign import create_campaign  # type: ignore[import-untyped]
+from bo_mcp_server.tools.generate_suggestions import (  # type: ignore[import-untyped]
+    generate_suggestions,
+)
+from bo_mcp_server.tools.get_diagnostics import get_diagnostics  # type: ignore[import-untyped]
+from bo_mcp_server.tools.submit_results import submit_results  # type: ignore[import-untyped]
 
 API_KEY = "dev-api-key-12345"
 N_CYCLES = 6
 EXPECTED_BATCH_SIZE = 2
 
-# Replace these 12 values with your own local mock data.
-MOCK_GAP_EV_SEQUENCE = [
-    5.625384909529561,
-    4.562828813866204,
-    5.2100,
-    4.9800,
-    4.7700,
-    4.6400,
-    4.5200,
-    4.4100,
-    4.3600,
-    4.2900,
-    4.2400,
-    4.1800,
+DONOR_CATEGORIES = [
+    "phenyl",
+    "anisole",
+    "aniline",
+    "thiophene",
+    "carbazole",
+    "phenothiazine",
 ]
+
+ACCEPTOR_CATEGORIES = [
+    "phenyl",
+    "benzonitrile",
+    "pyridine",
+    "pyrimidine",
+    "benzothiadiazole",
+    "triazine",
+]
+
+# One deterministic mock value per (donor, acceptor) pair.
+# Override any entries with your preferred local values.
+MOCK_GAP_EV_BY_PAIR: dict[tuple[str, str], float] = {
+    (donor, acceptor): round(5.9 - 0.17 * i - 0.22 * j + 0.03 * ((i + j) % 3), 6)
+    for i, donor in enumerate(DONOR_CATEGORIES)
+    for j, acceptor in enumerate(ACCEPTOR_CATEGORIES)
+}
+
 
 CAMPAIGN_DATA = CampaignIntakeInput(
     name="BO: donor–acceptor fragment selection for minimal HOMO–LUMO gap",
@@ -57,26 +75,12 @@ CAMPAIGN_DATA = CampaignIntakeInput(
         InputParameter(
             name="donor",
             type=ParameterType.CATEGORICAL,
-            categories=[
-                "phenyl",
-                "anisole",
-                "aniline",
-                "thiophene",
-                "carbazole",
-                "phenothiazine",
-            ],
+            categories=DONOR_CATEGORIES,
         ),
         InputParameter(
             name="acceptor",
             type=ParameterType.CATEGORICAL,
-            categories=[
-                "phenyl",
-                "benzonitrile",
-                "pyridine",
-                "pyrimidine",
-                "benzothiadiazole",
-                "triazine",
-            ],
+            categories=ACCEPTOR_CATEGORIES,
         ),
     ],
     objectives=[Objective(name="gap_eV", direction="minimize")],
@@ -90,14 +94,13 @@ CAMPAIGN_DATA = CampaignIntakeInput(
 def _mock_result_for(
     experiment_index: int, parameter_values: dict[str, str], suggestion_id: str
 ) -> ResultSubmissionInput:
-    """Return one mocked observation payload from the fixed objective sequence."""
-    if experiment_index >= len(MOCK_GAP_EV_SEQUENCE):
-        raise IndexError(
-            "Not enough mocked objective values. "
-            f"Need at least {N_CYCLES * EXPECTED_BATCH_SIZE} entries."
-        )
+    """Return one mocked observation payload from donor/acceptor lookup."""
+    pair = (parameter_values["donor"], parameter_values["acceptor"])
+    try:
+        gap_e_v = float(MOCK_GAP_EV_BY_PAIR[pair])
+    except KeyError as exc:
+        raise KeyError(f"Missing mock gap_eV for pair donor={pair[0]}, acceptor={pair[1]}") from exc
 
-    gap_e_v = float(MOCK_GAP_EV_SEQUENCE[experiment_index])
     return ResultSubmissionInput(
         suggestion_id=suggestion_id,
         parameter_values=parameter_values,
@@ -117,11 +120,11 @@ async def main() -> None:
     print("BO-MCP Hard-Coded Example: Donor/Acceptor HOMO-LUMO Gap Minimization")
     print("=" * 72)
 
-    required_results = N_CYCLES * EXPECTED_BATCH_SIZE
-    if len(MOCK_GAP_EV_SEQUENCE) < required_results:
+    expected_pairs = len(DONOR_CATEGORIES) * len(ACCEPTOR_CATEGORIES)
+    if len(MOCK_GAP_EV_BY_PAIR) != expected_pairs:
         raise ValueError(
-            f"MOCK_GAP_EV_SEQUENCE has {len(MOCK_GAP_EV_SEQUENCE)} values, "
-            f"but {required_results} are required for {N_CYCLES} cycles."
+            f"MOCK_GAP_EV_BY_PAIR has {len(MOCK_GAP_EV_BY_PAIR)} entries, "
+            f"but expected at least {expected_pairs} for full donor/acceptor coverage."
         )
 
     async with lifespan():

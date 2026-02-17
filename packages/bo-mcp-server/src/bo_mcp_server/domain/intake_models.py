@@ -26,11 +26,18 @@ class CampaignIntakeInput(BaseModel):
     def validate_constraint_parameter_refs(self) -> "CampaignIntakeInput":
         """Ensure constraints only reference declared parameters."""
         parameter_names = {p.name for p in self.parameters}
+        invalid_params = []
+
         for constraint in self.constraints:
             for parameter in constraint.parameters:
                 if parameter not in parameter_names:
-                    msg = f"Constraint references unknown parameter '{parameter}'"
-                    raise ValueError(msg)
+                    invalid_params.append(parameter)
+
+        if invalid_params:
+            unique_invalid = list(dict.fromkeys(invalid_params))
+            msg = f"Constraints reference unknown parameters: {', '.join(unique_invalid)}"
+            raise ValueError(msg)
+
         return self
 
 

@@ -296,7 +296,7 @@ def format_create_campaign_response(
             "errors": full_response.get("errors", []),
         }
 
-    elif verbosity == VerbosityLevel.STANDARD:
+    if verbosity == VerbosityLevel.STANDARD:
         # Standard includes spec_id and campaign_name
         return {
             "success": full_response.get("success"),
@@ -377,7 +377,7 @@ def format_validate_intake_response(
             "errors": full_response.get("errors", []),
         }
 
-    elif verbosity == VerbosityLevel.STANDARD:
+    if verbosity == VerbosityLevel.STANDARD:
         # Standard includes warnings but simplified spec
         spec = full_response.get("spec")
         spec_summary = None

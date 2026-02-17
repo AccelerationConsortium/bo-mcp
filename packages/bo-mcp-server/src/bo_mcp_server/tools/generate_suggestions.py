@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from bo_engine.batch_diversity import compute_batch_diversity
@@ -263,7 +263,7 @@ def _format_suggestions_response(
 async def generate_suggestions(
     campaign_id: str,
     batch_size: int | None = None,
-    verbosity: str = "standard",
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard",
 ) -> dict[str, Any]:
     """Generate next batch of experiment suggestions for a campaign.
 

@@ -18,7 +18,7 @@ class CampaignIntakeInput(BaseModel):
     batch_size: int = Field(default=1, ge=1)
     max_iterations: int | None = None
     initial_design_size: int | None = None
-    random_seed: int | None = None
+    random_seed: int | None = 42
 
     model_config = {"extra": "forbid"}
 

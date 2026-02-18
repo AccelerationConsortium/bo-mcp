@@ -34,8 +34,8 @@ def upgrade() -> None:
         sa.Column("email", sa.String(255), nullable=False, unique=True),
         sa.Column("api_key_hash", sa.String(255), nullable=False),
         sa.Column("is_active", sa.Boolean(), default=True, nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("last_active_at", sa.DateTime(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("last_active_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("ix_users_email", "users", ["email"])
     op.create_index("ix_users_api_key_hash", "users", ["api_key_hash"])
@@ -53,7 +53,7 @@ def upgrade() -> None:
         sa.Column("max_iterations", sa.Integer(), nullable=True),
         sa.Column("initial_design_size", sa.Integer(), nullable=True),
         sa.Column("random_seed", sa.Integer(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
 
     # Campaigns table
@@ -80,9 +80,9 @@ def upgrade() -> None:
         ),
         sa.Column("version", sa.Integer(), default=1, nullable=False),
         sa.Column("iteration", sa.Integer(), default=0, nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.Column("completed_at", sa.DateTime(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("turbo_state_json", sa.Text(), nullable=True),
         sa.Column("hypervolume_history_json", sa.Text(), default="[]", nullable=False),
     )
@@ -102,13 +102,15 @@ def upgrade() -> None:
         sa.Column("parameter_values_json", sa.Text(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("PENDING", "EVALUATED", "FAILED", "CANCELLED", name="suggestionstatus"),
+            sa.Enum(
+                "PENDING", "ACCEPTED", "REJECTED", "COMPLETED", "EXPIRED", name="suggestionstatus"
+            ),
             default="PENDING",
             nullable=False,
         ),
         sa.Column("provenance_json", sa.Text(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index("ix_suggestions_campaign_id", "suggestions", ["campaign_id"])
     op.create_index("ix_suggestions_status", "suggestions", ["status"])
@@ -133,12 +135,12 @@ def upgrade() -> None:
         sa.Column("objective_values_json", sa.Text(), nullable=False),
         sa.Column(
             "source",
-            sa.Enum("API", "MCP", "MANUAL", "HISTORICAL", name="resultsource"),
+            sa.Enum("GUI", "FILE_UPLOAD", "API", name="resultsource"),
             nullable=False,
         ),
         sa.Column("submitted_by", sa.String(36), nullable=False),
         sa.Column("metadata_json", sa.Text(), default="{}", nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index("ix_results_campaign_id", "results", ["campaign_id"])
     op.create_index("ix_results_suggestion_id", "results", ["suggestion_id"])

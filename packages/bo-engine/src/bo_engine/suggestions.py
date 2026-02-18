@@ -505,7 +505,9 @@ def _generate_single_objective_batch(
         cost_model=cost_model,
     )
     # Optimize without constraints, then project onto constraint surface
-    candidates, acq_values = optimize_acquisition(acqf, opt_bounds, batch_size)
+    candidates, acq_values = optimize_acquisition(
+        acqf, opt_bounds, batch_size, spec=spec, x_avoid=train_x
+    )
 
     # Apply parameter constraints by projecting candidates onto constraint surface
     if spec.constraints:
@@ -654,7 +656,9 @@ def _generate_multi_objective_batch(
         constraints=None,
     )
     # Optimize without constraints, then project onto constraint surface
-    candidates, acq_values = optimize_acquisition(acqf, bounds, batch_size)
+    candidates, acq_values = optimize_acquisition(
+        acqf, bounds, batch_size, spec=spec, x_avoid=train_x
+    )
 
     # Apply parameter constraints by projecting candidates onto constraint surface
     if spec.constraints:

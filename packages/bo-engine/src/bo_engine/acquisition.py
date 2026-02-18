@@ -22,15 +22,24 @@ from botorch.acquisition.multi_objective.parego import qLogNParEGO
 from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.optim import optimize_acqf
+from botorch.optim.optimize import optimize_acqf_discrete, optimize_acqf_mixed
 from torch import Tensor
 
+from bo_engine.constants import MIXED_CATEGORICAL_COMBO_THRESHOLD
 from bo_engine.device import ensure_device, to_device
 from bo_engine.reference_point import (
     ReferencePointConfig,
     ReferencePointStrategy,
     get_reference_point_dynamic,
 )
-from bo_engine.types import AcquisitionConfig, AcquisitionMethod
+from bo_engine.transforms import (
+    SearchSpaceType,
+    build_fixed_features_list,
+    classify_search_space,
+    count_categorical_combinations,
+    enumerate_discrete_choices,
+)
+from bo_engine.types import AcquisitionConfig, AcquisitionMethod, OptimizationSpec
 
 
 def create_single_objective_acquisition(
@@ -400,8 +409,15 @@ def optimize_acquisition(
     batch_size: int = 1,
     num_restarts: int = 20,
     raw_samples: int = 512,
+    spec: OptimizationSpec | None = None,
+    x_avoid: Tensor | None = None,  # noqa: N803
 ) -> tuple[Tensor, Tensor]:
     """Optimize acquisition function to find next candidates.
+
+    Dispatches to the appropriate optimizer based on the search space type:
+    - CONTINUOUS: standard L-BFGS-B via optimize_acqf
+    - PURELY_CATEGORICAL: exhaustive enumeration via optimize_acqf_discrete
+    - MIXED: per-combo continuous optimization via optimize_acqf_mixed
 
     Uses sequential greedy optimization for batch_size > 1.
 
@@ -415,6 +431,10 @@ def optimize_acquisition(
         batch_size: Number of candidates to generate
         num_restarts: Number of optimization restarts
         raw_samples: Number of raw samples for initialization
+        spec: Optimization specification for discrete/mixed dispatch.
+            If None, falls back to continuous optimization.
+        x_avoid: Points to avoid (e.g., already-evaluated training data).
+            Used by optimize_acqf_discrete to exclude known points.
 
     Returns:
         Tuple of (candidates, acquisition_values) where:
@@ -423,19 +443,136 @@ def optimize_acquisition(
     """
     bounds = to_device(bounds)
 
+    if spec is None:
+        return _optimize_continuous(acqf, bounds, batch_size, num_restarts, raw_samples)
+
+    space_type = classify_search_space(spec)
+
+    if space_type == SearchSpaceType.PURELY_CATEGORICAL:
+        return _optimize_discrete(acqf, spec, batch_size, x_avoid)
+    elif space_type == SearchSpaceType.MIXED:
+        n_combos = count_categorical_combinations(spec)
+        if n_combos > MIXED_CATEGORICAL_COMBO_THRESHOLD:
+            raise NotImplementedError(
+                f"Mixed spaces with more than {MIXED_CATEGORICAL_COMBO_THRESHOLD} "
+                f"categorical combinations are not yet supported (this space has "
+                f"{n_combos}). Consider reducing the number of categories. "
+                "A future version will support optimize_acqf_mixed_alternating "
+                "with integer encoding for larger mixed spaces."
+            )
+        return _optimize_mixed(acqf, bounds, spec, batch_size, num_restarts, raw_samples)
+    else:
+        return _optimize_continuous(acqf, bounds, batch_size, num_restarts, raw_samples)
+
+
+def _optimize_continuous(
+    acqf: AcquisitionFunction,
+    bounds: Tensor,
+    batch_size: int,
+    num_restarts: int,
+    raw_samples: int,
+) -> tuple[Tensor, Tensor]:
+    """Optimize acquisition over continuous space using L-BFGS-B.
+
+    Args:
+        acqf: Acquisition function to optimize
+        bounds: Parameter bounds of shape (2, n_dims)
+        batch_size: Number of candidates to generate
+        num_restarts: Number of optimization restarts
+        raw_samples: Number of raw samples for initialization
+
+    Returns:
+        Tuple of (candidates, acquisition_values)
+    """
     candidates, acq_values = optimize_acqf(
         acq_function=acqf,
         bounds=bounds,
         q=batch_size,
         num_restarts=num_restarts,
         raw_samples=raw_samples,
-        sequential=True,  # Sequential greedy for batch
+        sequential=True,
         options={
             "batch_limit": 5,
             "maxiter": 200,
         },
     )
+    return candidates, acq_values
 
+
+def _optimize_discrete(
+    acqf: AcquisitionFunction,
+    spec: OptimizationSpec,
+    batch_size: int,
+    x_avoid: Tensor | None,
+) -> tuple[Tensor, Tensor]:
+    """Optimize acquisition over a purely categorical space.
+
+    Enumerates all one-hot-encoded combinations and uses BoTorch's
+    optimize_acqf_discrete with unique=True to avoid duplicate suggestions.
+
+    Reference:
+        https://botorch.readthedocs.io/en/latest/optim.html#botorch.optim.optimize.optimize_acqf_discrete
+
+    Args:
+        acqf: Acquisition function to optimize
+        spec: Optimization specification (purely categorical)
+        batch_size: Number of candidates to generate
+        x_avoid: Points to exclude from the choice set
+
+    Returns:
+        Tuple of (candidates, acquisition_values)
+    """
+    choices = enumerate_discrete_choices(spec)
+    candidates, acq_values = optimize_acqf_discrete(
+        acq_function=acqf,
+        q=batch_size,
+        choices=choices,
+        unique=True,
+        X_avoid=x_avoid,
+    )
+    return candidates, acq_values
+
+
+def _optimize_mixed(
+    acqf: AcquisitionFunction,
+    bounds: Tensor,
+    spec: OptimizationSpec,
+    batch_size: int,
+    num_restarts: int,
+    raw_samples: int,
+) -> tuple[Tensor, Tensor]:
+    """Optimize acquisition over a mixed continuous + categorical space.
+
+    For each categorical combination, runs L-BFGS-B optimization over the
+    continuous dimensions, then returns the best result.
+
+    Reference:
+        https://botorch.readthedocs.io/en/latest/optim.html#botorch.optim.optimize.optimize_acqf_mixed
+
+    Args:
+        acqf: Acquisition function to optimize
+        bounds: Parameter bounds of shape (2, n_dims)
+        spec: Optimization specification (mixed space)
+        batch_size: Number of candidates to generate
+        num_restarts: Number of optimization restarts
+        raw_samples: Number of raw samples for initialization
+
+    Returns:
+        Tuple of (candidates, acquisition_values)
+    """
+    fixed_features = build_fixed_features_list(spec)
+    candidates, acq_values = optimize_acqf_mixed(
+        acq_function=acqf,
+        bounds=bounds,
+        q=batch_size,
+        num_restarts=num_restarts,
+        raw_samples=raw_samples,
+        fixed_features_list=fixed_features,
+        options={
+            "batch_limit": 5,
+            "maxiter": 200,
+        },
+    )
     return candidates, acq_values
 
 

@@ -10,6 +10,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from bo_mcp_server.domain.campaign import CampaignStatus
 from bo_mcp_server.domain.result import ResultSource
 from bo_mcp_server.domain.suggestion import SuggestionStatus
+from bo_mcp_server.domain.utils import utcnow
 
 
 class Base(DeclarativeBase):
@@ -28,8 +29,8 @@ class UserModel(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     api_key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     campaigns: Mapped[list["CampaignModel"]] = relationship(back_populates="owner")
@@ -50,7 +51,7 @@ class CampaignSpecModel(Base):
     max_iterations: Mapped[int | None] = mapped_column(Integer, nullable=True)
     initial_design_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     random_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationships
     campaigns: Mapped[list["CampaignModel"]] = relationship(back_populates="spec")
@@ -83,9 +84,9 @@ class CampaignModel(Base):
     )
     version: Mapped[int] = mapped_column(Integer, default=1)
     iteration: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # v1.2: TuRBO state for high-dimensional optimization
     turbo_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # v2.8: Hypervolume history for multi-objective convergence detection
@@ -122,8 +123,8 @@ class SuggestionModel(Base):
         Enum(SuggestionStatus), default=SuggestionStatus.PENDING
     )
     provenance_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationships
     campaign: Mapped["CampaignModel"] = relationship(back_populates="suggestions")
@@ -153,7 +154,7 @@ class ResultModel(Base):
     source: Mapped[ResultSource] = mapped_column(Enum(ResultSource), nullable=False)
     submitted_by: Mapped[str] = mapped_column(String(36), nullable=False)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")  # JSON
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationships
     campaign: Mapped["CampaignModel"] = relationship(back_populates="results")

@@ -1,11 +1,12 @@
 """Create campaign tool for MCP."""
 
 import logging
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from bo_mcp_server.domain import (
     Campaign,
+    CampaignIntakeInput,
     CampaignSpec,
     CampaignStatus,
     Constraint,
@@ -29,14 +30,15 @@ logger = logging.getLogger(__name__)
 
 @mcp.tool()
 async def create_campaign(
-    intake_data: dict[str, Any],
+    intake_data: CampaignIntakeInput,
     owner_id: str,
-    verbosity: str = "standard",
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard",
 ) -> dict[str, Any]:
     """Create a new optimization campaign from validated intake data.
 
     Args:
-        intake_data: Campaign configuration (same format as validate_intake)
+        intake_data: Campaign intake payload validated via CampaignIntakeInput
+            (same schema used by validate_intake).
         owner_id: UUID of the user creating the campaign
         verbosity: Response verbosity level. Options:
             - "minimal": ~30 tokens - campaign_id only

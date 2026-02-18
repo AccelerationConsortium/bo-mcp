@@ -125,14 +125,18 @@ def apply_sum_constraint(
     result = candidates.clone()
     selected = result[..., param_indices]
 
-    # Normalize to sum to target
+    # Normalize to sum to target. For near-zero rows, fall back to
+    # an equal split so the constraint is still satisfied.
     current_sum = selected.sum(dim=-1, keepdim=True)
-    current_sum = torch.where(
-        current_sum.abs() < 1e-10,
-        torch.ones_like(current_sum),
-        current_sum,
-    )
-    result[..., param_indices] = selected * (target_sum / current_sum)
+    near_zero = current_sum.abs() < 1e-10
+    safe_sum = torch.where(near_zero, torch.ones_like(current_sum), current_sum)
+    projected = selected * (target_sum / safe_sum)
+
+    if near_zero.any():
+        equal_split = torch.full_like(selected, target_sum / len(param_indices))
+        projected = torch.where(near_zero.expand_as(selected), equal_split, projected)
+
+    result[..., param_indices] = projected
 
     return result
 

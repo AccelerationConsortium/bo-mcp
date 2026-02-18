@@ -41,7 +41,9 @@ class TestInputParameter:
             bounds=(20.0, 100.0),
         )
         assert param.name == "temp"
-        assert param.bounds == (20.0, 100.0)
+        assert param.bounds is not None
+        assert param.bounds.lower == 20.0
+        assert param.bounds.upper == 100.0
 
     def test_discrete_param_requires_values_or_bounds(self):
         """Discrete parameter must have values or bounds."""

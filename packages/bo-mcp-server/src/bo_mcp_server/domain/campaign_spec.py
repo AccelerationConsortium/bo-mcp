@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ParameterType(StrEnum):
@@ -14,15 +14,43 @@ class ParameterType(StrEnum):
     CATEGORICAL = "categorical"
 
 
+class Bounds(BaseModel):
+    """Numeric lower/upper bounds."""
+
+    lower: float
+    upper: float
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "Bounds":
+        """Validate lower bound is less than upper bound."""
+        if self.lower >= self.upper:
+            msg = "Lower bound must be less than upper bound"
+            raise ValueError(msg)
+        return self
+
+
 class InputParameter(BaseModel):
     """Input parameter definition."""
 
     name: str = Field(..., min_length=1)
     type: ParameterType
-    bounds: tuple[float, float] | None = None  # For continuous/discrete
+    bounds: Bounds | None = None  # For continuous/discrete
     values: list[int] | None = None  # For discrete
     categories: list[str] | None = None  # For categorical
     description: str = ""
+
+    @field_validator("bounds", mode="before")
+    @classmethod
+    def normalize_bounds(cls, value: Any) -> Any:
+        """Accept legacy [lower, upper] payloads in addition to object form."""
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            if len(value) != 2:
+                msg = "Bounds must contain exactly 2 values"
+                raise ValueError(msg)
+            return {"lower": value[0], "upper": value[1]}
+        return value
 
     @model_validator(mode="after")
     def validate_parameter(self) -> "InputParameter":
@@ -30,9 +58,6 @@ class InputParameter(BaseModel):
         if self.type == ParameterType.CONTINUOUS:
             if self.bounds is None:
                 msg = "Continuous parameter requires bounds"
-                raise ValueError(msg)
-            if self.bounds[0] >= self.bounds[1]:
-                msg = "Lower bound must be less than upper bound"
                 raise ValueError(msg)
         elif self.type == ParameterType.DISCRETE:
             if self.values is None and self.bounds is None:
@@ -110,10 +135,21 @@ class FidelityParameter(BaseModel):
     """
 
     name: str = Field(..., min_length=1)
-    bounds: tuple[float, float]  # (min_fidelity, max_fidelity)
+    bounds: Bounds  # (min_fidelity, max_fidelity)
     target: float  # Target fidelity for final optimization (usually max)
     cost_weight: float = 1.0  # Cost scaling factor for fidelity
     fixed_cost: float = 5.0  # Fixed base cost
+
+    @field_validator("bounds", mode="before")
+    @classmethod
+    def normalize_bounds(cls, value: Any) -> Any:
+        """Accept legacy [lower, upper] payloads in addition to object form."""
+        if isinstance(value, (list, tuple)):
+            if len(value) != 2:
+                msg = "Bounds must contain exactly 2 values"
+                raise ValueError(msg)
+            return {"lower": value[0], "upper": value[1]}
+        return value
 
 
 class TransferLearningConfig(BaseModel):

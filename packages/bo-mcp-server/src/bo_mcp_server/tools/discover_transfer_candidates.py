@@ -96,8 +96,8 @@ def _compute_bounds_overlap(
             continue
 
         # Compute 1D interval overlap
-        s_lower, s_upper = sp.bounds
-        t_lower, t_upper = tp.bounds
+        s_lower, s_upper = sp.bounds.lower, sp.bounds.upper
+        t_lower, t_upper = tp.bounds.lower, tp.bounds.upper
 
         overlap_lower = max(s_lower, t_lower)
         overlap_upper = min(s_upper, t_upper)

@@ -155,7 +155,7 @@ def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
         InputParameter(
             name=p["name"],
             type=ParameterType(p["type"]),
-            bounds=tuple(p["bounds"]) if p.get("bounds") else None,
+            bounds=p.get("bounds"),
             values=p.get("values"),
             categories=p.get("categories"),
             description=p.get("description", ""),

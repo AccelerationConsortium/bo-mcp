@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """Toy example: Run a complete Bayesian Optimization workflow."""
 
 import asyncio

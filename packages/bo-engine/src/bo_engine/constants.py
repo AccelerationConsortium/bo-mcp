@@ -76,6 +76,21 @@ NUM_RESTARTS = 10
 RAW_SAMPLES = 512
 
 # =============================================================================
+# Discrete / Mixed Search Space Optimization
+# =============================================================================
+
+# Maximum number of categorical combinations for the optimize_acqf_mixed path.
+# Each combination triggers a separate L-BFGS-B run over the continuous dims.
+# 100 runs complete in seconds for typical problem sizes; increase if you have
+# more computational budget or reduce if continuous dimensionality is high.
+MIXED_CATEGORICAL_COMBO_THRESHOLD = 100
+
+# Maximum number of discrete points for exhaustive enumeration in
+# optimize_acqf_discrete. Above this, a ValueError is raised to prevent
+# silent memory issues from loading a massive choices tensor.
+DISCRETE_ENUMERATION_MAX_POINTS = 10_000
+
+# =============================================================================
 # Initial Design
 # =============================================================================
 

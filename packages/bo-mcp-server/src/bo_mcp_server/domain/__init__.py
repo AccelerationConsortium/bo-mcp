@@ -13,6 +13,7 @@ from bo_mcp_server.domain.campaign_spec import (
     ParameterType,
     TransferLearningConfig,
 )
+from bo_mcp_server.domain.intake_models import CampaignIntakeInput, ResultSubmissionInput
 from bo_mcp_server.domain.result import Result, ResultSource
 from bo_mcp_server.domain.suggestion import Suggestion, SuggestionProvenance, SuggestionStatus
 from bo_mcp_server.domain.user import User
@@ -22,6 +23,7 @@ __version__ = "0.1.0"
 __all__ = [
     "AcquisitionMethod",
     "Campaign",
+    "CampaignIntakeInput",
     "CampaignSpec",
     "CampaignStatus",
     "Constraint",
@@ -32,6 +34,7 @@ __all__ = [
     "OutcomeConstraint",
     "ParameterType",
     "Result",
+    "ResultSubmissionInput",
     "ResultSource",
     "Suggestion",
     "SuggestionProvenance",

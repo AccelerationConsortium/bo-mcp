@@ -20,6 +20,12 @@ import numpy as np
 import pytest
 import torch
 
+from bo_mcp_server.domain import ResultSubmissionInput
+
+
+def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
+    return [ResultSubmissionInput.model_validate(r) for r in results]
+
 
 class TestSingleObjectiveLifecycle:
     """End-to-end tests for single-objective optimization campaigns.
@@ -104,7 +110,7 @@ class TestSingleObjectiveLifecycle:
             for s in gen1["suggestions"]
         ]
 
-        submit1 = await submit_results(campaign_id, results1, owner_id)
+        submit1 = await submit_results(campaign_id, _to_result_inputs(results1), owner_id)
         assert submit1["success"] is True, f"Submit failed: {submit1['errors']}"
         assert len(submit1["result_ids"]) == 3
 
@@ -130,7 +136,7 @@ class TestSingleObjectiveLifecycle:
             }
             for s in gen2["suggestions"]
         ]
-        submit2 = await submit_results(campaign_id, results2, owner_id)
+        submit2 = await submit_results(campaign_id, _to_result_inputs(results2), owner_id)
         assert submit2["success"] is True
 
         # 6. Check diagnostics show progress
@@ -185,7 +191,7 @@ class TestSingleObjectiveLifecycle:
             }
             for s in gen1["suggestions"]
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Second iteration
         gen2 = await generate_suggestions(campaign_id)
@@ -198,7 +204,7 @@ class TestSingleObjectiveLifecycle:
             }
             for s in gen2["suggestions"]
         ]
-        await submit_results(campaign_id, results2, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results2), owner_id)
 
         # Diagnostics
         diag = await get_diagnostics(campaign_id)
@@ -276,7 +282,7 @@ class TestMultiObjectiveLifecycle:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
             # Check diagnostics after each iteration
             diag = await get_diagnostics(campaign_id)
@@ -351,7 +357,7 @@ class TestMultiObjectiveLifecycle:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         diag = await get_diagnostics(campaign_id)
         assert diag["success"] is True
@@ -417,7 +423,7 @@ class TestMixedParameterLifecycle:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         diag = await get_diagnostics(campaign_id)
         assert diag["success"] is True
@@ -472,7 +478,7 @@ class TestMixedParameterLifecycle:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         diag = await get_diagnostics(campaign_id)
         assert diag["success"] is True
@@ -538,7 +544,7 @@ class TestConstrainedLifecycle:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         diag = await get_diagnostics(campaign_id)
         assert diag["success"] is True
@@ -617,7 +623,7 @@ class TestLongRunningLifecycle:
                 }
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
             diag = await get_diagnostics(campaign_id)
             assert diag["success"] is True
@@ -706,7 +712,7 @@ class TestCampaignStateTransitions:
                 {"parameter_values": s["parameter_values"], "objective_values": {"f": 1.0}}
                 for s in gen["suggestions"]
             ]
-            await submit_results(campaign_id, results, owner_id)
+            await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Verify iteration sequence
         assert iterations_seen == [1, 2, 3, 4]

@@ -251,18 +251,48 @@ Validates campaign configuration before creating a campaign.
         "type": "sum_equals | sum_less_than | sum_greater_than | linear (required)",
         "parameters": ["string"] (required),
         "value": number (required),
-        "coefficients": [number] (required for linear)
+        "coefficients": [number] (optional, used by linear constraints)
       }
     ],
     "batch_size": "integer (optional, default: 1)",
     "max_iterations": "integer (optional)",
     "initial_design_size": "integer (optional)",
     "random_seed": "integer (optional)"
+  },
+  "verbosity": "minimal | standard | detailed (default: standard)"
+}
+```
+
+`intake_data` is validated as a strict schema (unknown top-level fields are rejected).
+
+**Output Schema:**
+Depends on `verbosity`:
+
+- `minimal`
+```json
+{
+  "valid": "boolean",
+  "errors": ["string"]
+}
+```
+
+- `standard` (default)
+```json
+{
+  "valid": "boolean",
+  "errors": ["string"],
+  "warnings": ["string"],
+  "spec_summary": {
+    "name": "string",
+    "n_parameters": "integer",
+    "n_objectives": "integer",
+    "n_constraints": "integer",
+    "batch_size": "integer"
   }
 }
 ```
 
-**Output Schema:**
+- `detailed`
 ```json
 {
   "valid": "boolean",

@@ -5,9 +5,13 @@ import asyncio
 import json
 import sys
 
+import dotenv
+
 from bo_mcp_server import __version__
 from bo_mcp_server.server import mcp
 from bo_mcp_server.storage import init_database
+
+dotenv.load_dotenv()
 
 # Number of tools available in the MCP server
 _TOOLS_COUNT = 13
@@ -18,9 +22,9 @@ async def main_async(transport: str, host: str, port: int) -> None:
     await init_database()
 
     if transport == "stdio":
-        await mcp.run_stdio()
+        await mcp.run_stdio_async()
     else:
-        await mcp.run_sse(host=host, port=port)
+        await mcp.run_sse_async(host=host, port=port)
 
 
 async def _verify_setup() -> None:

@@ -1,12 +1,12 @@
 """Campaign specification value object."""
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
 
-class ParameterType(str, Enum):
+class ParameterType(StrEnum):
     """Type of input parameter."""
 
     CONTINUOUS = "continuous"
@@ -59,7 +59,7 @@ class Objective(BaseModel):
         return self.direction == "minimize"
 
 
-class ConstraintType(str, Enum):
+class ConstraintType(StrEnum):
     """Type of constraint."""
 
     SUM_EQUALS = "sum_equals"
@@ -77,7 +77,7 @@ class Constraint(BaseModel):
     coefficients: list[float] | None = None  # For linear constraints
 
 
-class AcquisitionMethod(str, Enum):
+class AcquisitionMethod(StrEnum):
     """Acquisition function method."""
 
     AUTO = "auto"  # Automatic selection based on n_objectives

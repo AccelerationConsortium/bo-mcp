@@ -38,7 +38,7 @@ async def ensure_dev_user() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Application lifespan handler."""
     # Initialize database on startup
     await init_database()

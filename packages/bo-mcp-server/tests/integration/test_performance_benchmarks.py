@@ -18,6 +18,13 @@ from uuid import uuid4
 import pytest
 import torch
 
+from bo_mcp_server.domain import ResultSubmissionInput
+
+
+def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
+    return [ResultSubmissionInput.model_validate(r) for r in results]
+
+
 # Performance thresholds (in seconds)
 # These are conservative bounds to catch major regressions
 # while allowing for variance in CI environments
@@ -113,7 +120,7 @@ class TestSuggestionGenerationPerformance:
             }
             for i in range(10)
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Measure BO suggestion time
         start_time = time.perf_counter()
@@ -166,7 +173,7 @@ class TestSuggestionGenerationPerformance:
             }
             for i in range(30)
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Measure BO suggestion time
         start_time = time.perf_counter()
@@ -232,7 +239,7 @@ class TestSuggestionGenerationPerformance:
             cumulative_results.extend(new_results)
 
             if new_results:
-                await submit_results(campaign_id, new_results, owner_id)
+                await submit_results(campaign_id, _to_result_inputs(new_results), owner_id)
 
             # Measure suggestion time
             start_time = time.perf_counter()
@@ -293,7 +300,7 @@ class TestDiagnosticsPerformance:
             }
             for i in range(10)
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Measure diagnostics time
         start_time = time.perf_counter()
@@ -343,7 +350,7 @@ class TestDiagnosticsPerformance:
             }
             for i in range(30)
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Measure diagnostics time
         start_time = time.perf_counter()
@@ -441,7 +448,7 @@ class TestHighDimensionalPerformance:
             }
             for i in range(15)
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         start_time = time.perf_counter()
         gen = await generate_suggestions(campaign_id)
@@ -499,7 +506,7 @@ class TestMultiObjectivePerformance:
             }
             for i in range(15)
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         start_time = time.perf_counter()
         gen = await generate_suggestions(campaign_id)
@@ -554,7 +561,7 @@ class TestMultiObjectivePerformance:
             }
             for i in range(15)
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         start_time = time.perf_counter()
         gen = await generate_suggestions(campaign_id)
@@ -665,7 +672,7 @@ class TestPerformanceRegression:
             }
             for i in range(10)
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # Regression threshold: 30 seconds for small dataset BO
         regression_threshold = 30.0

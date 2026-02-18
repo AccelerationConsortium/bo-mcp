@@ -8,6 +8,13 @@ References:
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
+
+from bo_mcp_server.domain import ResultSubmissionInput
+
+
+def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
+    return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
 class TestValidateIntake:
@@ -430,7 +437,7 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id="not-a-uuid",
-            results=[],
+            results=_to_result_inputs([]),
             submitted_by=str(uuid4()),
         )
 
@@ -444,7 +451,7 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id=str(uuid4()),
-            results=[],
+            results=_to_result_inputs([]),
             submitted_by="not-a-uuid",
         )
 
@@ -458,7 +465,7 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id=str(uuid4()),
-            results=[],
+            results=_to_result_inputs([]),
             submitted_by=str(uuid4()),
         )
 
@@ -472,7 +479,9 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id=str(uuid4()),
-            results=[{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}],
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]
+            ),
             submitted_by=str(uuid4()),
         )
 
@@ -505,10 +514,12 @@ class TestSubmitResults:
         # Submit results
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
-                {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},
-            ],
+            results=_to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
+                    {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},
+                ]
+            ),
             submitted_by=owner_id,
         )
 
@@ -539,9 +550,11 @@ class TestSubmitResults:
         # Missing x2 parameter
         result = await submit_results(
             campaign_id=create_result["campaign_id"],
-            results=[
-                {"parameter_values": {"x1": 0.5}, "objective_values": {"y": 1.0}},
-            ],
+            results=_to_result_inputs(
+                [
+                    {"parameter_values": {"x1": 0.5}, "objective_values": {"y": 1.0}},
+                ]
+            ),
             submitted_by=owner_id,
         )
 
@@ -573,9 +586,11 @@ class TestSubmitResults:
         # Missing y2 objective
         result = await submit_results(
             campaign_id=create_result["campaign_id"],
-            results=[
-                {"parameter_values": {"x": 0.5}, "objective_values": {"y1": 1.0}},
-            ],
+            results=_to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.5}, "objective_values": {"y1": 1.0}},
+                ]
+            ),
             submitted_by=owner_id,
         )
 
@@ -589,7 +604,9 @@ class TestSubmitResults:
 
         result = await submit_results(
             campaign_id=str(uuid4()),
-            results=[{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}],
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]
+            ),
             submitted_by=str(uuid4()),
             source="invalid_source",
         )
@@ -610,10 +627,9 @@ class TestSubmitResultsBatchOperations:
 
     @pytest.mark.asyncio
     async def test_atomic_mode_rollback_on_error(self, setup_database):
-        """Atomic mode rolls back all results when any validation fails."""
+        """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-        from bo_mcp_server.tools.submit_results import submit_results
 
         owner_id = str(uuid4())
         intake_data = {
@@ -628,22 +644,14 @@ class TestSubmitResultsBatchOperations:
         campaign_id = create_result["campaign_id"]
         await generate_suggestions(campaign_id)
 
-        # Mix of valid and invalid results - atomic mode should reject all
-        result = await submit_results(
-            campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},  # Valid
-                {"parameter_values": {"x": 0.5}},  # Missing objective_values
-                {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},  # Valid
-            ],
-            submitted_by=owner_id,
-            atomic=True,  # Default, but explicit for clarity
-        )
+        invalid_payload = [
+            {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},  # Valid
+            {"parameter_values": {"x": 0.5}},  # Missing objective_values
+            {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},  # Valid
+        ]
 
-        # Should fail because one result is invalid
-        assert result["success"] is False
-        assert len(result["result_ids"]) == 0
-        assert any("missing" in e.lower() for e in result["errors"])
+        with pytest.raises(ValidationError):
+            _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
@@ -671,11 +679,19 @@ class TestSubmitResultsBatchOperations:
         # Mix of valid and invalid results
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},  # Valid (idx 0)
-                {"parameter_values": {"x": 0.5}},  # Missing objective_values (idx 1)
-                {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},  # Valid (idx 2)
-            ],
+            results=_to_result_inputs(
+                [
+                    {
+                        "parameter_values": {"x": 0.3},
+                        "objective_values": {"y": 1.5},
+                    },  # Valid (idx 0)
+                    {"parameter_values": {"x": 0.5}},  # Missing objective_values (idx 1)
+                    {
+                        "parameter_values": {"x": 0.7},
+                        "objective_values": {"y": 0.8},
+                    },  # Valid (idx 2)
+                ]
+            ),
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
@@ -695,10 +711,9 @@ class TestSubmitResultsBatchOperations:
 
     @pytest.mark.asyncio
     async def test_non_atomic_without_continue_on_error(self, setup_database):
-        """Non-atomic mode without continue_on_error still processes all valid results."""
+        """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-        from bo_mcp_server.tools.submit_results import submit_results
 
         owner_id = str(uuid4())
         intake_data = {
@@ -713,24 +728,14 @@ class TestSubmitResultsBatchOperations:
         campaign_id = create_result["campaign_id"]
         await generate_suggestions(campaign_id)
 
-        # Mix of valid and invalid results
-        result = await submit_results(
-            campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},  # Valid
-                {"objective_values": {"y": 0.5}},  # Missing parameter_values
-                {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},  # Valid
-            ],
-            submitted_by=owner_id,
-            atomic=False,
-            continue_on_error=False,  # Default
-        )
+        invalid_payload = [
+            {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},  # Valid
+            {"objective_values": {"y": 0.5}},  # Missing parameter_values
+            {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},  # Valid
+        ]
 
-        # Non-atomic processes valid results even with errors
-        # But without continue_on_error, no partial_results dict
-        assert len(result["result_ids"]) == 2
-        assert "partial_results" not in result
-        assert len(result["errors"]) >= 1
+        with pytest.raises(ValidationError):
+            _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
@@ -762,10 +767,12 @@ class TestSubmitResultsBatchOperations:
 
         result = await submit_results(
             campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
-                {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},
-            ],
+            results=_to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
+                    {"parameter_values": {"x": 0.7}, "objective_values": {"y": 0.8}},
+                ]
+            ),
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
@@ -781,10 +788,9 @@ class TestSubmitResultsBatchOperations:
 
     @pytest.mark.asyncio
     async def test_all_results_fail_in_continue_mode(self, setup_database):
-        """When all results fail in continue_on_error mode, success is False."""
+        """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-        from bo_mcp_server.tools.submit_results import submit_results
 
         owner_id = str(uuid4())
         intake_data = {
@@ -799,33 +805,19 @@ class TestSubmitResultsBatchOperations:
         campaign_id = create_result["campaign_id"]
         await generate_suggestions(campaign_id)
 
-        # All results are invalid
-        result = await submit_results(
-            campaign_id=campaign_id,
-            results=[
-                {"objective_values": {"y": 1.5}},  # Missing parameter_values
-                {"parameter_values": {"x": 0.5}},  # Missing objective_values
-            ],
-            submitted_by=owner_id,
-            atomic=False,
-            continue_on_error=True,
-        )
+        invalid_payload = [
+            {"objective_values": {"y": 1.5}},  # Missing parameter_values
+            {"parameter_values": {"x": 0.5}},  # Missing objective_values
+        ]
 
-        # Should fail since no results were saved
-        assert result["success"] is False
-        assert len(result["result_ids"]) == 0
-        assert "partial_results" in result
-        # All entries should be errors
-        for idx in result["partial_results"]:
-            assert isinstance(result["partial_results"][idx], dict)
-            assert "error" in result["partial_results"][idx]
+        with pytest.raises(ValidationError):
+            _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
     async def test_atomic_default_true(self, setup_database):
-        """Atomic parameter defaults to True for backward compatibility."""
+        """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-        from bo_mcp_server.tools.submit_results import submit_results
 
         owner_id = str(uuid4())
         intake_data = {
@@ -840,26 +832,19 @@ class TestSubmitResultsBatchOperations:
         campaign_id = create_result["campaign_id"]
         await generate_suggestions(campaign_id)
 
-        # Don't specify atomic - should default to True
-        result = await submit_results(
-            campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
-                {"parameter_values": {"x": 0.5}},  # Invalid - missing objective
-            ],
-            submitted_by=owner_id,
-        )
+        invalid_payload = [
+            {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
+            {"parameter_values": {"x": 0.5}},  # Invalid - missing objective
+        ]
 
-        # Should fail (atomic behavior)
-        assert result["success"] is False
-        assert len(result["result_ids"]) == 0
+        with pytest.raises(ValidationError):
+            _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
     async def test_continue_on_error_ignored_when_atomic(self, setup_database):
-        """continue_on_error is ignored when atomic=True."""
+        """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-        from bo_mcp_server.tools.submit_results import submit_results
 
         owner_id = str(uuid4())
         intake_data = {
@@ -874,23 +859,13 @@ class TestSubmitResultsBatchOperations:
         campaign_id = create_result["campaign_id"]
         await generate_suggestions(campaign_id)
 
-        # atomic=True with continue_on_error=True - should still be atomic
-        result = await submit_results(
-            campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
-                {"parameter_values": {"x": 0.5}},  # Invalid
-            ],
-            submitted_by=owner_id,
-            atomic=True,
-            continue_on_error=True,  # Should be ignored
-        )
+        invalid_payload = [
+            {"parameter_values": {"x": 0.3}, "objective_values": {"y": 1.5}},
+            {"parameter_values": {"x": 0.5}},  # Invalid
+        ]
 
-        # Should fail (atomic behavior takes precedence)
-        assert result["success"] is False
-        assert len(result["result_ids"]) == 0
-        # No partial_results in atomic mode
-        assert "partial_results" not in result
+        with pytest.raises(ValidationError):
+            _to_result_inputs(invalid_payload)
 
 
 class TestGetDiagnostics:
@@ -967,11 +942,13 @@ class TestGetDiagnostics:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.2}, "objective_values": {"y": 2.0}},
-                {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
-                {"parameter_values": {"x": 0.8}, "objective_values": {"y": 1.5}},
-            ],
+            results=_to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.2}, "objective_values": {"y": 2.0}},
+                    {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
+                    {"parameter_values": {"x": 0.8}, "objective_values": {"y": 1.5}},
+                ]
+            ),
             submitted_by=owner_id,
         )
 
@@ -1010,11 +987,13 @@ class TestGetDiagnostics:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id=campaign_id,
-            results=[
-                {"parameter_values": {"x": 0.2}, "objective_values": {"f1": 0.8, "f2": 0.3}},
-                {"parameter_values": {"x": 0.5}, "objective_values": {"f1": 0.5, "f2": 0.5}},
-                {"parameter_values": {"x": 0.8}, "objective_values": {"f1": 0.3, "f2": 0.8}},
-            ],
+            results=_to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.2}, "objective_values": {"f1": 0.8, "f2": 0.3}},
+                    {"parameter_values": {"x": 0.5}, "objective_values": {"f1": 0.5, "f2": 0.5}},
+                    {"parameter_values": {"x": 0.8}, "objective_values": {"f1": 0.3, "f2": 0.8}},
+                ]
+            ),
             submitted_by=owner_id,
         )
 
@@ -1463,7 +1442,7 @@ class TestEndToEndWorkflow:
             }
             for s in gen1["suggestions"]
         ]
-        submit1 = await submit_results(campaign_id, results1, owner_id)
+        submit1 = await submit_results(campaign_id, _to_result_inputs(results1), owner_id)
         assert submit1["success"] is True
 
         # 4. Generate BO-based suggestions (now with data)
@@ -1513,7 +1492,7 @@ class TestEndToEndWorkflow:
             {"parameter_values": {"x": 0.5}, "objective_values": {"f1": 0.5, "f2": 0.5}},
             {"parameter_values": {"x": 0.9}, "objective_values": {"f1": 0.9, "f2": 0.1}},
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         # 3. Verify multi-objective diagnostics
         diag = await get_diagnostics(campaign_id)
@@ -1557,11 +1536,13 @@ class TestAgentUsabilityDiagnostics:
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id,
-            [
-                {"parameter_values": {"x": 0.2}, "objective_values": {"y": 2.0}},
-                {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
-                {"parameter_values": {"x": 0.8}, "objective_values": {"y": 1.5}},
-            ],
+            _to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.2}, "objective_values": {"y": 2.0}},
+                    {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
+                    {"parameter_values": {"x": 0.8}, "objective_values": {"y": 1.5}},
+                ]
+            ),
             owner_id,
         )
         await generate_suggestions(campaign_id)  # This should have uncertainty info
@@ -1596,11 +1577,13 @@ class TestAgentUsabilityDiagnostics:
         await generate_suggestions(campaign_id)  # Initial design
         await submit_results(
             campaign_id,
-            [
-                {"parameter_values": {"x": 0.1}, "objective_values": {"y": 2.0}},
-                {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
-                {"parameter_values": {"x": 0.9}, "objective_values": {"y": 1.5}},
-            ],
+            _to_result_inputs(
+                [
+                    {"parameter_values": {"x": 0.1}, "objective_values": {"y": 2.0}},
+                    {"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}},
+                    {"parameter_values": {"x": 0.9}, "objective_values": {"y": 1.5}},
+                ]
+            ),
             owner_id,
         )
         await generate_suggestions(campaign_id)  # BO-based suggestions
@@ -1645,7 +1628,7 @@ class TestAgentUsabilityDiagnostics:
             {"parameter_values": {"x1": 0.7, "x2": 0.3}, "objective_values": {"y": 1.2}},
             {"parameter_values": {"x1": 0.9, "x2": 0.9}, "objective_values": {"y": 1.8}},
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         diag = await get_diagnostics(campaign_id)
 
@@ -1697,7 +1680,7 @@ class TestAgentUsabilityDiagnostics:
                 "objective_values": {"y": 1.5},
             },  # Infeasible
         ]
-        await submit_results(campaign_id, results, owner_id)
+        await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
         diag = await get_diagnostics(campaign_id)
 
@@ -1797,7 +1780,7 @@ class TestCompareCampaigns:
         await generate_suggestions(campaign1_id)
         await submit_results(
             campaign1_id,
-            [{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}],
+            _to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]),
             owner_id,
         )
 
@@ -1812,7 +1795,7 @@ class TestCompareCampaigns:
         await generate_suggestions(campaign2_id)
         await submit_results(
             campaign2_id,
-            [{"parameter_values": {"x": 0.3}, "objective_values": {"y": 0.8}}],
+            _to_result_inputs([{"parameter_values": {"x": 0.3}, "objective_values": {"y": 0.8}}]),
             owner_id,
         )
 
@@ -1929,20 +1912,22 @@ class TestDiscoverTransferCandidates:
         # Submit enough results to make it a transfer candidate
         await submit_results(
             source_id,
-            [
-                {
-                    "parameter_values": {"temperature": 50, "pressure": 5},
-                    "objective_values": {"yield": 0.8},
-                },
-                {
-                    "parameter_values": {"temperature": 60, "pressure": 6},
-                    "objective_values": {"yield": 0.85},
-                },
-                {
-                    "parameter_values": {"temperature": 70, "pressure": 7},
-                    "objective_values": {"yield": 0.9},
-                },
-            ],
+            _to_result_inputs(
+                [
+                    {
+                        "parameter_values": {"temperature": 50, "pressure": 5},
+                        "objective_values": {"yield": 0.8},
+                    },
+                    {
+                        "parameter_values": {"temperature": 60, "pressure": 6},
+                        "objective_values": {"yield": 0.85},
+                    },
+                    {
+                        "parameter_values": {"temperature": 70, "pressure": 7},
+                        "objective_values": {"yield": 0.9},
+                    },
+                ]
+            ),
             owner_id,
         )
 
@@ -2459,7 +2444,7 @@ class TestVerbosityOnExistingTools:
         # Minimal - n_submitted only
         minimal = await submit_results(
             create_result["campaign_id"],
-            results_data,
+            _to_result_inputs(results_data),
             owner_id,
             verbosity="minimal",
         )

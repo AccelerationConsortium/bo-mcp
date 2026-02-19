@@ -8,10 +8,11 @@ import sys
 import dotenv
 
 from bo_mcp_server import __version__
-from bo_mcp_server.server import mcp
-from bo_mcp_server.storage import init_database
 
 dotenv.load_dotenv()
+
+from bo_mcp_server.server import mcp
+from bo_mcp_server.storage import init_database
 
 # Number of tools available in the MCP server
 _TOOLS_COUNT = 13

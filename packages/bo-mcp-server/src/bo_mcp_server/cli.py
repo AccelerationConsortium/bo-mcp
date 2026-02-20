@@ -11,8 +11,8 @@ from bo_mcp_server import __version__
 
 dotenv.load_dotenv()
 
-from bo_mcp_server.server import mcp
-from bo_mcp_server.storage import close_database, init_database
+from bo_mcp_server.server import mcp  # noqa: E402
+from bo_mcp_server.storage import close_database, init_database  # noqa: E402
 
 # Number of tools available in the MCP server
 _TOOLS_COUNT = 13
@@ -25,7 +25,9 @@ async def main_async(transport: str, host: str, port: int) -> None:
     if transport == "stdio":
         await mcp.run_stdio_async()
     else:
-        await mcp.run_sse_async(host=host, port=port)
+        mcp.settings.host = host
+        mcp.settings.port = port
+        await mcp.run_sse_async()
 
 
 async def _verify_setup() -> None:
@@ -49,9 +51,9 @@ async def _verify_setup() -> None:
     finally:
         try:
             await close_database()
-        except Exception:
+        except Exception as e:
             # Verification already captured DB status; teardown errors should not block exit.
-            pass
+            status["database_close_warning"] = str(e)
 
     print(json.dumps(status, indent=2))
     sys.exit(0 if status["status"] == "ok" else 1)

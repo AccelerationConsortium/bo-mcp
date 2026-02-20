@@ -16,8 +16,8 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
     "pytest-timeout>=2.3.1",
-    "ruff>=0.4",
-    "pyright>=1.1",
+    "ruff>=0.15.2",
+    "pyright>=1.1.408",
     "pre-commit>=3.7",
 ]
 
@@ -27,8 +27,8 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
     "pytest-timeout>=2.3.1",
-    "ruff>=0.4",
-    "pyright>=1.1",
+    "ruff>=0.15.2",
+    "pyright>=1.1.408",
     "pre-commit>=3.7",
 ]
 

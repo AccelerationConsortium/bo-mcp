@@ -48,7 +48,7 @@ async def get_campaign(campaign_id: str) -> str:
 
         for param in spec.parameters:
             if param.bounds:
-                bounds_str = f"[{param.bounds[0]}, {param.bounds[1]}]"
+                bounds_str = f"[{param.bounds.lower}, {param.bounds.upper}]"
                 lines.append(f"- **{param.name}** ({param.type.value}): {bounds_str}")
             elif param.categories:
                 lines.append(f"- **{param.name}** ({param.type.value}): {param.categories}")

@@ -42,7 +42,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
             ParameterSpec(
                 name=p.name,
                 type=param_type,
-                bounds=p.bounds,
+                bounds=(p.bounds.lower, p.bounds.upper) if p.bounds is not None else None,
                 values=p.values,
                 categories=p.categories,
             )
@@ -83,7 +83,10 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
     if spec.fidelity_parameter is not None:
         fidelity_parameter = FidelityParameterSpec(
             name=spec.fidelity_parameter.name,
-            bounds=spec.fidelity_parameter.bounds,
+            bounds=(
+                spec.fidelity_parameter.bounds.lower,
+                spec.fidelity_parameter.bounds.upper,
+            ),
             target=spec.fidelity_parameter.target,
             cost_weight=spec.fidelity_parameter.cost_weight,
             fixed_cost=spec.fidelity_parameter.fixed_cost,

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """Toy example: Run a complete Bayesian Optimization workflow."""
 
 import asyncio
 import hashlib
 import random
+
+import dotenv
+
+dotenv.load_dotenv()
 
 from bo_mcp_server.domain import User
 from bo_mcp_server.storage import UserRepository, get_session, lifespan

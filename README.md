@@ -1,4 +1,4 @@
-# BO-MCP-UI
+# BO-MCP
 
 Bayesian Optimization MCP Service with Web UI - A multi-objective optimization platform using BoTorch and the Model Context Protocol (MCP).
 
@@ -33,7 +33,7 @@ Bayesian Optimization MCP Service with Web UI - A multi-objective optimization p
 ### 1. Installation
 
 ```bash
-git clone <repo-url> && cd bo-mcp-ui && uv sync
+git clone <repo-url> && cd bo-mcp && uv sync
 ```
 
 ### 2. Verify Prerequisites
@@ -47,7 +47,7 @@ uv run python scripts/check_prerequisites.py
 
 ```bash
 uv run bo-mcp-server --verify
-# Expected: {"status": "ok", "version": "0.1.0", "tools": 17, "database": "connected"}
+# Expected: JSON with status, version, tools, and database fields (status should be "ok")
 ```
 
 ### 4. Claude Code Configuration
@@ -60,7 +60,7 @@ Add to `~/.claude.json` (or Claude Desktop's MCP configuration):
     "bo-mcp": {
       "command": "uv",
       "args": ["run", "bo-mcp-server"],
-      "cwd": "/absolute/path/to/bo-mcp-ui"
+      "cwd": "/absolute/path/to/bo-mcp"
     }
   }
 }
@@ -73,7 +73,7 @@ Add to `~/.claude.json` (or Claude Desktop's MCP configuration):
     "bo-mcp": {
       "command": "uv",
       "args": ["run", "python", "scripts/run_mcp_server.py"],
-      "cwd": "/absolute/path/to/bo-mcp-ui"
+      "cwd": "/absolute/path/to/bo-mcp"
     }
   }
 }
@@ -154,7 +154,7 @@ frontend          (calls bo-mcp-api via HTTP)
 ```bash
 # Clone the repository first
 git clone <repo-url>
-cd bo-mcp-ui
+cd bo-mcp
 
 # Just the BO engine for custom integrations
 pip install ./packages/bo-engine
@@ -180,7 +180,7 @@ pip install ./packages/bo-mcp-api
 ```bash
 # Clone the repository
 git clone <repo-url>
-cd bo-mcp-ui
+cd bo-mcp
 
 # Build and run all services
 docker-compose up --build
@@ -476,7 +476,7 @@ Add to your Claude Code MCP configuration file. The location depends on your set
     "bo-mcp": {
       "command": "uv",
       "args": ["run", "python", "scripts/run_mcp_server.py"],
-      "cwd": "/path/to/bo-mcp-ui"
+      "cwd": "/path/to/bo-mcp"
     }
   }
 }
@@ -494,9 +494,13 @@ Add to your Claude Code MCP configuration file. The location depends on your set
 | `upload_results_file` | Upload results from CSV file |
 | `get_diagnostics` | Get campaign progress, Pareto front, and health status |
 | `get_suggestion_explanation` | Get detailed explanation of why a suggestion was made |
+| `search_tools` | Discover relevant MCP tools by keyword/category |
+| `list_campaigns` | List campaigns with optional filters and verbosity |
+| `batch_get_status` | Fetch status for up to 20 campaigns in one call |
 | `pause_campaign` | Pause an active campaign |
 | `resume_campaign` | Resume a paused campaign |
 | `terminate_campaign` | Permanently terminate a campaign |
+| `manage_campaign_lifecycle` | Consolidated lifecycle tool (`pause`/`resume`/`terminate`) |
 | `compare_campaigns` | Compare 2-10 campaigns for relative performance |
 | `discover_transfer_candidates` | Auto-discover campaigns for transfer learning |
 
@@ -517,171 +521,142 @@ If you're building your own LLM agent or automation that needs to use the BO-MCP
 
 ```python
 import asyncio
+import json
+from uuid import uuid4
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-async def run_optimization():
-    # Connect to the MCP server via stdio
+
+async def run_optimization() -> None:
+    owner_id = str(uuid4())
     server_params = StdioServerParameters(
         command="uv",
         args=["run", "python", "scripts/run_mcp_server.py"],
-        cwd="/path/to/bo-mcp-ui"
+        cwd="/path/to/bo-mcp",
     )
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
-            # Initialize the session
             await session.initialize()
 
-            # List available tools
-            tools = await session.list_tools()
-            print(f"Available tools: {[t.name for t in tools.tools]}")
+            intake_data = {
+                "name": "My Optimization",
+                "description": "Optimizing process parameters",
+                "parameters": [
+                    {"name": "temperature", "type": "continuous", "bounds": [50.0, 150.0]},
+                    {"name": "pressure", "type": "continuous", "bounds": [1.0, 10.0]},
+                    {"name": "catalyst", "type": "categorical", "categories": ["Pt", "Pd", "Rh"]},
+                ],
+                "objectives": [
+                    {"name": "yield", "direction": "maximize"},
+                    {"name": "cost", "direction": "minimize"},
+                ],
+                "batch_size": 3,
+            }
 
-            # Create a campaign
-            result = await session.call_tool(
+            validation = await session.call_tool(
+                "validate_intake", arguments={"intake_data": intake_data}
+            )
+            validation_payload = json.loads(validation.content[0].text)
+            if not validation_payload["valid"]:
+                raise RuntimeError(validation_payload["errors"])
+
+            created = await session.call_tool(
                 "create_campaign",
-                arguments={
-                    "name": "My Optimization",
-                    "description": "Optimizing process parameters",
-                    "parameters": [
-                        {"name": "temperature", "type": "continuous", "bounds": [50.0, 150.0]},
-                        {"name": "pressure", "type": "continuous", "bounds": [1.0, 10.0]},
-                        {"name": "catalyst", "type": "categorical", "categories": ["Pt", "Pd", "Rh"]}
-                    ],
-                    "objectives": [
-                        {"name": "yield", "direction": "maximize"},
-                        {"name": "cost", "direction": "minimize"}
-                    ],
-                    "batch_size": 3
-                }
+                arguments={"intake_data": intake_data, "owner_id": owner_id},
             )
-            campaign_id = result.content[0].text  # Extract campaign ID from response
-            print(f"Created campaign: {campaign_id}")
+            campaign_id = json.loads(created.content[0].text)["campaign_id"]
 
-            # Generate suggestions
             suggestions = await session.call_tool(
-                "generate_suggestions",
-                arguments={"campaign_id": campaign_id}
+                "generate_suggestions", arguments={"campaign_id": campaign_id}
             )
-            print(f"Suggestions: {suggestions.content[0].text}")
+            print(suggestions.content[0].text)
 
-            # Submit results after running experiments
             await session.call_tool(
                 "submit_results",
                 arguments={
                     "campaign_id": campaign_id,
                     "results": [
                         {
-                            "parameter_values": {"temperature": 100.0, "pressure": 5.0, "catalyst": "Pd"},
-                            "objective_values": {"yield": 92.5, "cost": 180.0}
+                            "parameter_values": {
+                                "temperature": 100.0,
+                                "pressure": 5.0,
+                                "catalyst": "Pd",
+                            },
+                            "objective_values": {"yield": 92.5, "cost": 180.0},
                         }
-                    ]
-                }
+                    ],
+                    "submitted_by": owner_id,
+                    "source": "api",
+                },
             )
 
-            # Get diagnostics
             diagnostics = await session.call_tool(
-                "get_diagnostics",
-                arguments={"campaign_id": campaign_id}
+                "get_diagnostics", arguments={"campaign_id": campaign_id}
             )
-            print(f"Diagnostics: {diagnostics.content[0].text}")
+            print(diagnostics.content[0].text)
+
 
 if __name__ == "__main__":
     asyncio.run(run_optimization())
 ```
 
-#### Option B: Direct HTTP with SSE Transport
+#### Option B: SSE Transport
 
-For network-based connections, start the server with SSE transport:
+Start the server with SSE transport:
 
 ```bash
 uv run python scripts/run_mcp_server.py --transport sse --host 0.0.0.0 --port 8001
 ```
 
-Then connect via HTTP:
+Then use an MCP client/SDK that supports SSE. The safest path is to keep using SDK-level tool calls with the same argument shapes as Option A.
 
-```python
-import httpx
-import json
+#### Option C: Using Tool Functions Directly (No MCP Protocol)
 
-MCP_URL = "http://localhost:8001"
-
-# Tool calls are sent as JSON-RPC 2.0 requests
-def call_tool(tool_name: str, arguments: dict) -> dict:
-    response = httpx.post(
-        f"{MCP_URL}/mcp/v1/tools/call",
-        json={
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments
-            }
-        }
-    )
-    return response.json()
-
-# Create campaign
-result = call_tool("create_campaign", {
-    "name": "Network Optimization",
-    "parameters": [
-        {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}
-    ],
-    "objectives": [
-        {"name": "y", "direction": "maximize"}
-    ]
-})
-print(result)
-```
-
-#### Option C: Using the Server Directly in Python (No MCP Protocol)
-
-For tighter integration, you can import and use the MCP server's internal functions directly:
+For tighter integration, you can import and use the server tool functions directly:
 
 ```python
 import asyncio
+from uuid import uuid4
+
 from bo_mcp_server.storage import init_database
 from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-from bo_mcp_server.tools.submit_results import submit_results
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics
+from bo_mcp_server.tools.submit_results import submit_results
 
-async def main():
-    # Initialize database
+
+async def main() -> None:
     await init_database()
+    owner_id = str(uuid4())
 
-    # Create campaign (returns campaign ID)
-    result = await create_campaign(
-        name="Direct Integration",
-        description="Using server functions directly",
-        parameters=[
+    intake_data = {
+        "name": "Direct Integration",
+        "description": "Using server functions directly",
+        "parameters": [
             {"name": "x", "type": "continuous", "bounds": [0.0, 10.0]},
-            {"name": "y", "type": "continuous", "bounds": [0.0, 10.0]}
+            {"name": "y", "type": "continuous", "bounds": [0.0, 10.0]},
         ],
-        objectives=[
-            {"name": "f", "direction": "minimize"}
-        ],
-        batch_size=2
-    )
-    campaign_id = result["campaign_id"]
-    print(f"Campaign ID: {campaign_id}")
+        "objectives": [{"name": "f", "direction": "minimize"}],
+        "batch_size": 2,
+    }
 
-    # Generate suggestions
+    created = await create_campaign(intake_data=intake_data, owner_id=owner_id)
+    campaign_id = created["campaign_id"]
+
     suggestions = await generate_suggestions(campaign_id=campaign_id)
-    print(f"Suggestions: {suggestions}")
+    params = suggestions["suggestions"][0]["parameter_values"]
 
-    # Submit results
     await submit_results(
         campaign_id=campaign_id,
-        results=[
-            {"parameter_values": {"x": 5.0, "y": 5.0}, "objective_values": {"f": 25.0}}
-        ]
+        results=[{"parameter_values": params, "objective_values": {"f": 25.0}}],
+        submitted_by=owner_id,
     )
 
-    # Get diagnostics
-    diag = await get_diagnostics(campaign_id=campaign_id)
-    print(f"Best value: {diag.get('best_objectives')}")
+    diagnostics = await get_diagnostics(campaign_id=campaign_id)
+    print(diagnostics)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -689,96 +664,80 @@ if __name__ == "__main__":
 
 ### Full Optimization Workflow Example
 
-Here's a complete example showing the typical optimization loop:
-
 ```python
 import asyncio
+import json
+from uuid import uuid4
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-import json
 
-async def optimization_loop(n_iterations: int = 5):
+
+async def optimization_loop(n_iterations: int = 5) -> None:
+    owner_id = str(uuid4())
+    intake_data = {
+        "name": "Process Optimization",
+        "parameters": [
+            {"name": "temp", "type": "continuous", "bounds": [20.0, 100.0]},
+            {"name": "time", "type": "discrete", "bounds": [1, 60]},
+        ],
+        "objectives": [{"name": "quality", "direction": "maximize"}],
+        "batch_size": 2,
+    }
+
     server_params = StdioServerParameters(
         command="uv",
         args=["run", "python", "scripts/run_mcp_server.py"],
-        cwd="/path/to/bo-mcp-ui"
+        cwd="/path/to/bo-mcp",
     )
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # 1. Validate configuration first
             validation = await session.call_tool(
-                "validate_intake",
-                arguments={
-                    "parameters": [
-                        {"name": "temp", "type": "continuous", "bounds": [20.0, 100.0]},
-                        {"name": "time", "type": "discrete", "bounds": [1, 60]}
-                    ],
-                    "objectives": [
-                        {"name": "quality", "direction": "maximize"}
-                    ]
-                }
+                "validate_intake", arguments={"intake_data": intake_data}
             )
-            print(f"Validation: {validation.content[0].text}")
+            if not json.loads(validation.content[0].text)["valid"]:
+                raise RuntimeError("Validation failed")
 
-            # 2. Create campaign
-            result = await session.call_tool(
+            created = await session.call_tool(
                 "create_campaign",
-                arguments={
-                    "name": "Process Optimization",
-                    "parameters": [
-                        {"name": "temp", "type": "continuous", "bounds": [20.0, 100.0]},
-                        {"name": "time", "type": "discrete", "bounds": [1, 60]}
-                    ],
-                    "objectives": [
-                        {"name": "quality", "direction": "maximize"}
-                    ],
-                    "batch_size": 2
-                }
+                arguments={"intake_data": intake_data, "owner_id": owner_id},
             )
-            campaign_id = json.loads(result.content[0].text)["campaign_id"]
+            campaign_id = json.loads(created.content[0].text)["campaign_id"]
 
-            # 3. Optimization loop
-            for iteration in range(n_iterations):
-                print(f"\n--- Iteration {iteration + 1} ---")
-
-                # Generate suggestions
+            for _ in range(n_iterations):
                 suggestions_result = await session.call_tool(
-                    "generate_suggestions",
-                    arguments={"campaign_id": campaign_id}
+                    "generate_suggestions", arguments={"campaign_id": campaign_id}
                 )
                 suggestions = json.loads(suggestions_result.content[0].text)["suggestions"]
 
-                # Simulate running experiments (replace with actual experiments)
                 results = []
-                for sugg in suggestions:
-                    params = sugg["parameter_values"]
-                    # Your experiment code here - this is just a simulation
-                    quality = 100 - (params["temp"] - 60)**2 / 100 - (params["time"] - 30)**2 / 50
-                    results.append({
-                        "parameter_values": params,
-                        "objective_values": {"quality": quality}
-                    })
+                for suggestion in suggestions:
+                    params = suggestion["parameter_values"]
+                    quality = 100 - (params["temp"] - 60) ** 2 / 100 - (params["time"] - 30) ** 2 / 50
+                    results.append(
+                        {
+                            "parameter_values": params,
+                            "objective_values": {"quality": quality},
+                        }
+                    )
 
-                # Submit results
                 await session.call_tool(
                     "submit_results",
                     arguments={
                         "campaign_id": campaign_id,
-                        "results": results
-                    }
+                        "results": results,
+                        "submitted_by": owner_id,
+                    },
                 )
 
-                # Check progress
-                diag_result = await session.call_tool(
-                    "get_diagnostics",
-                    arguments={"campaign_id": campaign_id}
+                diagnostics = await session.call_tool(
+                    "get_diagnostics", arguments={"campaign_id": campaign_id}
                 )
-                diagnostics = json.loads(diag_result.content[0].text)
-                print(f"Best so far: {diagnostics.get('best_objectives')}")
-                print(f"Pareto points: {diagnostics.get('n_pareto_points')}")
+                print(diagnostics.content[0].text)
+
 
 if __name__ == "__main__":
     asyncio.run(optimization_loop())
@@ -786,74 +745,16 @@ if __name__ == "__main__":
 
 ### MCP Tool Schemas
 
-For reference, here are the detailed schemas for each MCP tool:
+Canonical tool docs and payload schemas are maintained in:
+- `packages/bo-mcp-server/TOOL_SCHEMAS.md`
+- `packages/bo-mcp-server/AGENT_COOKBOOK.md`
 
-#### validate_intake
-Validates campaign configuration before creation.
-```json
-{
-  "parameters": [
-    {"name": "string", "type": "continuous|discrete|categorical", "bounds": [min, max], "categories": ["a", "b"]}
-  ],
-  "objectives": [
-    {"name": "string", "direction": "maximize|minimize", "unit": "optional"}
-  ],
-  "constraints": [
-    {"type": "sum", "parameters": ["param1", "param2"], "value": 1.0}
-  ]
-}
-```
-
-#### create_campaign
-Creates a new optimization campaign.
-```json
-{
-  "name": "string (required)",
-  "description": "string (optional)",
-  "parameters": [...],
-  "objectives": [...],
-  "constraints": [...],
-  "batch_size": 3
-}
-```
-
-#### generate_suggestions
-Generates the next batch of experiment suggestions.
-```json
-{
-  "campaign_id": "uuid-string"
-}
-```
-
-#### submit_results
-Submits experimental results.
-```json
-{
-  "campaign_id": "uuid-string",
-  "results": [
-    {
-      "parameter_values": {"param1": value1, "param2": value2},
-      "objective_values": {"obj1": value1, "obj2": value2}
-    }
-  ]
-}
-```
-
-#### get_diagnostics
-Returns campaign progress and health metrics.
-```json
-{
-  "campaign_id": "uuid-string"
-}
-```
-
-Response includes:
-- `hypervolume`: Current hypervolume indicator
-- `hypervolume_history`: Progress over iterations
-- `pareto_front`: Current Pareto-optimal points
-- `n_pareto_points`: Number of Pareto points
-- `n_results`: Total results submitted
-- `model_health`: GP model diagnostics
+Most important payload shapes:
+- `validate_intake`: `{"intake_data": {...}, "verbosity": "minimal|standard|detailed"}`
+- `create_campaign`: `{"intake_data": {...}, "owner_id": "<uuid>", "verbosity": "minimal|standard|detailed"}`
+- `generate_suggestions`: `{"campaign_id": "<uuid>", "batch_size": <int|null>, "verbosity": "minimal|standard|detailed"}`
+- `submit_results`: `{"campaign_id": "<uuid>", "results": [...], "submitted_by": "<uuid>", "source": "api|gui|file_upload"}`
+- `get_diagnostics`: `{"campaign_id": "<uuid>", "use_cache": true, "verbosity": "minimal|standard|detailed"}`
 
 ## Development
 
@@ -903,14 +804,13 @@ npm run lint
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite+aiosqlite:///./data/bo_mcp.db` | Database connection string |
+| `DATABASE_URL` | `postgresql+asyncpg://bo_user:bo_password@localhost:5432/bo_mcp` | Database connection string |
 | `SQL_ECHO` | `false` | Enable SQL query logging |
+| `USE_ALEMBIC` | `auto` | Migration mode (`auto`, `true`, `false`) |
 
 ### Frontend
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VITE_API_URL` | `/api` | Backend API URL |
+The frontend currently uses a fixed `/api` base path in `apps/frontend/src/api/client.ts` and relies on the Vite proxy (dev) or reverse proxy/container networking (Docker).
 
 ## GPU Acceleration
 
@@ -992,7 +892,7 @@ clear_cache()
 - Verify `cwd` path in config is an absolute path and correct
 - Test manually first:
   ```bash
-  cd /path/to/bo-mcp-ui && uv run python scripts/run_mcp_server.py
+  cd /path/to/bo-mcp && uv run python scripts/run_mcp_server.py
   ```
 - Check that `uv` is available in your PATH
 
@@ -1002,4 +902,4 @@ clear_cache()
 
 ## License
 
-[Add license information]
+[MIT](LICENSE)

@@ -16,6 +16,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import dotenv
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.ext.asyncio import (
@@ -28,6 +29,9 @@ from sqlalchemy.ext.asyncio import (
 from bo_mcp_server.storage.models import Base
 
 logger = logging.getLogger(__name__)
+
+# Ensure .env values are available even when this module is imported directly.
+dotenv.load_dotenv()
 
 # Default to PostgreSQL (override via DATABASE_URL environment variable)
 DATABASE_URL = os.getenv(

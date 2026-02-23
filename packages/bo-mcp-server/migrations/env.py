@@ -10,6 +10,7 @@ import asyncio
 import os
 from logging.config import fileConfig
 
+import dotenv
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -24,6 +25,9 @@ config = context.config
 # Configure Python logging from alembic.ini
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# Ensure Alembic sees the same .env configuration as application startup.
+dotenv.load_dotenv()
 
 # Target metadata for 'autogenerate' support
 target_metadata = Base.metadata

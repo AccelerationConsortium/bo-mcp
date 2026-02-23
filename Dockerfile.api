@@ -1,5 +1,5 @@
 # Build stage for BO-MCP API service
-FROM python:3.12-slim as builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
@@ -7,16 +7,16 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy workspace configuration and packages
-COPY pyproject.toml uv.lock .python-version ./
+COPY pyproject.toml uv.lock ./
 COPY packages/ ./packages/
 
 # Create venv and sync dependencies
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv
 RUN uv venv /app/.venv && \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --package bo-mcp-api
 
 # Runtime stage
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 

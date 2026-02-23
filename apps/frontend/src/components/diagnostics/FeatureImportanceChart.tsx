@@ -45,7 +45,7 @@ function FeatureImportanceChart({ featureImportance }: FeatureImportanceChartPro
           layout={{
             margin: { t: 10, r: 60, b: 40, l: 100 },
             xaxis: {
-              title: 'Relative Importance',
+              title: { text: 'Relative Importance' },
               tickformat: '.0%',
               range: [0, Math.max(...values) * 1.2],
             },

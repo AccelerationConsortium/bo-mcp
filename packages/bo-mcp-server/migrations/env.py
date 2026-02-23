@@ -8,7 +8,6 @@ Reference: https://alembic.sqlalchemy.org/en/latest/cookbook.html#using-asyncio-
 
 import asyncio
 import os
-import threading
 from logging.config import fileConfig
 
 from alembic import context
@@ -88,15 +87,13 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
-    asyncio.get_running_loop()
+    """Run migrations in 'online' mode.
 
-    def _run() -> None:
-        asyncio.run(run_async_migrations())
-
-    thread = threading.Thread(target=_run, name="alembic-migrations")
-    thread.start()
-    thread.join()
+    Uses asyncio.run() to execute async migrations. This function must be called
+    from a thread without a running event loop. When invoked from an async context
+    (e.g., FastAPI lifespan), the caller should use asyncio.to_thread().
+    """
+    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

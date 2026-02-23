@@ -9,6 +9,7 @@ and SQLite (testing). It supports two initialization modes:
 The initialization mode is automatically selected based on DATABASE_URL.
 """
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -118,8 +119,10 @@ async def init_database() -> None:
             os.makedirs(data_dir, exist_ok=True)
 
     if _should_use_alembic():
-        # Use Alembic for PostgreSQL (production)
-        _run_alembic_migrations()
+        # Use Alembic for PostgreSQL (production).
+        # Run in a worker thread to avoid conflict with the running event loop —
+        # Alembic's env.py uses asyncio.run() which requires no active loop.
+        await asyncio.to_thread(_run_alembic_migrations)
     else:
         # Use direct creation for SQLite (testing)
         async with engine.begin() as conn:

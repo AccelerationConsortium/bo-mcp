@@ -39,8 +39,8 @@ from bo_mcp_server.tools.get_diagnostics import get_diagnostics  # type: ignore[
 from bo_mcp_server.tools.submit_results import submit_results  # type: ignore[import-untyped]
 
 API_KEY = "dev-api-key-12345"
-N_CYCLES = 7
-EXPECTED_BATCH_SIZE = 4
+N_CYCLES = 10
+EXPECTED_BATCH_SIZE = 2
 
 
 @dataclass(frozen=True)
@@ -53,7 +53,7 @@ class Pair:
     acceptor: str
 
 
-GAP_EV = {
+GAP_EV: dict[Pair, float] = {
     Pair("phenyl", "phenyl"): 4.811,
     Pair("phenyl", "benzonitrile"): 4.099,
     Pair("phenyl", "pyridine"): 3.557,
@@ -120,7 +120,6 @@ CAMPAIGN_DATA = CampaignIntakeInput(
     batch_size=EXPECTED_BATCH_SIZE,
     max_iterations=N_CYCLES,
     initial_design_size=2,
-    random_seed=1,
 )
 
 
@@ -195,8 +194,9 @@ async def main() -> None:
         experiment_index = 0
         best_gap = float("inf")
         best_combo: dict[str, str] | None = None
-        observed_gap_by_iteration: list[float] = []
-        cumulative_best_by_iteration: list[float] = []
+        observed_gap_by_cycle: list[float] = []
+        observed_cycle_plot_x: list[float] = []
+        cumulative_best_by_cycle: list[float] = []
 
         for cycle in range(1, N_CYCLES + 1):
             print("\n" + "=" * 44)
@@ -222,7 +222,8 @@ async def main() -> None:
                 print(f"  {i}. donor={p['donor']}, acceptor={p['acceptor']}")
 
             results_to_submit = []
-            for suggestion in suggestions:
+            n_in_batch = len(suggestions)
+            for batch_idx, suggestion in enumerate(suggestions):
                 params = suggestion["parameter_values"]
                 result_entry = _result_for(experiment_index, params, suggestion["id"])
                 experiment_index += 1
@@ -232,8 +233,9 @@ async def main() -> None:
                     best_gap = gap_e_v
                     best_combo = params
 
-                observed_gap_by_iteration.append(gap_e_v)
-                cumulative_best_by_iteration.append(best_gap)
+                observed_gap_by_cycle.append(gap_e_v)
+                jitter = (batch_idx - (n_in_batch - 1) / 2.0) * 0.09
+                observed_cycle_plot_x.append(cycle + jitter)
                 print(
                     f"  -> gap_eV={gap_e_v:.6f} (seq idx {result_entry.metadata['sequence_index']})"
                 )
@@ -248,6 +250,7 @@ async def main() -> None:
             if not submit_result["success"]:
                 print(f"Failed to submit results: {submit_result['errors']}")
                 break
+            cumulative_best_by_cycle.append(best_gap)
 
             diagnostics = await get_diagnostics(campaign_id)
             if diagnostics["success"]:
@@ -261,7 +264,6 @@ async def main() -> None:
                         "Current best combo: "
                         f"donor={best_combo['donor']}, acceptor={best_combo['acceptor']}"
                     )
-
         print("\n" + "=" * 72)
         print("Hard-coded optimization run complete")
         print(f"Total submitted experiments: {experiment_index}")
@@ -272,29 +274,28 @@ async def main() -> None:
                 f"gap_eV={best_gap:.6f}"
             )
 
-        if cumulative_best_by_iteration:
+        if cumulative_best_by_cycle:
             sns.set_theme(style="whitegrid")
-            plt.figure(figsize=(10, 6))
-            x_values = list(range(1, len(cumulative_best_by_iteration) + 1))
+            plt.figure(figsize=(8, 5))
             sns.scatterplot(
-                x=x_values,
-                y=observed_gap_by_iteration,
+                x=observed_cycle_plot_x,
+                y=observed_gap_by_cycle,
                 s=45,
                 alpha=0.6,
                 color="#4C566A",
-                label="Tested gap_eV",
+                label="Tested gap",
             )
             sns.lineplot(
-                x=x_values,
-                y=cumulative_best_by_iteration,
+                x=list(range(1, len(cumulative_best_by_cycle) + 1)),
+                y=cumulative_best_by_cycle,
                 marker="o",
                 linewidth=2.2,
                 color="#2E86AB",
-                label="Cumulative best gap_eV",
+                label="Cumulative best",
             )
-            plt.title("Cumulative Best gap_eV vs Iteration")
-            plt.xlabel("Iteration")
-            plt.ylabel("Cumulative Best gap_eV (lower is better)")
+            plt.xlabel("batch index")
+            plt.ylabel("HOMO-LUMO gap / eV")
+            plt.xticks(list(range(1, len(cumulative_best_by_cycle) + 1)))
             plt.legend()
             plt.tight_layout()
 
@@ -302,7 +303,7 @@ async def main() -> None:
                 Path(__file__).resolve().parent
                 / "hardcoded_fragment_bo_example_cumulative_best.png"
             )
-            plt.savefig(output_path, dpi=300)
+            plt.savefig(output_path, dpi=500)
             plt.close()
             print(f"Saved cumulative-best plot to: {output_path}")
         print("=" * 72)

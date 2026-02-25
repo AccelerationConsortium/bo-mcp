@@ -8,6 +8,8 @@ readme = "README.md"
 # No direct dependencies - all deps are in packages
 dependencies = [
     "plotly>=6.5.2",
+    "seaborn>=0.13.2",
+    "types-seaborn>=0.13.2.20251221",
 ]
 
 [project.optional-dependencies]

@@ -3,13 +3,18 @@
 #!/usr/bin/env python3
 """Hard-coded categorical BO example for donor/acceptor fragment selection.
 
-This mirrors the MCP toy workflow but uses a pre-defined objective sequence
-instead of running expensive quantum chemistry.
+This mirrors the MCP toy workflow but uses pre-computed gap values
+for each donor/acceptor pair instead of running expensive quantum chemistry.
 """
 
 import dotenv
 import asyncio
 import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 dotenv.load_dotenv()  # Load environment variables from .env if present
 
@@ -34,34 +39,62 @@ from bo_mcp_server.tools.get_diagnostics import get_diagnostics  # type: ignore[
 from bo_mcp_server.tools.submit_results import submit_results  # type: ignore[import-untyped]
 
 API_KEY = "dev-api-key-12345"
-N_CYCLES = 6
-EXPECTED_BATCH_SIZE = 2
+N_CYCLES = 7
+EXPECTED_BATCH_SIZE = 4
 
-DONOR_CATEGORIES = [
-    "phenyl",
-    "anisole",
-    "aniline",
-    "thiophene",
-    "carbazole",
-    "phenothiazine",
-]
 
-ACCEPTOR_CATEGORIES = [
-    "phenyl",
-    "benzonitrile",
-    "pyridine",
-    "pyrimidine",
-    "benzothiadiazole",
-    "triazine",
-]
+@dataclass(frozen=True)
+class Pair:
+    """
+    Represents a pair of chemical groups for which we have a known gap energy value.
+    """
 
-# One deterministic mock value per (donor, acceptor) pair.
-# Override any entries with your preferred local values.
-MOCK_GAP_EV_BY_PAIR: dict[tuple[str, str], float] = {
-    (donor, acceptor): round(5.9 - 0.17 * i - 0.22 * j + 0.03 * ((i + j) % 3), 6)
-    for i, donor in enumerate(DONOR_CATEGORIES)
-    for j, acceptor in enumerate(ACCEPTOR_CATEGORIES)
+    donor: str
+    acceptor: str
+
+
+GAP_EV = {
+    Pair("phenyl", "phenyl"): 4.811,
+    Pair("phenyl", "benzonitrile"): 4.099,
+    Pair("phenyl", "pyridine"): 3.557,
+    Pair("phenyl", "pyrimidine"): 3.229,
+    Pair("phenyl", "benzothiadiazole"): 2.936,
+    Pair("phenyl", "triazine"): 3.230,
+    Pair("anisole", "phenyl"): 3.992,
+    Pair("anisole", "benzonitrile"): 2.996,
+    Pair("anisole", "pyridine"): 3.198,
+    Pair("anisole", "pyrimidine"): 3.120,
+    Pair("anisole", "benzothiadiazole"): 2.560,
+    Pair("anisole", "triazine"): 3.020,
+    Pair("aniline", "phenyl"): 3.514,
+    Pair("aniline", "benzonitrile"): 2.685,
+    Pair("aniline", "pyridine"): 2.971,
+    Pair("aniline", "pyrimidine"): 2.851,
+    Pair("aniline", "benzothiadiazole"): 2.274,
+    Pair("aniline", "triazine"): 2.763,
+    Pair("thiophene", "phenyl"): 4.223,
+    Pair("thiophene", "benzonitrile"): 3.384,
+    Pair("thiophene", "pyridine"): 3.140,
+    Pair("thiophene", "pyrimidine"): 3.155,
+    Pair("thiophene", "benzothiadiazole"): 2.500,
+    Pair("thiophene", "triazine"): 3.141,
+    Pair("carbazole", "phenyl"): 3.336,
+    Pair("carbazole", "benzonitrile"): 2.713,
+    Pair("carbazole", "pyridine"): 2.827,
+    Pair("carbazole", "pyrimidine"): 2.651,
+    Pair("carbazole", "benzothiadiazole"): 2.380,
+    Pair("carbazole", "triazine"): 2.470,
+    Pair("phenothiazine", "phenyl"): 2.500,
+    Pair("phenothiazine", "benzonitrile"): 1.974,
+    Pair("phenothiazine", "pyridine"): 2.171,
+    Pair("phenothiazine", "pyrimidine"): 1.969,
+    Pair("phenothiazine", "benzothiadiazole"): 1.641,
+    Pair("phenothiazine", "triazine"): 1.757,
 }
+assert len(GAP_EV) == 36
+# Derive categories from GAP_EV keys to avoid duplicating source data.
+DONOR_CATEGORIES = list(dict.fromkeys(pair.donor for pair in GAP_EV))
+ACCEPTOR_CATEGORIES = list(dict.fromkeys(pair.acceptor for pair in GAP_EV))
 
 
 CAMPAIGN_DATA = CampaignIntakeInput(
@@ -91,24 +124,26 @@ CAMPAIGN_DATA = CampaignIntakeInput(
 )
 
 
-def _mock_result_for(
+def _result_for(
     experiment_index: int, parameter_values: dict[str, str], suggestion_id: str
 ) -> ResultSubmissionInput:
-    """Return one mocked observation payload from donor/acceptor lookup."""
-    pair = (parameter_values["donor"], parameter_values["acceptor"])
+    """Return one observation payload from GAP_EV donor/acceptor lookup."""
+    pair = Pair(parameter_values["donor"], parameter_values["acceptor"])
     try:
-        gap_e_v = float(MOCK_GAP_EV_BY_PAIR[pair])
+        gap_e_v = float(GAP_EV[pair])
     except KeyError as exc:
-        raise KeyError(f"Missing mock gap_eV for pair donor={pair[0]}, acceptor={pair[1]}") from exc
+        raise KeyError(
+            f"Missing gap_eV for pair donor={pair.donor}, acceptor={pair.acceptor}"
+        ) from exc
 
     return ResultSubmissionInput(
         suggestion_id=suggestion_id,
         parameter_values=parameter_values,
         objective_values={"gap_eV": gap_e_v},
         metadata={
-            "method": "MOCK: pre-defined gap_eV array (replace with local evaluator)",
+            "method": "pre-computed GAP_EV lookup",
             "gap_raw_hartree": gap_e_v / 27.211386245988,
-            "coupled_smiles": f"mock::{parameter_values['donor']}::{parameter_values['acceptor']}",
+            "coupled_smiles": f"lookup::{parameter_values['donor']}::{parameter_values['acceptor']}",  # noqa: E501
             "sequence_index": experiment_index,
         },
     )
@@ -121,9 +156,9 @@ async def main() -> None:
     print("=" * 72)
 
     expected_pairs = len(DONOR_CATEGORIES) * len(ACCEPTOR_CATEGORIES)
-    if len(MOCK_GAP_EV_BY_PAIR) != expected_pairs:
+    if len(GAP_EV) != expected_pairs:
         raise ValueError(
-            f"MOCK_GAP_EV_BY_PAIR has {len(MOCK_GAP_EV_BY_PAIR)} entries, "
+            f"GAP_EV has {len(GAP_EV)} entries, "
             f"but expected at least {expected_pairs} for full donor/acceptor coverage."
         )
 
@@ -160,6 +195,8 @@ async def main() -> None:
         experiment_index = 0
         best_gap = float("inf")
         best_combo: dict[str, str] | None = None
+        observed_gap_by_iteration: list[float] = []
+        cumulative_best_by_iteration: list[float] = []
 
         for cycle in range(1, N_CYCLES + 1):
             print("\n" + "=" * 44)
@@ -187,7 +224,7 @@ async def main() -> None:
             results_to_submit = []
             for suggestion in suggestions:
                 params = suggestion["parameter_values"]
-                result_entry = _mock_result_for(experiment_index, params, suggestion["id"])
+                result_entry = _result_for(experiment_index, params, suggestion["id"])
                 experiment_index += 1
                 gap_e_v = result_entry.objective_values["gap_eV"]
 
@@ -195,9 +232,10 @@ async def main() -> None:
                     best_gap = gap_e_v
                     best_combo = params
 
+                observed_gap_by_iteration.append(gap_e_v)
+                cumulative_best_by_iteration.append(best_gap)
                 print(
-                    "  -> gap_eV="
-                    f"{gap_e_v:.6f} (mock seq idx {result_entry.metadata['sequence_index']})"
+                    f"  -> gap_eV={gap_e_v:.6f} (seq idx {result_entry.metadata['sequence_index']})"
                 )
                 results_to_submit.append(result_entry)
 
@@ -233,6 +271,40 @@ async def main() -> None:
                 f"donor={best_combo['donor']}, acceptor={best_combo['acceptor']}, "
                 f"gap_eV={best_gap:.6f}"
             )
+
+        if cumulative_best_by_iteration:
+            sns.set_theme(style="whitegrid")
+            plt.figure(figsize=(10, 6))
+            x_values = list(range(1, len(cumulative_best_by_iteration) + 1))
+            sns.scatterplot(
+                x=x_values,
+                y=observed_gap_by_iteration,
+                s=45,
+                alpha=0.6,
+                color="#4C566A",
+                label="Tested gap_eV",
+            )
+            sns.lineplot(
+                x=x_values,
+                y=cumulative_best_by_iteration,
+                marker="o",
+                linewidth=2.2,
+                color="#2E86AB",
+                label="Cumulative best gap_eV",
+            )
+            plt.title("Cumulative Best gap_eV vs Iteration")
+            plt.xlabel("Iteration")
+            plt.ylabel("Cumulative Best gap_eV (lower is better)")
+            plt.legend()
+            plt.tight_layout()
+
+            output_path = (
+                Path(__file__).resolve().parent
+                / "hardcoded_fragment_bo_example_cumulative_best.png"
+            )
+            plt.savefig(output_path, dpi=300)
+            plt.close()
+            print(f"Saved cumulative-best plot to: {output_path}")
         print("=" * 72)
 
 

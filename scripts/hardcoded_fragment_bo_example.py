@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
 
 dotenv.load_dotenv()  # Load environment variables from .env if present
@@ -41,6 +42,7 @@ from bo_mcp_server.tools.submit_results import submit_results  # type: ignore[im
 API_KEY = "dev-api-key-12345"
 N_CYCLES = 10
 EXPECTED_BATCH_SIZE = 2
+N_RUNS = 100
 
 
 @dataclass(frozen=True)
@@ -149,10 +151,11 @@ def _result_for(
 
 
 async def main() -> None:
-    """Run 6 BO cycles (2 suggestions each) with hard-coded objective values."""
+    """Run multiple independent BO campaigns and plot averaged convergence."""
     print("=" * 72)
     print("BO-MCP Hard-Coded Example: Donor/Acceptor HOMO-LUMO Gap Minimization")
     print("=" * 72)
+    print(f"Runs: {N_RUNS}, cycles per run: {N_CYCLES}, batch size: {EXPECTED_BATCH_SIZE}")
 
     expected_pairs = len(DONOR_CATEGORIES) * len(ACCEPTOR_CATEGORIES)
     if len(GAP_EV) != expected_pairs:
@@ -179,133 +182,154 @@ async def main() -> None:
 
         owner_id = str(user.id)
 
-        print("\n" + "-" * 44)
-        print("Step 1: Creating donor/acceptor BO campaign")
-        print("-" * 44)
-        create_result = await create_campaign(CAMPAIGN_DATA, owner_id)
-        if not create_result["success"]:
-            print(f"Failed to create campaign: {create_result['errors']}")
-            return
+        all_runs_records: list[dict[str, float | int]] = []
+        run_best_gaps: list[float] = []
+        run_best_combos: list[dict[str, str] | None] = []
 
-        campaign_id = create_result["campaign_id"]
-        print(f"Campaign created: {campaign_id}")
-        print(f"Configured cycles: {N_CYCLES}, batch size: {EXPECTED_BATCH_SIZE}")
+        for run_idx in range(1, N_RUNS + 1):
+            print("\n" + "-" * 44)
+            print(f"Run {run_idx}/{N_RUNS}: Creating donor/acceptor BO campaign")
+            print("-" * 44)
+            create_result = await create_campaign(CAMPAIGN_DATA, owner_id)
+            if not create_result["success"]:
+                print(f"Failed to create campaign: {create_result['errors']}")
+                continue
 
-        experiment_index = 0
-        best_gap = float("inf")
-        best_combo: dict[str, str] | None = None
-        observed_gap_by_cycle: list[float] = []
-        observed_cycle_plot_x: list[float] = []
-        cumulative_best_by_cycle: list[float] = []
+            campaign_id = create_result["campaign_id"]
+            print(f"Campaign created: {campaign_id}")
+            print(f"Configured cycles: {N_CYCLES}, batch size: {EXPECTED_BATCH_SIZE}")
 
-        for cycle in range(1, N_CYCLES + 1):
-            print("\n" + "=" * 44)
-            print(f"Cycle {cycle}/{N_CYCLES}")
-            print("=" * 44)
+            experiment_index = 0
+            best_gap = float("inf")
+            best_combo: dict[str, str] | None = None
 
-            suggestions_result = await generate_suggestions(campaign_id)
-            if not suggestions_result["success"]:
-                print(f"Failed to generate suggestions: {suggestions_result['errors']}")
-                break
+            for cycle in range(1, N_CYCLES + 1):
+                print("\n" + "=" * 44)
+                print(f"Run {run_idx}/{N_RUNS} | Cycle {cycle}/{N_CYCLES}")
+                print("=" * 44)
 
-            suggestions = suggestions_result["suggestions"]
-            if len(suggestions) != EXPECTED_BATCH_SIZE:
-                print(
-                    "Unexpected suggestion count: "
-                    f"expected {EXPECTED_BATCH_SIZE}, got {len(suggestions)}"
-                )
-                break
+                suggestions_result = await generate_suggestions(campaign_id)
+                if not suggestions_result["success"]:
+                    print(f"Failed to generate suggestions: {suggestions_result['errors']}")
+                    break
 
-            print("Suggestions:")
-            for i, suggestion in enumerate(suggestions, start=1):
-                p = suggestion["parameter_values"]
-                print(f"  {i}. donor={p['donor']}, acceptor={p['acceptor']}")
-
-            results_to_submit = []
-            n_in_batch = len(suggestions)
-            for batch_idx, suggestion in enumerate(suggestions):
-                params = suggestion["parameter_values"]
-                result_entry = _result_for(experiment_index, params, suggestion["id"])
-                experiment_index += 1
-                gap_e_v = result_entry.objective_values["gap_eV"]
-
-                if gap_e_v < best_gap:
-                    best_gap = gap_e_v
-                    best_combo = params
-
-                observed_gap_by_cycle.append(gap_e_v)
-                jitter = (batch_idx - (n_in_batch - 1) / 2.0) * 0.09
-                observed_cycle_plot_x.append(cycle + jitter)
-                print(
-                    f"  -> gap_eV={gap_e_v:.6f} (seq idx {result_entry.metadata['sequence_index']})"
-                )
-                results_to_submit.append(result_entry)
-
-            submit_result = await submit_results(
-                campaign_id=campaign_id,
-                results=results_to_submit,
-                submitted_by=owner_id,
-                source="api",
-            )
-            if not submit_result["success"]:
-                print(f"Failed to submit results: {submit_result['errors']}")
-                break
-            cumulative_best_by_cycle.append(best_gap)
-
-            diagnostics = await get_diagnostics(campaign_id)
-            if diagnostics["success"]:
-                print(
-                    f"Submitted {len(submit_result['result_ids'])} results "
-                    f"(total={diagnostics['n_results']})"
-                )
-                print(f"Current best gap_eV: {best_gap:.6f}")
-                if best_combo:
+                suggestions = suggestions_result["suggestions"]
+                if len(suggestions) != EXPECTED_BATCH_SIZE:
                     print(
-                        "Current best combo: "
-                        f"donor={best_combo['donor']}, acceptor={best_combo['acceptor']}"
+                        "Unexpected suggestion count: "
+                        f"expected {EXPECTED_BATCH_SIZE}, got {len(suggestions)}"
                     )
-        print("\n" + "=" * 72)
-        print("Hard-coded optimization run complete")
-        print(f"Total submitted experiments: {experiment_index}")
-        if best_combo:
-            print(
-                "Best observed combo: "
-                f"donor={best_combo['donor']}, acceptor={best_combo['acceptor']}, "
-                f"gap_eV={best_gap:.6f}"
-            )
+                    break
 
-        if cumulative_best_by_cycle:
+                print("Suggestions:")
+                for i, suggestion in enumerate(suggestions, start=1):
+                    p = suggestion["parameter_values"]
+                    print(f"  {i}. donor={p['donor']}, acceptor={p['acceptor']}")
+
+                results_to_submit = []
+                for suggestion in suggestions:
+                    params = suggestion["parameter_values"]
+                    result_entry = _result_for(experiment_index, params, suggestion["id"])
+                    experiment_index += 1
+                    gap_e_v = result_entry.objective_values["gap_eV"]
+
+                    if gap_e_v < best_gap:
+                        best_gap = gap_e_v
+                        best_combo = params
+
+                    print(
+                        f"  -> gap_eV={gap_e_v:.6f} "
+                        + f"(seq idx {result_entry.metadata['sequence_index']})"
+                    )
+                    results_to_submit.append(result_entry)
+
+                submit_result = await submit_results(
+                    campaign_id=campaign_id,
+                    results=results_to_submit,
+                    submitted_by=owner_id,
+                    source="api",
+                )
+                if not submit_result["success"]:
+                    print(f"Failed to submit results: {submit_result['errors']}")
+                    break
+
+                all_runs_records.append(
+                    {
+                        "run": run_idx,
+                        "cycle": cycle,
+                        "cumulative_best_gap_eV": best_gap,
+                    }
+                )
+
+                diagnostics = await get_diagnostics(campaign_id)
+                if diagnostics["success"]:
+                    print(
+                        f"Submitted {len(submit_result['result_ids'])} results "
+                        f"(total={diagnostics['n_results']})"
+                    )
+                    print(f"Current best gap_eV: {best_gap:.6f}")
+                    if best_combo:
+                        print(
+                            "Current best combo: "
+                            f"donor={best_combo['donor']}, acceptor={best_combo['acceptor']}"
+                        )
+
+            run_best_gaps.append(best_gap)
+            run_best_combos.append(best_combo)
+            if best_combo:
+                print(
+                    f"Best observed combo in run {run_idx}: "
+                    f"donor={best_combo['donor']}, acceptor={best_combo['acceptor']}, "
+                    f"gap_eV={best_gap:.6f}"
+                )
+        print("\n" + "=" * 72)
+        print("Hard-coded optimization runs complete")
+        if run_best_gaps:
+            global_best_idx = min(range(len(run_best_gaps)), key=run_best_gaps.__getitem__)
+            global_best_gap = run_best_gaps[global_best_idx]
+            global_best_combo = run_best_combos[global_best_idx]
+            if global_best_combo:
+                print(
+                    f"Best observed combo overall: "
+                    f"donor={global_best_combo['donor']}, "
+                    + f"acceptor={global_best_combo['acceptor']}, "
+                    f"gap_eV={global_best_gap:.6f} (run {global_best_idx + 1})"
+                )
+            else:
+                print(
+                    f"Best observed gap overall: gap_eV={global_best_gap:.6f} "
+                    f"(run {global_best_idx + 1})"
+                )
+        if not all_runs_records:
+            print("No completed runs produced data for plotting.")
+        else:
+            curve_df = pd.DataFrame(all_runs_records)
             sns.set_theme(style="whitegrid")
             plt.figure(figsize=(8, 5))
-            sns.scatterplot(
-                x=observed_cycle_plot_x,
-                y=observed_gap_by_cycle,
-                s=45,
-                alpha=0.6,
-                color="#4C566A",
-                label="Tested gap",
-            )
             sns.lineplot(
-                x=list(range(1, len(cumulative_best_by_cycle) + 1)),
-                y=cumulative_best_by_cycle,
-                marker="o",
+                data=curve_df,
+                x="cycle",
+                y="cumulative_best_gap_eV",
+                errorbar=("ci", 95),
                 linewidth=2.2,
                 color="#2E86AB",
-                label="Cumulative best",
+                marker="o",
+                label="Cumulative best (mean ± 95% CI across runs)",
             )
             plt.xlabel("batch index")
             plt.ylabel("HOMO-LUMO gap / eV")
-            plt.xticks(list(range(1, len(cumulative_best_by_cycle) + 1)))
+            plt.xticks(list(range(1, N_CYCLES + 1)))
             plt.legend()
             plt.tight_layout()
 
             output_path = (
                 Path(__file__).resolve().parent
-                / "hardcoded_fragment_bo_example_cumulative_best.png"
+                / "hardcoded_fragment_bo_example_cumulative_best_avg_100_runs.png"
             )
             plt.savefig(output_path, dpi=500)
             plt.close()
-            print(f"Saved cumulative-best plot to: {output_path}")
+            print(f"Saved averaged cumulative-best plot to: {output_path}")
+
         print("=" * 72)
 
 

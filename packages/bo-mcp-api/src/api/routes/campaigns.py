@@ -24,7 +24,7 @@ async def validate_campaign_intake(intake: IntakeData) -> CampaignValidation:
 
     This is a thin proxy to the MCP validate_intake tool.
     """
-    result = await validate_intake(intake.to_dict())
+    result = await validate_intake(intake.to_dict(), verbosity="detailed")
     return CampaignValidation(
         valid=result["valid"],
         errors=result["errors"],

@@ -9,7 +9,6 @@ readme = "README.md"
 dependencies = [
     "plotly>=6.5.2",
     "seaborn>=0.13.2",
-    "types-seaborn>=0.13.2.20251221",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +20,7 @@ dev = [
     "ruff>=0.15.2",
     "pyright>=1.1.408",
     "pre-commit>=3.7",
+    "types-seaborn>=0.13.2.20251221",
 ]
 
 [dependency-groups]
@@ -32,6 +32,7 @@ dev = [
     "ruff>=0.15.2",
     "pyright>=1.1.408",
     "pre-commit>=3.7",
+    "types-seaborn>=0.13.2.20251221",
 ]
 
 [tool.uv.workspace]

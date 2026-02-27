@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version < '3.12'",
@@ -297,7 +297,6 @@ source = { virtual = "." }
 dependencies = [
     { name = "plotly" },
     { name = "seaborn" },
-    { name = "types-seaborn" },
 ]
 
 [package.optional-dependencies]
@@ -309,6 +308,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+    { name = "types-seaborn" },
 ]
 
 [package.dev-dependencies]
@@ -320,6 +320,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+    { name = "types-seaborn" },
 ]
 
 [package.metadata]
@@ -333,7 +334,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.2" },
     { name = "seaborn", specifier = ">=0.13.2" },
-    { name = "types-seaborn", specifier = ">=0.13.2.20251221" },
+    { name = "types-seaborn", marker = "extra == 'dev'", specifier = ">=0.13.2.20251221" },
 ]
 provides-extras = ["dev"]
 
@@ -346,6 +347,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=4.0" },
     { name = "pytest-timeout", specifier = ">=2.3.1" },
     { name = "ruff", specifier = ">=0.15.2" },
+    { name = "types-seaborn", specifier = ">=0.13.2.20251221" },
 ]
 
 [[package]]

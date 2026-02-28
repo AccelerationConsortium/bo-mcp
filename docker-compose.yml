@@ -16,7 +16,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - bo-mcp-grafico
+      - bo-mcp-network
   api:
     build:
       context: .
@@ -38,7 +38,7 @@ services:
       retries: 3
       start_period: 10s
     networks:
-      - bo-mcp-grafico
+      - bo-mcp-network
   frontend:
     build:
       context: ./apps/frontend
@@ -53,9 +53,9 @@ services:
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://api:8000}
     networks:
-      - bo-mcp-grafico
+      - bo-mcp-network
 volumes:
   postgres-data:
 networks:
-  bo-mcp-grafico:
+  bo-mcp-network:
     external: true

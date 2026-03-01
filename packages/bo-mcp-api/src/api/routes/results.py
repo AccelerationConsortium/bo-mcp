@@ -3,6 +3,7 @@
 import io
 
 import pandas as pd
+from bo_mcp_server.domain import ResultSubmissionInput
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -36,12 +37,12 @@ async def submit_campaign_results(
 
     # Convert to MCP format
     results_data = [
-        {
-            "parameter_values": r.parameter_values,
-            "objective_values": r.objective_values,
-            "suggestion_id": r.suggestion_id,
-            "metadata": r.metadata,
-        }
+        ResultSubmissionInput(
+            parameter_values=r.parameter_values,
+            objective_values=r.objective_values,
+            suggestion_id=r.suggestion_id,
+            metadata=r.metadata,
+        )
         for r in request.results
     ]
 
@@ -116,11 +117,11 @@ async def upload_results_file(
     results_data = []
     for _, row in df.iterrows():
         results_data.append(
-            {
-                "parameter_values": {name: row[name] for name in param_names},
-                "objective_values": {name: float(row[name]) for name in objective_names},
-                "metadata": {"source_file": filename},
-            }
+            ResultSubmissionInput(
+                parameter_values={name: row[name] for name in param_names},
+                objective_values={name: float(row[name]) for name in objective_names},
+                metadata={"source_file": filename},
+            )
         )
 
     # Submit via MCP tool

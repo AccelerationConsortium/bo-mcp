@@ -11,11 +11,12 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bo_user -d bo_mcp"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bo_user} -d ${POSTGRES_DB:-bo_mcp}"]
       interval: 5s
       timeout: 5s
       retries: 5
-
+    networks:
+      - bo-mcp-network
   api:
     build:
       context: .
@@ -36,7 +37,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
+    networks:
+      - bo-mcp-network
   frontend:
     build:
       context: ./apps/frontend
@@ -50,6 +52,10 @@ services:
       - .env
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://api:8000}
-
+    networks:
+      - bo-mcp-network
 volumes:
   postgres-data:
+networks:
+  bo-mcp-network:
+    external: true

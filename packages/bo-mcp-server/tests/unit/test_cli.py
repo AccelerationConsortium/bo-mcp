@@ -10,6 +10,7 @@ from bo_mcp_server import cli
 @pytest.mark.asyncio
 async def test_main_async_initializes_mcp_server(monkeypatch) -> None:
     calls: list[str] = []
+    bind_all_host = "0.0.0.0"  # noqa: S104 - intentional test input for SSE bind-all configuration
 
     async def fake_init_database() -> None:
         calls.append("init_database")
@@ -25,8 +26,8 @@ async def test_main_async_initializes_mcp_server(monkeypatch) -> None:
     monkeypatch.setattr(cli, "init_database", fake_init_database)
     monkeypatch.setattr(cli, "create_mcp_server", lambda: fake_mcp)
 
-    await cli.main_async("sse", "0.0.0.0", 8001)
+    await cli.main_async("sse", bind_all_host, 8001)
 
     assert calls == ["init_database", "run_sse_async"]
-    assert fake_mcp.settings.host == "0.0.0.0"
+    assert fake_mcp.settings.host == bind_all_host
     assert fake_mcp.settings.port == 8001

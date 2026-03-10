@@ -3,11 +3,25 @@
 import logging
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 logger = logging.getLogger(__name__)
 
+
 # Create MCP server instance
-mcp = FastMCP("bo-mcp")
+mcp = FastMCP(
+    "bo-mcp",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*", "mcp:*"],
+        allowed_origins=[
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "http://[::1]:*",
+            "http://mcp:*",
+        ],
+    ),
+)
 
 
 def create_mcp_server() -> FastMCP:

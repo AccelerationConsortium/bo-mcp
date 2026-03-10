@@ -670,6 +670,8 @@ Use the URL that matches where the calling agent is running:
 
 The `mcp` hostname only resolves inside the same Docker network. External machines must use the Docker host's reachable IP address or DNS name, and port `8001` must be open.
 
+The BO-MCP server allows `localhost` and the Docker Compose service hostname `mcp` by default for SSE Host-header validation, so `http://mcp:8001/sse` works for container-to-container access on the same Compose network.
+
 #### Option C: Using the Server Directly in Python (No MCP Protocol)
 
 For tighter integration, you can import and use the MCP server's internal functions directly:

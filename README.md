@@ -187,7 +187,7 @@ docker-compose up --build
 ```
 
 Access the application:
-- **Frontend**: http://localhost:3000
+- **Frontend**: http://localhost:3001
 - **Backend API**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
 - **MCP SSE**: http://localhost:8001

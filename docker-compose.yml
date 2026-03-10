@@ -39,6 +39,23 @@ services:
       start_period: 10s
     networks:
       - bo-mcp-network
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command: ["bo-mcp-server", "--transport", "sse", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-bo_user}:${POSTGRES_PASSWORD:-bo_password}@db:5432/${POSTGRES_DB:-bo_mcp}
+      - SQL_ECHO=${SQL_ECHO:-false}
+    networks:
+      - bo-mcp-network
   frontend:
     build:
       context: ./apps/frontend

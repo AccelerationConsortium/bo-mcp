@@ -190,6 +190,7 @@ Access the application:
 - **Frontend**: http://localhost:3000
 - **Backend API**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
+- **MCP SSE**: http://localhost:8001
 
 ### Option 2: Run Locally (Development)
 

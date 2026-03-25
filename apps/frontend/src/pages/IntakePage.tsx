@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Form, Button, Alert, Row, Col } from 'react-bootstrap';
-import { createCampaign, validateIntake } from '../api/campaigns';
+import { createCampaign } from '../api/campaigns';
 import type { InputParameter, Objective, Constraint, ParameterType, OptimizationDirection } from '../types';
 import ErrorAlert from '../components/common/ErrorAlert';
 
@@ -21,6 +21,15 @@ function IntakePage() {
   const [error, setError] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
+
+  const buildIntake = () => ({
+    name,
+    description,
+    parameters: parameters.filter((p) => p.name),
+    objectives: objectives.filter((o) => o.name),
+    constraints: constraints.length > 0 ? constraints : undefined,
+    batch_size: batchSize,
+  });
 
   const addParameter = () => {
     setParameters([...parameters, { name: '', type: 'continuous', bounds: [0, 1] }]);
@@ -91,58 +100,18 @@ function IntakePage() {
     setConstraints(updated);
   };
 
-  const handleValidate = async () => {
-    setValidationErrors([]);
-    setWarnings([]);
-    setError(null);
-
-    const intake = {
-      name,
-      description,
-      parameters: parameters.filter((p) => p.name),
-      objectives: objectives.filter((o) => o.name),
-      constraints: constraints.length > 0 ? constraints : undefined,
-      batch_size: batchSize,
-    };
-
-    try {
-      const result = await validateIntake(intake);
-      if (!result.valid) {
-        setValidationErrors(result.errors || []);
-      }
-      if (result.warnings && result.warnings.length > 0) {
-        setWarnings(result.warnings);
-      }
-      return result.valid;
-    } catch (err) {
-      setError('Failed to validate intake');
-      console.error(err);
-      return false;
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
-
-    const isValid = await handleValidate();
-    if (!isValid) {
-      setLoading(false);
-      return;
-    }
-
-    const intake = {
-      name,
-      description,
-      parameters: parameters.filter((p) => p.name),
-      objectives: objectives.filter((o) => o.name),
-      constraints: constraints.length > 0 ? constraints : undefined,
-      batch_size: batchSize,
-    };
+    setValidationErrors([]);
+    setWarnings([]);
 
     try {
-      const result = await createCampaign(intake);
+      const result = await createCampaign(buildIntake());
+      if (result.warnings && result.warnings.length > 0) {
+        setWarnings(result.warnings);
+      }
       if (result.success && result.campaign_id) {
         navigate(`/campaign/${result.campaign_id}`);
       } else {
@@ -466,9 +435,6 @@ function IntakePage() {
         </Card>
 
         <div className="d-flex gap-2">
-          <Button variant="outline-secondary" onClick={handleValidate} disabled={loading}>
-            Validate
-          </Button>
           <Button variant="primary" type="submit" disabled={loading}>
             {loading ? 'Creating...' : 'Create Campaign'}
           </Button>

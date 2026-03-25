@@ -27,42 +27,14 @@ class TestAPIEndpoints:
         response = httpx.get(f"{BASE_URL}/health")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "healthy"
+        assert data["healthy"] is True
+        assert data["database"] == "connected"
+        assert isinstance(data["version"], str)
+        assert data["tools_available"] > 0
+        assert data["uptime_seconds"] >= 0
         print("✓ Health check passed")
 
-    def test_02_validate_intake(self):
-        """Test intake validation endpoint."""
-        intake_data = {
-            "name": "Test Campaign",
-            "description": "API test campaign",
-            "parameters": [
-                {
-                    "name": "temperature",
-                    "type": "continuous",
-                    "bounds": [0.0, 100.0],
-                },
-                {
-                    "name": "pressure",
-                    "type": "continuous",
-                    "bounds": [1.0, 10.0],
-                },
-            ],
-            "objectives": [
-                {"name": "yield", "direction": "maximize"},
-                {"name": "cost", "direction": "minimize"},
-            ],
-        }
-        response = httpx.post(
-            f"{BASE_URL}/api/campaigns/validate",
-            json=intake_data,
-            headers=HEADERS,
-        )
-        assert response.status_code == 200, f"Validate intake failed: {response.text}"
-        data = response.json()
-        assert data["valid"] is True, f"Validation errors: {data.get('errors')}"
-        print("✓ Validate intake passed")
-
-    def test_03_create_campaign(self):
+    def test_02_create_campaign(self):
         """Test campaign creation endpoint."""
         intake_data = {
             "intake": {
@@ -95,11 +67,12 @@ class TestAPIEndpoints:
         data = response.json()
         assert data["success"] is True, f"Campaign creation failed: {data.get('errors')}"
         assert data["campaign_id"] is not None
+        assert "warnings" in data
         TestAPIEndpoints.campaign_id = data["campaign_id"]
         TestAPIEndpoints.spec_id = data["spec_id"]
         print(f"✓ Create campaign passed (id={TestAPIEndpoints.campaign_id[:8]}...)")
 
-    def test_04_get_campaign_spec(self):
+    def test_03_get_campaign_spec(self):
         """Test get campaign spec endpoint."""
         assert TestAPIEndpoints.spec_id, "No spec_id from previous test"
         response = httpx.get(
@@ -113,7 +86,7 @@ class TestAPIEndpoints:
         assert len(data["objectives"]) == 2
         print("✓ Get campaign spec passed")
 
-    def test_05_get_campaign(self):
+    def test_04_get_campaign(self):
         """Test get campaign endpoint."""
         assert TestAPIEndpoints.campaign_id, "No campaign_id from previous test"
         response = httpx.get(
@@ -126,7 +99,7 @@ class TestAPIEndpoints:
         assert data["status"] == "created"
         print("✓ Get campaign passed")
 
-    def test_06_list_campaigns(self):
+    def test_05_list_campaigns(self):
         """Test list campaigns endpoint."""
         response = httpx.get(
             f"{BASE_URL}/api/campaigns",
@@ -138,7 +111,7 @@ class TestAPIEndpoints:
         assert data["total"] >= 1
         print(f"✓ List campaigns passed (total={data['total']})")
 
-    def test_07_generate_suggestions(self):
+    def test_06_generate_suggestions(self):
         """Test generate suggestions endpoint."""
         assert TestAPIEndpoints.campaign_id, "No campaign_id from previous test"
         response = httpx.post(
@@ -152,7 +125,7 @@ class TestAPIEndpoints:
         TestAPIEndpoints.suggestion_id = data["suggestions"][0]["id"]
         print(f"✓ Generate suggestions passed (count={len(data['suggestions'])})")
 
-    def test_08_get_suggestions(self):
+    def test_07_get_suggestions(self):
         """Test get suggestions endpoint."""
         assert TestAPIEndpoints.campaign_id, "No campaign_id from previous test"
         response = httpx.get(
@@ -166,7 +139,7 @@ class TestAPIEndpoints:
         assert len(data) > 0
         print(f"✓ Get suggestions passed (count={len(data)})")
 
-    def test_09_submit_results(self):
+    def test_08_submit_results(self):
         """Test submit results endpoint."""
         assert TestAPIEndpoints.campaign_id, "No campaign_id from previous test"
         assert TestAPIEndpoints.suggestion_id, "No suggestion_id from previous test"
@@ -194,7 +167,7 @@ class TestAPIEndpoints:
         TestAPIEndpoints.result_id = data["result_ids"][0]
         print(f"✓ Submit results passed (count={len(data['result_ids'])})")
 
-    def test_10_get_results(self):
+    def test_09_get_results(self):
         """Test get results endpoint."""
         assert TestAPIEndpoints.campaign_id, "No campaign_id from previous test"
         response = httpx.get(
@@ -208,7 +181,7 @@ class TestAPIEndpoints:
         assert len(data) >= 1
         print(f"✓ Get results passed (count={len(data)})")
 
-    def test_11_get_diagnostics(self):
+    def test_10_get_diagnostics(self):
         """Test get diagnostics endpoint."""
         assert TestAPIEndpoints.campaign_id, "No campaign_id from previous test"
         response = httpx.get(
@@ -228,16 +201,15 @@ if __name__ == "__main__":
     test = TestAPIEndpoints()
     tests = [
         test.test_01_health_check,
-        test.test_02_validate_intake,
-        test.test_03_create_campaign,
-        test.test_04_get_campaign_spec,
-        test.test_05_get_campaign,
-        test.test_06_list_campaigns,
-        test.test_07_generate_suggestions,
-        test.test_08_get_suggestions,
-        test.test_09_submit_results,
-        test.test_10_get_results,
-        test.test_11_get_diagnostics,
+        test.test_02_create_campaign,
+        test.test_03_get_campaign_spec,
+        test.test_04_get_campaign,
+        test.test_05_list_campaigns,
+        test.test_06_generate_suggestions,
+        test.test_07_get_suggestions,
+        test.test_08_submit_results,
+        test.test_09_get_results,
+        test.test_10_get_diagnostics,
     ]
 
     passed = 0

@@ -10,14 +10,7 @@ import type {
   SubmitResultsRequest,
   SubmitResultsResponse,
   Suggestion,
-  ValidationResponse,
 } from '../types';
-
-// Validate intake before creating campaign
-export const validateIntake = async (intake: IntakeRequest['intake']): Promise<ValidationResponse> => {
-  const response = await apiClient.post<ValidationResponse>('/campaigns/validate', intake);
-  return response.data;
-};
 
 // Create a new campaign
 export const createCampaign = async (intake: IntakeRequest['intake']): Promise<CreateCampaignResponse> => {

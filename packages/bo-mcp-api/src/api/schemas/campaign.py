@@ -1,7 +1,6 @@
 """Campaign schemas."""
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel
 
@@ -12,15 +11,6 @@ class CampaignCreate(BaseModel):
     """Campaign creation request."""
 
     intake: IntakeData
-
-
-class CampaignValidation(BaseModel):
-    """Campaign validation response."""
-
-    valid: bool
-    errors: list[str]
-    warnings: list[str]
-    spec: dict[str, Any] | None = None
 
 
 class CampaignResponse(BaseModel):
@@ -44,6 +34,7 @@ class CampaignCreateResponse(BaseModel):
     success: bool
     campaign_id: str | None = None
     spec_id: str | None = None
+    warnings: list[str] = []
     errors: list[str]
 
 

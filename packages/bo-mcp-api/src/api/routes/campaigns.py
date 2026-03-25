@@ -2,7 +2,6 @@
 
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 from bo_mcp_server.tools.create_campaign import create_campaign
-from bo_mcp_server.tools.validate_intake import validate_intake
 from fastapi import APIRouter, HTTPException, status
 
 from api.deps import CurrentUser, get_authorized_campaign, validate_uuid
@@ -11,26 +10,9 @@ from api.schemas.campaign import (
     CampaignCreateResponse,
     CampaignListResponse,
     CampaignResponse,
-    CampaignValidation,
 )
-from api.schemas.intake import IntakeData
 
 router = APIRouter()
-
-
-@router.post("/validate", response_model=CampaignValidation)
-async def validate_campaign_intake(intake: IntakeData) -> CampaignValidation:
-    """Validate campaign intake data without creating a campaign.
-
-    This is a thin proxy to the MCP validate_intake tool.
-    """
-    result = await validate_intake(intake.to_dict(), verbosity="detailed")
-    return CampaignValidation(
-        valid=result["valid"],
-        errors=result["errors"],
-        warnings=result["warnings"],
-        spec=result["spec"],
-    )
 
 
 @router.post("", response_model=CampaignCreateResponse)
@@ -50,6 +32,7 @@ async def create_new_campaign(
         success=result["success"],
         campaign_id=result["campaign_id"],
         spec_id=result["spec_id"],
+        warnings=result.get("warnings", []),
         errors=result["errors"],
     )
 

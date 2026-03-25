@@ -76,6 +76,7 @@ async def create_campaign(
         )
         response["campaign_id"] = None
         response["spec_id"] = None
+        response["warnings"] = validation.get("warnings", [])
         return response
 
     # Parse owner_id
@@ -129,6 +130,7 @@ async def create_campaign(
         "campaign_id": str(campaign_id),
         "spec_id": str(spec_id),
         "campaign_name": spec.name,
+        "warnings": validation.get("warnings", []),
         "errors": [],
     }
 

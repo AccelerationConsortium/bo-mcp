@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from bo_mcp_server.domain import User
 from bo_mcp_server.storage import UserRepository, get_session, init_database
+from bo_mcp_server.tools.health_check import health_check as mcp_health_check
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -72,9 +73,9 @@ def create_app() -> FastAPI:
     app.include_router(diagnostics.router, prefix="/api/diagnostics", tags=["diagnostics"])
 
     @app.get("/health")
-    async def health_check() -> dict[str, str]:
-        """Health check endpoint."""
-        return {"status": "healthy"}
+    async def health_check() -> dict[str, str | bool | int]:
+        """Health check endpoint aligned with the MCP health_check tool."""
+        return await mcp_health_check()
 
     @app.get("/")
     async def root() -> RedirectResponse:

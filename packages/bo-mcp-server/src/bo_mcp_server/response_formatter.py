@@ -293,6 +293,7 @@ def format_create_campaign_response(
         return {
             "success": full_response.get("success"),
             "campaign_id": full_response.get("campaign_id"),
+            "warnings": full_response.get("warnings", []),
             "errors": full_response.get("errors", []),
         }
 
@@ -303,6 +304,7 @@ def format_create_campaign_response(
             "campaign_id": full_response.get("campaign_id"),
             "spec_id": full_response.get("spec_id"),
             "campaign_name": full_response.get("campaign_name"),
+            "warnings": full_response.get("warnings", []),
             "errors": full_response.get("errors", []),
         }
 

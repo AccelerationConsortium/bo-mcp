@@ -47,7 +47,7 @@ uv run python scripts/check_prerequisites.py
 
 ```bash
 uv run bo-mcp-server --verify
-# Expected: {"status": "ok", "version": "0.1.0", "tools": 17, "database": "connected"}
+# Expected: {"status": "ok", "version": "0.1.0", "tools": 12, "database": "connected"}
 ```
 
 ### 4. Claude Code Configuration

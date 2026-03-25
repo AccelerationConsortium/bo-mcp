@@ -45,7 +45,7 @@ create_campaign → [generate_suggestions → submit_results]* → get_diagnosti
 
 ## Overview
 
-The MCP server exposes 15 tools organized into five categories:
+The MCP server exposes 12 tools organized into six categories:
 
 | Category | Tools |
 |----------|-------|

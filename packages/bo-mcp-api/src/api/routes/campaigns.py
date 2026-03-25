@@ -1,15 +1,34 @@
 """Campaign routes."""
 
+from bo_mcp_server.operations.batch_status import batch_get_status_operation
+from bo_mcp_server.operations.campaign_lifecycle import manage_campaign_lifecycle_operation
+from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
+from bo_mcp_server.operations.transfer_candidates import (
+    discover_transfer_candidates_operation,
+)
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 from bo_mcp_server.tools.create_campaign import create_campaign
 from fastapi import APIRouter, HTTPException, status
 
-from api.deps import CurrentUser, get_authorized_campaign, validate_uuid
+from api.deps import (
+    CurrentUser,
+    ensure_owned_campaigns,
+    get_authorized_campaign,
+    validate_uuid,
+)
 from api.schemas.campaign import (
+    BatchStatusRequest,
+    BatchStatusResponse,
     CampaignCreate,
     CampaignCreateResponse,
+    CampaignLifecycleRequest,
+    CampaignLifecycleResponse,
     CampaignListResponse,
     CampaignResponse,
+    CompareCampaignsRequest,
+    CompareCampaignsResponse,
+    TransferCandidatesRequest,
+    TransferCandidatesResponse,
 )
 
 router = APIRouter()
@@ -79,6 +98,76 @@ async def list_campaigns(current_user: CurrentUser) -> CampaignListResponse:
                 )
 
         return CampaignListResponse(campaigns=responses, total=len(responses))
+
+
+@router.post("/status/batch", response_model=BatchStatusResponse)
+async def batch_campaign_status(
+    request: BatchStatusRequest,
+    current_user: CurrentUser,
+) -> BatchStatusResponse:
+    """Get status for multiple campaigns."""
+    await ensure_owned_campaigns(request.campaign_ids, current_user)
+
+    result = await batch_get_status_operation(
+        campaign_ids=request.campaign_ids,
+        verbosity=request.verbosity.value,
+    )
+    return BatchStatusResponse(**result)
+
+
+@router.post("/compare", response_model=CompareCampaignsResponse)
+async def compare_campaign_group(
+    request: CompareCampaignsRequest,
+    current_user: CurrentUser,
+) -> CompareCampaignsResponse:
+    """Compare multiple campaigns."""
+    await ensure_owned_campaigns(request.campaign_ids, current_user)
+
+    result = await compare_campaigns_operation(
+        campaign_ids=request.campaign_ids,
+        verbosity=request.verbosity.value,
+    )
+    return CompareCampaignsResponse(**result)
+
+
+@router.post(
+    "/{campaign_id}/lifecycle",
+    response_model=CampaignLifecycleResponse,
+)
+async def manage_campaign(
+    campaign_id: str,
+    request: CampaignLifecycleRequest,
+    current_user: CurrentUser,
+) -> CampaignLifecycleResponse:
+    """Manage campaign lifecycle."""
+    await get_authorized_campaign(campaign_id, current_user)
+
+    result = await manage_campaign_lifecycle_operation(
+        campaign_id=campaign_id,
+        action=request.action,  # pyright: ignore[reportArgumentType]
+    )
+    return CampaignLifecycleResponse(**result)
+
+
+@router.post(
+    "/{campaign_id}/transfer-candidates",
+    response_model=TransferCandidatesResponse,
+)
+async def discover_campaign_transfer_candidates(
+    campaign_id: str,
+    request: TransferCandidatesRequest,
+    current_user: CurrentUser,
+) -> TransferCandidatesResponse:
+    """Discover transfer-learning candidates for a campaign."""
+    await get_authorized_campaign(campaign_id, current_user)
+
+    result = await discover_transfer_candidates_operation(
+        campaign_id=campaign_id,
+        similarity_threshold=request.similarity_threshold,
+        max_candidates=request.max_candidates,
+        verbosity=request.verbosity.value,
+    )
+    return TransferCandidatesResponse(**result)
 
 
 @router.get("/spec/{spec_id}")

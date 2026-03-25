@@ -4,8 +4,13 @@ import hashlib
 from typing import Annotated
 from uuid import UUID
 
-from bo_mcp_server.domain import Campaign, User
-from bo_mcp_server.storage import CampaignRepository, UserRepository, get_session
+from bo_mcp_server.domain import Campaign, Suggestion, User
+from bo_mcp_server.storage import (
+    CampaignRepository,
+    SuggestionRepository,
+    UserRepository,
+    get_session,
+)
 from fastapi import Depends, Header, HTTPException, status
 
 
@@ -125,3 +130,66 @@ async def get_authorized_campaign(
             )
 
         return campaign
+
+
+async def get_authorized_suggestion(
+    suggestion_id: str,
+    current_user: User,
+) -> Suggestion:
+    """Fetch and authorize a suggestion via its owning campaign."""
+    suggestion_uuid = validate_uuid(suggestion_id, "suggestion_id")
+
+    async with get_session() as session:
+        suggestion_repo = SuggestionRepository(session)
+        campaign_repo = CampaignRepository(session)
+
+        suggestion = await suggestion_repo.get(suggestion_uuid)
+        if suggestion is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Suggestion {suggestion_id} not found",
+            )
+
+        campaign = await campaign_repo.get(suggestion.campaign_id)
+        if campaign is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Campaign {suggestion.campaign_id} not found",
+            )
+
+        if campaign.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this suggestion",
+            )
+
+        return suggestion
+
+
+async def ensure_owned_campaigns(
+    campaign_ids: list[str],
+    current_user: User,
+) -> None:
+    """Reject requests that include campaigns owned by another user.
+
+    Invalid or missing campaign IDs are intentionally ignored here so the shared
+    operation can surface them in the MCP-aligned response payload.
+    """
+    async with get_session() as session:
+        campaign_repo = CampaignRepository(session)
+
+        for campaign_id in campaign_ids:
+            try:
+                campaign_uuid = UUID(campaign_id)
+            except ValueError:
+                continue
+
+            campaign = await campaign_repo.get(campaign_uuid)
+            if campaign is None:
+                continue
+
+            if campaign.owner_id != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Not authorized to access campaign {campaign_id}",
+                )

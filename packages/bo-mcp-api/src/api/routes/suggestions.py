@@ -1,17 +1,26 @@
 """Suggestion routes."""
 
 from bo_mcp_server.domain import SuggestionStatus
+from bo_mcp_server.operations.suggestion_explanation import (
+    get_suggestion_explanation_operation,
+)
 from bo_mcp_server.storage import CampaignRepository, SuggestionRepository, get_session
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from fastapi import APIRouter, HTTPException, Query, status
 
-from api.deps import CurrentUser, get_authorized_campaign, validate_uuid
-from api.schemas.suggestion import (
-    SuggestionProvenance as SuggestionProvenanceSchema,
+from api.deps import (
+    CurrentUser,
+    get_authorized_campaign,
+    get_authorized_suggestion,
+    validate_uuid,
 )
 from api.schemas.suggestion import (
+    SuggestionExplanationResponse,
     SuggestionResponse,
     SuggestionsGenerateResponse,
+)
+from api.schemas.suggestion import (
+    SuggestionProvenance as SuggestionProvenanceSchema,
 )
 
 router = APIRouter()
@@ -62,6 +71,21 @@ async def generate_campaign_suggestions(
         iteration=result["iteration"],
         errors=[],
     )
+
+
+@router.get(
+    "/{suggestion_id}/explanation",
+    response_model=SuggestionExplanationResponse,
+)
+async def get_campaign_suggestion_explanation(
+    suggestion_id: str,
+    current_user: CurrentUser,
+) -> SuggestionExplanationResponse:
+    """Get a detailed explanation for a suggestion."""
+    await get_authorized_suggestion(suggestion_id, current_user)
+
+    result = await get_suggestion_explanation_operation(suggestion_id)
+    return SuggestionExplanationResponse(**result)
 
 
 @router.get("/{campaign_id}", response_model=list[SuggestionResponse])

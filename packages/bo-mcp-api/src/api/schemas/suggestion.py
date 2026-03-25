@@ -41,3 +41,12 @@ class SuggestionsGenerateResponse(BaseModel):
     suggestions: list[SuggestionResponse]
     iteration: int | None = None
     errors: list[str]
+
+
+class SuggestionExplanationResponse(BaseModel):
+    """Response for suggestion explanation."""
+
+    success: bool
+    explanation: str | None = None
+    provenance: SuggestionProvenance | None = None
+    errors: list[str]

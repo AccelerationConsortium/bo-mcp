@@ -487,18 +487,18 @@ Add to your Claude Code MCP configuration file. The location depends on your set
 
 | Tool | Description |
 |------|-------------|
-| `health_check` | Check MCP server health and connectivity |
-| `create_campaign` | Create a new optimization campaign |
-| `list_campaigns` | List campaigns with optional filtering |
-| `generate_suggestions` | Generate next batch of experiment suggestions |
-| `submit_results` | Submit experimental results |
-| `upload_results_file` | Upload results from CSV file |
-| `get_diagnostics` | Get campaign progress, Pareto front, and health status |
-| `get_suggestion_explanation` | Get detailed explanation of why a suggestion was made |
-| `manage_campaign_lifecycle` | Pause, resume, or terminate a campaign |
-| `compare_campaigns` | Compare 2-10 campaigns for relative performance |
-| `discover_transfer_candidates` | Auto-discover campaigns for transfer learning |
-| `batch_get_status` | Get status for multiple campaigns in one call |
+| `bo_health_check` | Check MCP server health and connectivity |
+| `bo_create_campaign` | Create a new optimization campaign |
+| `bo_list_campaigns` | List campaigns with optional filtering |
+| `bo_generate_suggestions` | Generate next batch of experiment suggestions |
+| `bo_submit_results` | Submit experimental results |
+| `bo_upload_results_file` | Upload results from CSV file |
+| `bo_get_diagnostics` | Get campaign progress, Pareto front, and health status |
+| `bo_get_suggestion_explanation` | Get detailed explanation of why a suggestion was made |
+| `bo_manage_campaign_lifecycle` | Pause, resume, or terminate a campaign |
+| `bo_compare_campaigns` | Compare 2-10 campaigns for relative performance |
+| `bo_discover_transfer_candidates` | Auto-discover campaigns for transfer learning |
+| `bo_batch_get_status` | Get status for multiple campaigns in one call |
 
 ### Available MCP Resources
 
@@ -539,7 +539,7 @@ async def run_optimization():
 
             # Create a campaign
             result = await session.call_tool(
-                "create_campaign",
+                "bo_create_campaign",
                 arguments={
                     "name": "My Optimization",
                     "description": "Optimizing process parameters",
@@ -560,14 +560,14 @@ async def run_optimization():
 
             # Generate suggestions
             suggestions = await session.call_tool(
-                "generate_suggestions",
+                "bo_generate_suggestions",
                 arguments={"campaign_id": campaign_id}
             )
             print(f"Suggestions: {suggestions.content[0].text}")
 
             # Submit results after running experiments
             await session.call_tool(
-                "submit_results",
+                "bo_submit_results",
                 arguments={
                     "campaign_id": campaign_id,
                     "results": [
@@ -581,7 +581,7 @@ async def run_optimization():
 
             # Get diagnostics
             diagnostics = await session.call_tool(
-                "get_diagnostics",
+                "bo_get_diagnostics",
                 arguments={"campaign_id": campaign_id}
             )
             print(f"Diagnostics: {diagnostics.content[0].text}")
@@ -623,7 +623,7 @@ def call_tool(tool_name: str, arguments: dict) -> dict:
     return response.json()
 
 # Create campaign
-result = call_tool("create_campaign", {
+result = call_tool("bo_create_campaign", {
     "name": "Network Optimization",
     "parameters": [
         {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}
@@ -746,7 +746,7 @@ async def optimization_loop(n_iterations: int = 5):
 
             # 1. Create campaign
             result = await session.call_tool(
-                "create_campaign",
+                "bo_create_campaign",
                 arguments={
                     "name": "Process Optimization",
                     "parameters": [
@@ -767,7 +767,7 @@ async def optimization_loop(n_iterations: int = 5):
 
                 # Generate suggestions
                 suggestions_result = await session.call_tool(
-                    "generate_suggestions",
+                    "bo_generate_suggestions",
                     arguments={"campaign_id": campaign_id}
                 )
                 suggestions = json.loads(suggestions_result.content[0].text)["suggestions"]
@@ -785,7 +785,7 @@ async def optimization_loop(n_iterations: int = 5):
 
                 # Submit results
                 await session.call_tool(
-                    "submit_results",
+                    "bo_submit_results",
                     arguments={
                         "campaign_id": campaign_id,
                         "results": results
@@ -794,7 +794,7 @@ async def optimization_loop(n_iterations: int = 5):
 
                 # Check progress
                 diag_result = await session.call_tool(
-                    "get_diagnostics",
+                    "bo_get_diagnostics",
                     arguments={"campaign_id": campaign_id}
                 )
                 diagnostics = json.loads(diag_result.content[0].text)
@@ -809,7 +809,7 @@ if __name__ == "__main__":
 
 For reference, here are the detailed schemas for each MCP tool:
 
-#### create_campaign
+#### bo_create_campaign
 Creates a new optimization campaign.
 ```json
 {
@@ -822,7 +822,7 @@ Creates a new optimization campaign.
 }
 ```
 
-#### generate_suggestions
+#### bo_generate_suggestions
 Generates the next batch of experiment suggestions.
 ```json
 {
@@ -830,7 +830,7 @@ Generates the next batch of experiment suggestions.
 }
 ```
 
-#### submit_results
+#### bo_submit_results
 Submits experimental results.
 ```json
 {
@@ -844,7 +844,7 @@ Submits experimental results.
 }
 ```
 
-#### get_diagnostics
+#### bo_get_diagnostics
 Returns campaign progress and health metrics.
 ```json
 {

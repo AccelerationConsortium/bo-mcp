@@ -25,7 +25,7 @@ from bo_mcp_server.storage import (
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
+@mcp.tool(name="bo_list_campaigns")
 async def list_campaigns(
     owner_id: str | None = None,
     status: str | None = None,

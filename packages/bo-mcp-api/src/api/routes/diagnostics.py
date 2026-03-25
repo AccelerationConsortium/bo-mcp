@@ -17,7 +17,7 @@ async def get_campaign_diagnostics(
 ) -> dict[str, Any]:
     """Get diagnostic information for a campaign.
 
-    This is a thin proxy to the MCP get_diagnostics tool.
+    This is a thin proxy to the MCP bo_get_diagnostics tool.
     """
     await get_authorized_campaign(campaign_id, current_user)
 

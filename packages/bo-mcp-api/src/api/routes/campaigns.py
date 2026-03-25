@@ -41,7 +41,7 @@ async def create_new_campaign(
 ) -> CampaignCreateResponse:
     """Create a new optimization campaign.
 
-    This is a thin proxy to the MCP create_campaign tool.
+    This is a thin proxy to the MCP bo_create_campaign tool.
     """
     result = await create_campaign(
         intake_data=request.intake.to_dict(),

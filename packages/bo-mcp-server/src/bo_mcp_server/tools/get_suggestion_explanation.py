@@ -8,7 +8,7 @@ from bo_mcp_server.operations.suggestion_explanation import (
 from bo_mcp_server.server import mcp
 
 
-@mcp.tool()
+@mcp.tool(name="bo_get_suggestion_explanation")
 async def get_suggestion_explanation(suggestion_id: str) -> dict[str, Any]:
     """Get detailed explanation for why a suggestion was generated."""
     return await get_suggestion_explanation_operation(suggestion_id)

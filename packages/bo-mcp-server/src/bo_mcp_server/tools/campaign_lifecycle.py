@@ -9,7 +9,7 @@ from bo_mcp_server.operations.campaign_lifecycle import (
 from bo_mcp_server.server import mcp
 
 
-@mcp.tool()
+@mcp.tool(name="bo_manage_campaign_lifecycle")
 async def manage_campaign_lifecycle(
     campaign_id: str,
     action: LifecycleAction,

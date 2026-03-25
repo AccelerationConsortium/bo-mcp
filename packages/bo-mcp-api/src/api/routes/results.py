@@ -33,7 +33,7 @@ async def submit_campaign_results(
 ) -> ResultSubmitResponse:
     """Submit results for a campaign.
 
-    This is a thin proxy to the MCP submit_results tool.
+    This is a thin proxy to the MCP bo_submit_results tool.
     """
     await get_authorized_campaign(campaign_id, current_user)
 

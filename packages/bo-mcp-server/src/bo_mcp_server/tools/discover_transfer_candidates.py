@@ -8,7 +8,7 @@ from bo_mcp_server.operations.transfer_candidates import (
 from bo_mcp_server.server import mcp
 
 
-@mcp.tool()
+@mcp.tool(name="bo_discover_transfer_candidates")
 async def discover_transfer_candidates(
     campaign_id: str,
     similarity_threshold: float = 0.5,

@@ -13,7 +13,7 @@ from bo_mcp_server.tools.submit_results import submit_results
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
+@mcp.tool(name="bo_upload_results_file")
 async def upload_results_file(
     campaign_id: str,
     file_content: str,

@@ -6,7 +6,7 @@ from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operati
 from bo_mcp_server.server import mcp
 
 
-@mcp.tool()
+@mcp.tool(name="bo_compare_campaigns")
 async def compare_campaigns(
     campaign_ids: list[str],
     verbosity: str = "standard",

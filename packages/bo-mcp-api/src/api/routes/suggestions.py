@@ -34,7 +34,7 @@ async def generate_campaign_suggestions(
 ) -> SuggestionsGenerateResponse:
     """Generate new suggestions for a campaign.
 
-    This is a thin proxy to the MCP generate_suggestions tool.
+    This is a thin proxy to the MCP bo_generate_suggestions tool.
     """
     await get_authorized_campaign(campaign_id, current_user)
 

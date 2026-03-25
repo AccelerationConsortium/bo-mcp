@@ -74,7 +74,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health_check() -> dict[str, str | bool | int]:
-        """Health check endpoint aligned with the MCP health_check tool."""
+        """Health check endpoint aligned with the MCP bo_health_check tool."""
         return await mcp_health_check()
 
     @app.get("/")

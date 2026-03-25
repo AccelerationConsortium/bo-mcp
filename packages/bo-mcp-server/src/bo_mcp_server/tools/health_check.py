@@ -28,7 +28,7 @@ def _get_server_start_time() -> float:
     return _server_start_time
 
 
-@mcp.tool()
+@mcp.tool(name="bo_health_check")
 async def health_check() -> dict[str, Any]:
     """Check MCP server health and connectivity.
 

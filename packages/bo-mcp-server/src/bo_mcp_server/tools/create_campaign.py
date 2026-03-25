@@ -28,7 +28,7 @@ from bo_mcp_server.tools.validate_intake import validate_intake
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
+@mcp.tool(name="bo_create_campaign")
 async def create_campaign(
     intake_data: CampaignIntakeInput,
     owner_id: str,

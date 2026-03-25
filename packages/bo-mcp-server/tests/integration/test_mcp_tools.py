@@ -2133,7 +2133,7 @@ class TestNextActionRecommendation:
         assert result["success"] is True
         assert "next_action_recommendation" in result
         # New campaign with no results should recommend generating suggestions
-        assert result["next_action_recommendation"]["action"] == "generate_suggestions"
+        assert result["next_action_recommendation"]["action"] == "bo_generate_suggestions"
 
     @pytest.mark.asyncio
     async def test_next_action_submit_results(self, setup_database):
@@ -2154,7 +2154,7 @@ class TestNextActionRecommendation:
         result = await get_diagnostics(create_result["campaign_id"], verbosity="detailed")
 
         assert result["success"] is True
-        assert result["next_action_recommendation"]["action"] == "submit_results"
+        assert result["next_action_recommendation"]["action"] == "bo_submit_results"
 
     @pytest.mark.asyncio
     async def test_next_action_in_minimal_response(self, setup_database):

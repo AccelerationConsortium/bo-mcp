@@ -187,9 +187,10 @@ docker-compose up --build
 ```
 
 Access the application:
-- **Frontend**: http://localhost:3000
+- **Frontend**: http://localhost:3001
 - **Backend API**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
+- **MCP SSE**: http://localhost:8001
 
 ### Option 2: Run Locally (Development)
 
@@ -634,6 +635,42 @@ result = call_tool("create_campaign", {
 })
 print(result)
 ```
+
+#### Option B1: Using from PydanticAI
+
+If another PydanticAI agent needs BO-MCP tools over the network, connect to the SSE endpoint with `MCPServerSSE` and pass it as a toolset:
+
+```python
+import asyncio
+
+from pydantic_ai import Agent
+from pydantic_ai.mcp import MCPServerSSE
+
+server = MCPServerSSE("http://localhost:8001/sse")
+
+agent = Agent(
+    "openai:gpt-5.2",
+    toolsets=[server],
+)
+
+async def main():
+    async with server:
+        result = await agent.run("List the available BO tools and create a campaign.")
+        print(result.output)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Use the URL that matches where the calling agent is running:
+
+- **Same host as Docker Compose**: `http://localhost:8001/sse`
+- **Another container on the same Compose network**: `http://mcp:8001/sse`
+- **Another machine on the network**: `http://<docker-host-ip>:8001/sse`
+
+The `mcp` hostname only resolves inside the same Docker network. External machines must use the Docker host's reachable IP address or DNS name, and port `8001` must be open.
+
+The BO-MCP server allows `localhost` and the Docker Compose service hostname `mcp` by default for SSE Host-header validation, so `http://mcp:8001/sse` works for container-to-container access on the same Compose network.
 
 #### Option C: Using the Server Directly in Python (No MCP Protocol)
 

@@ -1611,7 +1611,7 @@ from api import create_app
 docker-compose up --build
 
 # Access:
-# - Frontend: http://localhost:3000
+# - Frontend: http://localhost:3001
 # - API: http://localhost:8000
 # - API Docs: http://localhost:8000/docs
 ```

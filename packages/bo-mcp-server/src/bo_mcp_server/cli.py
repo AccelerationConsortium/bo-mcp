@@ -11,16 +11,14 @@ from bo_mcp_server import __version__
 
 dotenv.load_dotenv()
 
-from bo_mcp_server.server import mcp  # noqa: E402
+from bo_mcp_server.server import create_mcp_server  # noqa: E402
 from bo_mcp_server.storage import close_database, init_database  # noqa: E402
-
-# Number of tools available in the MCP server
-_TOOLS_COUNT = 13
 
 
 async def main_async(transport: str, host: str, port: int) -> None:
     """Async main function."""
     await init_database()
+    mcp = create_mcp_server()
 
     if transport == "stdio":
         await mcp.run_stdio_async()
@@ -36,10 +34,11 @@ async def _verify_setup() -> None:
     Checks database connectivity and prints a JSON status report.
     Exits with code 0 on success, 1 on error.
     """
+    mcp = create_mcp_server()
     status: dict[str, str | int] = {
         "status": "ok",
         "version": __version__,
-        "tools": _TOOLS_COUNT,
+        "tools": len(mcp._tool_manager.list_tools()),
     }
 
     try:

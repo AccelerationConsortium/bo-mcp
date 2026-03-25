@@ -227,7 +227,7 @@ async def main():
 
     print(f"\nCampaign ID: {campaign_id}")
     print("You can view this campaign in the web UI at:")
-    print(f"  http://localhost:3000/campaign/{campaign_id}")
+    print(f"  http://localhost:3001/campaign/{campaign_id}")
 
 
 if __name__ == "__main__":

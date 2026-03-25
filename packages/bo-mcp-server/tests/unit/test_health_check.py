@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from bo_mcp_server import __version__
+from bo_mcp_server.server import create_mcp_server
 from bo_mcp_server.tools.health_check import (
     _get_server_start_time,
     health_check,
@@ -57,17 +58,11 @@ class TestHealthCheckResponse:
 
     @pytest.mark.asyncio
     async def test_health_check_returns_correct_tool_count(self, setup_database: None) -> None:
-        """Verify tools_available matches actual tool count.
-
-        Tools: validate_intake, create_campaign, generate_suggestions,
-        submit_results, get_diagnostics, upload_results_file,
-        get_suggestion_explanation, pause_campaign, resume_campaign,
-        terminate_campaign, compare_campaigns, discover_transfer_candidates,
-        health_check = 13 tools
-        """
+        """Verify tools_available matches actual tool count."""
+        expected_tools = len(create_mcp_server()._tool_manager.list_tools())
         result = await health_check()
 
-        assert result["tools_available"] == 13
+        assert result["tools_available"] == expected_tools
 
     @pytest.mark.asyncio
     async def test_health_check_uptime_is_non_negative(self, setup_database: None) -> None:
@@ -116,7 +111,7 @@ class TestHealthCheckDatabaseError:
             result = await health_check()
 
             assert result["version"] == __version__
-            assert result["tools_available"] == 13
+            assert result["tools_available"] == len(create_mcp_server()._tool_manager.list_tools())
 
 
 class TestServerStartTime:

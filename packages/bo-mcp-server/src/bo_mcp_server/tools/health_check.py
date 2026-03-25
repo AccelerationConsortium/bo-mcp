@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import text
 
 from bo_mcp_server import __version__
-from bo_mcp_server.server import mcp
+from bo_mcp_server.server import create_mcp_server, mcp
 from bo_mcp_server.storage.database import get_session
 
 logger = logging.getLogger(__name__)
@@ -60,12 +60,8 @@ async def health_check() -> dict[str, Any]:
     start_time = _get_server_start_time()
     uptime = int(time.time() - start_time)
 
-    # Count available tools (update when adding new tools)
-    # Tools: validate_intake, create_campaign, generate_suggestions, submit_results,
-    #        get_diagnostics, upload_results_file, get_suggestion_explanation,
-    #        pause_campaign, resume_campaign, terminate_campaign,
-    #        compare_campaigns, discover_transfer_candidates, health_check
-    tools_count = 13
+    create_mcp_server()
+    tools_count = len(mcp._tool_manager.list_tools())
 
     healthy = db_status == "connected"
 

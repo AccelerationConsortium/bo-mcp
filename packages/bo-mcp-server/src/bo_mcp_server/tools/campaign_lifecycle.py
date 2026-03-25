@@ -2,9 +2,8 @@
 
 This module provides tools for managing campaign lifecycle state transitions.
 
-Per MCP best practices, we provide both:
-1. Individual tools (pause_campaign, resume_campaign, terminate_campaign) for backward compatibility
-2. A consolidated tool (manage_campaign_lifecycle) for reduced cognitive load
+The MCP surface exposes a single consolidated tool,
+`manage_campaign_lifecycle`, for pause/resume/terminate operations.
 
 Reference: MCP Best Practices - "Avoid mapping every API endpoint to a new MCP tool.
 Instead, group related tasks."
@@ -21,60 +20,6 @@ from bo_mcp_server.server import mcp
 from bo_mcp_server.storage import CampaignRepository, get_session
 
 logger = logging.getLogger(__name__)
-
-
-@mcp.tool()
-async def pause_campaign(campaign_id: str) -> dict[str, Any]:
-    """Pause an active campaign.
-
-    Args:
-        campaign_id: UUID of the campaign to pause
-
-    Returns:
-        Dictionary with success status and campaign info
-    """
-    return await _change_campaign_status(
-        campaign_id,
-        target_status=CampaignStatus.PAUSED,
-        valid_from_statuses=[CampaignStatus.RUNNING],
-        action="pause",
-    )
-
-
-@mcp.tool()
-async def resume_campaign(campaign_id: str) -> dict[str, Any]:
-    """Resume a paused campaign.
-
-    Args:
-        campaign_id: UUID of the campaign to resume
-
-    Returns:
-        Dictionary with success status and campaign info
-    """
-    return await _change_campaign_status(
-        campaign_id,
-        target_status=CampaignStatus.RUNNING,
-        valid_from_statuses=[CampaignStatus.PAUSED],
-        action="resume",
-    )
-
-
-@mcp.tool()
-async def terminate_campaign(campaign_id: str) -> dict[str, Any]:
-    """Terminate a campaign (cannot be undone).
-
-    Args:
-        campaign_id: UUID of the campaign to terminate
-
-    Returns:
-        Dictionary with success status and campaign info
-    """
-    return await _change_campaign_status(
-        campaign_id,
-        target_status=CampaignStatus.COMPLETED,
-        valid_from_statuses=[CampaignStatus.RUNNING, CampaignStatus.PAUSED, CampaignStatus.CREATED],
-        action="terminate",
-    )
 
 
 async def _change_campaign_status(
@@ -164,9 +109,9 @@ async def manage_campaign_lifecycle(
 ) -> dict[str, Any]:
     """Manage campaign lifecycle with a single consolidated tool.
 
-    This tool consolidates pause_campaign, resume_campaign, and terminate_campaign
-    into a single interface for reduced cognitive load. Use this as the preferred
-    tool for lifecycle management.
+    This tool consolidates pause, resume, and terminate into a single interface
+    for reduced cognitive load. Use this as the preferred tool for lifecycle
+    management.
 
     Args:
         campaign_id: UUID of the campaign to manage.

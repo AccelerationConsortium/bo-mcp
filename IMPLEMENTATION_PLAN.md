@@ -990,7 +990,6 @@ This section documents improvements identified to maximize efficiency for AI age
 |------|--------------|----------------|
 | 1.1 | `list_campaigns` | New tool in `tools/list_campaigns.py` |
 | 1.2 | `manage_campaign_lifecycle` | Added to `tools/campaign_lifecycle.py` |
-| 1.3 | `search_tools` | New meta-tool in `tools/search_tools.py` |
 | 1.4 | `batch_get_status` | New tool in `tools/batch_operations.py` |
 | 1.5 | Verbosity on more tools | Added to `create_campaign`, `submit_results`, `validate_intake` |
 | 1.6 | `next_action_recommendation` | Added to `get_diagnostics` response |
@@ -1002,7 +1001,6 @@ This section documents improvements identified to maximize efficiency for AI age
 **Tests Added** (in `tests/integration/test_mcp_tools.py`):
 - `TestListCampaigns` - 5 tests
 - `TestManageCampaignLifecycle` - 4 tests
-- `TestSearchTools` - 4 tests
 - `TestBatchGetStatus` - 4 tests
 - `TestNextActionRecommendation` - 3 tests
 - `TestVerbosityOnExistingTools` - 3 tests
@@ -1055,27 +1053,6 @@ async def manage_campaign_lifecycle(
 
 **Files to Modify**:
 - `packages/bo-mcp-server/src/bo_mcp_server/tools/campaign_lifecycle.py` (add consolidated tool)
-
----
-
-#### 1.3 Lazy Tool Loading (On-Demand Tool Definitions)
-
-**Problem**: All 13 tool definitions are sent to agents on connection, consuming ~2000 tokens of context before any work begins.
-
-**Recommendation**: Implement tool discovery pattern from Anthropic's code execution with MCP:
-
-1. Add `search_tools` meta-tool for agents to find relevant tools
-2. Provide tool definitions on-demand via filesystem-like access
-3. Reduces initial context by 60-80%
-
-```python
-@mcp.tool()
-async def search_tools(query: str) -> dict[str, Any]:
-    """Search available tools by keyword. Returns tool names and descriptions."""
-```
-
-**Files to Create**:
-- `packages/bo-mcp-server/src/bo_mcp_server/tools/search_tools.py` (new)
 
 ---
 
@@ -1273,7 +1250,6 @@ uv run python scripts/check_prerequisites.py
 
 #### Phase 3: Efficiency Optimizations ✅ COMPLETED (Part 1)
 
-- [x] **3.1**: Add `search_tools` meta-tool for on-demand tool discovery
 - [x] **3.2**: Add `batch_get_status` tool for multi-campaign monitoring
 - [x] **3.3**: Add consolidated `manage_campaign_lifecycle` tool
 
@@ -1293,7 +1269,6 @@ uv run python scripts/check_prerequisites.py
 | `packages/bo-mcp-server/AGENT_COOKBOOK.md` | Modify | ✅ Done | Added resources explanation, workflow example, troubleshooting trees, convergence guidance, initial design guidance |
 | `packages/bo-mcp-server/TOOL_SCHEMAS.md` | Modify | ✅ Done | Added method selection table, initial design docs |
 | `packages/bo-mcp-server/src/bo_mcp_server/tools/list_campaigns.py` | Create | ✅ Done (Part 1) | New tool wrapping campaigns resource |
-| `packages/bo-mcp-server/src/bo_mcp_server/tools/search_tools.py` | Create | ✅ Done (Part 1) | Meta-tool for tool discovery |
 | `packages/bo-mcp-server/src/bo_mcp_server/tools/batch_operations.py` | Create | ✅ Done (Part 1) | Batch status tool |
 | `packages/bo-mcp-server/src/bo_mcp_server/tools/get_diagnostics.py` | Modify | ✅ Done (Part 1) | Added next_action_recommendation |
 | `packages/bo-mcp-server/src/bo_mcp_server/tools/create_campaign.py` | Modify | ✅ Done (Part 1) | Added verbosity parameter |

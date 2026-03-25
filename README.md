@@ -488,18 +488,17 @@ Add to your Claude Code MCP configuration file. The location depends on your set
 | Tool | Description |
 |------|-------------|
 | `health_check` | Check MCP server health and connectivity |
-| `validate_intake` | Validate campaign configuration before creation |
 | `create_campaign` | Create a new optimization campaign |
+| `list_campaigns` | List campaigns with optional filtering |
 | `generate_suggestions` | Generate next batch of experiment suggestions |
 | `submit_results` | Submit experimental results |
 | `upload_results_file` | Upload results from CSV file |
 | `get_diagnostics` | Get campaign progress, Pareto front, and health status |
 | `get_suggestion_explanation` | Get detailed explanation of why a suggestion was made |
-| `pause_campaign` | Pause an active campaign |
-| `resume_campaign` | Resume a paused campaign |
-| `terminate_campaign` | Permanently terminate a campaign |
+| `manage_campaign_lifecycle` | Pause, resume, or terminate a campaign |
 | `compare_campaigns` | Compare 2-10 campaigns for relative performance |
 | `discover_transfer_candidates` | Auto-discover campaigns for transfer learning |
+| `batch_get_status` | Get status for multiple campaigns in one call |
 
 ### Available MCP Resources
 
@@ -745,22 +744,7 @@ async def optimization_loop(n_iterations: int = 5):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # 1. Validate configuration first
-            validation = await session.call_tool(
-                "validate_intake",
-                arguments={
-                    "parameters": [
-                        {"name": "temp", "type": "continuous", "bounds": [20.0, 100.0]},
-                        {"name": "time", "type": "discrete", "bounds": [1, 60]}
-                    ],
-                    "objectives": [
-                        {"name": "quality", "direction": "maximize"}
-                    ]
-                }
-            )
-            print(f"Validation: {validation.content[0].text}")
-
-            # 2. Create campaign
+            # 1. Create campaign
             result = await session.call_tool(
                 "create_campaign",
                 arguments={
@@ -777,7 +761,7 @@ async def optimization_loop(n_iterations: int = 5):
             )
             campaign_id = json.loads(result.content[0].text)["campaign_id"]
 
-            # 3. Optimization loop
+            # 2. Optimization loop
             for iteration in range(n_iterations):
                 print(f"\n--- Iteration {iteration + 1} ---")
 
@@ -824,22 +808,6 @@ if __name__ == "__main__":
 ### MCP Tool Schemas
 
 For reference, here are the detailed schemas for each MCP tool:
-
-#### validate_intake
-Validates campaign configuration before creation.
-```json
-{
-  "parameters": [
-    {"name": "string", "type": "continuous|discrete|categorical", "bounds": [min, max], "categories": ["a", "b"]}
-  ],
-  "objectives": [
-    {"name": "string", "direction": "maximize|minimize", "unit": "optional"}
-  ],
-  "constraints": [
-    {"type": "sum", "parameters": ["param1", "param2"], "value": 1.0}
-  ]
-}
-```
 
 #### create_campaign
 Creates a new optimization campaign.

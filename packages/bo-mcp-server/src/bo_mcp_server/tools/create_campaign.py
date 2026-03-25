@@ -38,7 +38,7 @@ async def create_campaign(
 
     Args:
         intake_data: Campaign intake payload validated via CampaignIntakeInput
-            (same schema used by validate_intake).
+            and validated internally before campaign creation.
         owner_id: UUID of the user creating the campaign
         verbosity: Response verbosity level. Options:
             - "minimal": ~30 tokens - campaign_id only

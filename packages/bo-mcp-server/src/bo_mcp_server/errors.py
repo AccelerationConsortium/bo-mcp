@@ -98,7 +98,7 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "Use force=True parameter to override duplicate detection, or skip this result."
     ),
     ErrorCode.VALIDATION_FAILED: (
-        "Review the errors array, fix the issues, and retry validate_intake."
+        "Review the errors array, fix the issues, and retry create_campaign."
     ),
     ErrorCode.MISSING_PARAMETERS: (
         "Add at least one parameter to the intake_data.parameters array."

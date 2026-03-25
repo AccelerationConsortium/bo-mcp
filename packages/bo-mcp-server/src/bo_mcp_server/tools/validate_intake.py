@@ -10,15 +10,16 @@ from bo_mcp_server.domain import (
     CampaignSpec,
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.response_formatter import VerbosityLevel, format_validate_intake_response
-from bo_mcp_server.server import mcp
+from bo_mcp_server.response_formatter import (
+    VerbosityLevel,
+    format_validate_intake_response,
+)
 
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
 async def validate_intake(
-    intake_data: CampaignIntakeInput,
+    intake_data: CampaignIntakeInput | dict[str, Any],
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
 ) -> dict[str, Any]:
     """Validate campaign intake data and return validation result.

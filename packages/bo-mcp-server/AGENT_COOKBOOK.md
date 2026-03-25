@@ -5,9 +5,8 @@ Quick reference for AI agents using the Bayesian Optimization MCP server.
 ## Quick Start (3 Steps)
 
 ```
-1. validate_intake → Check configuration
-2. create_campaign → Start optimization
-3. Loop: generate_suggestions → submit_results → get_diagnostics(verbosity="minimal")
+1. create_campaign → Start optimization
+2. Loop: generate_suggestions → submit_results → get_diagnostics(verbosity="minimal")
 ```
 
 ---
@@ -128,9 +127,7 @@ Error Code E101 "Model fitting failed"
 
 | User Intent | Recommended Tool(s) |
 |-------------|---------------------|
-| Discover tools | `search_tools` (v3.3+) |
 | Check server is up | `health_check` |
-| Validate before create | `validate_intake` |
 | Start new optimization | `create_campaign` |
 | List all campaigns | `list_campaigns` (v3.3+) |
 | Get next experiments | `generate_suggestions` |
@@ -186,7 +183,6 @@ Error Code E101 "Model fitting failed"
 | Operation | Typical Time | Notes |
 |-----------|--------------|-------|
 | health_check | <100ms | Immediate |
-| validate_intake | <200ms | Pure validation |
 | create_campaign | <500ms | Database writes |
 | generate_suggestions (initial) | 1-3s | Sobol sampling |
 | generate_suggestions (with model) | 3-30s | Depends on data size, dimensions |
@@ -242,10 +238,10 @@ Optimize a chemical reaction for maximum yield and minimum cost:
 - **Objectives**: yield (maximize), cost (minimize)
 - **Constraint**: sum of reagent fractions equals 1.0
 
-### Step 1: Validate Configuration
+### Step 1: Create Campaign
 
 ```json
-// Tool: validate_intake
+// Tool: create_campaign
 {
   "intake_data": {
     "name": "Catalyst Optimization",
@@ -265,9 +261,10 @@ Optimize a chemical reaction for maximum yield and minimum cost:
       {"type": "sum_equals", "parameters": ["reagent_A", "reagent_B"], "value": 1.0}
     ],
     "batch_size": 3
-  }
+  },
+  "owner_id": "user-uuid"
 }
-// Expected: {"valid": true, "errors": [], "warnings": []}
+// Expected: {"success": true, "campaign_id": "...", "errors": []}
 ```
 
 ### Step 2: Create Campaign
@@ -380,7 +377,7 @@ Is campaign status RUNNING?
 │   └── FAILED → Check errors; may need new campaign
 └── Yes → Are there any results?
     ├── No results → Uses Sobol sampling (should always work)
-    │   └── Still fails? → Check validate_intake for spec issues
+    │   └── Still fails? → Check create_campaign validation errors for spec issues
     └── Has results → Model fitting issue
         ├── < 2 results → Add 1+ more observations
         ├── All NaN/Inf values? → Submit valid numeric results

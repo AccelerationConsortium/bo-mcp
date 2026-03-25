@@ -1,9 +1,11 @@
 """Results routes."""
 
 import io
+from typing import Any
 
 import pandas as pd
 from bo_mcp_server.domain import ResultSubmissionInput
+from bo_mcp_server.result_upload_parser import parse_named_result_rows
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -113,15 +115,21 @@ async def upload_results_file(
             detail=f"Missing columns: {missing_cols}",
         )
 
-    # Convert to results
-    results_data = []
-    for _, row in df.iterrows():
-        results_data.append(
-            ResultSubmissionInput(
-                parameter_values={name: row[name] for name in param_names},
-                objective_values={name: float(row[name]) for name in objective_names},
-                metadata={"source_file": filename},
-            )
+    upload_rows: list[dict[str, Any]] = [
+        {str(key): value for key, value in row.items()} for row in df.to_dict(orient="records")
+    ]
+
+    results_data, parse_errors = parse_named_result_rows(
+        upload_rows,
+        parameter_names=param_names,
+        objective_names=objective_names,
+        metadata_factory=lambda _row_num: {"source_file": filename},
+    )
+
+    if parse_errors:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=parse_errors,
         )
 
     # Submit via MCP tool

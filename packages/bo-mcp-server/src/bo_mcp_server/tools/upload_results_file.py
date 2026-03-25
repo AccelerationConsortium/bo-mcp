@@ -6,7 +6,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from bo_mcp_server.domain import ResultSubmissionInput
+from bo_mcp_server.result_upload_parser import parse_prefixed_result_rows
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.submit_results import submit_results
 
@@ -84,53 +84,10 @@ async def upload_results_file(
             "errors": [f"Failed to parse CSV: {e}"],
         }
 
-    parsed_results: list[ResultSubmissionInput] = []
-    parse_errors: list[str] = []
-
-    for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is row 1)
-        try:
-            # Convention: columns starting with "param_" are parameters and
-            # columns starting with "obj_" are objectives.
-            param_values: dict[str, Any] = {}
-            obj_values: dict[str, float] = {}
-
-            for key, value in row.items():
-                if key is None or value is None:
-                    continue
-                if key.startswith("param_"):
-                    param_name = key[6:]  # Remove "param_" prefix
-                    param_values[param_name] = _parse_value(value)
-                elif key.startswith("obj_"):
-                    obj_name = key[4:]  # Remove "obj_" prefix
-                    try:
-                        obj_values[obj_name] = float(value)
-                    except ValueError:
-                        parse_errors.append(
-                            f"Row {row_num}: Invalid objective value for {obj_name}"
-                        )
-                        continue
-
-            if not param_values:
-                parse_errors.append(
-                    f"Row {row_num}: No parameter values found (use param_<name> columns)"
-                )
-                continue
-
-            if not obj_values:
-                parse_errors.append(
-                    f"Row {row_num}: No objective values found (use obj_<name> columns)"
-                )
-                continue
-
-            parsed_results.append(
-                ResultSubmissionInput(
-                    parameter_values=param_values,
-                    objective_values=obj_values,
-                    metadata={"source_row": row_num},
-                )
-            )
-        except Exception as e:
-            parse_errors.append(f"Row {row_num}: {e!s}")
+    parsed_results, parse_errors = parse_prefixed_result_rows(
+        reader,
+        metadata_factory=lambda row_num: {"source_row": row_num},
+    )
 
     if not parsed_results:
         return {
@@ -177,19 +134,3 @@ async def upload_results_file(
         response["duplicates_detected"] = duplicates_detected
 
     return response
-
-
-def _parse_value(value: str) -> Any:
-    """Parse string value to appropriate type."""
-    # Try integer first
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    # Try float
-    try:
-        return float(value)
-    except ValueError:
-        pass
-    # Return as string
-    return value

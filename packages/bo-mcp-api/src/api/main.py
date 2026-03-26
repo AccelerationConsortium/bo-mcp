@@ -1,19 +1,21 @@
 """FastAPI application setup."""
 
 import logging
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from bo_mcp_server.storage import init_database
-from bo_mcp_server.tools.health_check import health_check as mcp_health_check
+from bo_mcp_server.storage import get_session, init_database
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from sqlalchemy import text
 
 from api.dev_auth import ensure_dev_user
 from api.routes import campaigns, diagnostics, results, suggestions
 
 logger = logging.getLogger(__name__)
+_api_start_time = time.time()
 
 # Revert reference: `ensure_dev_user` can stay in `api.dev_auth`. To restore
 # real API-key auth, revert `get_current_user()` in `api.deps`.
@@ -55,8 +57,25 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health_check() -> dict[str, str | bool | int]:
-        """Health check endpoint aligned with the MCP bo_health_check tool."""
-        return await mcp_health_check()
+        """Health check endpoint for API readiness."""
+        db_status = "error"
+        try:
+            async with get_session() as session:
+                await session.execute(text("SELECT 1"))
+                db_status = "connected"
+        except Exception as e:
+            logger.warning("API health check failed: %s", e)
+
+        healthy = db_status == "connected"
+        uptime = int(time.time() - _api_start_time)
+
+        return {
+            "healthy": healthy,
+            "service": "api",
+            "version": app.version,
+            "database": db_status,
+            "uptime_seconds": uptime,
+        }
 
     @app.get("/")
     async def root() -> RedirectResponse:

@@ -31,9 +31,9 @@ class TestAPIEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert data["healthy"] is True
+        assert data["service"] == "api"
         assert data["database"] == "connected"
         assert isinstance(data["version"], str)
-        assert data["tools_available"] > 0
         assert data["uptime_seconds"] >= 0
         print("✓ Health check passed")
 

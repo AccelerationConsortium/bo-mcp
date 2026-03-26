@@ -24,7 +24,6 @@ from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 from bo_mcp_server.tools.submit_results import submit_results
-from bo_mcp_server.tools.validate_intake import validate_intake
 
 
 def prior_task_objective(x1: float, x2: float) -> float:
@@ -211,11 +210,6 @@ async def main():
             "num_ranking_samples": 256,
         },
     }
-
-    validation = await validate_intake(new_config)
-    if not validation["valid"]:
-        print(f"    ERROR: {validation['errors']}")
-        return
 
     result = await create_campaign(new_config, owner_id)
     if not result["success"]:

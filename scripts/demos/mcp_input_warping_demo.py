@@ -25,7 +25,6 @@ from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 from bo_mcp_server.tools.submit_results import submit_results
-from bo_mcp_server.tools.validate_intake import validate_intake
 
 
 def non_stationary_objective(x: float, y: float) -> float:
@@ -234,18 +233,8 @@ async def main() -> None:
     print("    Input warping: ENABLED")
     print()
 
-    # Validate configuration
-    print("[4] Validating configuration...")
-    validation = await validate_intake(campaign_config)
-
-    if not validation["valid"]:
-        print(f"    ERROR: {validation['errors']}")
-        return
-
-    print("    Configuration is valid!")
-
     # Create campaign
-    print("\n[5] Creating campaign...")
+    print("[4] Creating campaign...")
     result = await create_campaign(campaign_config, owner_id)
 
     if not result["success"]:

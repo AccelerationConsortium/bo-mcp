@@ -18,7 +18,7 @@ def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
 
 
 class TestValidateIntake:
-    """Tests for validate_intake MCP tool."""
+    """Tests for the internal validate_intake helper."""
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
@@ -2237,7 +2237,7 @@ class TestVerbosityOnExistingTools:
 
     @pytest.mark.asyncio
     async def test_validate_intake_verbosity_levels(self):
-        """Tests verbosity levels on validate_intake."""
+        """Tests verbosity levels on the internal validate_intake helper."""
         from bo_mcp_server.tools.validate_intake import validate_intake
 
         intake = {

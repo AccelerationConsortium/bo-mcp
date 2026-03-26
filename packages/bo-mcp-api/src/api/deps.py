@@ -1,6 +1,5 @@
 """FastAPI dependencies."""
 
-import hashlib
 from typing import Annotated
 from uuid import UUID
 
@@ -8,46 +7,52 @@ from bo_mcp_server.domain import Campaign, Suggestion, User
 from bo_mcp_server.storage import (
     CampaignRepository,
     SuggestionRepository,
-    UserRepository,
     get_session,
 )
 from fastapi import Depends, Header, HTTPException, status
 
+from api.dev_auth import ensure_dev_user
+
 
 async def get_current_user(
-    x_api_key: Annotated[str, Header()],
+    x_api_key: Annotated[str | None, Header()] = None,
 ) -> User:
-    """Get current user from API key header.
+    """Return the shared development user for every request.
 
-    Args:
-        x_api_key: API key from header
-
-    Returns:
-        User entity
-
-    Raises:
-        HTTPException: If API key is invalid
+    This is a temporary development-only bypass. It intentionally ignores the
+    incoming ``X-API-Key`` header so route ownership and submission logic can
+    continue to use a concrete ``current_user`` without enforcing real auth.
+    This is not a sustainable production configuration.
     """
-    # Hash the API key for lookup
-    api_key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
-
-    async with get_session() as session:
-        user_repo = UserRepository(session)
-        user = await user_repo.get_by_api_key_hash(api_key_hash)
-
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid API key",
-            )
-
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User account is deactivated",
-            )
-
-        return user
+    # Revert reference: restore the original API-key behavior by re-adding the
+    # imports below at module scope and replacing this function body with the
+    # commented block that follows.
+    #
+    # from bo_mcp_server.storage import UserRepository
+    # import hashlib
+    #
+    # Original implementation:
+    # api_key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+    #
+    # async with get_session() as session:
+    #     user_repo = UserRepository(session)
+    #     user = await user_repo.get_by_api_key_hash(api_key_hash)
+    #
+    #     if user is None:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_401_UNAUTHORIZED,
+    #             detail="Invalid API key",
+    #         )
+    #
+    #     if not user.is_active:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_403_FORBIDDEN,
+    #             detail="User account is deactivated",
+    #         )
+    #
+    #     return user
+    _ = x_api_key
+    return await ensure_dev_user()
 
 
 # Type alias for dependency injection

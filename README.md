@@ -230,7 +230,10 @@ The frontend will be available at http://localhost:5173
 
 When you first open the UI, you'll be prompted to enter an API key.
 
-For development, use: `dev-api-key-12345`
+Temporary development note: the backend currently bypasses API-key validation
+and maps every request to a shared dev user. The UI may still prompt for a key,
+but any value will work. You can keep using `dev-api-key-12345` for
+compatibility. This is not a sustainable or production-safe setup.
 
 ### Step 2: Create a Campaign
 
@@ -397,7 +400,6 @@ The system automatically selects the optimal BO method based on your problem:
 import httpx
 
 BASE_URL = "http://localhost:8000/api"
-headers = {"X-API-Key": "dev-api-key-12345"}
 
 campaign_data = {
     "intake": {
@@ -416,14 +418,18 @@ campaign_data = {
     }
 }
 
-response = httpx.post(f"{BASE_URL}/campaigns", json=campaign_data, headers=headers)
+response = httpx.post(f"{BASE_URL}/campaigns", json=campaign_data)
 campaign_id = response.json()["campaign_id"]
 ```
+
+Temporary development note: API-key validation is currently bypassed by the
+backend and all requests resolve to a shared dev user. Do not keep this
+configuration beyond local development.
 
 ### Generate Suggestions
 
 ```python
-response = httpx.post(f"{BASE_URL}/suggestions/{campaign_id}/generate", headers=headers)
+response = httpx.post(f"{BASE_URL}/suggestions/{campaign_id}/generate")
 suggestions = response.json()["suggestions"]
 ```
 
@@ -959,8 +965,11 @@ clear_cache()
 ## Troubleshooting
 
 ### "Unauthorized" errors
-- Make sure you've set your API key in the UI (click "Set API Key" in the nav)
-- For development, use: `dev-api-key-12345`
+- This repo currently bypasses API-key validation in local development, so
+  authorization failures usually indicate you are not running the temporary
+  dev-bypass version of the API.
+- That bypass maps every request to one shared dev user and is not sustainable
+  for production.
 
 ### Frontend can't connect to backend
 - Ensure the backend is running on port 8000

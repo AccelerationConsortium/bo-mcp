@@ -1,40 +1,79 @@
-# Build stage for BO-MCP API service
-FROM python:3.13-slim AS builder
+# Dependency layer for BO-MCP API and server development.
+FROM python:3.13-slim AS deps
 
-WORKDIR /app
+WORKDIR /workspace
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy workspace configuration and packages
+# Copy only dependency metadata so source edits do not invalidate this layer.
 COPY pyproject.toml uv.lock ./
-COPY packages/ ./packages/
+COPY packages/bo-engine/pyproject.toml packages/bo-engine/README.md ./packages/bo-engine/
+COPY packages/bo-mcp-server/pyproject.toml packages/bo-mcp-server/README.md ./packages/bo-mcp-server/
+COPY packages/bo-mcp-api/pyproject.toml packages/bo-mcp-api/README.md ./packages/bo-mcp-api/
 
-# Create venv and sync dependencies
-ENV UV_PROJECT_ENVIRONMENT=/app/.venv
-RUN uv venv /app/.venv && \
-    uv sync --frozen --no-dev --package bo-mcp-api
+ENV UV_LINK_MODE=copy
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 
-# Runtime stage
-FROM python:3.13-slim
+RUN uv venv /opt/venv && \
+    uv sync --frozen --no-dev \
+    --package bo-engine \
+    --package bo-mcp-server \
+    --package bo-mcp-api \
+    --no-install-workspace
 
-WORKDIR /app
 
-# Install curl for healthcheck
+# Development image: dependencies only, workspace source is mounted at runtime.
+FROM python:3.13-slim AS dev
+
+WORKDIR /workspace
+
+# Install curl for the API healthcheck.
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy virtual environment from builder
-COPY --from=builder /app/.venv /app/.venv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=deps /opt/venv /opt/venv
+COPY docker/dev-entrypoint.sh /usr/local/bin/dev-entrypoint.sh
 
-# Copy package source code
-COPY packages/ ./packages/
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Set environment variables
-ENV PATH="/app/.venv/bin:$PATH"
+RUN chmod +x /usr/local/bin/dev-entrypoint.sh && \
+    uv pip install --python /opt/venv/bin/python hatchling editables
 
-# Expose port
+ENTRYPOINT ["/usr/local/bin/dev-entrypoint.sh"]
+
 EXPOSE 8000
 
-# Run the application
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+
+# Self-contained runtime image for non-dev use.
+FROM deps AS runtime-builder
+
+COPY packages/ ./packages/
+
+RUN uv sync --frozen --no-dev \
+    --package bo-engine \
+    --package bo-mcp-server \
+    --package bo-mcp-api \
+    --no-editable
+
+
+FROM python:3.13-slim AS runtime
+
+WORKDIR /app
+
+# Install curl for healthchecks.
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=runtime-builder /opt/venv /opt/venv
+COPY packages/ ./packages/
+
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONPATH="/app/packages/bo-engine/src:/app/packages/bo-mcp-server/src:/app/packages/bo-mcp-api/src"
+
+EXPOSE 8000
+
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

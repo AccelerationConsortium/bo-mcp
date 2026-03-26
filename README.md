@@ -182,9 +182,19 @@ pip install ./packages/bo-mcp-api
 git clone <repo-url>
 cd bo-mcp-ui
 
-# Build and run all services
+# Build dependency-only dev images and run all services
 docker-compose up --build
 ```
+
+The `api` and `mcp` services use bind-mounted workspace source in Docker Compose,
+so Python code changes are picked up from the local checkout instead of forcing an
+image rebuild. Dependencies stay baked into the image, while the mounted workspace
+packages are installed in editable mode when the dev containers start. Rebuild
+those images when dependency manifests or Dockerfiles change, not for normal
+source edits.
+
+For a self-contained image that copies the source into the build, use the
+`runtime` target in `Dockerfile.api`.
 
 Access the application:
 - **Frontend**: http://localhost:3001

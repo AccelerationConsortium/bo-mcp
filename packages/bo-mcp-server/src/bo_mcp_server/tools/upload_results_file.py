@@ -6,11 +6,39 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.result_upload_parser import parse_prefixed_result_rows
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.submit_results import submit_results
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_uuids(campaign_id: str, submitted_by: str | None) -> dict[str, Any] | tuple[UUID, UUID]:
+    """Validate and parse campaign_id and submitted_by UUIDs.
+
+    Returns an error response dict on failure, or (campaign_uuid, submitter_uuid) on success.
+    """
+    try:
+        campaign_uuid = UUID(campaign_id)
+    except ValueError:
+        return make_error_response(
+            ErrorCode.INVALID_CAMPAIGN_ID,
+            details={"campaign_id": campaign_id},
+        )
+
+    submitter_uuid = campaign_uuid
+    if submitted_by:
+        try:
+            submitter_uuid = UUID(submitted_by)
+        except ValueError:
+            return make_error_response(
+                ErrorCode.VALIDATION_FAILED,
+                message="Invalid submitted_by format",
+                details={"submitted_by": submitted_by},
+            )
+
+    return campaign_uuid, submitter_uuid
 
 
 @mcp.tool(name="bo_upload_results_file")
@@ -47,42 +75,25 @@ async def upload_results_file(
 
     if file_format != "csv":
         logger.warning("Unsupported file format: %s", file_format)
-        return {
-            "success": False,
-            "results_created": 0,
-            "errors": [f"Unsupported format: {file_format}. Only 'csv' supported."],
-        }
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=f"Unsupported format: {file_format}. Only 'csv' supported.",
+            details={"file_format": file_format},
+        )
 
-    try:
-        campaign_uuid = UUID(campaign_id)
-    except ValueError:
-        return {
-            "success": False,
-            "results_created": 0,
-            "errors": ["Invalid campaign_id format"],
-        }
-
-    # Parse submitted_by
-    submitter_uuid = campaign_uuid
-    if submitted_by:
-        try:
-            submitter_uuid = UUID(submitted_by)
-        except ValueError:
-            return {
-                "success": False,
-                "results_created": 0,
-                "errors": ["Invalid submitted_by format"],
-            }
+    uuid_result = _parse_uuids(campaign_id, submitted_by)
+    if isinstance(uuid_result, dict):
+        return uuid_result
+    _, submitter_uuid = uuid_result
 
     # Parse CSV
     try:
         reader = csv.DictReader(io.StringIO(file_content))
-    except Exception as e:
-        return {
-            "success": False,
-            "results_created": 0,
-            "errors": [f"Failed to parse CSV: {e}"],
-        }
+    except csv.Error as e:
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=f"Failed to parse CSV: {e}",
+        )
 
     parsed_results, parse_errors = parse_prefixed_result_rows(
         reader,
@@ -90,11 +101,14 @@ async def upload_results_file(
     )
 
     if not parsed_results:
-        return {
-            "success": False,
-            "results_created": 0,
-            "errors": parse_errors or ["No valid results found in uploaded file"],
-        }
+        response = make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message="No valid results found in uploaded file",
+            details={"parse_errors": parse_errors} if parse_errors else None,
+        )
+        if parse_errors:
+            response["errors"] = parse_errors
+        return response
 
     submit_result = await submit_results(
         campaign_id=campaign_id,

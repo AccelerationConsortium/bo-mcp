@@ -51,9 +51,13 @@ def create_mcp_server() -> FastMCP:
         get_suggestion_explanation,
         health_check,
         list_campaigns,
+        list_results,
+        list_suggestions,
         submit_results,
+        update_suggestion_status,
         upload_results_file,
+        validate_intake,
     )
 
-    logger.info("MCP server created with 12 tools and 3 resources")
+    logger.info("MCP server created with 18 tools and 3 resources")
     return mcp

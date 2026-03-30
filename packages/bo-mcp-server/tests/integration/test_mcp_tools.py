@@ -1921,17 +1921,17 @@ class TestListCampaigns:
         assert "spec_summary" in detailed_result["campaigns"][0]
 
 
-class TestManageCampaignLifecycle:
-    """Tests for manage_campaign_lifecycle consolidated tool.
+class TestCampaignLifecycleTools:
+    """Tests for individual campaign lifecycle tools.
 
-    Reference: MCP Best Practices - Avoid mapping every API endpoint to a tool.
+    Reference: MCP Best Practices - Individual tools are more discoverable.
     https://modelcontextprotocol.io/docs/best-practices
     """
 
     @pytest.mark.asyncio
-    async def test_pause_action(self, setup_database):
-        """Pause action transitions running campaign to paused."""
-        from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+    async def test_pause_campaign(self, setup_database):
+        """bo_pause_campaign transitions running campaign to paused."""
+        from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -1947,16 +1947,16 @@ class TestManageCampaignLifecycle:
         # Move to RUNNING
         await generate_suggestions(campaign_id)
 
-        result = await manage_campaign_lifecycle(campaign_id, "pause")
+        result = await pause_campaign(campaign_id)
 
         assert result["success"] is True
         assert result["status"] == "paused"
         assert result["previous_status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_resume_action(self, setup_database):
-        """Resume action transitions paused campaign to running."""
-        from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+    async def test_resume_campaign(self, setup_database):
+        """bo_resume_campaign transitions paused campaign to running."""
+        from bo_mcp_server.tools.campaign_lifecycle import pause_campaign, resume_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -1971,18 +1971,18 @@ class TestManageCampaignLifecycle:
 
         # Move to RUNNING then PAUSED
         await generate_suggestions(campaign_id)
-        await manage_campaign_lifecycle(campaign_id, "pause")
+        await pause_campaign(campaign_id)
 
-        result = await manage_campaign_lifecycle(campaign_id, "resume")
+        result = await resume_campaign(campaign_id)
 
         assert result["success"] is True
         assert result["status"] == "running"
         assert result["previous_status"] == "paused"
 
     @pytest.mark.asyncio
-    async def test_terminate_action(self, setup_database):
-        """Terminate action completes the campaign."""
-        from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+    async def test_terminate_campaign(self, setup_database):
+        """bo_terminate_campaign completes the campaign."""
+        from bo_mcp_server.tools.campaign_lifecycle import terminate_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
 
         owner_id = str(uuid4())
@@ -1994,30 +1994,36 @@ class TestManageCampaignLifecycle:
         create_result = await create_campaign(intake, owner_id)
         campaign_id = create_result["campaign_id"]
 
-        result = await manage_campaign_lifecycle(campaign_id, "terminate")
+        result = await terminate_campaign(campaign_id)
 
         assert result["success"] is True
         assert result["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_invalid_action(self, setup_database):
-        """Invalid action returns error."""
-        from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+    async def test_invalid_state_transition(self, setup_database):
+        """Pausing an already paused campaign returns error."""
+        from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
         owner_id = str(uuid4())
         intake = {
-            "name": "Invalid Action Test",
+            "name": "Invalid Transition Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
             "objectives": [{"name": "y", "direction": "minimize"}],
         }
         create_result = await create_campaign(intake, owner_id)
         campaign_id = create_result["campaign_id"]
 
-        result = await manage_campaign_lifecycle(campaign_id, "invalid_action")  # type: ignore
+        await generate_suggestions(campaign_id)
+        await pause_campaign(campaign_id)
+
+        # Try to pause again - should fail
+        result = await pause_campaign(campaign_id)
 
         assert result["success"] is False
-        assert "invalid" in str(result["errors"]).lower()
+        errors_str = str(result["errors"]).lower()
+        assert "cannot pause" in errors_str or "paused" in errors_str
 
 
 class TestBatchGetStatus:

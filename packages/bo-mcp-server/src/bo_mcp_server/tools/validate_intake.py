@@ -14,15 +14,20 @@ from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_validate_intake_response,
 )
+from bo_mcp_server.server import mcp
 
 logger = logging.getLogger(__name__)
 
 
+@mcp.tool(name="bo_validate_intake")
 async def validate_intake(
     intake_data: CampaignIntakeInput | dict[str, Any],
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
 ) -> dict[str, Any]:
-    """Validate campaign intake data and return validation result.
+    """Validate a campaign specification without creating a campaign (dry-run).
+
+    Use this to check a campaign spec for errors before committing to creation.
+    This is side-effect-free: no database writes, no campaign created.
 
     Args:
         intake_data: Campaign intake payload validated via CampaignIntakeInput.
@@ -66,10 +71,17 @@ async def validate_intake(
         )
         spec = CampaignSpec(**intake.model_dump())
     except ValidationError as e:
-        errors: list[str] = []
-        for error in e.errors():
-            errors.append(f"{error['loc']}: {error['msg']}")
-        return {"valid": False, "errors": errors, "warnings": [], "spec": None}
+        errors: list[str] = [f"{error['loc']}: {error['msg']}" for error in e.errors()]
+        response = make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message="Intake validation failed",
+            details={"validation_errors": errors},
+        )
+        response["valid"] = False
+        response["errors"] = errors  # Override with detailed errors for backward compat
+        response["warnings"] = []
+        response["spec"] = None
+        return response
 
     # Add warnings
     warnings: list[str] = []

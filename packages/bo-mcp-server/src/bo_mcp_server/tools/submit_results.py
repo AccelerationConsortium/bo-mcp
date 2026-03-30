@@ -512,7 +512,7 @@ async def submit_results(  # noqa: C901
         partial_success_allowed = not atomic and continue_on_error
         overall_success = len(result_ids) > 0 and (not has_errors or partial_success_allowed)
 
-        response_data = {
+        response_data: dict[str, Any] = {
             "success": overall_success,
             "result_ids": result_ids,
             "errors": errors,

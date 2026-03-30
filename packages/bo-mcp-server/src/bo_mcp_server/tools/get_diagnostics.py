@@ -1,7 +1,7 @@
 """Get diagnostics tool for MCP."""
 
 import logging
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import torch
@@ -10,6 +10,7 @@ from bo_engine.convergence import (
     detect_single_objective_convergence,
 )
 from bo_engine.diagnostics import (
+    LOOCVMetrics,
     compute_best_value,
     compute_constraint_satisfaction,
     compute_exploration_exploitation_metrics,
@@ -252,6 +253,10 @@ def _compute_model_correlation(
         return sum(correlations) / len(correlations)
 
 
+def _loo_cv_metrics_to_dict(m: LOOCVMetrics) -> dict[str, float]:
+    return {"rmse": m.rmse, "mae": m.mae, "r_squared": m.r_squared}
+
+
 def _compute_model_diagnostics(
     spec: CampaignSpec,
     results: list[Result],
@@ -321,21 +326,16 @@ def _compute_model_diagnostics(
             try:
                 loo_metrics = compute_loo_cv_for_model(model, train_x, train_y)
                 # Format LOO-CV metrics by objective name
-                loo_cv_by_objective = {}
+                loo_cv_by_objective: dict[str, dict[str, float]] = {}
                 if isinstance(loo_metrics, dict):
+                    metrics_by_idx = cast(dict[int, LOOCVMetrics], loo_metrics)
                     for idx, obj_name in enumerate(objective_names):
-                        if idx in loo_metrics:
-                            loo_cv_by_objective[obj_name] = {
-                                "rmse": loo_metrics[idx].rmse,
-                                "mae": loo_metrics[idx].mae,
-                                "r_squared": loo_metrics[idx].r_squared,
-                            }
+                        if idx in metrics_by_idx:
+                            loo_cv_by_objective[obj_name] = _loo_cv_metrics_to_dict(
+                                metrics_by_idx[idx]
+                            )
                 elif objective_names:
-                    loo_cv_by_objective[objective_names[0]] = {
-                        "rmse": loo_metrics.rmse,
-                        "mae": loo_metrics.mae,
-                        "r_squared": loo_metrics.r_squared,
-                    }
+                    loo_cv_by_objective[objective_names[0]] = _loo_cv_metrics_to_dict(loo_metrics)
                 diagnostics["loo_cv_metrics"] = loo_cv_by_objective
             except Exception as e:
                 logger.debug("LOO-CV computation failed: %s", e)

@@ -15,7 +15,7 @@ from bo_mcp_server.operations.transfer_candidates import (
     discover_transfer_candidates_operation,
 )
 from bo_mcp_server.tools.batch_operations import batch_get_status
-from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
 from bo_mcp_server.tools.compare_campaigns import compare_campaigns
 from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.discover_transfer_candidates import discover_transfer_candidates
@@ -67,7 +67,7 @@ class TestSharedOperations:
             operation_campaign_id,
             "pause",
         )
-        tool_result = await manage_campaign_lifecycle(tool_campaign_id, "pause")
+        tool_result = await pause_campaign(tool_campaign_id)
 
         assert operation_result["success"] is True
         assert tool_result["success"] is True

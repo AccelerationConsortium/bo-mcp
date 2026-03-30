@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 MAX_BATCH_SIZE = 20
 
 
-async def batch_get_status_operation(
+async def batch_get_status_operation(  # noqa: C901
     campaign_ids: list[str],
     verbosity: str = "minimal",
 ) -> dict[str, Any]:

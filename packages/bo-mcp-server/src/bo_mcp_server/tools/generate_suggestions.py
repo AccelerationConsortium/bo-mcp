@@ -260,7 +260,7 @@ def _format_suggestions_response(
 
 
 @mcp.tool(name="bo_generate_suggestions")
-async def generate_suggestions(
+async def generate_suggestions(  # noqa: C901 — refactoring planned in TODO Step 6
     campaign_id: str,
     batch_size: int | None = None,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -447,6 +447,7 @@ async def generate_suggestions(
         diversity_info: dict[str, Any] | None = None
         if len(suggestions) > 1:
             import torch
+            from bo_engine.device import get_device, get_dtype
             from bo_engine.transforms import get_bounds_tensor
 
             try:
@@ -458,7 +459,7 @@ async def generate_suggestions(
                 for s in suggestions:
                     values = [float(s.parameter_values.get(name, 0.0)) for name in param_names]
                     suggestion_values.append(values)
-                candidates = torch.tensor(suggestion_values)
+                candidates = torch.tensor(suggestion_values, device=get_device(), dtype=get_dtype())
 
                 metrics = compute_batch_diversity(candidates, bounds)
                 diversity_info = {

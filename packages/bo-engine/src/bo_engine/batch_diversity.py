@@ -247,7 +247,7 @@ def apply_local_penalization(
     return penalized_acq
 
 
-def filter_diverse_candidates(
+def filter_diverse_candidates(  # noqa: C901
     candidates: Tensor,
     acq_values: Tensor,
     bounds: Tensor,

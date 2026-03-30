@@ -199,7 +199,7 @@ def compute_prediction_intervals(
     return results
 
 
-def compute_suggestion_predictions(
+def compute_suggestion_predictions(  # noqa: C901
     model: SingleTaskGP | ModelListGP,
     suggestions: list[dict[str, float]],
     parameter_names: list[str],

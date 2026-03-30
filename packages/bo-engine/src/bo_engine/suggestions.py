@@ -11,6 +11,7 @@ v2.3: Added GPU auto-detection and acceleration
 
 from __future__ import annotations
 
+import logging
 import random
 from typing import Any
 
@@ -21,7 +22,6 @@ from torch.quasirandom import SobolEngine
 
 from bo_engine.acquisition import (
     create_acquisition,
-    get_reference_point,
     optimize_acquisition,
 )
 from bo_engine.constants import (
@@ -34,11 +34,17 @@ from bo_engine.constants import (
 from bo_engine.constraints import (
     _get_parameter_indices,
     apply_sum_constraint,
+    build_botorch_linear_constraints,
 )
 from bo_engine.device import get_device, get_dtype
 from bo_engine.models import (
     create_and_fit_model,
     create_and_fit_single_task_model,
+)
+from bo_engine.reference_point import (
+    ReferencePointConfig,
+    ReferencePointStrategy,
+    get_reference_point_dynamic,
 )
 from bo_engine.transforms import (
     decode_categorical,
@@ -61,6 +67,8 @@ from bo_engine.types import (
     OptimizationSpec,
     SuggestionResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def generate_initial_design(
@@ -210,12 +218,17 @@ def generate_next_batch(
         random_seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
     torch.manual_seed(random_seed)
 
-    # If not enough data, fall back to initial design
-    # Use initial_design_size if specified to control when BO starts
+    # If not enough data, fall back to initial design.
+    # Require at least n_params+1 observations so the GP kernel has more data points
+    # than lengthscale hyperparameters to estimate (slightly overdetermined).
+    # Note: initial_design_size (default 2*n_params+1) is a separate, stricter
+    # recommendation for how many Sobol points to generate — but a user who provides
+    # n_params+1 observations from prior data should not be forced to wait longer.
+    min_model_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters + 1)
     if spec.initial_design_size is not None:
-        min_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters, spec.initial_design_size)
+        min_data = max(min_model_data, spec.initial_design_size)
     else:
-        min_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters)
+        min_data = min_model_data
     if len(observations) < min_data:
         designs = generate_initial_design(spec, batch_size)
         suggestions = [
@@ -467,10 +480,6 @@ def _generate_single_objective_batch(
         train_x, train_y_bo, bounds, use_input_warping=spec.use_input_warping
     )
 
-    # Note: Parameter constraints (sum_equals, etc.) are applied via post-hoc projection
-    # rather than constraining the optimizer, as equality constraints are difficult for
-    # gradient-based optimization. See _apply_constraints_to_samples for projection logic.
-
     # Outcome constraint models (constraints on OUTPUT space)
     outcome_constraints = None
     if spec.outcome_constraints and observations:
@@ -492,7 +501,16 @@ def _generate_single_objective_batch(
     if method == AcquisitionMethod.AUTO:
         method = AcquisitionMethod.EIPU if spec.use_cost_aware else AcquisitionMethod.QLOGNEI
 
-    # Create acquisition function (no parameter constraints - use projection instead)
+    # Build native linear constraints for the optimizer
+    ineq_constraints = None
+    eq_constraints = None
+    projection_constraints: list = []
+    if spec.constraints:
+        ineq_constraints, eq_constraints, projection_constraints = build_botorch_linear_constraints(
+            spec
+        )
+
+    # Create acquisition function
     acqf = create_acquisition(
         model=model,
         ref_point=None,
@@ -504,13 +522,19 @@ def _generate_single_objective_batch(
         outcome_constraint_models=outcome_constraints,
         cost_model=cost_model,
     )
-    # Optimize without constraints, then project onto constraint surface
+    # Optimize with native constraints where possible
     candidates, acq_values = optimize_acquisition(
-        acqf, opt_bounds, batch_size, spec=spec, x_avoid=train_x
+        acqf,
+        opt_bounds,
+        batch_size,
+        spec=spec,
+        x_avoid=train_x,
+        inequality_constraints=ineq_constraints or None,
+        equality_constraints=eq_constraints or None,
     )
 
-    # Apply parameter constraints by projecting candidates onto constraint surface
-    if spec.constraints:
+    # Post-hoc projection only for constraints that couldn't be handled natively
+    if projection_constraints:
         candidates = _apply_constraints_to_samples(candidates, spec, bounds)
 
     # Get uncertainties and create suggestions
@@ -633,19 +657,26 @@ def _generate_multi_objective_batch(
         train_x, train_y_bo, bounds, use_input_warping=spec.use_input_warping
     )
 
-    # Get reference point
-    ref_point = get_reference_point(train_y_bo, minimize_mask)
-
-    # Note: Parameter constraints (sum_equals, etc.) are applied via post-hoc projection
-    # rather than constraining the optimizer, as equality constraints are difficult for
-    # gradient-based optimization.
+    # Get reference point (using STATIC strategy for backward compatibility;
+    # DYNAMIC can be enabled via ReferencePointConfig when exposed in OptimizationSpec)
+    ref_point_config = ReferencePointConfig(strategy=ReferencePointStrategy.STATIC)
+    ref_point, _info = get_reference_point_dynamic(train_y_bo, minimize_mask, ref_point_config)
 
     # Determine acquisition method
     method = spec.acquisition_method
     if method == AcquisitionMethod.AUTO:
         method = AcquisitionMethod.QLOGNEHVI
 
-    # Create acquisition function (no parameter constraints - use projection instead)
+    # Build native linear constraints for the optimizer
+    ineq_constraints = None
+    eq_constraints = None
+    projection_constraints: list = []
+    if spec.constraints:
+        ineq_constraints, eq_constraints, projection_constraints = build_botorch_linear_constraints(
+            spec
+        )
+
+    # Create acquisition function
     acqf = create_acquisition(
         model=model,
         ref_point=ref_point,
@@ -655,13 +686,19 @@ def _generate_multi_objective_batch(
         method=method,
         constraints=None,
     )
-    # Optimize without constraints, then project onto constraint surface
+    # Optimize with native constraints where possible
     candidates, acq_values = optimize_acquisition(
-        acqf, bounds, batch_size, spec=spec, x_avoid=train_x
+        acqf,
+        bounds,
+        batch_size,
+        spec=spec,
+        x_avoid=train_x,
+        inequality_constraints=ineq_constraints or None,
+        equality_constraints=eq_constraints or None,
     )
 
-    # Apply parameter constraints by projecting candidates onto constraint surface
-    if spec.constraints:
+    # Post-hoc projection only for constraints that couldn't be handled natively
+    if projection_constraints:
         candidates = _apply_constraints_to_samples(candidates, spec, bounds)
 
     # Get uncertainties for provenance
@@ -686,19 +723,31 @@ def _get_confidence_level(uncertainty: float | None) -> str:
         return "low"
 
 
-def _prepare_cost_data(observations: list[ObservationData]) -> Tensor | None:
+def _prepare_cost_data(
+    observations: list[ObservationData], use_cost_aware: bool = False
+) -> Tensor | None:
     """Extract cost data from observations.
 
     Args:
         observations: List of observations with optional cost field
+        use_cost_aware: Whether cost-aware mode was requested (for warning)
 
     Returns:
         Tensor of costs if all observations have costs, else None
     """
     costs = []
+    has_some_costs = False
     for obs in observations:
         if obs.cost is None:
+            if has_some_costs and use_cost_aware:
+                logger.warning(
+                    "Cost-aware mode requested but %d/%d observations lack cost data. "
+                    "Falling back to non-cost-aware optimization.",
+                    sum(1 for o in observations if o.cost is None),
+                    len(observations),
+                )
             return None
+        has_some_costs = True
         costs.append(obs.cost)
     return torch.tensor(costs, dtype=get_dtype(), device=get_device())
 
@@ -732,7 +781,12 @@ def _build_outcome_constraint_models(
         obj_values = []
         for obs in observations:
             if oc.objective_name not in obs.objective_values:
-                return None  # Missing objective
+                logger.warning(
+                    "Outcome constraint on '%s' disabled: observation missing this objective. "
+                    "All observations must include the constrained objective.",
+                    oc.objective_name,
+                )
+                return None
             obj_values.append(obs.objective_values[oc.objective_name])
 
         obj_tensor = torch.tensor(obj_values, dtype=get_dtype(), device=get_device()).unsqueeze(-1)
@@ -774,19 +828,13 @@ def update_turbo_after_evaluation(
     if not new_observations:
         return turbo_state
 
-    # Extract objective values
+    # Extract raw objective values — update_turbo_state handles negation internally
     minimize = spec.objectives[0].minimize
-    y_values = []
-    for obs in new_observations:
-        obj_name = spec.objectives[0].name
-        y_val = obs.objective_values[obj_name]
-        # Convert to maximization convention for TuRBO
-        if minimize:
-            y_val = -y_val
-        y_values.append(y_val)
+    obj_name = spec.objectives[0].name
+    y_values = [obs.objective_values[obj_name] for obs in new_observations]
 
     y_tensor = torch.tensor(y_values, dtype=get_dtype(), device=get_device())
-    return update_turbo_state(turbo_state, y_tensor)
+    return update_turbo_state(turbo_state, y_tensor, minimize=minimize)
 
 
 def _prepare_training_data(

@@ -14,6 +14,7 @@ from bo_engine.constants import (
     CONVERGENCE_IMPROVEMENT_THRESHOLD,
     CONVERGENCE_MIN_OBSERVATIONS,
     CONVERGENCE_WINDOW_SIZE,
+    IMPROVEMENT_TOLERANCE_ABSOLUTE,
 )
 
 
@@ -90,27 +91,23 @@ def detect_convergence(
             recommendation="Continue optimization to enable convergence detection.",
         )
 
-    # Compute improvements over recent window
+    # Compute improvements over recent window using combined relative-absolute criterion
+    # to avoid instability when values are near zero
     recent = metric_history[-window_size:]
     improvements = []
     for i in range(1, len(recent)):
-        if abs(recent[i - 1]) > 1e-10:
-            improvement = (recent[i] - recent[i - 1]) / abs(recent[i - 1])
-        else:
-            improvement = 0.0 if abs(recent[i]) < 1e-10 else 1.0
-        improvements.append(improvement)
+        delta = recent[i] - recent[i - 1]
+        denominator = max(abs(recent[i - 1]), IMPROVEMENT_TOLERANCE_ABSOLUTE)
+        improvements.append(delta / denominator)
 
     avg_improvement = sum(improvements) / len(improvements) if improvements else 0.0
 
     # Count iterations without meaningful improvement
     iterations_without_improvement = 0
     for i in range(n - 1, 0, -1):
-        if abs(metric_history[i - 1]) > 1e-10:
-            rel_improvement = (metric_history[i] - metric_history[i - 1]) / abs(
-                metric_history[i - 1]
-            )
-        else:
-            rel_improvement = 0.0 if abs(metric_history[i]) < 1e-10 else 1.0
+        delta = metric_history[i] - metric_history[i - 1]
+        denominator = max(abs(metric_history[i - 1]), IMPROVEMENT_TOLERANCE_ABSOLUTE)
+        rel_improvement = delta / denominator
 
         if rel_improvement > improvement_threshold:
             break

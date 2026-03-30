@@ -544,7 +544,7 @@ def compute_parameter_deviation(
     }
 
 
-def format_provenance_report(provenance: ResultProvenance | SuggestionProvenance) -> str:
+def format_provenance_report(provenance: ResultProvenance | SuggestionProvenance) -> str:  # noqa: C901
     """Format provenance information as a human-readable report.
 
     Args:

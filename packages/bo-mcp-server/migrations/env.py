@@ -33,9 +33,7 @@ dotenv.load_dotenv()
 target_metadata = Base.metadata
 
 # Get database URL from environment (consistent with database.py)
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+asyncpg://bo_user:bo_password@localhost:5432/bo_mcp"
-)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bo_mcp.db")
 
 
 def get_url() -> str:

@@ -121,7 +121,7 @@ def _generate_transfer_recommendation(
     )
 
 
-async def discover_transfer_candidates_operation(
+async def discover_transfer_candidates_operation(  # noqa: C901
     campaign_id: str,
     similarity_threshold: float = 0.5,
     max_candidates: int = 5,

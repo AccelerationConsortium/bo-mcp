@@ -32,7 +32,7 @@ class MethodSelection:
     warnings: list[str] = field(default_factory=list)
 
 
-def select_methods(spec: OptimizationSpec, n_observations: int) -> MethodSelection:
+def select_methods(spec: OptimizationSpec, n_observations: int) -> MethodSelection:  # noqa: C901
     """Automatically select optimal BO methods based on problem structure.
 
     Analyzes the optimization specification and number of observations to

@@ -133,6 +133,16 @@ class TestCostAwareOptimization:
                 objective_values={"f": 0.2},
                 cost=50.0,
             ),
+            ObservationData(
+                parameter_values={"x1": 0.7, "x2": 0.8},
+                objective_values={"f": 0.4},
+                cost=15.0,
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.9, "x2": 0.1},
+                objective_values={"f": 0.35},
+                cost=25.0,
+            ),
         ]
 
         # Should still work (falls back to standard acquisition)
@@ -166,6 +176,11 @@ class TestCostAwareOptimization:
                 parameter_values={"x1": 0.7},
                 objective_values={"f": 0.3},
                 cost=50.0,
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.5},
+                objective_values={"f": 0.4},
+                cost=30.0,
             ),
         ]
 
@@ -278,6 +293,11 @@ class TestCostAwareWithConstraints:
                 parameter_values={"x1": 0.7},
                 objective_values={"f1": 0.3, "f2": 0.6},
                 cost=20.0,
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.5},
+                objective_values={"f1": 0.4, "f2": 0.5},
+                cost=15.0,
             ),
         ]
 

@@ -411,6 +411,8 @@ def optimize_acquisition(
     raw_samples: int = 512,
     spec: OptimizationSpec | None = None,
     x_avoid: Tensor | None = None,  # noqa: N803
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Optimize acquisition function to find next candidates.
 
@@ -420,10 +422,6 @@ def optimize_acquisition(
     - MIXED: per-combo continuous optimization via optimize_acqf_mixed
 
     Uses sequential greedy optimization for batch_size > 1.
-
-    Note: For parameter constraints (sum_equals, sum_less_than, etc.), apply them
-    via post-hoc projection rather than constraining the optimizer. See
-    suggestions._apply_constraints_to_samples for the projection logic.
 
     Args:
         acqf: Acquisition function to optimize
@@ -435,6 +433,10 @@ def optimize_acquisition(
             If None, falls back to continuous optimization.
         x_avoid: Points to avoid (e.g., already-evaluated training data).
             Used by optimize_acqf_discrete to exclude known points.
+        inequality_constraints: BoTorch linear inequality constraints (Ax <= b).
+            Each tuple is (indices, coefficients, rhs).
+        equality_constraints: BoTorch linear equality constraints (Ax = b).
+            Each tuple is (indices, coefficients, rhs).
 
     Returns:
         Tuple of (candidates, acquisition_values) where:
@@ -444,7 +446,15 @@ def optimize_acquisition(
     bounds = to_device(bounds)
 
     if spec is None:
-        return _optimize_continuous(acqf, bounds, batch_size, num_restarts, raw_samples)
+        return _optimize_continuous(
+            acqf,
+            bounds,
+            batch_size,
+            num_restarts,
+            raw_samples,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
+        )
 
     space_type = classify_search_space(spec)
 
@@ -462,7 +472,15 @@ def optimize_acquisition(
             )
         return _optimize_mixed(acqf, bounds, spec, batch_size, num_restarts, raw_samples)
     else:
-        return _optimize_continuous(acqf, bounds, batch_size, num_restarts, raw_samples)
+        return _optimize_continuous(
+            acqf,
+            bounds,
+            batch_size,
+            num_restarts,
+            raw_samples,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
+        )
 
 
 def _optimize_continuous(
@@ -471,6 +489,8 @@ def _optimize_continuous(
     batch_size: int,
     num_restarts: int,
     raw_samples: int,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Optimize acquisition over continuous space using L-BFGS-B.
 
@@ -480,22 +500,30 @@ def _optimize_continuous(
         batch_size: Number of candidates to generate
         num_restarts: Number of optimization restarts
         raw_samples: Number of raw samples for initialization
+        inequality_constraints: BoTorch linear inequality constraints (Ax <= b)
+        equality_constraints: BoTorch linear equality constraints (Ax = b)
 
     Returns:
         Tuple of (candidates, acquisition_values)
     """
-    candidates, acq_values = optimize_acqf(
-        acq_function=acqf,
-        bounds=bounds,
-        q=batch_size,
-        num_restarts=num_restarts,
-        raw_samples=raw_samples,
-        sequential=True,
-        options={
+    kwargs: dict = {
+        "acq_function": acqf,
+        "bounds": bounds,
+        "q": batch_size,
+        "num_restarts": num_restarts,
+        "raw_samples": raw_samples,
+        "sequential": True,
+        "options": {
             "batch_limit": 5,
             "maxiter": 200,
         },
-    )
+    }
+    if inequality_constraints:
+        kwargs["inequality_constraints"] = inequality_constraints
+    if equality_constraints:
+        kwargs["equality_constraints"] = equality_constraints
+
+    candidates, acq_values = optimize_acqf(**kwargs)
     return candidates, acq_values
 
 

@@ -466,7 +466,7 @@ class TestMultiObjectiveAcquisition:
             batch_size=2,
         )
 
-        # Need some initial data
+        # Need some initial data (2*2+1=5 for BO mode with 2 params)
         observations = [
             ObservationData(
                 parameter_values={"x1": 0.2, "x2": 0.3},
@@ -479,6 +479,14 @@ class TestMultiObjectiveAcquisition:
             ObservationData(
                 parameter_values={"x1": 0.5, "x2": 0.5},
                 objective_values={"f1": 0.6, "f2": 0.6},
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.3, "x2": 0.8},
+                objective_values={"f1": 0.55, "f2": 0.7},
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.8, "x2": 0.2},
+                objective_values={"f1": 0.75, "f2": 0.45},
             ),
         ]
 

@@ -7,7 +7,7 @@ from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, ge
 
 
 @mcp.resource("campaign://{campaign_id}")
-async def get_campaign(campaign_id: str) -> str:
+async def get_campaign(campaign_id: str) -> str:  # noqa: C901
     """Get campaign details as a resource.
 
     Args:

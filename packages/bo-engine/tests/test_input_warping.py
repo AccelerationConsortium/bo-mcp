@@ -157,6 +157,14 @@ class TestWarpingInWorkflow:
                 parameter_values={"x1": 0.5, "x2": 0.5},
                 objective_values={"f": 0.5},
             ),
+            ObservationData(
+                parameter_values={"x1": 0.3, "x2": 0.8},
+                objective_values={"f": 1.5},
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.7, "x2": 0.2},
+                objective_values={"f": 1.8},
+            ),
         ]
 
         suggestions, _ = generate_next_batch(spec, observations, iteration=1)
@@ -191,6 +199,14 @@ class TestWarpingInWorkflow:
             ObservationData(
                 parameter_values={"x1": 0.5, "x2": 0.5},
                 objective_values={"f1": 1.5, "f2": 1.5},
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.3, "x2": 0.8},
+                objective_values={"f1": 1.2, "f2": 1.8},
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.7, "x2": 0.2},
+                objective_values={"f1": 1.8, "f2": 1.2},
             ),
         ]
 

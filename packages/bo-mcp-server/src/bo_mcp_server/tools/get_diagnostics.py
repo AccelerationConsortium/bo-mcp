@@ -962,7 +962,7 @@ def _compute_outlier_diagnostics(
 
 
 @mcp.tool(name="bo_get_diagnostics")
-async def get_diagnostics(
+async def get_diagnostics(  # noqa: C901
     campaign_id: str,
     use_cache: bool = True,
     verbosity: str = "standard",

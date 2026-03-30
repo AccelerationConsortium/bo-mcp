@@ -69,6 +69,14 @@ def sample_observations_single() -> list[ObservationData]:
             parameter_values={"x1": 0.9, "x2": 0.1},
             objective_values={"y": 4.0},
         ),
+        ObservationData(
+            parameter_values={"x1": 0.3, "x2": 0.7},
+            objective_values={"y": 3.5},
+        ),
+        ObservationData(
+            parameter_values={"x1": 0.7, "x2": 0.4},
+            objective_values={"y": 4.5},
+        ),
     ]
 
 
@@ -339,6 +347,7 @@ class TestSingleObjectiveIntegration:
         observations = [
             ObservationData(parameter_values={"x": 0.3}, objective_values={"f": 1.0}),
             ObservationData(parameter_values={"x": 0.7}, objective_values={"f": 2.0}),
+            ObservationData(parameter_values={"x": 0.5}, objective_values={"f": 1.5}),
         ]
 
         # Both should work and produce qLogNEI for single objective
@@ -434,6 +443,7 @@ class TestEdgeCasesAndFailures:
         )
 
         observations = [
+            ObservationData({"x": 0.1}, {"y": 2.0}),
             ObservationData({"x": 0.5}, {"y": float("nan")}),
             ObservationData({"x": 0.3}, {"y": 1.0}),
         ]
@@ -456,6 +466,7 @@ class TestEdgeCasesAndFailures:
         )
 
         observations = [
+            ObservationData({"x": 0.1}, {"y": 2.0}),
             ObservationData({"x": 0.5}, {"y": float("inf")}),
             ObservationData({"x": 0.3}, {"y": 1.0}),
         ]
@@ -476,6 +487,7 @@ class TestEdgeCasesAndFailures:
         observations = [
             ObservationData({"x": 1e-11}, {"y": 1.0}),
             ObservationData({"x": 5e-11}, {"y": 2.0}),
+            ObservationData({"x": 8e-11}, {"y": 1.5}),
         ]
 
         # Should work without numerical issues

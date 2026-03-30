@@ -66,7 +66,7 @@ class TestTurboIntegration:
     def test_turbo_returns_state(self) -> None:
         """generate_next_batch returns TurboState for high-dim problems."""
         spec = make_high_dim_spec(n_params=25)
-        # Need enough observations to pass min_data check (max(2, n_params))
+        # Need enough observations to pass min_data check (n_params+1 = 26)
         observations = generate_observations(spec, n_obs=30)
 
         suggestions, turbo_state = generate_next_batch(
@@ -84,7 +84,7 @@ class TestTurboIntegration:
     def test_turbo_state_passed_through(self) -> None:
         """TuRBO state is passed through multiple iterations."""
         spec = make_high_dim_spec(n_params=25)
-        # Need enough observations to pass min_data check
+        # Need enough observations to pass min_data check (n_params+1 = 26)
         observations = generate_observations(spec, n_obs=30)
 
         # First batch
@@ -184,7 +184,7 @@ class TestTurboIntegration:
     def test_generation_method_is_turbo(self) -> None:
         """Suggestions indicate turbo generation method when using TuRBO."""
         spec = make_high_dim_spec(n_params=25)
-        # Need enough observations to pass min_data check
+        # Need enough observations to pass min_data check (n_params+1 = 26)
         observations = generate_observations(spec, n_obs=30)
 
         suggestions, _ = generate_next_batch(

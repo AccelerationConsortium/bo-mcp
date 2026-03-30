@@ -250,12 +250,15 @@ def decode_categorical(tensor: Tensor, spec: OptimizationSpec) -> dict[str, Any]
             values[param.name] = round(tensor[idx].item())
             idx += 1
         elif param.type == ParameterType.CATEGORICAL:
-            # Decode one-hot: pick highest value
+            # Decode one-hot: apply softmax then pick highest value.
+            # Softmax sharpens the encoding so ties from continuous relaxation
+            # are resolved deterministically.
             if param.categories is None:
                 raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
             n_cats = len(param.categories)
             cat_values = tensor[idx : idx + n_cats]
-            best_cat_idx = int(cat_values.argmax().item())
+            sharpened = torch.softmax(cat_values, dim=0)
+            best_cat_idx = int(sharpened.argmax().item())
             values[param.name] = param.categories[best_cat_idx]
             idx += n_cats
 

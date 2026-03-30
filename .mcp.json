@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bo-mcp": {
+      "command": "uv",
+      "args": ["run", "bo-mcp-server"],
+      "env": {
+        "DATABASE_URL": "sqlite+aiosqlite:///./data/bo_mcp.db"
+      }
+    }
+  }
+}

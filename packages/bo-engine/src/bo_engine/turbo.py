@@ -92,7 +92,7 @@ def create_turbo_state(
     return state
 
 
-def update_turbo_state(state: TurboState, y_next: Tensor) -> TurboState:
+def update_turbo_state(state: TurboState, y_next: Tensor, minimize: bool = True) -> TurboState:
     """Update trust region based on new observations.
 
     The trust region expands after consecutive successes and contracts
@@ -102,13 +102,16 @@ def update_turbo_state(state: TurboState, y_next: Tensor) -> TurboState:
     Args:
         state: Current TuRBO state
         y_next: Objective values from latest batch (shape: [batch_size] or [batch_size, 1])
-                Values should be for maximization (negate if minimizing)
+                Raw objective values — negation for maximization is handled internally.
+        minimize: If True, lower y is better. If False, higher y is better.
 
     Returns:
         Updated TurboState with modified counters and length
     """
-    # Get best value from new batch
-    y_max = y_next.max().item()
+    # Negate if minimizing so that "improvement" always means higher internal value
+    # (TuRBO internally works in maximization convention)
+    y_internal = -y_next if minimize else y_next
+    y_max = y_internal.max().item()
 
     # Check improvement with tolerance for numerical stability
     tolerance = (

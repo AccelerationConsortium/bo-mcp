@@ -33,10 +33,9 @@ logger = logging.getLogger(__name__)
 # Ensure .env values are available even when this module is imported directly.
 dotenv.load_dotenv()
 
-# Default to PostgreSQL (override via DATABASE_URL environment variable)
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+asyncpg://bo_user:bo_password@localhost:5432/bo_mcp"
-)
+# Default to SQLite for local/stdio usage. Override via DATABASE_URL for production:
+#   DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bo_mcp.db")
 
 # Use Alembic for PostgreSQL, direct creation for SQLite (testing)
 USE_ALEMBIC = os.getenv("USE_ALEMBIC", "auto")  # "auto", "true", or "false"

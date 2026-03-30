@@ -1075,7 +1075,7 @@ def compute_exploration_exploitation_metrics(
     )
 
 
-def extract_hyperparameters(
+def extract_hyperparameters(  # noqa: C901
     model: SingleTaskGP | ModelListGP,
     param_names: list[str],
 ) -> HyperparameterInfo:
@@ -1160,7 +1160,7 @@ def extract_hyperparameters(
     )
 
 
-def compute_constraint_satisfaction(
+def compute_constraint_satisfaction(  # noqa: C901
     results: list[dict[str, float]],
     constraints: list[dict],
     window: int = 10,

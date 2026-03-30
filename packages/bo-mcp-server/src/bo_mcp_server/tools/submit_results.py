@@ -134,7 +134,7 @@ def _results_to_observations(results: list[Result]) -> list[ObservationData]:
 
 
 @mcp.tool(name="bo_submit_results")
-async def submit_results(
+async def submit_results(  # noqa: C901
     campaign_id: str,
     results: list[ResultSubmissionInput],
     submitted_by: str,

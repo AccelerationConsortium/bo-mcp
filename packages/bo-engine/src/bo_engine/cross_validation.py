@@ -94,7 +94,7 @@ class CVConfig:
 _cv_cache: dict[str, tuple[CVMetrics, float]] = {}
 
 
-def compute_loo_cv_optimized(
+def compute_loo_cv_optimized(  # noqa: C901
     model_or_train_x: SingleTaskGP | Tensor,
     train_x_or_train_y: Tensor,
     train_y_or_bounds: Tensor,

@@ -317,8 +317,8 @@ def _detect_outliers_single_objective(
                     )
                 )
 
-        except Exception as e:
-            # Skip folds that fail to fit
+        except (RuntimeError, ValueError) as e:
+            # Skip folds that fail to fit (singular matrices, numerical instability)
             logger.debug("LOO-CV fold failed: %s", e)
             continue
 
@@ -386,7 +386,7 @@ def compute_loo_standardized_errors(
             else:
                 std_error = 0.0
             errors.append(std_error)
-        except Exception:
+        except (RuntimeError, ValueError):
             errors.append(0.0)
 
     return errors

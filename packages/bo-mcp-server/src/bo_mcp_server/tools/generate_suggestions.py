@@ -259,7 +259,7 @@ def _format_suggestions_response(
     return response
 
 
-@mcp.tool()
+@mcp.tool(name="bo_generate_suggestions")
 async def generate_suggestions(
     campaign_id: str,
     batch_size: int | None = None,

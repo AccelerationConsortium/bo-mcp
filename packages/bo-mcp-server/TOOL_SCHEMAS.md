@@ -12,26 +12,25 @@ This document provides detailed schema documentation for all MCP tools exposed b
 ### Recommended Workflow
 
 ```
-validate_intake → create_campaign → [generate_suggestions → submit_results]* → get_diagnostics
-                                           ↑__________________|
-                                           (repeat until convergence)
+bo_create_campaign → [bo_generate_suggestions → bo_submit_results]* → bo_get_diagnostics
+                       ↑__________________|
+                       (repeat until convergence)
 ```
 
 ### Tool Selection Guide
 
 | User Intent | Recommended Tool(s) |
 |-------------|---------------------|
-| Find available tools | `search_tools` |
-| Start new optimization | `validate_intake` → `create_campaign` |
-| List all campaigns | `list_campaigns` |
-| Get next experiments | `generate_suggestions` |
-| Record experiment outcomes | `submit_results` or `upload_results_file` |
-| Check optimization progress | `get_diagnostics` (includes `next_action_recommendation`) |
-| Monitor multiple campaigns | `batch_get_status` |
-| Understand a suggestion | `get_suggestion_explanation` |
-| Pause/resume/terminate | `manage_campaign_lifecycle` (consolidated) |
-| Compare multiple optimizations | `compare_campaigns` |
-| Find related prior work | `discover_transfer_candidates` |
+| Start new optimization | `bo_create_campaign` |
+| List all campaigns | `bo_list_campaigns` |
+| Get next experiments | `bo_generate_suggestions` |
+| Record experiment outcomes | `bo_submit_results` or `bo_upload_results_file` |
+| Check optimization progress | `bo_get_diagnostics` (includes `next_action_recommendation`) |
+| Monitor multiple campaigns | `bo_batch_get_status` |
+| Understand a suggestion | `bo_get_suggestion_explanation` |
+| Pause/resume/terminate | `bo_manage_campaign_lifecycle` (consolidated) |
+| Compare multiple optimizations | `bo_compare_campaigns` |
+| Find related prior work | `bo_discover_transfer_candidates` |
 
 ### Common Error Recovery
 
@@ -40,28 +39,28 @@ validate_intake → create_campaign → [generate_suggestions → submit_results
 | "Campaign not found" | Invalid UUID or deleted campaign | Verify `campaign_id` format (UUID v4), check `campaigns://list` |
 | "Invalid state transition" | Wrong campaign status | Check status with `campaign://{id}`, use appropriate lifecycle tool |
 | "Duplicate result detected" | Same parameters submitted twice | Use `force: true` parameter to override, or skip |
-| "Validation failed" | Invalid intake configuration | Review `errors` array, fix and retry `validate_intake` |
+| "Validation failed" | Invalid intake configuration | Review `errors` array, fix the intake, and retry `bo_create_campaign` |
 
 ---
 
 ## Overview
 
-The MCP server exposes 17 tools organized into five categories:
+The MCP server exposes 12 tools organized into six categories:
 
 | Category | Tools |
 |----------|-------|
-| **Server Health** | `health_check` |
-| **Campaign Management** | `validate_intake`, `create_campaign`, `list_campaigns`, `manage_campaign_lifecycle`, `pause_campaign`, `resume_campaign`, `terminate_campaign` |
-| **Suggestion Generation** | `generate_suggestions`, `get_suggestion_explanation` |
-| **Result Submission** | `submit_results`, `upload_results_file` |
-| **Analysis & Strategy** | `get_diagnostics`, `compare_campaigns`, `discover_transfer_candidates` |
-| **Agent Efficiency (v3.3)** | `search_tools`, `batch_get_status` |
+| **Server Health** | `bo_health_check` |
+| **Campaign Management** | `bo_create_campaign`, `bo_list_campaigns`, `bo_manage_campaign_lifecycle` |
+| **Suggestion Generation** | `bo_generate_suggestions`, `bo_get_suggestion_explanation` |
+| **Result Submission** | `bo_submit_results`, `bo_upload_results_file` |
+| **Analysis & Strategy** | `bo_get_diagnostics`, `bo_compare_campaigns`, `bo_discover_transfer_candidates` |
+| **Agent Efficiency (v3.3)** | `bo_batch_get_status` |
 
 ---
 
 ## Automatic Method Selection
 
-The server automatically selects optimal algorithms based on problem characteristics. Agents don't need to configure this - check `method_selection` in `generate_suggestions` response to see what was used.
+The server automatically selects optimal algorithms based on problem characteristics. Agents don't need to configure this - check `method_selection` in `bo_generate_suggestions` response to see what was used.
 
 | Condition | Model | Acquisition | Strategy | Why |
 |-----------|-------|-------------|----------|-----|
@@ -103,7 +102,7 @@ Before Bayesian optimization begins, the system generates initial points using S
 
 Some response fields only appear under certain conditions. This section documents when to expect these fields.
 
-### `get_diagnostics` Conditional Fields
+### `bo_get_diagnostics` Conditional Fields
 
 | Field | Appears When | Description |
 |-------|--------------|-------------|
@@ -115,7 +114,7 @@ Some response fields only appear under certain conditions. This section document
 | `feature_importance` | ≥2×n_params observations | Parameter importance scores |
 | `loo_cv_metrics` | ≥5 observations | Leave-one-out cross-validation metrics |
 
-### `generate_suggestions` v2.5+ Fields
+### `bo_generate_suggestions` v2.5+ Fields
 
 | Field | Appears When | Description |
 |-------|--------------|-------------|
@@ -123,7 +122,7 @@ Some response fields only appear under certain conditions. This section document
 | `pending_points` | Pending suggestions exist | Info about filtered/expired pending points |
 | `method_selection` | Always | Model and acquisition function selection info |
 
-### `submit_results` v2.5+ Fields
+### `bo_submit_results` v2.5+ Fields
 
 | Field | Appears When | Description |
 |-------|--------------|-------------|
@@ -144,15 +143,14 @@ Several tools support a `verbosity` parameter to control response payload size:
 
 ### Tools Supporting Verbosity
 
-- `get_diagnostics(verbosity="minimal|standard|detailed")`
-- `generate_suggestions(verbosity="minimal|standard|detailed")`
-- `compare_campaigns(verbosity="minimal|standard|detailed")`
-- `discover_transfer_candidates(verbosity="minimal|standard|detailed")`
-- `create_campaign(verbosity="minimal|standard|detailed")` (v3.3+)
-- `submit_results(verbosity="minimal|standard|detailed")` (v3.3+)
-- `validate_intake(verbosity="minimal|standard|detailed")` (v3.3+)
-- `list_campaigns(verbosity="minimal|standard|detailed")` (v3.3+)
-- `batch_get_status(verbosity="minimal|standard|detailed")` (v3.3+)
+- `bo_get_diagnostics(verbosity="minimal|standard|detailed")`
+- `bo_generate_suggestions(verbosity="minimal|standard|detailed")`
+- `bo_compare_campaigns(verbosity="minimal|standard|detailed")`
+- `bo_discover_transfer_candidates(verbosity="minimal|standard|detailed")`
+- `bo_create_campaign(verbosity="minimal|standard|detailed")` (v3.3+)
+- `bo_submit_results(verbosity="minimal|standard|detailed")` (v3.3+)
+- `bo_list_campaigns(verbosity="minimal|standard|detailed")` (v3.3+)
+- `bo_batch_get_status(verbosity="minimal|standard|detailed")` (v3.3+)
 
 ---
 
@@ -194,7 +192,7 @@ Tools return structured errors with recovery guidance:
 
 ## Server Health Tools
 
-### `health_check`
+### `bo_health_check`
 
 Verifies MCP server health and connectivity. Use this tool to confirm the server is running before starting optimization workflows.
 
@@ -218,110 +216,14 @@ Verifies MCP server health and connectivity. Use this tool to confirm the server
 
 ## Campaign Management Tools
 
-### `validate_intake`
-
-Validates campaign configuration before creating a campaign.
-
-**Input Schema:**
-```json
-{
-  "intake_data": {
-    "name": "string (required)",
-    "description": "string (optional)",
-    "parameters": [
-      {
-        "name": "string (required)",
-        "type": "continuous | discrete | categorical (required)",
-        "bounds": [number, number] (required for continuous/discrete),
-        "categories": ["string"] (required for categorical),
-        "values": [number] (optional, for discrete),
-        "description": "string (optional)"
-      }
-    ],
-    "objectives": [
-      {
-        "name": "string (required)",
-        "direction": "minimize | maximize (required)",
-        "unit": "string (optional)",
-        "target": number (optional)
-      }
-    ],
-    "constraints": [
-      {
-        "type": "sum_equals | sum_less_than | sum_greater_than | linear (required)",
-        "parameters": ["string"] (required),
-        "value": number (required),
-        "coefficients": [number] (optional, used by linear constraints)
-      }
-    ],
-    "batch_size": "integer (optional, default: 1)",
-    "max_iterations": "integer (optional)",
-    "initial_design_size": "integer (optional)",
-    "random_seed": "integer (optional)"
-  },
-  "verbosity": "minimal | standard | detailed (default: standard)"
-}
-```
-
-`intake_data` is validated as a strict schema (unknown top-level fields are rejected).
-
-**Output Schema:**
-Depends on `verbosity`:
-
-- `minimal`
-```json
-{
-  "valid": "boolean",
-  "errors": ["string"]
-}
-```
-
-- `standard` (default)
-```json
-{
-  "valid": "boolean",
-  "errors": ["string"],
-  "warnings": ["string"],
-  "spec_summary": {
-    "name": "string",
-    "n_parameters": "integer",
-    "n_objectives": "integer",
-    "n_constraints": "integer",
-    "batch_size": "integer"
-  }
-}
-```
-
-- `detailed`
-```json
-{
-  "valid": "boolean",
-  "errors": ["string"],
-  "warnings": ["string"],
-  "spec": {
-    "name": "string",
-    "description": "string",
-    "parameters": [...],
-    "objectives": [...],
-    "constraints": [...],
-    "batch_size": "integer",
-    "max_iterations": "integer | null",
-    "initial_design_size": "integer | null",
-    "random_seed": "integer | null"
-  }
-}
-```
-
----
-
-### `create_campaign`
+### `bo_create_campaign`
 
 Creates a new optimization campaign from validated intake data.
 
 **Input Schema:**
 ```json
 {
-  "intake_data": "object (same as validate_intake)",
+  "intake_data": "object (campaign configuration payload)",
   "owner_id": "string (UUID)"
 }
 ```
@@ -338,82 +240,7 @@ Creates a new optimization campaign from validated intake data.
 
 ---
 
-### `pause_campaign`
-
-Pauses an active (RUNNING) campaign.
-
-**Input Schema:**
-```json
-{
-  "campaign_id": "string (UUID)"
-}
-```
-
-**Output Schema:**
-```json
-{
-  "success": "boolean",
-  "campaign_id": "string",
-  "status": "paused | null",
-  "errors": ["string"]
-}
-```
-
-**Valid State Transitions:** `RUNNING` -> `PAUSED`
-
----
-
-### `resume_campaign`
-
-Resumes a paused campaign.
-
-**Input Schema:**
-```json
-{
-  "campaign_id": "string (UUID)"
-}
-```
-
-**Output Schema:**
-```json
-{
-  "success": "boolean",
-  "campaign_id": "string",
-  "status": "running | null",
-  "errors": ["string"]
-}
-```
-
-**Valid State Transitions:** `PAUSED` -> `RUNNING`
-
----
-
-### `terminate_campaign`
-
-Terminates a campaign permanently (cannot be undone).
-
-**Input Schema:**
-```json
-{
-  "campaign_id": "string (UUID)"
-}
-```
-
-**Output Schema:**
-```json
-{
-  "success": "boolean",
-  "campaign_id": "string",
-  "status": "completed | null",
-  "errors": ["string"]
-}
-```
-
-**Valid State Transitions:** `RUNNING|PAUSED|CREATED` -> `COMPLETED`
-
----
-
-### `list_campaigns` (v3.3+)
+### `bo_list_campaigns` (v3.3+)
 
 Lists all campaigns with optional filtering. Tool-based alternative to `campaigns://list` resource.
 
@@ -449,7 +276,7 @@ Lists all campaigns with optional filtering. Tool-based alternative to `campaign
 
 ---
 
-### `manage_campaign_lifecycle` (v3.3+)
+### `bo_manage_campaign_lifecycle` (v3.3+)
 
 Consolidated lifecycle management tool. Combines pause, resume, and terminate into a single interface for reduced cognitive load.
 
@@ -481,43 +308,7 @@ Consolidated lifecycle management tool. Combines pause, resume, and terminate in
 
 ## Agent Efficiency Tools (v3.3+)
 
-### `search_tools`
-
-Meta-tool for on-demand tool discovery. Reduces context consumption by ~60-80% compared to loading all tool definitions upfront.
-
-**Input Schema:**
-```json
-{
-  "query": "string (keyword or description)",
-  "category": "campaign_management | optimization | monitoring | lifecycle | system | analysis | advanced | data (optional)",
-  "limit": "integer (default: 5, max: 10)"
-}
-```
-
-**Output Schema:**
-```json
-{
-  "success": "boolean",
-  "query": "string",
-  "results": [
-    {
-      "name": "string",
-      "description": "string",
-      "category": "string",
-      "parameters": ["string"],
-      "relevance": "number (0-1)"
-    }
-  ],
-  "categories": {
-    "category_name": "description"
-  },
-  "errors": ["string"]
-}
-```
-
----
-
-### `batch_get_status`
+### `bo_batch_get_status`
 
 Batch status retrieval for multiple campaigns. Reduces N calls to 1 for dashboard/monitoring scenarios.
 
@@ -553,7 +344,7 @@ Batch status retrieval for multiple campaigns. Reduces N calls to 1 for dashboar
 
 ## Suggestion Generation Tools
 
-### `generate_suggestions`
+### `bo_generate_suggestions`
 
 Generates the next batch of experiment suggestions for a campaign.
 
@@ -620,7 +411,7 @@ Generates the next batch of experiment suggestions for a campaign.
 
 ---
 
-### `get_suggestion_explanation`
+### `bo_get_suggestion_explanation`
 
 Gets detailed explanation for why a suggestion was generated.
 
@@ -655,7 +446,7 @@ Gets detailed explanation for why a suggestion was generated.
 
 ## Result Submission Tools
 
-### `submit_results`
+### `bo_submit_results`
 
 Submits experimental results for a campaign.
 
@@ -700,7 +491,7 @@ Submits experimental results for a campaign.
 
 ---
 
-### `upload_results_file`
+### `bo_upload_results_file`
 
 Uploads experimental results from a CSV file.
 
@@ -754,7 +545,7 @@ suggestion_id,param_temperature,param_pressure,obj_yield,obj_cost
 
 ## Analysis & Strategy Tools
 
-### `get_diagnostics`
+### `bo_get_diagnostics`
 
 Gets comprehensive diagnostic information for a campaign.
 
@@ -891,7 +682,7 @@ Gets comprehensive diagnostic information for a campaign.
 
 ---
 
-### `compare_campaigns`
+### `bo_compare_campaigns`
 
 Compares multiple optimization campaigns.
 
@@ -936,7 +727,7 @@ Compares multiple optimization campaigns.
 
 ---
 
-### `discover_transfer_candidates`
+### `bo_discover_transfer_candidates`
 
 Discovers campaigns suitable for transfer learning.
 
@@ -1034,15 +825,14 @@ Example error response:
 ## Version History
 
 - **v3.3**: Added Agent Efficiency improvements:
-  - `search_tools` - On-demand tool discovery for reduced context consumption
-  - `list_campaigns` - Tool-based campaign listing with filters
-  - `batch_get_status` - Multi-campaign status in one call
-  - `manage_campaign_lifecycle` - Consolidated pause/resume/terminate
-  - Verbosity parameter added to `create_campaign`, `submit_results`, `validate_intake`
-  - `next_action_recommendation` added to `get_diagnostics`
-- **v3.1**: Added `health_check` tool, response verbosity parameter, structured error codes with recovery actions, and AGENT_COOKBOOK.md reference
+  - `bo_list_campaigns` - Tool-based campaign listing with filters
+  - `bo_batch_get_status` - Multi-campaign status in one call
+  - `bo_manage_campaign_lifecycle` - Consolidated pause/resume/terminate
+  - Verbosity parameter added to `bo_create_campaign` and `bo_submit_results`
+  - `next_action_recommendation` added to `bo_get_diagnostics`
+- **v3.1**: Added `bo_health_check` tool, response verbosity parameter, structured error codes with recovery actions, and AGENT_COOKBOOK.md reference
 - **v2.5**: Added batch diversity metrics, pending points tracking, outlier detection, convergence analysis, duplicate detection with `force` override, and agent quick reference
-- **v2.4**: Added agent usability tools (`compare_campaigns`, `discover_transfer_candidates`) and enhanced diagnostics
+- **v2.4**: Added agent usability tools (`bo_compare_campaigns`, `bo_discover_transfer_candidates`) and enhanced diagnostics
 - **v2.0**: Added transfer learning, multi-fidelity, and outcome constraints
 - **v1.1**: Added LOO-CV metrics and feature importance
 - **v1.0**: Initial release with core tools

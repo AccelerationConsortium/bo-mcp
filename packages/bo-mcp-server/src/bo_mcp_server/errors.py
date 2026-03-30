@@ -98,7 +98,7 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "Use force=True parameter to override duplicate detection, or skip this result."
     ),
     ErrorCode.VALIDATION_FAILED: (
-        "Review the errors array, fix the issues, and retry validate_intake."
+        "Review the errors array, fix the issues, and retry bo_create_campaign."
     ),
     ErrorCode.MISSING_PARAMETERS: (
         "Add at least one parameter to the intake_data.parameters array."
@@ -113,7 +113,7 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "Verify suggestion_id is correct. Use suggestions://{campaign_id} to list suggestions."
     ),
     ErrorCode.MODEL_FITTING_FAILED: (
-        "Check data quality with get_diagnostics. May need more observations (minimum 2)."
+        "Check data quality with bo_get_diagnostics. May need more observations (minimum 2)."
     ),
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: (
         "Try reducing batch_size or check for constraint conflicts."

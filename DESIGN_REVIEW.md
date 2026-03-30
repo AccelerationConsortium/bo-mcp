@@ -427,7 +427,6 @@ A **Campaign** is the complete lifecycle of an optimization effort:
 
 | Tool | Intent | Category | Status |
 |------|--------|----------|--------|
-| `validate_intake` | Check intake for errors before campaign creation | Setup | ✅ Implemented |
 | `create_campaign` | Initialize a new campaign from validated intake | Setup | ✅ Implemented |
 | `generate_suggestions` | Produce next batch of experimental designs | Core Loop | ✅ Implemented |
 | `submit_results` | Record measured outcomes for suggestions | Core Loop | ✅ Implemented |
@@ -441,27 +440,11 @@ A **Campaign** is the complete lifecycle of an optimization effort:
 
 ### 4.2 Tool Contracts
 
-#### `validate_intake`
-
-- **Intent**: Determine if an intake can be successfully converted to a CampaignSpec
-- **Preconditions**: Raw intake data provided
-- **Outputs**:
-  - Validation result (pass/fail)
-  - List of errors (blocking issues)
-  - List of warnings (non-blocking concerns)
-  - Preview of derived defaults (what will be assumed)
-- **Failure modes**:
-  - Invalid parameter types or ranges → Error list
-  - Inconsistent constraints → Error list
-  - Missing required fields → Error list
-  - Ambiguous specifications → Warning list with assumed resolutions
-- **Side effects**: None (pure validation)
-
 #### `create_campaign`
 
 - **Intent**: Initialize a new optimization campaign from intake
 - **Preconditions**:
-  - Intake passes validation
+  - Intake passes internal validation
   - User has confirmed acceptance of derived defaults
 - **Outputs**:
   - Campaign ID
@@ -1113,13 +1096,9 @@ True optimum: A = 1.0, B = 0.0 → yield ≈ 95%
 
 #### Expected Operation Sequence
 
-1. **Validate intake**
-   - Call: `validate_intake(intake)`
-   - Expected: Pass; no errors; confirm sum constraint recognized
-
-2. **Create campaign**
+1. **Create campaign**
    - Call: `create_campaign(intake)`
-   - Expected: Campaign ID returned; CampaignSpec created with:
+   - Expected: Internal validation passes; campaign ID returned; CampaignSpec created with:
      - 2 input dimensions (normalized to [0,1])
      - 1 objective (maximize)
      - 1 sum constraint
@@ -1317,7 +1296,6 @@ This section tracks what has been implemented versus what remains from the desig
 
 | Tool | Status | Notes |
 |------|--------|-------|
-| `validate_intake` | ✅ Implemented | `bo_mcp_server/tools/validate_intake.py` |
 | `create_campaign` | ✅ Implemented | `bo_mcp_server/tools/create_campaign.py` |
 | `generate_suggestions` | ✅ Implemented | `bo_mcp_server/tools/generate_suggestions.py` |
 | `submit_results` | ✅ Implemented | `bo_mcp_server/tools/submit_results.py` |

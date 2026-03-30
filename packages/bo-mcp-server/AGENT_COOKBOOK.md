@@ -5,9 +5,8 @@ Quick reference for AI agents using the Bayesian Optimization MCP server.
 ## Quick Start (3 Steps)
 
 ```
-1. validate_intake → Check configuration
-2. create_campaign → Start optimization
-3. Loop: generate_suggestions → submit_results → get_diagnostics(verbosity="minimal")
+1. bo_create_campaign → Start optimization
+2. Loop: bo_generate_suggestions → bo_submit_results → bo_get_diagnostics(verbosity="minimal")
 ```
 
 ---
@@ -18,19 +17,19 @@ Resources are read-only data sources accessed via URI. Tools perform actions.
 
 | Interaction Type | When to Use | Example |
 |------------------|-------------|---------|
-| **Tool call** | Actions, mutations, queries with filters | `session.call_tool("create_campaign", {...})` |
+| **Tool call** | Actions, mutations, queries with filters | `session.call_tool("bo_create_campaign", {...})` |
 | **Resource read** | Static data retrieval by ID | `session.read_resource("campaign://abc-123")` |
 
 ### When to Use Each
 
 ```
 Need to list campaigns?
-├── With filters (owner, status, limit) → Use tool: list_campaigns
-└── Simple list all → Either: list_campaigns OR resource: campaigns://list
+├── With filters (owner, status, limit) → Use tool: bo_list_campaigns
+└── Simple list all → Either: bo_list_campaigns OR resource: campaigns://list
 
 Need campaign details?
 ├── Quick ID lookup → Resource: campaign://{id}
-└── Full status + next_action → Tool: get_diagnostics
+└── Full status + next_action → Tool: bo_get_diagnostics
 
 Need pending suggestions?
 └── Resource: suggestions://{campaign_id}
@@ -44,7 +43,7 @@ from mcp import ClientSession
 async def example(session: ClientSession):
     # Tool call (preferred for most operations)
     result = await session.call_tool(
-        "list_campaigns",
+        "bo_list_campaigns",
         {"owner_id": "user-uuid", "status": "running", "limit": 10}
     )
 
@@ -57,7 +56,7 @@ async def example(session: ClientSession):
 
 ### Step 1: Create Campaign
 ```json
-// Tool: create_campaign
+// Tool: bo_create_campaign
 {
   "intake_data": {
     "name": "Quick Optimization",
@@ -75,18 +74,18 @@ async def example(session: ClientSession):
 
 ### Step 2: Optimization Loop
 ```json
-// Tool: generate_suggestions
+// Tool: bo_generate_suggestions
 {"campaign_id": "abc-123-..."}
 // Response: {"suggestions": [{"id": "...", "parameter_values": {"x": 5.2}}]}
 
-// Tool: submit_results
+// Tool: bo_submit_results
 {
   "campaign_id": "abc-123-...",
   "results": [{"parameter_values": {"x": 5.2}, "objective_values": {"y": 12.3}}],
   "submitted_by": "user-uuid-here"
 }
 
-// Tool: get_diagnostics (use verbosity=minimal for tight loops)
+// Tool: bo_get_diagnostics (use verbosity=minimal for tight loops)
 {"campaign_id": "abc-123-...", "verbosity": "minimal"}
 // Response: {"health": "healthy", "converged": false, "key_metric": {"best_value": 12.3}}
 ```
@@ -95,9 +94,9 @@ async def example(session: ClientSession):
 
 ### When to Stop Optimization
 ```
-get_diagnostics.converged == true? → STOP (optimization converged)
-get_diagnostics.health == "critical"? → WARN user, consider stopping
-get_diagnostics.iteration > max_iterations? → STOP (budget exhausted)
+bo_get_diagnostics.converged == true? → STOP (optimization converged)
+bo_get_diagnostics.health == "critical"? → WARN user, consider stopping
+bo_get_diagnostics.iteration > max_iterations? → STOP (budget exhausted)
 Otherwise → CONTINUE
 ```
 
@@ -128,43 +127,41 @@ Error Code E101 "Model fitting failed"
 
 | User Intent | Recommended Tool(s) |
 |-------------|---------------------|
-| Discover tools | `search_tools` (v3.3+) |
-| Check server is up | `health_check` |
-| Validate before create | `validate_intake` |
-| Start new optimization | `create_campaign` |
-| List all campaigns | `list_campaigns` (v3.3+) |
-| Get next experiments | `generate_suggestions` |
-| Record outcomes | `submit_results` or `upload_results_file` |
-| Check progress | `get_diagnostics` (has `next_action` hint) |
-| Monitor many campaigns | `batch_get_status` (v3.3+) |
-| Understand a suggestion | `get_suggestion_explanation` |
-| Pause/resume/terminate | `manage_campaign_lifecycle` (v3.3+ consolidated) |
-| Compare runs | `compare_campaigns` |
-| Find related prior work | `discover_transfer_candidates` |
+| Check server is up | `bo_health_check` |
+| Start new optimization | `bo_create_campaign` |
+| List all campaigns | `bo_list_campaigns` (v3.3+) |
+| Get next experiments | `bo_generate_suggestions` |
+| Record outcomes | `bo_submit_results` or `bo_upload_results_file` |
+| Check progress | `bo_get_diagnostics` (has `next_action` hint) |
+| Monitor many campaigns | `bo_batch_get_status` (v3.3+) |
+| Understand a suggestion | `bo_get_suggestion_explanation` |
+| Pause/resume/terminate | `bo_manage_campaign_lifecycle` (v3.3+ consolidated) |
+| Compare runs | `bo_compare_campaigns` |
+| Find related prior work | `bo_discover_transfer_candidates` |
 
 ## Common Patterns
 
 ### Pattern 1: Monitor Multiple Campaigns (v3.3+)
 ```json
-// Use batch_get_status for efficiency (1 call vs N calls)
+// Use bo_batch_get_status for efficiency (1 call vs N calls)
 {"campaign_ids": ["id1", "id2", "id3"], "verbosity": "minimal"}
 // Response: {"campaigns": {"id1": {...}, "id2": {...}, ...}, "failed_ids": []}
 
-// Or use compare_campaigns for detailed comparison
+// Or use bo_compare_campaigns for detailed comparison
 {"campaign_ids": ["id1", "id2", "id3"]}
 ```
 
 ### Pattern 1b: Follow Proactive Guidance
 ```json
-// get_diagnostics includes next_action_recommendation
+// bo_get_diagnostics includes next_action_recommendation
 {"campaign_id": "abc-123", "verbosity": "minimal"}
-// Response includes: {"next_action": {"action": "submit_results", "reason": "..."}}
+// Response includes: {"next_action": {"action": "bo_submit_results", "reason": "..."}}
 // Agent follows the recommendation without manual interpretation
 ```
 
 ### Pattern 2: Upload Historical Data
 ```json
-// Use upload_results_file with CSV format
+// Use bo_upload_results_file with CSV format
 {
   "campaign_id": "...",
   "file_content": "param_x,param_y,obj_z\n1.0,2.0,3.0\n...",
@@ -175,7 +172,7 @@ Error Code E101 "Model fitting failed"
 ### Pattern 3: Warm Start with Transfer Learning
 ```json
 // 1. Find related campaigns
-{"campaign_id": "new-campaign-id"}  // discover_transfer_candidates
+{"campaign_id": "new-campaign-id"}  // bo_discover_transfer_candidates
 
 // 2. Results show similar prior campaigns that can inform the new one
 // Transfer learning is applied automatically based on parameter similarity
@@ -185,13 +182,12 @@ Error Code E101 "Model fitting failed"
 
 | Operation | Typical Time | Notes |
 |-----------|--------------|-------|
-| health_check | <100ms | Immediate |
-| validate_intake | <200ms | Pure validation |
-| create_campaign | <500ms | Database writes |
-| generate_suggestions (initial) | 1-3s | Sobol sampling |
-| generate_suggestions (with model) | 3-30s | Depends on data size, dimensions |
-| submit_results | <500ms | Per result |
-| get_diagnostics | 1-5s | Cached for 30s |
+| bo_health_check | <100ms | Immediate |
+| bo_create_campaign | <500ms | Database writes |
+| bo_generate_suggestions (initial) | 1-3s | Sobol sampling |
+| bo_generate_suggestions (with model) | 3-30s | Depends on data size, dimensions |
+| bo_submit_results | <500ms | Per result |
+| bo_get_diagnostics | 1-5s | Cached for 30s |
 
 **Note**: High-dimensional problems (>20 params) and large batches increase suggestion generation time.
 
@@ -223,10 +219,10 @@ Process all results, get partial results:
 
 ## Caching Behavior
 
-- `get_diagnostics` is cached for 30 seconds by default
+- `bo_get_diagnostics` is cached for 30 seconds by default
 - Cache is automatically invalidated when:
-  - `submit_results` completes successfully
-  - `generate_suggestions` completes successfully
+  - `bo_submit_results` completes successfully
+  - `bo_generate_suggestions` completes successfully
 - Use `use_cache=false` to force fresh computation
 
 ---
@@ -242,10 +238,10 @@ Optimize a chemical reaction for maximum yield and minimum cost:
 - **Objectives**: yield (maximize), cost (minimize)
 - **Constraint**: sum of reagent fractions equals 1.0
 
-### Step 1: Validate Configuration
+### Step 1: Create Campaign
 
 ```json
-// Tool: validate_intake
+// Tool: bo_create_campaign
 {
   "intake_data": {
     "name": "Catalyst Optimization",
@@ -265,15 +261,16 @@ Optimize a chemical reaction for maximum yield and minimum cost:
       {"type": "sum_equals", "parameters": ["reagent_A", "reagent_B"], "value": 1.0}
     ],
     "batch_size": 3
-  }
+  },
+  "owner_id": "user-uuid"
 }
-// Expected: {"valid": true, "errors": [], "warnings": []}
+// Expected: {"success": true, "campaign_id": "...", "errors": []}
 ```
 
 ### Step 2: Create Campaign
 
 ```json
-// Tool: create_campaign
+// Tool: bo_create_campaign
 {
   "intake_data": { /* same as above */ },
   "owner_id": "550e8400-e29b-41d4-a716-446655440000"
@@ -293,7 +290,7 @@ MAX_ITERATIONS = 5
 for iteration in range(MAX_ITERATIONS):
     # Generate suggestions
     suggestions = await session.call_tool(
-        "generate_suggestions",
+        "bo_generate_suggestions",
         {"campaign_id": CAMPAIGN_ID, "verbosity": "minimal"}
     )
     suggestion_data = json.loads(suggestions.content[0].text)
@@ -317,7 +314,7 @@ for iteration in range(MAX_ITERATIONS):
 
     # Submit results
     await session.call_tool(
-        "submit_results",
+        "bo_submit_results",
         {
             "campaign_id": CAMPAIGN_ID,
             "results": results,
@@ -328,7 +325,7 @@ for iteration in range(MAX_ITERATIONS):
 
     # Check diagnostics and next action
     diagnostics = await session.call_tool(
-        "get_diagnostics",
+        "bo_get_diagnostics",
         {"campaign_id": CAMPAIGN_ID, "verbosity": "minimal"}
     )
     diag_data = json.loads(diagnostics.content[0].text)
@@ -341,7 +338,7 @@ for iteration in range(MAX_ITERATIONS):
 
 # Final results
 final_diag = await session.call_tool(
-    "get_diagnostics",
+    "bo_get_diagnostics",
     {"campaign_id": CAMPAIGN_ID, "verbosity": "detailed"}
 )
 print(f"Pareto front: {json.loads(final_diag.content[0].text)['pareto_front']}")
@@ -375,22 +372,22 @@ print(f"Pareto front: {json.loads(final_diag.content[0].text)['pareto_front']}")
 Is campaign status RUNNING?
 ├── No → What is the status?
 │   ├── CREATED → First call auto-transitions to RUNNING (should work)
-│   ├── PAUSED → Call: manage_campaign_lifecycle(action="resume")
+│   ├── PAUSED → Call: bo_manage_campaign_lifecycle(action="resume")
 │   ├── COMPLETED → Campaign finished; create new campaign
 │   └── FAILED → Check errors; may need new campaign
 └── Yes → Are there any results?
     ├── No results → Uses Sobol sampling (should always work)
-    │   └── Still fails? → Check validate_intake for spec issues
+    │   └── Still fails? → Check bo_create_campaign validation errors for spec issues
     └── Has results → Model fitting issue
         ├── < 2 results → Add 1+ more observations
         ├── All NaN/Inf values? → Submit valid numeric results
-        └── >= 2 valid results → Check get_diagnostics for model health
+        └── >= 2 valid results → Check bo_get_diagnostics for model health
 ```
 
 ### "Model fitting failed" (Error E101)
 
 ```
-Check get_diagnostics output for health_status:
+Check bo_get_diagnostics output for health_status:
 ├── "Insufficient data" (E104)
 │   └── Action: Submit at least 2 results with valid objective values
 ├── "Numerical issues"
@@ -441,7 +438,7 @@ Check current campaign status first:
 ### Single-Objective Campaigns
 
 ```
-get_diagnostics.convergence.converged == true means:
+bo_get_diagnostics.convergence.converged == true means:
 ├── Improvement rate < 1% for last 5 iterations
 ├── OR max_iterations reached
 └── OR explicit stopping criterion met
@@ -455,7 +452,7 @@ Agent Actions:
 ### Multi-Objective Campaigns
 
 ```
-get_diagnostics.convergence.converged == true means:
+bo_get_diagnostics.convergence.converged == true means:
 ├── Hypervolume improvement < 1% for last 5 iterations
 ├── Pareto front is stable (minimal additions)
 └── No single "best" point - present trade-offs

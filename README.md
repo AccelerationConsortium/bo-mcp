@@ -47,7 +47,7 @@ uv run python scripts/check_prerequisites.py
 
 ```bash
 uv run bo-mcp-server --verify
-# Expected: {"status": "ok", "version": "0.1.0", "tools": 17, "database": "connected"}
+# Expected: {"status": "ok", "version": "0.1.0", "tools": 12, "database": "connected"}
 ```
 
 ### 4. Claude Code Configuration
@@ -182,9 +182,19 @@ pip install ./packages/bo-mcp-api
 git clone <repo-url>
 cd bo-mcp-ui
 
-# Build and run all services
+# Build dependency-only dev images and run all services
 docker-compose up --build
 ```
+
+The `api` and `mcp` services use bind-mounted workspace source in Docker Compose,
+so Python code changes are picked up from the local checkout instead of forcing an
+image rebuild. Dependencies stay baked into the image, while the mounted workspace
+packages are installed in editable mode when the dev containers start. Rebuild
+those images when dependency manifests or Dockerfiles change, not for normal
+source edits.
+
+For a self-contained image that copies the source into the build, use the
+`runtime` target in `Dockerfile.api`.
 
 Access the application:
 - **Frontend**: http://localhost:3001
@@ -230,7 +240,10 @@ The frontend will be available at http://localhost:5173
 
 When you first open the UI, you'll be prompted to enter an API key.
 
-For development, use: `dev-api-key-12345`
+Temporary development note: the backend currently bypasses API-key validation
+and maps every request to a shared dev user. The UI may still prompt for a key,
+but any value will work. You can keep using `dev-api-key-12345` for
+compatibility. This is not a sustainable or production-safe setup.
 
 ### Step 2: Create a Campaign
 
@@ -397,7 +410,6 @@ The system automatically selects the optimal BO method based on your problem:
 import httpx
 
 BASE_URL = "http://localhost:8000/api"
-headers = {"X-API-Key": "dev-api-key-12345"}
 
 campaign_data = {
     "intake": {
@@ -416,14 +428,18 @@ campaign_data = {
     }
 }
 
-response = httpx.post(f"{BASE_URL}/campaigns", json=campaign_data, headers=headers)
+response = httpx.post(f"{BASE_URL}/campaigns", json=campaign_data)
 campaign_id = response.json()["campaign_id"]
 ```
+
+Temporary development note: API-key validation is currently bypassed by the
+backend and all requests resolve to a shared dev user. Do not keep this
+configuration beyond local development.
 
 ### Generate Suggestions
 
 ```python
-response = httpx.post(f"{BASE_URL}/suggestions/{campaign_id}/generate", headers=headers)
+response = httpx.post(f"{BASE_URL}/suggestions/{campaign_id}/generate")
 suggestions = response.json()["suggestions"]
 ```
 
@@ -487,19 +503,18 @@ Add to your Claude Code MCP configuration file. The location depends on your set
 
 | Tool | Description |
 |------|-------------|
-| `health_check` | Check MCP server health and connectivity |
-| `validate_intake` | Validate campaign configuration before creation |
-| `create_campaign` | Create a new optimization campaign |
-| `generate_suggestions` | Generate next batch of experiment suggestions |
-| `submit_results` | Submit experimental results |
-| `upload_results_file` | Upload results from CSV file |
-| `get_diagnostics` | Get campaign progress, Pareto front, and health status |
-| `get_suggestion_explanation` | Get detailed explanation of why a suggestion was made |
-| `pause_campaign` | Pause an active campaign |
-| `resume_campaign` | Resume a paused campaign |
-| `terminate_campaign` | Permanently terminate a campaign |
-| `compare_campaigns` | Compare 2-10 campaigns for relative performance |
-| `discover_transfer_candidates` | Auto-discover campaigns for transfer learning |
+| `bo_health_check` | Check MCP server health and connectivity |
+| `bo_create_campaign` | Create a new optimization campaign |
+| `bo_list_campaigns` | List campaigns with optional filtering |
+| `bo_generate_suggestions` | Generate next batch of experiment suggestions |
+| `bo_submit_results` | Submit experimental results |
+| `bo_upload_results_file` | Upload results from CSV file |
+| `bo_get_diagnostics` | Get campaign progress, Pareto front, and health status |
+| `bo_get_suggestion_explanation` | Get detailed explanation of why a suggestion was made |
+| `bo_manage_campaign_lifecycle` | Pause, resume, or terminate a campaign |
+| `bo_compare_campaigns` | Compare 2-10 campaigns for relative performance |
+| `bo_discover_transfer_candidates` | Auto-discover campaigns for transfer learning |
+| `bo_batch_get_status` | Get status for multiple campaigns in one call |
 
 ### Available MCP Resources
 
@@ -540,7 +555,7 @@ async def run_optimization():
 
             # Create a campaign
             result = await session.call_tool(
-                "create_campaign",
+                "bo_create_campaign",
                 arguments={
                     "name": "My Optimization",
                     "description": "Optimizing process parameters",
@@ -561,14 +576,14 @@ async def run_optimization():
 
             # Generate suggestions
             suggestions = await session.call_tool(
-                "generate_suggestions",
+                "bo_generate_suggestions",
                 arguments={"campaign_id": campaign_id}
             )
             print(f"Suggestions: {suggestions.content[0].text}")
 
             # Submit results after running experiments
             await session.call_tool(
-                "submit_results",
+                "bo_submit_results",
                 arguments={
                     "campaign_id": campaign_id,
                     "results": [
@@ -582,7 +597,7 @@ async def run_optimization():
 
             # Get diagnostics
             diagnostics = await session.call_tool(
-                "get_diagnostics",
+                "bo_get_diagnostics",
                 arguments={"campaign_id": campaign_id}
             )
             print(f"Diagnostics: {diagnostics.content[0].text}")
@@ -624,7 +639,7 @@ def call_tool(tool_name: str, arguments: dict) -> dict:
     return response.json()
 
 # Create campaign
-result = call_tool("create_campaign", {
+result = call_tool("bo_create_campaign", {
     "name": "Network Optimization",
     "parameters": [
         {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}
@@ -745,24 +760,9 @@ async def optimization_loop(n_iterations: int = 5):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # 1. Validate configuration first
-            validation = await session.call_tool(
-                "validate_intake",
-                arguments={
-                    "parameters": [
-                        {"name": "temp", "type": "continuous", "bounds": [20.0, 100.0]},
-                        {"name": "time", "type": "discrete", "bounds": [1, 60]}
-                    ],
-                    "objectives": [
-                        {"name": "quality", "direction": "maximize"}
-                    ]
-                }
-            )
-            print(f"Validation: {validation.content[0].text}")
-
-            # 2. Create campaign
+            # 1. Create campaign
             result = await session.call_tool(
-                "create_campaign",
+                "bo_create_campaign",
                 arguments={
                     "name": "Process Optimization",
                     "parameters": [
@@ -777,13 +777,13 @@ async def optimization_loop(n_iterations: int = 5):
             )
             campaign_id = json.loads(result.content[0].text)["campaign_id"]
 
-            # 3. Optimization loop
+            # 2. Optimization loop
             for iteration in range(n_iterations):
                 print(f"\n--- Iteration {iteration + 1} ---")
 
                 # Generate suggestions
                 suggestions_result = await session.call_tool(
-                    "generate_suggestions",
+                    "bo_generate_suggestions",
                     arguments={"campaign_id": campaign_id}
                 )
                 suggestions = json.loads(suggestions_result.content[0].text)["suggestions"]
@@ -801,7 +801,7 @@ async def optimization_loop(n_iterations: int = 5):
 
                 # Submit results
                 await session.call_tool(
-                    "submit_results",
+                    "bo_submit_results",
                     arguments={
                         "campaign_id": campaign_id,
                         "results": results
@@ -810,7 +810,7 @@ async def optimization_loop(n_iterations: int = 5):
 
                 # Check progress
                 diag_result = await session.call_tool(
-                    "get_diagnostics",
+                    "bo_get_diagnostics",
                     arguments={"campaign_id": campaign_id}
                 )
                 diagnostics = json.loads(diag_result.content[0].text)
@@ -825,23 +825,7 @@ if __name__ == "__main__":
 
 For reference, here are the detailed schemas for each MCP tool:
 
-#### validate_intake
-Validates campaign configuration before creation.
-```json
-{
-  "parameters": [
-    {"name": "string", "type": "continuous|discrete|categorical", "bounds": [min, max], "categories": ["a", "b"]}
-  ],
-  "objectives": [
-    {"name": "string", "direction": "maximize|minimize", "unit": "optional"}
-  ],
-  "constraints": [
-    {"type": "sum", "parameters": ["param1", "param2"], "value": 1.0}
-  ]
-}
-```
-
-#### create_campaign
+#### bo_create_campaign
 Creates a new optimization campaign.
 ```json
 {
@@ -854,7 +838,7 @@ Creates a new optimization campaign.
 }
 ```
 
-#### generate_suggestions
+#### bo_generate_suggestions
 Generates the next batch of experiment suggestions.
 ```json
 {
@@ -862,7 +846,7 @@ Generates the next batch of experiment suggestions.
 }
 ```
 
-#### submit_results
+#### bo_submit_results
 Submits experimental results.
 ```json
 {
@@ -876,7 +860,7 @@ Submits experimental results.
 }
 ```
 
-#### get_diagnostics
+#### bo_get_diagnostics
 Returns campaign progress and health metrics.
 ```json
 {
@@ -991,8 +975,11 @@ clear_cache()
 ## Troubleshooting
 
 ### "Unauthorized" errors
-- Make sure you've set your API key in the UI (click "Set API Key" in the nav)
-- For development, use: `dev-api-key-12345`
+- This repo currently bypasses API-key validation in local development, so
+  authorization failures usually indicate you are not running the temporary
+  dev-bypass version of the API.
+- That bypass maps every request to one shared dev user and is not sustainable
+  for production.
 
 ### Frontend can't connect to backend
 - Ensure the backend is running on port 8000

@@ -89,12 +89,14 @@ Claude Code Configuration:
 
     if args.transport == "sse":
         print(f"Starting BO-MCP server with SSE transport on {args.host}:{args.port}")
-        print("Available tools: validate_intake, create_campaign, generate_suggestions,")
-        print("                 submit_results, get_diagnostics")
+        print("Available tools: create_campaign, generate_suggestions, submit_results,")
+        print("                 get_diagnostics")
         print("Available resources: campaign://, campaigns://list, suggestions://,")
         print("                     suggestion://")
         print("-" * 60)
-        mcp.run(transport="sse", host=args.host, port=args.port)
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.run(transport="sse")
     else:
         # stdio transport for Claude Code - no printing to stdout
         # as it would interfere with the MCP protocol

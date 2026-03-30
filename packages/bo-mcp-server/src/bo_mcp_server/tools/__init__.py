@@ -11,10 +11,8 @@ from bo_mcp_server.tools import (
     get_suggestion_explanation,
     health_check,
     list_campaigns,
-    search_tools,
     submit_results,
     upload_results_file,
-    validate_intake,
 )
 
 __all__ = [
@@ -28,8 +26,6 @@ __all__ = [
     "get_suggestion_explanation",
     "health_check",
     "list_campaigns",
-    "search_tools",
     "submit_results",
     "upload_results_file",
-    "validate_intake",
 ]

@@ -176,10 +176,3 @@ export interface SubmitResultsResponse {
   result_ids?: string[];
   errors?: string[];
 }
-
-export interface ValidationResponse {
-  valid: boolean;
-  errors?: string[];
-  warnings?: string[];
-  derived_defaults?: Record<string, unknown>;
-}

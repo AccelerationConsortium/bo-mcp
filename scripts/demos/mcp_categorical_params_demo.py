@@ -24,7 +24,6 @@ from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 from bo_mcp_server.tools.submit_results import submit_results
-from bo_mcp_server.tools.validate_intake import validate_intake
 
 
 def catalyst_experiment(
@@ -157,26 +156,16 @@ async def main() -> None:
     print("    Objective: maximize yield (%)")
     print()
 
-    # Validate configuration
-    print("[4] Validating configuration...")
-    validation = await validate_intake(campaign_config)
-
-    if not validation["valid"]:
-        print(f"    ERROR: {validation['errors']}")
-        return
-
-    if validation["warnings"]:
-        print(f"    Warnings: {validation['warnings']}")
-
-    print("    Configuration is valid!")
-
     # Create campaign
-    print("\n[5] Creating campaign...")
+    print("[4] Creating campaign...")
     result = await create_campaign(campaign_config, owner_id)
 
     if not result["success"]:
         print(f"    ERROR: {result['errors']}")
         return
+
+    if result["warnings"]:
+        print(f"    Warnings: {result['warnings']}")
 
     campaign_id = result["campaign_id"]
     print(f"    Campaign created: {campaign_id}")

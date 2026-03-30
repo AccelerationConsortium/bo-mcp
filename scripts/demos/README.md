@@ -83,7 +83,6 @@ uv run python scripts/demos/mcp_single_objective_demo.py
 ### MCP Tools Used
 
 Each demo uses the following MCP tools:
-- `validate_intake` - Validate campaign configuration
 - `create_campaign` - Create optimization campaign
 - `generate_suggestions` - Get next experimental designs
 - `submit_results` - Record experimental outcomes

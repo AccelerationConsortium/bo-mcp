@@ -8,11 +8,13 @@ os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["USE_ALEMBIC"] = "false"
 
 import hashlib
+from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 from bo_mcp_server.domain import (
+    Bounds,
     Campaign,
     CampaignSpec,
     CampaignStatus,
@@ -28,6 +30,9 @@ from bo_mcp_server.storage import (
     get_session,
     init_database,
 )
+from httpx import ASGITransport, AsyncClient
+
+from api.main import create_app
 
 
 @pytest.fixture
@@ -45,12 +50,11 @@ def sample_user() -> User:
 @pytest.fixture
 def another_user() -> User:
     """Create another user for testing authorization."""
-    api_key = "another-api-key-67890"
     return User(
         id=uuid4(),
         name="Another User",
         email="another@example.com",
-        api_key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+        api_key_hash=hashlib.sha256(b"another-api-key-67890").hexdigest(),
     )
 
 
@@ -64,7 +68,7 @@ def sample_campaign_spec() -> CampaignSpec:
             InputParameter(
                 name="temperature",
                 type=ParameterType.CONTINUOUS,
-                bounds=(20.0, 100.0),
+                bounds=Bounds(lower=20.0, upper=100.0),
             ),
         ],
         objectives=[
@@ -119,6 +123,39 @@ async def persisted_user(setup_database, sample_user: User) -> User:
         await user_repo.save(sample_user)
         await session.commit()
     return sample_user
+
+
+@pytest_asyncio.fixture
+async def persisted_another_user(setup_database, another_user: User) -> User:
+    """Create and persist the secondary user in the database."""
+    async with get_session() as session:
+        user_repo = UserRepository(session)
+        await user_repo.save(another_user)
+        await session.commit()
+    return another_user
+
+
+@pytest.fixture
+def auth_headers() -> dict[str, str]:
+    """Authentication headers for the primary test user."""
+    return {"X-API-Key": "test-api-key-12345"}
+
+
+@pytest.fixture
+def other_auth_headers() -> dict[str, str]:
+    """Authentication headers for the secondary test user."""
+    return {"X-API-Key": "another-api-key-67890"}
+
+
+@pytest_asyncio.fixture
+async def api_client(setup_database) -> AsyncGenerator[AsyncClient]:
+    """Async HTTP client bound to the FastAPI app."""
+    app = create_app()
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        yield client
 
 
 @pytest_asyncio.fixture

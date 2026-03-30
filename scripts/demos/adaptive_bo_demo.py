@@ -34,7 +34,6 @@ from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 from bo_mcp_server.tools.submit_results import submit_results
-from bo_mcp_server.tools.validate_intake import validate_intake
 
 
 def print_header(title: str) -> None:
@@ -216,18 +215,8 @@ async def run_optimization(
     config = build_config_from_benchmark(benchmark, batch_size)
     print_config_summary(config, benchmark)
 
-    # Validate configuration
-    print("\n[3] Validating configuration...")
-    validation = await validate_intake(config)
-
-    if not validation["valid"]:
-        print(f"    ERROR: {validation['errors']}")
-        raise ValueError(f"Invalid configuration: {validation['errors']}")
-
-    print("    Configuration is valid!")
-
     # Create campaign
-    print("\n[4] Creating campaign...")
+    print("\n[3] Creating campaign...")
     result = await create_campaign(config, owner_id)
 
     if not result["success"]:

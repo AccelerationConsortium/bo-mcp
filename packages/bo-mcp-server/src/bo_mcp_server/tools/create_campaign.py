@@ -28,7 +28,7 @@ from bo_mcp_server.tools.validate_intake import validate_intake
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
+@mcp.tool(name="bo_create_campaign")
 async def create_campaign(
     intake_data: CampaignIntakeInput,
     owner_id: str,
@@ -38,7 +38,7 @@ async def create_campaign(
 
     Args:
         intake_data: Campaign intake payload validated via CampaignIntakeInput
-            (same schema used by validate_intake).
+            and validated internally before campaign creation.
         owner_id: UUID of the user creating the campaign
         verbosity: Response verbosity level. Options:
             - "minimal": ~30 tokens - campaign_id only
@@ -76,6 +76,7 @@ async def create_campaign(
         )
         response["campaign_id"] = None
         response["spec_id"] = None
+        response["warnings"] = validation.get("warnings", [])
         return response
 
     # Parse owner_id
@@ -129,6 +130,7 @@ async def create_campaign(
         "campaign_id": str(campaign_id),
         "spec_id": str(spec_id),
         "campaign_name": spec.name,
+        "warnings": validation.get("warnings", []),
         "errors": [],
     }
 

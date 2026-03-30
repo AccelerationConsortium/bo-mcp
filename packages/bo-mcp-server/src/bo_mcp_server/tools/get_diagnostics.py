@@ -293,14 +293,14 @@ def _compute_model_diagnostics(
                 train_x,
                 train_y,
                 bounds,
-                use_warping=spec.use_input_warping,
+                use_input_warping=spec.use_input_warping,
             )
         else:
             model = create_and_fit_model(
                 train_x,
                 train_y,
                 bounds,
-                use_warping=spec.use_input_warping,
+                use_input_warping=spec.use_input_warping,
             )
 
         # Compute model correlation
@@ -322,13 +322,20 @@ def _compute_model_diagnostics(
                 loo_metrics = compute_loo_cv_for_model(model, train_x, train_y)
                 # Format LOO-CV metrics by objective name
                 loo_cv_by_objective = {}
-                for idx, obj_name in enumerate(objective_names):
-                    if idx in loo_metrics:
-                        loo_cv_by_objective[obj_name] = {
-                            "rmse": loo_metrics[idx].rmse,
-                            "mae": loo_metrics[idx].mae,
-                            "r_squared": loo_metrics[idx].r_squared,
-                        }
+                if isinstance(loo_metrics, dict):
+                    for idx, obj_name in enumerate(objective_names):
+                        if idx in loo_metrics:
+                            loo_cv_by_objective[obj_name] = {
+                                "rmse": loo_metrics[idx].rmse,
+                                "mae": loo_metrics[idx].mae,
+                                "r_squared": loo_metrics[idx].r_squared,
+                            }
+                elif objective_names:
+                    loo_cv_by_objective[objective_names[0]] = {
+                        "rmse": loo_metrics.rmse,
+                        "mae": loo_metrics.mae,
+                        "r_squared": loo_metrics.r_squared,
+                    }
                 diagnostics["loo_cv_metrics"] = loo_cv_by_objective
             except Exception as e:
                 logger.debug("LOO-CV computation failed: %s", e)
@@ -838,16 +845,16 @@ def _compute_next_action_recommendation(
         urgency = "normal"
     # Check pending suggestions
     elif n_pending_suggestions > 0:
-        action = "submit_results"
+        action = "bo_submit_results"
         reason = f"Campaign has {n_pending_suggestions} pending suggestion(s) awaiting results."
         urgency = "normal"
     # Need more suggestions
     elif n_results == 0:
-        action = "generate_suggestions"
+        action = "bo_generate_suggestions"
         reason = "No results yet. Generate initial suggestions to start optimization."
         urgency = "normal"
     else:
-        action = "generate_suggestions"
+        action = "bo_generate_suggestions"
         reason = f"Campaign healthy with {n_results} results. Ready for next batch of suggestions."
         urgency = "normal"
 
@@ -954,7 +961,7 @@ def _compute_outlier_diagnostics(
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(name="bo_get_diagnostics")
 async def get_diagnostics(
     campaign_id: str,
     use_cache: bool = True,
@@ -1126,11 +1133,17 @@ async def get_diagnostics(
 
                 if is_single_objective:
                     model = create_and_fit_single_task_model(
-                        train_x, train_y, bounds, use_warping=spec.use_input_warping
+                        train_x,
+                        train_y,
+                        bounds,
+                        use_input_warping=spec.use_input_warping,
                     )
                 else:
                     model = create_and_fit_model(
-                        train_x, train_y, bounds, use_warping=spec.use_input_warping
+                        train_x,
+                        train_y,
+                        bounds,
+                        use_input_warping=spec.use_input_warping,
                     )
                 _compute_hyperparameters(model, param_names, diagnostics)
             except Exception as e:

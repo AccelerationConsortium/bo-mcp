@@ -49,26 +49,25 @@ bo-mcp-server --help
 ## MCP Tools
 
 ### Core Tools
-- `validate_intake` - Validate campaign configuration
-- `create_campaign` - Create new optimization campaign
-- `generate_suggestions` - Generate next experiment batch
-- `submit_results` - Submit experimental results
-- `get_diagnostics` - Get model health and progress metrics
+- `bo_create_campaign` - Create new optimization campaign
+- `bo_list_campaigns` - List campaigns with optional filtering
+- `bo_generate_suggestions` - Generate next experiment batch
+- `bo_submit_results` - Submit experimental results
+- `bo_get_diagnostics` - Get model health and progress metrics
 
 ### Data Upload
-- `upload_results_file` - Upload results from CSV file
+- `bo_upload_results_file` - Upload results from CSV file
 
 ### Explainability
-- `get_suggestion_explanation` - Get detailed explanation of why a suggestion was made
+- `bo_get_suggestion_explanation` - Get detailed explanation of why a suggestion was made
 
 ### Campaign Lifecycle
-- `pause_campaign` - Pause an active campaign
-- `resume_campaign` - Resume a paused campaign
-- `terminate_campaign` - Permanently terminate a campaign
+- `bo_manage_campaign_lifecycle` - Pause, resume, or terminate a campaign
 
 ### Analysis & Strategy
-- `compare_campaigns` - Compare 2-10 campaigns for relative performance
-- `discover_transfer_candidates` - Auto-discover campaigns for transfer learning
+- `bo_compare_campaigns` - Compare 2-10 campaigns for relative performance
+- `bo_discover_transfer_candidates` - Auto-discover campaigns for transfer learning
+- `bo_batch_get_status` - Get status for multiple campaigns in one call
 
 For detailed input/output schemas with all fields documented, see [TOOL_SCHEMAS.md](TOOL_SCHEMAS.md).
 
@@ -99,12 +98,13 @@ bo_mcp_server/
 │   └── repositories.py
 ├── tools/                # MCP tool implementations
 │   ├── create_campaign.py
-│   ├── validate_intake.py
+│   ├── list_campaigns.py
 │   ├── generate_suggestions.py
 │   ├── submit_results.py
 │   ├── get_diagnostics.py
 │   ├── upload_results_file.py
 │   ├── get_suggestion_explanation.py
+│   ├── batch_operations.py
 │   └── campaign_lifecycle.py
 └── resources/            # MCP resource implementations
     ├── campaign_resource.py

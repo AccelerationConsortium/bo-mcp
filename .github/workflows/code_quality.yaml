@@ -46,7 +46,7 @@ jobs:
       - uses: ./.github/actions/setup
       # Sync all workspace packages to install dependencies (torch, botorch, etc.)
       - run: uv sync --all-packages
-      - run: uv run pyright
+      - run: uv run ty check
   # =============================================================================
   # Fast Tests (PR Checks) - Run on every push/PR
   # =============================================================================

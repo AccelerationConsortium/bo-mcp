@@ -3,7 +3,7 @@ name = "bo-mcp-api"
 version = "0.1.0"
 description = "REST API proxy for the BO MCP server - enables web frontend integration"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [{ name = "Your Name", email = "your@email.com" }]
 keywords = ["fastapi", "bayesian-optimization", "rest-api"]
@@ -49,9 +49,8 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "B", "S", "UP"]
+select = ["E", "F", "I", "N", "W", "B", "S", "UP", "C901"]
 ignore = ["S101", "N806"]
 
-[tool.pyright]
-pythonVersion = "3.13"
-typeCheckingMode = "strict"
+[tool.ruff.lint.mccabe]
+max-complexity = 10

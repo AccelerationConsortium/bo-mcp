@@ -272,3 +272,10 @@ temp/
 # Keep package lock files
 !package-lock.json
 !uv.lock
+
+DESIGN_REVIEW.md
+CLAUDE.md
+FRONTEND_PROPOSAL.md
+IMPLEMENTATION_PLAN.md
+PR10.md
+TODO.md

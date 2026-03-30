@@ -49,7 +49,7 @@ from bo_mcp_server.tools.create_campaign import create_campaign
 ## Python Guidelines
 
 - always use uv for package management
-- always use formatting (using ruff), linting (using ruff), typing (using pyright) and testing (using pytest) before letting me review your solution
+- always use formatting (using ruff), linting (using ruff), typing (using ty) and testing (using pytest) before letting me review your solution
 - always use an ORM (SQLAlchemy) when creating databases and when you interact with them
 - put all imports at the top of a file, don't put them within functions
 - do not use wild card imports ever

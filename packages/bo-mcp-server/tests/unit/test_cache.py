@@ -1,24 +1,24 @@
 """Tests for the response cache module.
 
-These tests verify the TTL-based caching behavior for expensive MCP operations
-like get_diagnostics.
+The cache uses version-aware keys (e.g. "diagnostics:{id}:{version}") so
+entries become unreachable after mutations — no explicit invalidation needed.
 
-Reference: BO-MCP-UI Implementation Plan v3.1, Section 12.4.
+Reference: BO-MCP-UI Implementation Plan Step 5, Section 2.5.
 """
 
 import time
 from datetime import datetime, timedelta
 
-from bo_mcp_server.cache import ResponseCache, diagnostics_cache
+from bo_mcp_server.cache import MAX_CACHE_ENTRIES, ResponseCache, diagnostics_cache
 
 
 class TestResponseCache:
     """Tests for ResponseCache class."""
 
     def test_cache_initialization_default_ttl(self) -> None:
-        """Cache should initialize with default 30 second TTL."""
+        """Cache should initialize with default 120 second TTL."""
         cache = ResponseCache()
-        assert cache._ttl == timedelta(seconds=30)
+        assert cache._ttl == timedelta(seconds=120)
         assert cache.size == 0
 
     def test_cache_initialization_custom_ttl(self) -> None:
@@ -31,8 +31,8 @@ class TestResponseCache:
         cache = ResponseCache(ttl_seconds=10)
         test_data = {"success": True, "health_status": "healthy"}
 
-        cache.set("diagnostics:test-campaign", test_data)
-        result = cache.get("diagnostics:test-campaign")
+        cache.set("diagnostics:test-campaign:1", test_data)
+        result = cache.get("diagnostics:test-campaign:1")
 
         assert result == test_data
 
@@ -61,40 +61,25 @@ class TestResponseCache:
         # After TTL, value should be None
         assert cache.get("test-key") is None
 
-    def test_cache_invalidate_by_campaign_id(self) -> None:
-        """Cache should invalidate all entries containing campaign_id.
+    def test_version_aware_keys_auto_invalidate(self) -> None:
+        """Version-aware keys mean old versions become unreachable.
 
-        Reference: Section 12.4 - Cache invalidation should be called
-        after mutations (submit_results, generate_suggestions).
+        Reference: Section 2.5 — Use diagnostics:{campaign_id}:{version}
+        as cache key. No explicit invalidation needed since version changes
+        on every mutation.
         """
         cache = ResponseCache()
         campaign_id = "abc-123-def-456"
 
-        # Set multiple entries for the same campaign
-        cache.set(f"diagnostics:{campaign_id}", {"health": "healthy"})
-        cache.set(f"suggestions:{campaign_id}", {"count": 5})
-        cache.set("diagnostics:other-campaign", {"health": "warning"})
+        # Store diagnostics for version 1
+        cache.set(f"diagnostics:{campaign_id}:1", {"health": "healthy"})
 
-        # Invalidate the specific campaign
-        cache.invalidate(campaign_id)
+        # After a mutation, version increments to 2
+        # The old key is no longer looked up
+        assert cache.get(f"diagnostics:{campaign_id}:2") is None
 
-        # Campaign entries should be gone
-        assert cache.get(f"diagnostics:{campaign_id}") is None
-        assert cache.get(f"suggestions:{campaign_id}") is None
-
-        # Other campaign entry should remain
-        assert cache.get("diagnostics:other-campaign") == {"health": "warning"}
-
-    def test_cache_invalidate_nonexistent_campaign(self) -> None:
-        """Invalidating nonexistent campaign should not raise error."""
-        cache = ResponseCache()
-        cache.set("diagnostics:existing", {"value": 1})
-
-        # Should not raise
-        cache.invalidate("nonexistent-campaign")
-
-        # Existing entry should remain
-        assert cache.get("diagnostics:existing") == {"value": 1}
+        # Old version entry is still technically in cache but unreachable
+        assert cache.get(f"diagnostics:{campaign_id}:1") == {"health": "healthy"}
 
     def test_cache_clear(self) -> None:
         """Cache clear should remove all entries."""
@@ -122,9 +107,6 @@ class TestResponseCache:
 
         cache.set("key2", "value2")
         assert cache.size == 2
-
-        cache.invalidate("key1")
-        assert cache.size == 1
 
     def test_cache_overwrite_existing_key(self) -> None:
         """Setting same key should overwrite previous value and reset TTL."""
@@ -168,12 +150,27 @@ class TestResponseCache:
             },
         }
 
-        cache.set("diagnostics:complex-test", complex_data)
-        result = cache.get("diagnostics:complex-test")
+        cache.set("diagnostics:complex-test:5", complex_data)
+        result = cache.get("diagnostics:complex-test:5")
 
         assert result == complex_data
         assert result["pareto_front"][0]["obj1"] == 1.5
         assert result["convergence"]["converged"] is False
+
+    def test_cache_evicts_oldest_at_capacity(self) -> None:
+        """Cache should evict oldest entry when at MAX_CACHE_ENTRIES."""
+        cache = ResponseCache(ttl_seconds=60)
+
+        # Fill to capacity
+        for i in range(MAX_CACHE_ENTRIES):
+            cache.set(f"key-{i}", {"i": i})
+
+        assert cache.size == MAX_CACHE_ENTRIES
+
+        # One more should evict the oldest
+        cache.set("overflow-key", {"new": True})
+        assert cache.size == MAX_CACHE_ENTRIES
+        assert cache.get("overflow-key") == {"new": True}
 
 
 class TestGlobalDiagnosticsCache:
@@ -184,9 +181,9 @@ class TestGlobalDiagnosticsCache:
         assert diagnostics_cache is not None
         assert isinstance(diagnostics_cache, ResponseCache)
 
-    def test_global_cache_has_30s_ttl(self) -> None:
-        """Global cache should have 30 second TTL as per spec."""
-        assert diagnostics_cache._ttl == timedelta(seconds=30)
+    def test_global_cache_has_120s_ttl(self) -> None:
+        """Global cache should have 120 second TTL (version-aware keys)."""
+        assert diagnostics_cache._ttl == timedelta(seconds=120)
 
     def test_global_cache_operations(self) -> None:
         """Global cache should support standard operations."""
@@ -199,9 +196,8 @@ class TestGlobalDiagnosticsCache:
         result = diagnostics_cache.get(test_key)
         assert result == {"test": True}
 
-        # Invalidate
-        diagnostics_cache.invalidate(test_key)
-        assert diagnostics_cache.get(test_key) is None
+        # Clear (cleanup)
+        diagnostics_cache.clear()
 
 
 class TestCacheEdgeCases:
@@ -238,22 +234,6 @@ class TestCacheEdgeCases:
         result = cache.get("empty-list")
         assert result == []
 
-    def test_cache_invalidate_partial_match(self) -> None:
-        """Invalidate should match campaign_id anywhere in key."""
-        cache = ResponseCache()
-        campaign_id = "test-uuid-123"
-
-        cache.set(f"prefix:{campaign_id}:suffix", {"a": 1})
-        cache.set(f"diagnostics:{campaign_id}", {"b": 2})
-        cache.set(f"{campaign_id}:extra", {"c": 3})
-
-        cache.invalidate(campaign_id)
-
-        # All entries containing campaign_id should be removed
-        assert cache.get(f"prefix:{campaign_id}:suffix") is None
-        assert cache.get(f"diagnostics:{campaign_id}") is None
-        assert cache.get(f"{campaign_id}:extra") is None
-
     def test_cache_concurrent_like_access_patterns(self) -> None:
         """Cache should handle rapid set/get patterns.
 
@@ -264,6 +244,6 @@ class TestCacheEdgeCases:
         campaign_id = "tight-loop-test"
 
         for i in range(100):
-            cache.set(f"diagnostics:{campaign_id}", {"iteration": i})
-            result = cache.get(f"diagnostics:{campaign_id}")
+            cache.set(f"diagnostics:{campaign_id}:{i}", {"iteration": i})
+            result = cache.get(f"diagnostics:{campaign_id}:{i}")
             assert result == {"iteration": i}

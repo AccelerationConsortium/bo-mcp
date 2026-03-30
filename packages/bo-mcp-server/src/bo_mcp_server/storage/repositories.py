@@ -3,12 +3,13 @@
 import json
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain import (
     Campaign,
     CampaignSpec,
+    CampaignStatus,
     Constraint,
     ConstraintType,
     InputParameter,
@@ -247,6 +248,69 @@ class CampaignRepository:
         result = await self.session.execute(select(CampaignModel))
         return [self._to_entity(m) for m in result.scalars()]
 
+    async def list_filtered(
+        self,
+        owner_id: UUID | None = None,
+        status: CampaignStatus | None = None,
+        exclude_ids: list[UUID] | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> tuple[list[Campaign], int]:
+        """List campaigns with database-side filtering and pagination.
+
+        Args:
+            owner_id: Filter by owner.
+            status: Filter by campaign status.
+            exclude_ids: Campaign IDs to exclude.
+            limit: Maximum number of results.
+            offset: Number of results to skip.
+
+        Returns:
+            Tuple of (campaigns, total_count).
+        """
+        query = select(CampaignModel)
+        count_query = select(func.count()).select_from(CampaignModel)
+
+        if owner_id is not None:
+            query = query.where(CampaignModel.owner_id == str(owner_id))
+            count_query = count_query.where(CampaignModel.owner_id == str(owner_id))
+        if status is not None:
+            query = query.where(CampaignModel.status == status)
+            count_query = count_query.where(CampaignModel.status == status)
+        if exclude_ids:
+            str_ids = [str(id) for id in exclude_ids]
+            query = query.where(CampaignModel.id.notin_(str_ids))
+            count_query = count_query.where(CampaignModel.id.notin_(str_ids))
+
+        total_result = await self.session.execute(count_query)
+        total_count = total_result.scalar_one()
+
+        query = query.order_by(CampaignModel.created_at.desc())
+        if offset > 0:
+            query = query.offset(offset)
+        if limit is not None:
+            query = query.limit(limit)
+
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
+
+    async def get_by_ids(self, ids: list[UUID]) -> dict[UUID, Campaign]:
+        """Get multiple campaigns by their IDs in a single query.
+
+        Args:
+            ids: List of UUIDs to fetch.
+
+        Returns:
+            Dictionary mapping UUID to Campaign for found campaigns.
+        """
+        if not ids:
+            return {}
+        str_ids = [str(id) for id in ids]
+        result = await self.session.execute(
+            select(CampaignModel).where(CampaignModel.id.in_(str_ids))
+        )
+        return {UUID(m.id): self._to_entity(m) for m in result.scalars()}
+
     async def save(self, campaign: Campaign, expected_version: int | None = None) -> Campaign:
         """Save campaign with optional optimistic locking."""
         if expected_version is not None:
@@ -391,6 +455,26 @@ class SuggestionRepository:
         result = await self.session.execute(select(SuggestionModel))
         return [self._to_entity(m) for m in result.scalars()]
 
+    async def count_pending_by_campaigns(self, campaign_ids: list[UUID]) -> dict[UUID, int]:
+        """Count pending suggestions per campaign in a single query.
+
+        Args:
+            campaign_ids: List of campaign UUIDs.
+
+        Returns:
+            Dictionary mapping campaign UUID to pending suggestion count.
+        """
+        if not campaign_ids:
+            return {}
+        str_ids = [str(id) for id in campaign_ids]
+        result = await self.session.execute(
+            select(SuggestionModel.campaign_id, func.count())
+            .where(SuggestionModel.campaign_id.in_(str_ids))
+            .where(SuggestionModel.status == SuggestionStatus.PENDING)
+            .group_by(SuggestionModel.campaign_id)
+        )
+        return {UUID(row[0]): row[1] for row in result.all()}
+
     def _to_entity(self, model: SuggestionModel) -> Suggestion:
         """Convert ORM model to domain entity."""
         prov_data = model.get_provenance()
@@ -515,6 +599,25 @@ class ResultRepository:
         """List all results."""
         result = await self.session.execute(select(ResultModel))
         return [self._to_entity(m) for m in result.scalars()]
+
+    async def count_by_campaigns(self, campaign_ids: list[UUID]) -> dict[UUID, int]:
+        """Count results per campaign in a single query.
+
+        Args:
+            campaign_ids: List of campaign UUIDs.
+
+        Returns:
+            Dictionary mapping campaign UUID to result count.
+        """
+        if not campaign_ids:
+            return {}
+        str_ids = [str(id) for id in campaign_ids]
+        result = await self.session.execute(
+            select(ResultModel.campaign_id, func.count())
+            .where(ResultModel.campaign_id.in_(str_ids))
+            .group_by(ResultModel.campaign_id)
+        )
+        return {UUID(row[0]): row[1] for row in result.all()}
 
     def _to_entity(self, model: ResultModel) -> Result:
         """Convert ORM model to domain entity."""

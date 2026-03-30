@@ -77,9 +77,11 @@ class CampaignModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     spec_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("campaign_specs.id"), nullable=False
+        String(36), ForeignKey("campaign_specs.id"), nullable=False, index=True
     )
-    owner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False, index=True
+    )
     status: Mapped[CampaignStatus] = mapped_column(
         Enum(CampaignStatus), default=CampaignStatus.CREATED
     )
@@ -118,7 +120,9 @@ class SuggestionModel(Base):
     __tablename__ = "suggestions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id"), nullable=False)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id"), nullable=False, index=True
+    )
     parameter_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     status: Mapped[SuggestionStatus] = mapped_column(
         Enum(SuggestionStatus), default=SuggestionStatus.PENDING
@@ -146,9 +150,11 @@ class ResultModel(Base):
     __tablename__ = "results"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id"), nullable=False)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id"), nullable=False, index=True
+    )
     suggestion_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("suggestions.id"), nullable=True
+        String(36), ForeignKey("suggestions.id"), nullable=True, index=True
     )
     parameter_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     objective_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON

@@ -11,7 +11,6 @@ from bo_engine.suggestions import update_turbo_after_evaluation
 from bo_engine.turbo import TurboState
 from bo_engine.types import ObservationData
 
-from bo_mcp_server.cache import diagnostics_cache
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     CampaignSpec,
@@ -495,9 +494,6 @@ async def submit_results(  # noqa: C901
         # Save campaign if updated
         if updated_campaign.version != campaign.version:
             await campaign_repo.save(updated_campaign, expected_version=campaign.version)
-
-        # Invalidate diagnostics cache since results have changed
-        diagnostics_cache.invalidate(campaign_id)
 
         logger.info(
             "Successfully submitted %d results for campaign %s",

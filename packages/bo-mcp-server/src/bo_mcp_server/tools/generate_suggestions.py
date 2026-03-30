@@ -13,7 +13,6 @@ from bo_engine.suggestions import generate_initial_design, generate_next_batch
 from bo_engine.turbo import TurboState, should_use_turbo
 from bo_engine.types import ObservationData, OptimizationSpec
 
-from bo_mcp_server.cache import diagnostics_cache
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
@@ -481,9 +480,6 @@ async def generate_suggestions(  # noqa: C901 — refactoring planned in TODO St
             turbo_dict = _turbo_state_to_dict(new_turbo_state)
             updated_campaign = updated_campaign.with_turbo_state(turbo_dict)
         await campaign_repo.save(updated_campaign, expected_version=campaign.version)
-
-        # Invalidate diagnostics cache since iteration/suggestions have changed
-        diagnostics_cache.invalidate(campaign_id)
 
         logger.info(
             "Generated %d suggestions for campaign %s, iteration=%d",

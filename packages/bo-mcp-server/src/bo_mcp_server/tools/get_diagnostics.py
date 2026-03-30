@@ -961,11 +961,17 @@ def _compute_outlier_diagnostics(
 # =============================================================================
 
 
+ALL_SECTIONS = frozenset(
+    ["health", "objectives", "model", "convergence", "suggestions", "outliers", "constraints"]
+)
+
+
 @mcp.tool(name="bo_get_diagnostics")
 async def get_diagnostics(  # noqa: C901
     campaign_id: str,
     use_cache: bool = True,
     verbosity: str = "standard",
+    sections: list[str] | None = None,
 ) -> dict[str, Any]:
     """Get diagnostic information for a campaign.
 
@@ -980,6 +986,17 @@ async def get_diagnostics(  # noqa: C901
             - "minimal": ~50 tokens - success + key metrics only (for tight loops)
             - "standard": ~200 tokens - excludes debug fields like hyperparameters
             - "detailed": ~500+ tokens - all fields including LOO-CV and hyperparameters
+        sections: Optional list of diagnostic sections to compute. When omitted,
+            all sections are computed. Valid values:
+            - "health": health_status, progress_status, next_action_recommendation
+            - "objectives": best_value/pareto_front, objective_ranges
+            - "model": feature_importance, loo_cv_metrics, model_correlation, hyperparameters
+            - "convergence": convergence detection
+            - "suggestions": uncertainty_trend, exploration_exploitation, suggestion_diversity
+            - "outliers": outlier detection
+            - "constraints": constraint satisfaction tracking
+            Requesting only cheap sections (health, objectives, convergence) avoids
+            expensive model fitting. Use ["health"] for fast status checks.
 
     Returns:
         Dictionary with:
@@ -988,37 +1005,32 @@ async def get_diagnostics(  # noqa: C901
             - iteration: Current iteration number
             - n_results: Number of results submitted
             - n_pending_suggestions: Number of pending suggestions
-            - pareto_front: List of Pareto-optimal points (multi-obj)
-            - hypervolume: Current hypervolume value (multi-obj)
-            - best_value: Best observed value (single-obj)
-            - health_status: 'healthy', 'warning', or 'critical'
+            - (section-dependent fields as described above)
             - errors: List of error messages (if failed)
-
-            Agent Usability Metrics (v2.4):
-            - uncertainty_trend: How model uncertainty is evolving
-            - exploration_exploitation: Balance between exploration and exploitation
-            - hyperparameters: Exposed GP hyperparameters (lengthscales, noise)
-            - constraint_satisfaction: Feasibility tracking over time
-            - suggestion_diversity: Diversity metrics for recent suggestions
-
-            Critical Missing Functionality (v2.5):
-            - convergence: Early stopping detection with convergence score and recommendation
-            - outliers: Detected outliers with standardized errors and recommendations
     """
     logger.info(
-        "Getting diagnostics for campaign_id=%s, use_cache=%s, verbosity=%s",
+        "Getting diagnostics for campaign_id=%s, use_cache=%s, verbosity=%s, sections=%s",
         campaign_id,
         use_cache,
         verbosity,
+        sections,
     )
 
-    # Validate verbosity parameter
+    # Validate inputs
     try:
         verbosity_level = VerbosityLevel(verbosity)
     except ValueError:
         return make_error_response(
             ErrorCode.VALIDATION_FAILED,
             message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
+        )
+
+    requested = ALL_SECTIONS if sections is None else frozenset(sections)
+    invalid_sections = requested - ALL_SECTIONS
+    if invalid_sections:
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=f"Invalid sections: {sorted(invalid_sections)}. Valid: {sorted(ALL_SECTIONS)}",
         )
 
     try:
@@ -1030,13 +1042,7 @@ async def get_diagnostics(  # noqa: C901
             details={"campaign_id": campaign_id},
         )
 
-    # Check cache first if enabled
-    cache_key = f"diagnostics:{campaign_id}"
-    if use_cache:
-        cached = diagnostics_cache.get(cache_key)
-        if cached is not None:
-            logger.debug("Returning cached diagnostics for campaign %s", campaign_id)
-            return format_diagnostics_response(cached, verbosity_level)
+    is_full = requested == ALL_SECTIONS
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
@@ -1044,7 +1050,6 @@ async def get_diagnostics(  # noqa: C901
         result_repo = ResultRepository(session)
         suggestion_repo = SuggestionRepository(session)
 
-        # Get campaign
         campaign = await campaign_repo.get(campaign_uuid)
         if campaign is None:
             return make_error_response(
@@ -1053,7 +1058,14 @@ async def get_diagnostics(  # noqa: C901
                 details={"campaign_id": campaign_id},
             )
 
-        # Get spec
+        # Version-aware cache key — auto-invalidates on any mutation
+        cache_key = f"diagnostics:{campaign_id}:{campaign.version}"
+        if use_cache and is_full:
+            cached = diagnostics_cache.get(cache_key)
+            if cached is not None:
+                logger.debug("Returning cached diagnostics for campaign %s", campaign_id)
+                return format_diagnostics_response(cached, verbosity_level)
+
         spec = await spec_repo.get(campaign.spec_id)
         if spec is None:
             return make_error_response(
@@ -1062,119 +1074,12 @@ async def get_diagnostics(  # noqa: C901
                 details={"spec_id": str(campaign.spec_id)},
             )
 
-        # Get results and suggestions
         results = await result_repo.list_by_campaign(campaign_uuid)
         all_suggestions = await suggestion_repo.list_by_campaign(campaign_uuid)
         pending_suggestions = [s for s in all_suggestions if s.status == SuggestionStatus.PENDING]
 
-        # Basic stats
-        diagnostics: dict[str, Any] = {
-            "success": True,
-            "campaign_status": campaign.status.value,
-            "iteration": campaign.iteration,
-            "n_results": len(results),
-            "n_pending_suggestions": len(pending_suggestions),
-            "errors": [],
-        }
-
-        # Determine if single-objective or multi-objective
-        is_single_objective = len(spec.objectives) == 1
-
-        # Compute problem-type-specific diagnostics
-        if is_single_objective:
-            _compute_single_objective_diagnostics(spec, results, diagnostics)
-        else:
-            _compute_multi_objective_diagnostics(spec, results, diagnostics)
-
-        # Add objective ranges
-        diagnostics["objective_ranges"] = _compute_objective_ranges(spec, results)
-
-        # Add model info
-        diagnostics["model_info"] = _get_model_info(spec, is_single_objective)
-
-        # Compute model-based diagnostics (feature importance, LOO-CV, correlation)
-        model_correlation = _compute_model_diagnostics(
-            spec, results, is_single_objective, diagnostics
-        )
-
-        # Compute health status and progress status
-        _compute_health_and_progress(
-            spec,
-            results,
-            campaign.iteration,
-            is_single_objective,
-            model_correlation,
-            campaign.hypervolume_history,  # Section 4.2: Use persisted history
-            diagnostics,
-        )
-
-        # =============================================================
-        # Agent Usability Metrics (v2.4)
-        # =============================================================
-
-        # Convert spec to optimization spec for encoding functions
-        opt_spec = campaign_spec_to_optimization_spec(spec)
-
-        # 1. Uncertainty trend (how confident is the model becoming?)
-        _compute_uncertainty_trends(all_suggestions, diagnostics)
-
-        # 2. Exploration/exploitation balance
-        _compute_exploration_exploitation(all_suggestions, results, spec, opt_spec, diagnostics)
-
-        # 3. Hyperparameter visibility (for advanced debugging)
-        # Only compute if we have enough data for a model
-        n_params = len(spec.parameters)
-        min_data_for_model = max(3, 2 * n_params)
-        if len(results) >= min_data_for_model:
-            try:
-                param_names = [p.name for p in spec.parameters]
-                train_x, train_y, _, _ = _prepare_training_data(spec, results, opt_spec)
-                bounds = get_bounds_tensor(opt_spec)
-
-                if is_single_objective:
-                    model = create_and_fit_single_task_model(
-                        train_x,
-                        train_y,
-                        bounds,
-                        use_input_warping=spec.use_input_warping,
-                    )
-                else:
-                    model = create_and_fit_model(
-                        train_x,
-                        train_y,
-                        bounds,
-                        use_input_warping=spec.use_input_warping,
-                    )
-                _compute_hyperparameters(model, param_names, diagnostics)
-            except Exception as e:
-                logger.debug("Model fitting for hyperparameters failed: %s", e)
-                diagnostics["hyperparameters"] = None
-        else:
-            diagnostics["hyperparameters"] = None
-
-        # 4. Constraint satisfaction tracking
-        _compute_constraint_satisfaction_metrics(results, spec, diagnostics)
-
-        # 5. Suggestion diversity metrics
-        _compute_suggestion_diversity_metrics(all_suggestions, opt_spec, diagnostics)
-
-        # =============================================================
-        # Critical Missing Functionality (v2.5)
-        # =============================================================
-
-        # 6. Convergence/Early Stopping Detection (Section 1.4, Section 4.2)
-        _compute_convergence_diagnostics(
-            spec, is_single_objective, campaign.hypervolume_history, diagnostics
-        )
-
-        # 7. Outlier Detection (Section 1.3)
-        _compute_outlier_diagnostics(spec, results, opt_spec, diagnostics)
-
-        # 8. Next Action Recommendation (v3.3 Agent Efficiency)
-        _compute_next_action_recommendation(
-            diagnostics,
-            n_pending_suggestions=len(pending_suggestions),
-            campaign_status=campaign.status.value,
+        diagnostics = _compute_sections(
+            requested, spec, results, all_suggestions, pending_suggestions, campaign
         )
 
         logger.info(
@@ -1185,7 +1090,126 @@ async def get_diagnostics(  # noqa: C901
             diagnostics.get("convergence", {}).get("converged", False),
         )
 
-        # Cache the full diagnostics before formatting
-        diagnostics_cache.set(cache_key, diagnostics)
+        # Cache full diagnostics only
+        if is_full:
+            diagnostics_cache.set(cache_key, diagnostics)
 
         return format_diagnostics_response(diagnostics, verbosity_level)
+
+
+def _compute_sections(
+    requested: frozenset[str],
+    spec: CampaignSpec,
+    results: list[Result],
+    all_suggestions: list[Suggestion],
+    pending_suggestions: list[Suggestion],
+    campaign: Any,
+) -> dict[str, Any]:
+    """Compute only the requested diagnostic sections."""
+    is_single_objective = len(spec.objectives) == 1
+
+    diagnostics: dict[str, Any] = {
+        "success": True,
+        "campaign_status": campaign.status.value,
+        "iteration": campaign.iteration,
+        "n_results": len(results),
+        "n_pending_suggestions": len(pending_suggestions),
+        "errors": [],
+    }
+
+    # Objectives section (cheap)
+    if "objectives" in requested or "health" in requested:
+        if is_single_objective:
+            _compute_single_objective_diagnostics(spec, results, diagnostics)
+        else:
+            _compute_multi_objective_diagnostics(spec, results, diagnostics)
+        diagnostics["objective_ranges"] = _compute_objective_ranges(spec, results)
+        diagnostics["model_info"] = _get_model_info(spec, is_single_objective)
+
+    # Model section (expensive — involves GP fitting)
+    model_correlation = 0.5
+    if "model" in requested:
+        model_correlation = _compute_model_diagnostics(
+            spec, results, is_single_objective, diagnostics
+        )
+
+    # Health section (cheap, but needs model correlation from model section)
+    if "health" in requested:
+        _compute_health_and_progress(
+            spec,
+            results,
+            campaign.iteration,
+            is_single_objective,
+            model_correlation,
+            campaign.hypervolume_history,
+            diagnostics,
+        )
+        _compute_next_action_recommendation(
+            diagnostics,
+            n_pending_suggestions=len(pending_suggestions),
+            campaign_status=campaign.status.value,
+        )
+
+    # Suggestions section (moderate — needs encoding)
+    if "suggestions" in requested:
+        opt_spec = campaign_spec_to_optimization_spec(spec)
+        _compute_uncertainty_trends(all_suggestions, diagnostics)
+        _compute_exploration_exploitation(all_suggestions, results, spec, opt_spec, diagnostics)
+        _compute_suggestion_diversity_metrics(all_suggestions, opt_spec, diagnostics)
+        _compute_hyperparameters_section(spec, results, is_single_objective, diagnostics)
+
+    # Constraints section (cheap)
+    if "constraints" in requested:
+        _compute_constraint_satisfaction_metrics(results, spec, diagnostics)
+
+    # Convergence section (cheap — uses stored history)
+    if "convergence" in requested:
+        _compute_convergence_diagnostics(
+            spec, is_single_objective, campaign.hypervolume_history, diagnostics
+        )
+
+    # Outliers section (expensive — needs model fitting)
+    if "outliers" in requested:
+        opt_spec = campaign_spec_to_optimization_spec(spec)
+        _compute_outlier_diagnostics(spec, results, opt_spec, diagnostics)
+
+    return diagnostics
+
+
+def _compute_hyperparameters_section(
+    spec: CampaignSpec,
+    results: list[Result],
+    is_single_objective: bool,
+    diagnostics: dict[str, Any],
+) -> None:
+    """Compute hyperparameter visibility (separate from model diagnostics)."""
+    n_params = len(spec.parameters)
+    min_data_for_model = max(3, 2 * n_params)
+    if len(results) < min_data_for_model:
+        diagnostics["hyperparameters"] = None
+        return
+
+    try:
+        opt_spec = campaign_spec_to_optimization_spec(spec)
+        param_names = [p.name for p in spec.parameters]
+        train_x, train_y, _, _ = _prepare_training_data(spec, results, opt_spec)
+        bounds = get_bounds_tensor(opt_spec)
+
+        if is_single_objective:
+            model = create_and_fit_single_task_model(
+                train_x,
+                train_y,
+                bounds,
+                use_input_warping=spec.use_input_warping,
+            )
+        else:
+            model = create_and_fit_model(
+                train_x,
+                train_y,
+                bounds,
+                use_input_warping=spec.use_input_warping,
+            )
+        _compute_hyperparameters(model, param_names, diagnostics)
+    except Exception as e:
+        logger.debug("Model fitting for hyperparameters failed: %s", e)
+        diagnostics["hyperparameters"] = None

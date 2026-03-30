@@ -186,6 +186,8 @@ class SuggestionResult:
     model_version: int | None = None
     confidence_level: str | None = None
     explanation: str | None = None
+    predicted_objectives: dict[str, float] | None = None  # Posterior mean per objective
+    predicted_std: dict[str, float] | None = None  # Posterior std per objective
 
 
 @dataclass

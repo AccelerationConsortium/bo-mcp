@@ -5,6 +5,7 @@ from bo_mcp_server.storage.database import close_database, get_session, init_dat
 from bo_mcp_server.storage.repositories import (
     CampaignRepository,
     CampaignSpecRepository,
+    EventRepository,
     ResultRepository,
     SuggestionRepository,
     UserRepository,
@@ -14,6 +15,7 @@ __all__ = [
     "CampaignRepository",
     "CampaignSpecRepository",
     "ConcurrentModificationError",
+    "EventRepository",
     "ResultRepository",
     "SuggestionRepository",
     "UserRepository",

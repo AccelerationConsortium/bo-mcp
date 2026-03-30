@@ -350,29 +350,34 @@ def _compute_turbo_bounds(
     return opt_bounds, turbo_info
 
 
-def _get_model_uncertainties(model: Any, candidates: Tensor) -> Tensor:
-    """Get model uncertainties at candidate points.
+def _get_model_predictions(model: Any, candidates: Tensor) -> tuple[Tensor, Tensor]:
+    """Get model predictions (mean and std) at candidate points.
 
     Args:
         model: Fitted GP model
         candidates: Candidate points to evaluate
 
     Returns:
-        Tensor of uncertainties (variances)
+        Tuple of (means, stds) where each has shape matching the model output
     """
     model.eval()
     with torch.no_grad():
         posterior = model.posterior(candidates)
-        uncertainties = posterior.variance.squeeze(-1)
-        if uncertainties.dim() == 0:
-            uncertainties = uncertainties.unsqueeze(0)
-    return uncertainties
+        means = posterior.mean.squeeze(-1)
+        variances = posterior.variance.squeeze(-1)
+        if means.dim() == 0:
+            means = means.unsqueeze(0)
+        if variances.dim() == 0:
+            variances = variances.unsqueeze(0)
+        stds = variances.sqrt()
+    return means, stds
 
 
 def _create_single_objective_suggestions(
     candidates: Tensor,
     acq_values: Tensor,
-    uncertainties: Tensor,
+    means: Tensor,
+    stds: Tensor,
     spec: OptimizationSpec,
     train_y: Tensor,
     iteration: int,
@@ -386,7 +391,8 @@ def _create_single_objective_suggestions(
     Args:
         candidates: Optimized candidate points
         acq_values: Acquisition function values
-        uncertainties: Model uncertainties at candidates
+        means: Posterior mean predictions at candidates
+        stds: Posterior std predictions at candidates
         spec: Optimization specification
         train_y: Original training outputs (not negated)
         iteration: Current iteration number
@@ -409,17 +415,26 @@ def _create_single_objective_suggestions(
         best_observed = train_y.max().item()
         best_str = "highest"
 
+    obj_name = spec.objectives[0].name
     suggestions = []
     for i in range(batch_size):
         values = decode_categorical(candidates[i], spec)
 
-        uncertainty = uncertainties[i].item() if i < uncertainties.numel() else None
-        confidence_level = _get_confidence_level(uncertainty)
+        std_val = stds[i].item() if i < stds.numel() else None
+        confidence_level = _get_confidence_level(std_val)
 
         if acq_values.dim() == 0:
             acq_val = acq_values.item() if i == 0 else None
         else:
             acq_val = acq_values[i].item() if i < acq_values.numel() else None
+
+        # Store posterior predictions for predicted-vs-actual comparison.
+        # For minimization, means are negated (BoTorch convention) — un-negate for storage.
+        pred_mean = means[i].item() if i < means.numel() else None
+        if pred_mean is not None and not minimize:
+            pred_mean = -pred_mean  # undo BoTorch negation
+        predicted_objectives = {obj_name: pred_mean} if pred_mean is not None else None
+        predicted_std_dict = {obj_name: std_val} if std_val is not None else None
 
         acq_name = method.value
         explanation = (
@@ -435,12 +450,14 @@ def _create_single_objective_suggestions(
             generation_method="bo" if turbo_state is None else "turbo",
             random_seed=random_seed,
             acquisition_value=acq_val,
-            model_uncertainty=uncertainty,
+            model_uncertainty=std_val,
             acquisition_function=acq_name,
             model_type="SingleTaskGP (Gaussian Process)",
             model_version=iteration,
             confidence_level=confidence_level,
             explanation=explanation,
+            predicted_objectives=predicted_objectives,
+            predicted_std=predicted_std_dict,
         )
         suggestions.append(suggestion)
 
@@ -537,12 +554,13 @@ def _generate_single_objective_batch(
     if projection_constraints:
         candidates = _apply_constraints_to_samples(candidates, spec, bounds)
 
-    # Get uncertainties and create suggestions
-    uncertainties = _get_model_uncertainties(model, candidates)
+    # Get model predictions and create suggestions
+    means, stds = _get_model_predictions(model, candidates)
     suggestions = _create_single_objective_suggestions(
         candidates,
         acq_values,
-        uncertainties,
+        means,
+        stds,
         spec,
         train_y,
         ctx.iteration,
@@ -558,7 +576,8 @@ def _generate_single_objective_batch(
 def _create_multi_objective_suggestions(
     candidates: Tensor,
     acq_values: Tensor,
-    uncertainties: Tensor,
+    means: Tensor,
+    stds: Tensor,
     spec: OptimizationSpec,
     iteration: int,
     random_seed: int,
@@ -569,11 +588,13 @@ def _create_multi_objective_suggestions(
     Args:
         candidates: Optimized candidate points
         acq_values: Acquisition function values
-        uncertainties: Model uncertainties at candidates
+        means: Posterior mean predictions at candidates (shape: batch x n_objectives)
+        stds: Posterior std predictions at candidates (shape: batch x n_objectives)
         spec: Optimization specification
         iteration: Current iteration number
         random_seed: Random seed for reproducibility
         method: Acquisition method used
+        minimize_mask: Boolean tensor indicating which objectives are minimized
 
     Returns:
         List of SuggestionResult objects
@@ -584,15 +605,31 @@ def _create_multi_objective_suggestions(
     for i in range(batch_size):
         values = decode_categorical(candidates[i], spec)
 
-        # Determine confidence level
-        uncertainty = uncertainties[i].item() if i < uncertainties.numel() else None
-        confidence_level = _get_confidence_level(uncertainty)
+        # Average std across objectives for confidence level
+        if stds.dim() > 1 and i < stds.shape[0]:
+            avg_std = stds[i].mean().item()
+        elif i < stds.numel():
+            avg_std = stds[i].item()
+        else:
+            avg_std = None
+        confidence_level = _get_confidence_level(avg_std)
 
         # Get acquisition value
         if acq_values.dim() == 0:
             acq_val = acq_values.item() if i == 0 else None
         else:
             acq_val = acq_values[i].item() if i < acq_values.numel() else None
+
+        # Store posterior predictions per objective.
+        # Un-negate maximization objectives (BoTorch works in minimization convention).
+        predicted_objectives: dict[str, float] = {}
+        predicted_std_dict: dict[str, float] = {}
+        for j, obj in enumerate(spec.objectives):
+            if means.dim() > 1 and i < means.shape[0] and j < means.shape[1]:
+                pred = means[i, j].item()
+                predicted_objectives[obj.name] = pred if obj.minimize else -pred
+            if stds.dim() > 1 and i < stds.shape[0] and j < stds.shape[1]:
+                predicted_std_dict[obj.name] = stds[i, j].item()
 
         # Generate explanation
         acq_name = method.value
@@ -614,12 +651,14 @@ def _create_multi_objective_suggestions(
             generation_method="bo",
             random_seed=random_seed,
             acquisition_value=acq_val,
-            model_uncertainty=uncertainty,
+            model_uncertainty=avg_std,
             acquisition_function=acq_name,
             model_type="ModelListGP (Gaussian Process)",
             model_version=iteration,
             confidence_level=confidence_level,
             explanation=explanation,
+            predicted_objectives=predicted_objectives or None,
+            predicted_std=predicted_std_dict or None,
         )
         suggestions.append(suggestion)
 
@@ -701,13 +740,18 @@ def _generate_multi_objective_batch(
     if projection_constraints:
         candidates = _apply_constraints_to_samples(candidates, spec, bounds)
 
-    # Get uncertainties for provenance
-    uncertainties = _get_model_uncertainties(model, candidates)
-    if uncertainties.dim() > 1:
-        uncertainties = uncertainties.mean(dim=-1)
+    # Get model predictions for provenance
+    means, stds = _get_model_predictions(model, candidates)
 
     return _create_multi_objective_suggestions(
-        candidates, acq_values, uncertainties, spec, ctx.iteration, ctx.random_seed, method
+        candidates,
+        acq_values,
+        means,
+        stds,
+        spec,
+        ctx.iteration,
+        ctx.random_seed,
+        method,
     )
 
 

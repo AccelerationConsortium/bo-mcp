@@ -14,6 +14,7 @@ from bo_mcp_server.domain.campaign_spec import (
     ParameterType,
     TransferLearningConfig,
 )
+from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.domain.intake_models import CampaignIntakeInput, ResultSubmissionInput
 from bo_mcp_server.domain.result import Result, ResultSource
 from bo_mcp_server.domain.suggestion import Suggestion, SuggestionProvenance, SuggestionStatus
@@ -24,6 +25,8 @@ __version__ = "0.1.0"
 __all__ = [
     "AcquisitionMethod",
     "Campaign",
+    "Event",
+    "EventType",
     "CampaignIntakeInput",
     "CampaignSpec",
     "CampaignStatus",

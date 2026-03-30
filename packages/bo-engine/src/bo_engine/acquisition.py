@@ -27,11 +27,6 @@ from torch import Tensor
 
 from bo_engine.constants import MIXED_CATEGORICAL_COMBO_THRESHOLD
 from bo_engine.device import ensure_device, to_device
-from bo_engine.reference_point import (
-    ReferencePointConfig,
-    ReferencePointStrategy,
-    get_reference_point_dynamic,
-)
 from bo_engine.transforms import (
     SearchSpaceType,
     build_fixed_features_list,
@@ -602,40 +597,6 @@ def _optimize_mixed(
         },
     )
     return candidates, acq_values
-
-
-def get_reference_point(
-    train_y: Tensor,
-    minimize_mask: Tensor,
-    margin: float = 0.1,
-) -> Tensor:
-    """Compute reference point for hypervolume.
-
-    The reference point should be slightly worse than the worst observed value
-    for each objective. This function provides backward compatibility with the
-    static reference point computation.
-
-    For adaptive reference point computation that improves over time, use
-    `get_reference_point_dynamic` from the `reference_point` module.
-
-    Args:
-        train_y: Training outputs of shape (n_samples, n_objectives)
-        minimize_mask: Boolean tensor indicating which objectives to minimize
-        margin: Margin factor (e.g., 0.1 = 10% worse)
-
-    Returns:
-        Reference point tensor of shape (n_objectives,)
-
-    See Also:
-        reference_point.get_reference_point_dynamic: Adaptive reference point
-        reference_point.ReferencePointStrategy: Available strategies
-    """
-    config = ReferencePointConfig(
-        strategy=ReferencePointStrategy.STATIC,
-        margin=margin,
-    )
-    ref_point, _ = get_reference_point_dynamic(train_y, minimize_mask, config)
-    return ref_point
 
 
 def get_best_observed_value(

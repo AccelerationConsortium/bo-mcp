@@ -19,7 +19,16 @@ class ResultSource(StrEnum):
 
 
 class Result(BaseModel):
-    """Result entity representing an experimental observation."""
+    """Result entity representing an experimental observation.
+
+    Metadata schema conventions (keys are optional but should follow this format):
+        external_ref: Reference to source system.
+            {"system": "lims", "id": "EXP-2024-0042", "url": "https://..."}
+        conditions: Experimental conditions not captured as BO parameters.
+            {"ambient_temp": 22.1, "operator": "WG", "equipment": "reactor_3"}
+        cost: Evaluation cost for cost-aware optimization.
+            1.5 (float)
+    """
 
     id: UUID = Field(default_factory=uuid4)
     campaign_id: UUID
@@ -28,6 +37,7 @@ class Result(BaseModel):
     objective_values: dict[str, float]  # Objective name -> observed value
     source: ResultSource
     submitted_by: UUID  # User who submitted
+    measurement_uncertainty: dict[str, float] | None = None  # Per-objective noise estimate (std)
     metadata: dict[str, Any] = Field(default_factory=dict)  # Extra info
     created_at: datetime = Field(default_factory=utcnow)
 

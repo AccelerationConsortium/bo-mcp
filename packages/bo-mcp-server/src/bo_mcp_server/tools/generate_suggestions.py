@@ -170,6 +170,8 @@ def _generate_bo_suggestions_data(
                 "model_version": sr.model_version,
                 "confidence_level": sr.confidence_level,
                 "explanation": sr.explanation,
+                "predicted_objectives": sr.predicted_objectives,
+                "predicted_std": sr.predicted_std,
             },
         )
         for sr in suggestion_results

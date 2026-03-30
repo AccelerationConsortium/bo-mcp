@@ -37,6 +37,7 @@ def create_mcp_server() -> FastMCP:
     # These imports must be inside the function to avoid circular imports
     from bo_mcp_server.resources import (  # noqa: F401
         campaign_resource,
+        events_resource,
         suggestion_resource,
     )
     from bo_mcp_server.tools import (  # noqa: F401
@@ -54,5 +55,5 @@ def create_mcp_server() -> FastMCP:
         upload_results_file,
     )
 
-    logger.info("MCP server created with 12 tools and 2 resources")
+    logger.info("MCP server created with 12 tools and 3 resources")
     return mcp

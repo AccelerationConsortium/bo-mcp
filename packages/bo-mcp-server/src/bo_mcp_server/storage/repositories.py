@@ -20,10 +20,12 @@ from bo_mcp_server.domain import (
     SuggestionStatus,
     User,
 )
+from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.storage.base import ConcurrentModificationError
 from bo_mcp_server.storage.models import (
     CampaignModel,
     CampaignSpecModel,
+    EventModel,
     ResultModel,
     SuggestionModel,
     UserModel,
@@ -405,6 +407,9 @@ class SuggestionRepository:
             model_version=prov_data.get("model_version"),
             confidence_level=prov_data.get("confidence_level"),
             explanation=prov_data.get("explanation"),
+            # Model prediction fields (Step 3)
+            predicted_objectives=prov_data.get("predicted_objectives"),
+            predicted_std=prov_data.get("predicted_std"),
         )
         return Suggestion(
             id=UUID(model.id),
@@ -448,6 +453,11 @@ class ResultRepository:
             objective_values_json=json.dumps(result.objective_values),
             source=result.source,
             submitted_by=str(result.submitted_by),
+            measurement_uncertainty_json=(
+                json.dumps(result.measurement_uncertainty)
+                if result.measurement_uncertainty
+                else None
+            ),
             metadata_json=json.dumps(result.metadata),
             created_at=result.created_at,
         )
@@ -476,6 +486,9 @@ class ResultRepository:
                 objective_values_json=json.dumps(r.objective_values),
                 source=r.source,
                 submitted_by=str(r.submitted_by),
+                measurement_uncertainty_json=(
+                    json.dumps(r.measurement_uncertainty) if r.measurement_uncertainty else None
+                ),
                 metadata_json=json.dumps(r.metadata),
                 created_at=r.created_at,
             )
@@ -505,6 +518,10 @@ class ResultRepository:
 
     def _to_entity(self, model: ResultModel) -> Result:
         """Convert ORM model to domain entity."""
+        measurement_uncertainty = None
+        if model.measurement_uncertainty_json:
+            measurement_uncertainty = json.loads(model.measurement_uncertainty_json)
+
         return Result(
             id=UUID(model.id),
             campaign_id=UUID(model.campaign_id),
@@ -513,6 +530,52 @@ class ResultRepository:
             objective_values=model.get_objective_values(),
             source=model.source,
             submitted_by=UUID(model.submitted_by),
+            measurement_uncertainty=measurement_uncertainty,
             metadata=model.get_metadata(),
+            created_at=model.created_at,
+        )
+
+
+class EventRepository:
+    """Repository for audit Event entities."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def save(self, event: Event) -> Event:
+        """Save an audit event."""
+        model = EventModel(
+            id=str(event.id),
+            campaign_id=str(event.campaign_id) if event.campaign_id else None,
+            event_type=event.event_type,
+            tool_name=event.tool_name,
+            input_summary_json=json.dumps(event.input_summary),
+            output_summary_json=json.dumps(event.output_summary),
+            actor_id=event.actor_id,
+            created_at=event.created_at,
+        )
+        merged = await self.session.merge(model)
+        return self._to_entity(merged)
+
+    async def list_by_campaign(self, campaign_id: UUID, limit: int = 50) -> list[Event]:
+        """List events for a campaign, most recent first."""
+        result = await self.session.execute(
+            select(EventModel)
+            .where(EventModel.campaign_id == str(campaign_id))
+            .order_by(EventModel.created_at.desc())
+            .limit(limit)
+        )
+        return [self._to_entity(m) for m in result.scalars()]
+
+    def _to_entity(self, model: EventModel) -> Event:
+        """Convert ORM model to domain entity."""
+        return Event(
+            id=UUID(model.id),
+            campaign_id=UUID(model.campaign_id) if model.campaign_id else None,
+            event_type=EventType(model.event_type),
+            tool_name=model.tool_name,
+            input_summary=json.loads(model.input_summary_json),
+            output_summary=json.loads(model.output_summary_json),
+            actor_id=model.actor_id,
             created_at=model.created_at,
         )

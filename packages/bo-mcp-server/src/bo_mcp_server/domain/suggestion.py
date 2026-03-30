@@ -37,6 +37,10 @@ class SuggestionProvenance(BaseModel):
     confidence_level: str | None = None  # "high", "medium", "low"
     explanation: str | None = None  # Human-readable reason for this suggestion
 
+    # Model predictions at the suggested point (enables predicted vs. actual comparison)
+    predicted_objectives: dict[str, float] | None = None  # Posterior mean per objective
+    predicted_std: dict[str, float] | None = None  # Posterior std per objective
+
 
 class Suggestion(BaseModel):
     """Suggestion entity representing a recommended experiment."""

@@ -8,6 +8,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from bo_mcp_server.domain.campaign import CampaignStatus
+from bo_mcp_server.domain.event import EventType
 from bo_mcp_server.domain.result import ResultSource
 from bo_mcp_server.domain.suggestion import SuggestionStatus
 from bo_mcp_server.domain.utils import utcnow
@@ -153,6 +154,7 @@ class ResultModel(Base):
     objective_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     source: Mapped[ResultSource] = mapped_column(Enum(ResultSource), nullable=False)
     submitted_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    measurement_uncertainty_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")  # JSON
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -171,3 +173,20 @@ class ResultModel(Base):
     def get_metadata(self) -> dict[str, Any]:
         """Deserialize metadata JSON."""
         return json.loads(self.metadata_json)
+
+
+class EventModel(Base):
+    """Audit event ORM model for MCP tool call logging."""
+
+    __tablename__ = "events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    campaign_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("campaigns.id"), nullable=True, index=True
+    )
+    event_type: Mapped[EventType] = mapped_column(Enum(EventType), default=EventType.TOOL_CALL)
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    input_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

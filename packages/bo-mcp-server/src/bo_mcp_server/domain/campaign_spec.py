@@ -103,17 +103,30 @@ class Constraint(BaseModel):
 
 
 class AcquisitionMethod(StrEnum):
-    """Acquisition function method."""
+    """Acquisition function method.
 
-    AUTO = "auto"  # Automatic selection based on n_objectives
-    QLOGNEI = "qLogNEI"  # Single-objective: Log Noisy Expected Improvement
-    QLOGEI = "qLogEI"  # Single-objective: Log Expected Improvement (noiseless)
-    QLOGNEHVI = "qLogNEHVI"  # Multi-objective: Log Noisy Expected Hypervolume Improvement
-    QLOGPAREGO = "qLogNParEGO"  # Multi-objective: Parallel EGO with Chebyshev scalarization
-    EIPU = "EIpu"  # Cost-aware: Expected Improvement per Unit cost
-    # v2.0: Advanced acquisition methods
-    QMFKG = "qMFKG"  # Multi-fidelity: Knowledge Gradient
-    SAASBO = "SAASBO"  # High-dimensional: Sparse Axis-Aligned Subspace BO
+    Values are backend-agnostic semantic names.
+    """
+
+    AUTO = "auto"
+    NOISY_EI = "noisy_expected_improvement"
+    EXPECTED_IMPROVEMENT = "expected_improvement"
+    HYPERVOLUME_IMPROVEMENT = "hypervolume_improvement"
+    SCALARIZED_MULTI_OBJ = "scalarized_multi_objective"
+    COST_WEIGHTED_EI = "cost_weighted_ei"
+    MULTI_FIDELITY_KG = "multi_fidelity_kg"
+
+
+# Maps legacy BoTorch class-name values to current semantic names.
+_LEGACY_ACQUISITION_VALUES: dict[str, str] = {
+    "qLogNEI": "noisy_expected_improvement",
+    "qLogEI": "expected_improvement",
+    "qLogNEHVI": "hypervolume_improvement",
+    "qLogNParEGO": "scalarized_multi_objective",
+    "EIpu": "cost_weighted_ei",
+    "qMFKG": "multi_fidelity_kg",
+    "SAASBO": "noisy_expected_improvement",
+}
 
 
 class OutcomeConstraint(BaseModel):
@@ -162,6 +175,29 @@ class TransferLearningConfig(BaseModel):
     num_ranking_samples: int = Field(default=512, ge=1)
 
 
+class TurboConfig(BaseModel):
+    """Configuration for TuRBO trust-region optimization.
+
+    Present = use TuRBO, absent (None) = standard acquisition optimization.
+    """
+
+    initial_length: float = 0.8
+    length_min: float = 0.5**7
+    length_max: float = 1.6
+    success_tolerance: int = 10
+
+
+class SaasboConfig(BaseModel):
+    """Configuration for SAASBO high-dimensional optimization.
+
+    Present = use SAASBO, absent (None) = standard GP.
+    """
+
+    warmup_steps: int = 256
+    num_samples: int = 128
+    thinning: int = 16
+
+
 class CampaignSpec(BaseModel):
     """Immutable campaign specification.
 
@@ -181,20 +217,38 @@ class CampaignSpec(BaseModel):
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
     # v1.1: Input warping for non-stationary objectives
     use_input_warping: bool = False
-    # v1.2: TuRBO for high-dimensional optimization
-    use_turbo: bool = False
+    # v1.2: TuRBO for high-dimensional optimization (None = disabled)
+    turbo_config: TurboConfig | None = None
     # v1.3: Outcome constraints learned from data
     outcome_constraints: list[OutcomeConstraint] = Field(default_factory=list)
-    # v1.3: Cost-aware optimization (EIpu)
+    # v1.3: Cost-aware optimization
     use_cost_aware: bool = False
     # v2.0: Multi-fidelity optimization
     fidelity_parameter: FidelityParameter | None = None
     # v2.0: Transfer learning from prior campaigns
     transfer_learning: TransferLearningConfig | None = None
-    # v2.0: SAASBO for high-dimensional optimization (50+ params)
-    use_saasbo: bool = False
+    # v2.0: SAASBO for high-dimensional optimization (None = disabled)
+    saasbo_config: SaasboConfig | None = None
 
     model_config = {"frozen": True}
+
+    @field_validator("acquisition_method", mode="before")
+    @classmethod
+    def normalize_acquisition_method(cls, value: Any) -> Any:
+        """Accept legacy BoTorch class-name values for backward compat."""
+        if isinstance(value, str) and value in _LEGACY_ACQUISITION_VALUES:
+            return _LEGACY_ACQUISITION_VALUES[value]
+        return value
+
+    @property
+    def use_turbo(self) -> bool:
+        """Backward-compatible check for TuRBO enabled."""
+        return self.turbo_config is not None
+
+    @property
+    def use_saasbo(self) -> bool:
+        """Backward-compatible check for SAASBO enabled."""
+        return self.saasbo_config is not None
 
     @model_validator(mode="after")
     def validate_spec(self) -> "CampaignSpec":

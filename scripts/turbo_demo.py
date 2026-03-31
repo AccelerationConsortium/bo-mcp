@@ -27,6 +27,7 @@ from bo_engine import (
     OptimizationSpec,
     ParameterSpec,
     ParameterType,
+    TurboConfig,
     TurboState,
     create_turbo_state,
     generate_next_batch,
@@ -179,7 +180,7 @@ def demo_turbo_optimization() -> None:
         ],
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=4,
-        use_turbo=True,
+        turbo_config=TurboConfig(),
     )
 
     observations: list[ObservationData] = []

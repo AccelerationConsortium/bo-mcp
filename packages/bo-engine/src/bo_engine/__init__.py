@@ -4,8 +4,8 @@ This package provides a standalone BO engine that can be used independently
 or integrated with higher-level packages like bo-mcp-server.
 
 Supports:
-- Single-objective optimization (qLogNEI, qLogEI) [v1.0.1]
-- Multi-objective optimization (qLogNEHVI, qLogNParEGO)
+- Single-objective optimization (noisy EI, EI) [v1.0.1]
+- Multi-objective optimization (hypervolume improvement, scalarized)
 - Input warping for non-stationary objectives [v1.1]
 - LOO cross-validation for model quality assessment [v1.1]
 - TuRBO for high-dimensional optimization [v1.2]
@@ -336,6 +336,7 @@ from bo_engine.turbo import (
     update_turbo_state,
 )
 from bo_engine.types import (
+    LEGACY_ACQUISITION_VALUES,
     AcquisitionMethod,
     ConstraintSpec,
     ConstraintType,
@@ -347,6 +348,7 @@ from bo_engine.types import (
     ParameterType,
     SuggestionResult,
     TransferLearningSpec,
+    TurboConfig,
 )
 
 # What-If Analysis (v2.7 - Section 3.8)
@@ -484,6 +486,8 @@ __all__ = [
     "compute_uncertainty_trend",
     "extract_hyperparameters",
     # Types
+    "LEGACY_ACQUISITION_VALUES",
+    "TurboConfig",
     "AcquisitionMethod",
     "ConstraintSpec",
     "ConstraintType",

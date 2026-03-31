@@ -91,7 +91,7 @@ class TestMultiObjectiveAcquisitionMethods:
             ref_point=ref_point,
             train_x=train_x,
             train_y=train_y,
-            method=AcquisitionMethod.QLOGNEHVI,
+            method=AcquisitionMethod.HYPERVOLUME_IMPROVEMENT,
         )
 
         # Should be callable and produce valid outputs
@@ -114,7 +114,7 @@ class TestMultiObjectiveAcquisitionMethods:
             ref_point=ref_point,
             train_x=train_x,
             train_y=train_y,
-            method=AcquisitionMethod.QLOGPAREGO,
+            method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
         )
 
         # Should be callable and produce valid outputs
@@ -182,7 +182,7 @@ class TestUnifiedAcquisitionCreation:
             train_x=train_x,
             train_y=train_y,
             n_objectives=2,
-            method=AcquisitionMethod.QLOGPAREGO,
+            method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
         )
 
         assert acqf is not None
@@ -259,7 +259,7 @@ class TestAcquisitionInWorkflow:
                 ObjectiveSpec(name="f2", minimize=True),
             ],
             batch_size=2,
-            acquisition_method=AcquisitionMethod.QLOGPAREGO,
+            acquisition_method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
         )
 
         observations = [
@@ -289,7 +289,7 @@ class TestAcquisitionInWorkflow:
 
         assert len(suggestions) == 2
         assert all(s.generation_method == "bo" for s in suggestions)
-        assert all(s.acquisition_function == "qLogNParEGO" for s in suggestions)
+        assert all(s.acquisition_function == "scalarized_multi_objective" for s in suggestions)
 
     def test_qlognehvi_default_in_workflow(self) -> None:
         """Test that qLogNEHVI is the default for multi-objective."""
@@ -323,4 +323,4 @@ class TestAcquisitionInWorkflow:
         suggestions, _ = generate_next_batch(spec, observations, iteration=1)
 
         assert len(suggestions) == 2
-        assert all(s.acquisition_function == "qLogNEHVI" for s in suggestions)
+        assert all(s.acquisition_function == "hypervolume_improvement" for s in suggestions)

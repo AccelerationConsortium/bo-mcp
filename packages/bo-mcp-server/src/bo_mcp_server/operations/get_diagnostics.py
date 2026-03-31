@@ -172,13 +172,17 @@ def _get_model_info(spec: CampaignSpec, is_single_objective: bool) -> dict[str, 
     """Get model information summary."""
     acquisition_fn = spec.acquisition_method.value
     if acquisition_fn == "auto":
-        acquisition_fn = "qLogNEI" if is_single_objective else "qLogNEHVI"
+        acquisition_fn = (
+            "noisy_expected_improvement" if is_single_objective else "hypervolume_improvement"
+        )
 
     acquisition_desc = {
-        "qLogNEI": "qLogNEI (Log Noisy Expected Improvement)",
-        "qLogEI": "qLogEI (Log Expected Improvement)",
-        "qLogNEHVI": "qLogNEHVI (Log Expected Hypervolume Improvement)",
-        "qLogNParEGO": "qLogNParEGO (Parallel EGO with Chebyshev)",
+        "noisy_expected_improvement": "Log Noisy Expected Improvement (qLogNEI)",
+        "expected_improvement": "Log Expected Improvement (qLogEI)",
+        "hypervolume_improvement": "Log Expected Hypervolume Improvement (qLogNEHVI)",
+        "scalarized_multi_objective": "Parallel EGO with Chebyshev (qLogNParEGO)",
+        "cost_weighted_ei": "Expected Improvement per Unit cost (EIpu)",
+        "multi_fidelity_kg": "Multi-Fidelity Knowledge Gradient (qMFKG)",
     }.get(acquisition_fn, acquisition_fn)
 
     model_type = (

@@ -499,8 +499,8 @@ class TestMultiObjectiveAcquisition:
             assert sugg.generation_method == "bo"
             # Should use multi-objective acquisition
             assert (
-                "qLogNEHVI" in sugg.acquisition_function
-                or "qLogNParEGO" in sugg.acquisition_function
+                "hypervolume_improvement" in sugg.acquisition_function
+                or "scalarized_multi_objective" in sugg.acquisition_function
             )
 
     @pytest.mark.smoke

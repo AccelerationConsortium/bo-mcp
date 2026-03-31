@@ -117,7 +117,7 @@ def format_suggestions_response(
             "success": true,
             "iteration": 3,
             "suggestion_ids": ["uuid1", "uuid2"],
-            "method": "qLogNEHVI",
+            "method": "hypervolume_improvement",
             "errors": []
         }
     """

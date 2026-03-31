@@ -193,7 +193,7 @@ class TestMultiObjectiveWorkflow:
         assert len(suggestions) == 2
         for s in suggestions:
             assert s.generation_method == "bo"
-            assert s.acquisition_function == "qLogNEHVI"
+            assert s.acquisition_function == "hypervolume_improvement"
             assert s.model_type is not None
             assert 0.0 <= s.parameter_values["x0"] <= 1.0
             assert 0.0 <= s.parameter_values["x1"] <= 1.0
@@ -419,7 +419,7 @@ class TestSuggestionProvenance:
 
         for s in suggestions:
             assert s.generation_method == "bo"
-            assert s.acquisition_function == "qLogNEHVI"
+            assert s.acquisition_function == "hypervolume_improvement"
             assert s.model_type is not None
             assert "GP" in s.model_type or "Gaussian" in s.model_type
             assert s.confidence_level in ["high", "medium", "low"]

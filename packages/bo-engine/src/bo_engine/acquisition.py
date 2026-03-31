@@ -1,9 +1,10 @@
 """Acquisition function creation and optimization.
 
-Supports both single-objective (qLogNEI, qLogEI) and multi-objective
-(qLogNEHVI, qLogNParEGO) acquisition functions.
+Supports both single-objective (noisy EI, EI) and multi-objective
+(hypervolume improvement, scalarized multi-objective) acquisition
+functions.
 
-v1.0.1: Added single-objective support via qLogNEI
+v1.0.1: Added single-objective support via qLogNoisyExpectedImprovement
 v1.1: Added qLogNParEGO alternative for multi-objective
 v1.3: Added cost-aware (EIpu) and outcome constraint support
 v2.3: Added GPU auto-detection and acceleration
@@ -51,17 +52,17 @@ def create_single_objective_acquisition(
         model: Fitted SingleTaskGP model
         train_x: Training inputs for baseline sampling
         train_y: Training outputs (for best_f computation if needed)
-        best_f: Best observed value (required for qLogEI, computed for qLogNEI)
-        use_noisy: If True, use qLogNEI (handles noise), else qLogEI
+        best_f: Best observed value (required for EI, computed for noisy EI)
+        use_noisy: If True, use noisy EI (handles noise), else EI
         constraints: Optional list of constraint callables
 
     Returns:
-        qLogNEI or qLogEI acquisition function
+        Noisy EI or EI acquisition function
     """
     train_x, train_y = ensure_device(train_x, train_y)
 
     if use_noisy:
-        # qLogNEI handles noisy observations - recommended default
+        # Noisy EI handles noisy observations - recommended default
         acqf_kwargs = {
             "model": model,
             "X_baseline": train_x,
@@ -72,7 +73,7 @@ def create_single_objective_acquisition(
             acqf_kwargs["constraints"] = constraints
         return qLogNoisyExpectedImprovement(**acqf_kwargs)
     else:
-        # qLogEI for noiseless observations - requires best_f
+        # EI for noiseless observations - requires best_f
         if best_f is None:
             # Compute best_f from training data (assumes minimization)
             best_f = train_y.min().item()
@@ -88,7 +89,7 @@ def create_multi_objective_acquisition(
     ref_point: Tensor,
     train_x: Tensor,
     train_y: Tensor,
-    method: AcquisitionMethod = AcquisitionMethod.QLOGNEHVI,
+    method: AcquisitionMethod = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT,
     constraints: list | None = None,
 ) -> AcquisitionFunction:
     """Create acquisition function for multi-objective optimization.
@@ -98,7 +99,7 @@ def create_multi_objective_acquisition(
         ref_point: Reference point for hypervolume computation
         train_x: Training inputs for sampling baseline
         train_y: Training outputs (for scalarization in NParEGO)
-        method: Acquisition method (qLogNEHVI or qLogNParEGO)
+        method: Acquisition method (HYPERVOLUME_IMPROVEMENT or SCALARIZED_MULTI_OBJ)
         constraints: Optional list of constraint callables
 
     Returns:
@@ -106,7 +107,7 @@ def create_multi_objective_acquisition(
     """
     train_x, train_y, ref_point = ensure_device(train_x, train_y, ref_point)
 
-    if method == AcquisitionMethod.QLOGPAREGO:
+    if method == AcquisitionMethod.SCALARIZED_MULTI_OBJ:
         # qLogNParEGO: Random scalarization weights for Pareto exploration
         # When weights=None, qLogNParEGO uses random weights internally
         acqf_kwargs: dict = {
@@ -122,7 +123,7 @@ def create_multi_objective_acquisition(
         return qLogNParEGO(**acqf_kwargs)
 
     else:
-        # Default: qLogNEHVI (hypervolume-based)
+        # Default: hypervolume improvement (qLogNEHVI)
         acqf_kwargs = {
             "model": model,
             "ref_point": ref_point.tolist(),
@@ -198,9 +199,9 @@ def create_acquisition(
     # Determine method if AUTO
     if method == AcquisitionMethod.AUTO:
         if n_objectives == 1:
-            method = AcquisitionMethod.QLOGNEI
+            method = AcquisitionMethod.NOISY_EI
         else:
-            method = AcquisitionMethod.QLOGNEHVI
+            method = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
 
     # Single-objective acquisition
     if n_objectives == 1:
@@ -212,7 +213,7 @@ def create_acquisition(
                 raise ValueError("Single-objective requires SingleTaskGP model")
 
         # Cost-aware acquisition (EIpu)
-        if method == AcquisitionMethod.EIPU and cost_model is not None:
+        if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
             return create_cost_aware_acquisition(
                 model=model,  # type: ignore[arg-type]
                 train_y=train_y,
@@ -228,7 +229,7 @@ def create_acquisition(
                     _make_outcome_constraint_callable(constraint_model, threshold)
                 )
 
-        use_noisy = method != AcquisitionMethod.QLOGEI
+        use_noisy = method != AcquisitionMethod.EXPECTED_IMPROVEMENT
         return create_single_objective_acquisition(
             model=model,  # type: ignore[arg-type]
             train_x=train_x,

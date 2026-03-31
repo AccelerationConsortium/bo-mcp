@@ -469,7 +469,7 @@ def _generate_single_objective_batch(
 ) -> tuple[list[SuggestionResult], TurboState | None]:
     """Generate suggestions for single-objective optimization.
 
-    Uses qLogNEI (or qLogEI) acquisition function. Supports TuRBO for
+    Uses noisy EI (or EI) acquisition function. Supports TuRBO for
     high-dimensional problems, outcome constraints, and cost-aware optimization.
 
     Args:
@@ -516,7 +516,11 @@ def _generate_single_objective_batch(
     # Acquisition method selection
     method = spec.acquisition_method
     if method == AcquisitionMethod.AUTO:
-        method = AcquisitionMethod.EIPU if spec.use_cost_aware else AcquisitionMethod.QLOGNEI
+        method = (
+            AcquisitionMethod.COST_WEIGHTED_EI
+            if spec.use_cost_aware
+            else AcquisitionMethod.NOISY_EI
+        )
 
     # Build native linear constraints for the optimizer
     ineq_constraints = None
@@ -670,7 +674,7 @@ def _generate_multi_objective_batch(
 ) -> list[SuggestionResult]:
     """Generate suggestions for multi-objective optimization.
 
-    Uses qLogNEHVI or qLogNParEGO acquisition function.
+    Uses hypervolume improvement or scalarized multi-objective acquisition.
 
     Args:
         ctx: Generation context containing all parameters
@@ -704,7 +708,7 @@ def _generate_multi_objective_batch(
     # Determine acquisition method
     method = spec.acquisition_method
     if method == AcquisitionMethod.AUTO:
-        method = AcquisitionMethod.QLOGNEHVI
+        method = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
 
     # Build native linear constraints for the optimizer
     ineq_constraints = None

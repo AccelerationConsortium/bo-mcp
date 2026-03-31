@@ -304,8 +304,8 @@ class TestMethodSelectionStability:
 
         # Method selection should indicate single-objective acquisition
         method = gen2["method_selection"]["acquisition_function"]
-        # Should be qLogEI, qEI, or similar single-objective acquisition
-        assert "EI" in method.upper() or "NEI" in method.upper() or method is not None
+        # Should be a single-objective acquisition method
+        assert "expected_improvement" in method or "ei" in method.lower()
 
     @pytest.mark.asyncio
     async def test_multi_objective_uses_qlognehvi(self, setup_database):
@@ -351,8 +351,8 @@ class TestMethodSelectionStability:
 
         # Method selection should indicate multi-objective acquisition
         method = gen2["method_selection"]["acquisition_function"]
-        # Should be qLogNEHVI, qNEHVI, or similar multi-objective acquisition
-        assert "NEHVI" in method.upper() or "HVI" in method.upper() or "PARETO" in method.upper()
+        # Should be a multi-objective acquisition method
+        assert "hypervolume" in method or "multi_objective" in method
 
     @pytest.mark.asyncio
     async def test_method_selection_explanation_present(self, setup_database):

@@ -12,7 +12,9 @@ from bo_mcp_server.domain.campaign_spec import (
     Objective,
     OutcomeConstraint,
     ParameterType,
+    SaasboConfig,
     TransferLearningConfig,
+    TurboConfig,
 )
 from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.domain.intake_models import CampaignIntakeInput, ResultSubmissionInput
@@ -45,5 +47,7 @@ __all__ = [
     "SuggestionProvenance",
     "SuggestionStatus",
     "TransferLearningConfig",
+    "TurboConfig",
+    "SaasboConfig",
     "User",
 ]

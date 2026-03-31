@@ -109,7 +109,7 @@ class TestSingleObjectiveGeneration:
 
         assert len(suggestions) == 2
         assert all(s.generation_method == "bo" for s in suggestions)
-        assert all(s.acquisition_function == "qLogNEI" for s in suggestions)
+        assert all(s.acquisition_function == "noisy_expected_improvement" for s in suggestions)
         assert all(s.model_type == "SingleTaskGP (Gaussian Process)" for s in suggestions)
 
     def test_generate_single_objective_maximization(
@@ -341,7 +341,7 @@ class TestSingleObjectiveIntegration:
                 ObjectiveSpec(name="f", minimize=True),
             ],
             batch_size=1,
-            acquisition_method=AcquisitionMethod.QLOGNEI,
+            acquisition_method=AcquisitionMethod.NOISY_EI,
         )
 
         observations = [
@@ -354,8 +354,8 @@ class TestSingleObjectiveIntegration:
         sugg_auto, _ = generate_next_batch(spec_auto, observations, iteration=1)
         sugg_qlognei, _ = generate_next_batch(spec_qlognei, observations, iteration=1)
 
-        assert sugg_auto[0].acquisition_function == "qLogNEI"
-        assert sugg_qlognei[0].acquisition_function == "qLogNEI"
+        assert sugg_auto[0].acquisition_function == "noisy_expected_improvement"
+        assert sugg_qlognei[0].acquisition_function == "noisy_expected_improvement"
 
 
 class TestModelActuallyLearns:

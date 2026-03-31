@@ -28,7 +28,7 @@ def make_cost_aware_spec() -> OptimizationSpec:
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=2,
         use_cost_aware=True,
-        acquisition_method=AcquisitionMethod.EIPU,
+        acquisition_method=AcquisitionMethod.COST_WEIGHTED_EI,
     )
 
 
@@ -68,13 +68,13 @@ class TestCostAwareSpec:
 
     def test_eipu_acquisition_method(self) -> None:
         """EIpu acquisition method is available."""
-        assert AcquisitionMethod.EIPU.value == "EIpu"
+        assert AcquisitionMethod.COST_WEIGHTED_EI.value == "cost_weighted_ei"
 
     def test_use_cost_aware_flag(self) -> None:
         """use_cost_aware flag is set correctly."""
         spec = make_cost_aware_spec()
         assert spec.use_cost_aware is True
-        assert spec.acquisition_method == AcquisitionMethod.EIPU
+        assert spec.acquisition_method == AcquisitionMethod.COST_WEIGHTED_EI
 
 
 class TestCostAwareOptimization:
@@ -112,7 +112,7 @@ class TestCostAwareOptimization:
         )
 
         for sugg in suggestions:
-            assert sugg.acquisition_function == "EIpu"
+            assert sugg.acquisition_function == "cost_weighted_ei"
 
     def test_cost_aware_with_missing_cost(self) -> None:
         """Falls back gracefully when some observations lack cost."""
@@ -194,7 +194,10 @@ class TestCostAwareOptimization:
         assert len(suggestions) == 2
         # Should use standard acquisition, not EIpu
         for sugg in suggestions:
-            assert sugg.acquisition_function in ["qLogNEI", "qLogEI"]
+            assert sugg.acquisition_function in [
+                "noisy_expected_improvement",
+                "expected_improvement",
+            ]
 
 
 class TestObservationDataWithCost:
@@ -232,7 +235,7 @@ class TestCostAwareWithConstraints:
             objectives=[ObjectiveSpec(name="f", minimize=True)],
             batch_size=2,
             use_cost_aware=True,
-            acquisition_method=AcquisitionMethod.EIPU,
+            acquisition_method=AcquisitionMethod.COST_WEIGHTED_EI,
             outcome_constraints=[
                 OutcomeConstraintSpec(
                     name="f",
@@ -311,4 +314,7 @@ class TestCostAwareWithConstraints:
         assert len(suggestions) == 2
         # Should use multi-objective acquisition, not EIpu
         for sugg in suggestions:
-            assert sugg.acquisition_function in ["qLogNEHVI", "qLogNParEGO"]
+            assert sugg.acquisition_function in [
+                "hypervolume_improvement",
+                "scalarized_multi_objective",
+            ]

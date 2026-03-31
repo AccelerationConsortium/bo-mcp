@@ -65,19 +65,21 @@ class TestSelectMethods:
         """AUTO mode selects qLogNEI for single objective."""
         spec = make_spec(n_objectives=1, acquisition_method=AcquisitionMethod.AUTO)
         result = select_methods(spec, n_observations=10)
-        assert result.acquisition_function == "qLogNEI"
+        assert result.acquisition_function == "noisy_expected_improvement"
 
     def test_multi_objective_acquisition_auto(self) -> None:
         """AUTO mode selects qLogNEHVI for multi-objective."""
         spec = make_spec(n_objectives=2, acquisition_method=AcquisitionMethod.AUTO)
         result = select_methods(spec, n_observations=10)
-        assert result.acquisition_function == "qLogNEHVI"
+        assert result.acquisition_function == "hypervolume_improvement"
 
     def test_explicit_acquisition_respected(self) -> None:
         """Explicit acquisition method is used."""
-        spec = make_spec(acquisition_method=AcquisitionMethod.QLOGEI)
+        spec = make_spec(
+            acquisition_method=AcquisitionMethod.EXPECTED_IMPROVEMENT,
+        )
         result = select_methods(spec, n_observations=10)
-        assert result.acquisition_function == "qLogEI"
+        assert result.acquisition_function == "expected_improvement"
 
     def test_zero_observations_uses_sobol(self) -> None:
         """Zero observations triggers Sobol initial design."""
@@ -158,13 +160,15 @@ class TestAlternatives:
         """Single objective suggests qLogEI as alternative."""
         spec = make_spec(n_objectives=1)
         result = select_methods(spec, n_observations=10)
-        assert any(alt.get("acquisition") == "qLogEI" for alt in result.alternatives)
+        assert any(alt.get("acquisition") == "expected_improvement" for alt in result.alternatives)
 
     def test_multi_objective_suggests_parego(self) -> None:
         """Multi-objective suggests qLogNParEGO as alternative."""
         spec = make_spec(n_objectives=2)
         result = select_methods(spec, n_observations=10)
-        assert any(alt.get("acquisition") == "qLogNParEGO" for alt in result.alternatives)
+        assert any(
+            alt.get("acquisition") == "scalarized_multi_objective" for alt in result.alternatives
+        )
 
 
 class TestExplanation:

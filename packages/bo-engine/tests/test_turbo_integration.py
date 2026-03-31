@@ -13,6 +13,7 @@ from bo_engine import (
     generate_next_batch,
     update_turbo_after_evaluation,
 )
+from bo_engine.types import TurboConfig
 
 
 def make_high_dim_spec(n_params: int = 25) -> OptimizationSpec:
@@ -28,7 +29,7 @@ def make_high_dim_spec(n_params: int = 25) -> OptimizationSpec:
         ],
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=4,
-        use_turbo=True,
+        turbo_config=TurboConfig(),
     )
 
 
@@ -117,7 +118,6 @@ class TestTurboIntegration:
             ],
             objectives=[ObjectiveSpec(name="f", minimize=True)],
             batch_size=2,
-            use_turbo=False,
         )
         observations = [
             ObservationData(
@@ -153,7 +153,7 @@ class TestTurboIntegration:
                 ObjectiveSpec(name="f2", minimize=True),
             ],
             batch_size=4,
-            use_turbo=True,
+            turbo_config=TurboConfig(),
         )
         observations = [
             ObservationData(

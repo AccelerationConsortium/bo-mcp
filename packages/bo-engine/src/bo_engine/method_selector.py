@@ -67,19 +67,19 @@ def select_methods(spec: OptimizationSpec, n_observations: int) -> MethodSelecti
         # User explicitly specified acquisition
         acquisition_function = spec.acquisition_method.value
     elif n_objectives == 1:
-        acquisition_function = "qLogNEI"
+        acquisition_function = AcquisitionMethod.NOISY_EI.value
         alternatives.append(
             {
-                "acquisition": "qLogEI",
+                "acquisition": AcquisitionMethod.EXPECTED_IMPROVEMENT.value,
                 "reason": "Use if observations are noiseless",
             }
         )
     else:
-        acquisition_function = "qLogNEHVI"
+        acquisition_function = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT.value
         alternatives.append(
             {
-                "acquisition": "qLogNParEGO",
-                "reason": "Better diversity in Pareto front exploration",
+                "acquisition": AcquisitionMethod.SCALARIZED_MULTI_OBJ.value,
+                "reason": ("Better diversity in Pareto front exploration"),
             }
         )
 

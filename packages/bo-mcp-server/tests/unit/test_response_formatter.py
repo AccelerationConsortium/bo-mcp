@@ -63,7 +63,10 @@ class TestFormatDiagnosticsResponse:
             "progress_status": "improving",
             "warnings": [],
             "objective_ranges": {"objective": {"min": 0.0, "max": 1.0, "direction": "minimize"}},
-            "model_info": {"type": "SingleTaskGP", "acquisition_function": "qLogNEI"},
+            "model_info": {
+                "type": "SingleTaskGP",
+                "acquisition_function": "noisy_expected_improvement",
+            },
             "feature_importance": {"x": 0.6, "y": 0.4},
             "model_correlation": 0.95,
             "hyperparameters": {"lengthscales": {"x": 0.1, "y": 0.2}, "noise_variance": 0.01},
@@ -156,13 +159,13 @@ class TestFormatSuggestionsResponse:
                 {
                     "id": "uuid-1",
                     "parameter_values": {"x": 0.5, "y": 0.3},
-                    "provenance": {"iteration": 3, "method": "qLogNEHVI"},
+                    "provenance": {"iteration": 3, "method": "hypervolume_improvement"},
                     "created_at": "2025-01-01T00:00:00Z",
                 },
                 {
                     "id": "uuid-2",
                     "parameter_values": {"x": 0.7, "y": 0.9},
-                    "provenance": {"iteration": 3, "method": "qLogNEHVI"},
+                    "provenance": {"iteration": 3, "method": "hypervolume_improvement"},
                     "created_at": "2025-01-01T00:00:01Z",
                 },
             ],
@@ -171,7 +174,7 @@ class TestFormatSuggestionsResponse:
             "warnings": [],
             "method_selection": {
                 "model_type": "ModelListGP",
-                "acquisition_function": "qLogNEHVI",
+                "acquisition_function": "hypervolume_improvement",
                 "optimization_strategy": "sequential_greedy",
                 "explanation": "Using multi-objective acquisition.",
             },
@@ -196,7 +199,7 @@ class TestFormatSuggestionsResponse:
         assert result["success"] is True
         assert result["iteration"] == 3
         assert result["suggestion_ids"] == ["uuid-1", "uuid-2"]
-        assert result["method"] == "qLogNEHVI"
+        assert result["method"] == "hypervolume_improvement"
         assert result["errors"] == []
 
         # Should NOT have full suggestion details
@@ -465,7 +468,7 @@ class TestTokenEstimation:
             ],
             "iteration": 5,
             "errors": [],
-            "method_selection": {"acquisition_function": "qLogNEHVI"},
+            "method_selection": {"acquisition_function": "hypervolume_improvement"},
             "pending_points": {"total_pending": 20, "details": "..." * 100},
             "batch_diversity": {"score": 0.8},
         }

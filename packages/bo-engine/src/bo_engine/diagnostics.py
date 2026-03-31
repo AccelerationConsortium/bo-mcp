@@ -485,9 +485,9 @@ def compute_loo_cv_metrics(
 
     for fold_idx in range(n_samples):
         train_fold = cv_folds.train_X[fold_idx]
-        train_Y_fold = cv_folds.train_Y[fold_idx]
+        train_y_fold = cv_folds.train_Y[fold_idx]
         test_fold = cv_folds.test_X[fold_idx]
-        test_Y_fold = cv_folds.test_Y[fold_idx]
+        test_y_fold = cv_folds.test_Y[fold_idx]
 
         # Skip if not enough training data
         if train_fold.shape[0] < 2:
@@ -497,7 +497,7 @@ def compute_loo_cv_metrics(
             # Create and fit model on training fold
             model = SingleTaskGP(
                 train_X=train_fold,
-                train_Y=train_Y_fold,
+                train_Y=train_y_fold,
                 input_transform=Normalize(d=train_x.shape[-1], bounds=bounds),
                 outcome_transform=Standardize(m=1),
             )
@@ -512,13 +512,13 @@ def compute_loo_cv_metrics(
                 pred_var = posterior.variance
 
             # Compute error
-            error = (pred_mean - test_Y_fold).abs().item()
+            error = (pred_mean - test_y_fold).abs().item()
             per_fold_errors.append(error)
             predictions.append(pred_mean.squeeze().item())
-            actuals.append(test_Y_fold.squeeze().item())
+            actuals.append(test_y_fold.squeeze().item())
 
             # Standardized error (for calibration check)
-            std_err = (pred_mean - test_Y_fold).abs() / (pred_var.sqrt() + 1e-10)
+            std_err = (pred_mean - test_y_fold).abs() / (pred_var.sqrt() + 1e-10)
             standardized_errors.append(std_err.item())
 
         except (RuntimeError, ValueError, TypeError) as e:  # noqa: S112 - intentionally skip failed folds

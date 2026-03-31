@@ -200,42 +200,106 @@ def create_acquisition(
         else:
             method = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
 
-    # Single-objective acquisition
     if n_objectives == 1:
-        if not isinstance(model, SingleTaskGP):
-            # If ModelListGP with single model, extract it
-            if isinstance(model, ModelListGP) and len(model.models) == 1:
-                model = cast(SingleTaskGP, model.models[0])
-            else:
-                raise ValueError("Single-objective requires SingleTaskGP model")
-
-        # Cost-aware acquisition (EIpu)
-        if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
-            return create_cost_aware_acquisition(
-                model=model,  # type: ignore[arg-type]
-                train_y=train_y,
-                cost_model=cost_model,
-                outcome_constraint_models=outcome_constraint_models,
-            )
-
-        # Build outcome constraint callables if provided
-        all_constraints = list(constraints) if constraints else []
-        if outcome_constraint_models:
-            for constraint_model, threshold in outcome_constraint_models:
-                all_constraints.append(
-                    _make_outcome_constraint_callable(constraint_model, threshold)
-                )
-
-        use_noisy = method != AcquisitionMethod.EXPECTED_IMPROVEMENT
-        return create_single_objective_acquisition(
-            model=model,  # type: ignore[arg-type]
+        return _create_single_objective_dispatch(
+            model=model,
             train_x=train_x,
             train_y=train_y,
-            use_noisy=use_noisy,
-            constraints=all_constraints if all_constraints else None,
+            method=method,
+            constraints=constraints,
+            outcome_constraint_models=outcome_constraint_models,
+            cost_model=cost_model,
         )
 
-    # Multi-objective acquisition
+    return _create_multi_objective_dispatch(
+        model=model,
+        ref_point=ref_point,
+        train_x=train_x,
+        train_y=train_y,
+        method=method,
+        constraints=constraints,
+    )
+
+
+def _create_single_objective_dispatch(
+    model: ModelListGP | SingleTaskGP,
+    train_x: Tensor,
+    train_y: Tensor,
+    method: AcquisitionMethod,
+    constraints: list | None,
+    outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None,
+    cost_model: SingleTaskGP | None,
+) -> AcquisitionFunction:
+    """Dispatch single-objective acquisition function creation.
+
+    Handles model extraction from ModelListGP, cost-aware EIpu, and
+    standard EI/noisy-EI with optional outcome constraints.
+
+    Args:
+        model: Fitted GP model (SingleTaskGP or single-model ModelListGP)
+        train_x: Training inputs
+        train_y: Training outputs
+        method: Acquisition method
+        constraints: Optional constraint callables
+        outcome_constraint_models: Optional (model, threshold) pairs
+        cost_model: Optional cost model for EIpu
+
+    Returns:
+        Single-objective acquisition function
+    """
+    if not isinstance(model, SingleTaskGP):
+        if isinstance(model, ModelListGP) and len(model.models) == 1:
+            model = cast(SingleTaskGP, model.models[0])
+        else:
+            raise ValueError("Single-objective requires SingleTaskGP model")
+
+    if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
+        return create_cost_aware_acquisition(
+            model=model,  # type: ignore[arg-type]
+            train_y=train_y,
+            cost_model=cost_model,
+            outcome_constraint_models=outcome_constraint_models,
+        )
+
+    all_constraints = list(constraints) if constraints else []
+    if outcome_constraint_models:
+        for constraint_model, threshold in outcome_constraint_models:
+            all_constraints.append(_make_outcome_constraint_callable(constraint_model, threshold))
+
+    use_noisy = method != AcquisitionMethod.EXPECTED_IMPROVEMENT
+    return create_single_objective_acquisition(
+        model=model,  # type: ignore[arg-type]
+        train_x=train_x,
+        train_y=train_y,
+        use_noisy=use_noisy,
+        constraints=all_constraints if all_constraints else None,
+    )
+
+
+def _create_multi_objective_dispatch(
+    model: ModelListGP | SingleTaskGP,
+    ref_point: Tensor | None,
+    train_x: Tensor,
+    train_y: Tensor,
+    method: AcquisitionMethod,
+    constraints: list | None,
+) -> AcquisitionFunction:
+    """Dispatch multi-objective acquisition function creation.
+
+    Validates that a reference point is provided, then delegates to
+    create_multi_objective_acquisition.
+
+    Args:
+        model: Fitted ModelListGP
+        ref_point: Reference point for hypervolume computation
+        train_x: Training inputs
+        train_y: Training outputs
+        method: Acquisition method
+        constraints: Optional constraint callables
+
+    Returns:
+        Multi-objective acquisition function
+    """
     if ref_point is None:
         raise ValueError("Reference point required for multi-objective optimization")
 
@@ -250,7 +314,7 @@ def create_acquisition(
 
 
 def _make_outcome_constraint_callable(
-    constraint_model: SingleTaskGP,
+    _constraint_model: SingleTaskGP,
     threshold: float,
 ) -> Callable[[Tensor], Tensor]:
     """Create a constraint callable for outcome constraints.
@@ -376,7 +440,7 @@ class EIpuAcquisition(AcquisitionFunction):
             # Ensure positive cost
             expected_cost = expected_cost.clamp(min=1e-6)
 
-        # EIpu = EI / cost
+        # Compute EI per unit cost (EIpu)
         eipu = ei_val / expected_cost
 
         # Apply outcome constraints if any

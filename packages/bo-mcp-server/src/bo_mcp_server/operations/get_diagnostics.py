@@ -357,9 +357,9 @@ def _compute_model_diagnostics(
 
 
 def _compute_health_and_progress(
-    spec: CampaignSpec,
+    _spec: CampaignSpec,
     results: list[Result],
-    campaign_iteration: int,
+    _campaign_iteration: int,
     is_single_objective: bool,
     model_correlation: float,
     hypervolume_history: list[float],

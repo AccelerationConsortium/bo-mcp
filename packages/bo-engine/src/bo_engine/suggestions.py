@@ -372,6 +372,71 @@ def _get_model_predictions(model: Any, candidates: Tensor) -> tuple[Tensor, Tens
     return means, stds
 
 
+def _extract_scalar_prediction(
+    tensor: Tensor,
+    index: int,
+) -> float | None:
+    """Safely extract a scalar from a 0-d or 1-d tensor at the given index.
+
+    Returns None if the index is out of bounds.
+
+    Args:
+        tensor: Tensor of acquisition values, means, or stds
+        index: Batch index
+
+    Returns:
+        Float value or None
+    """
+    if tensor.dim() == 0:
+        return tensor.item() if index == 0 else None
+    return tensor[index].item() if index < tensor.numel() else None
+
+
+def _build_single_objective_provenance(
+    means: Tensor,
+    stds: Tensor,
+    acq_values: Tensor,
+    index: int,
+    obj_name: str,
+    minimize: bool,
+) -> tuple[
+    float | None,
+    float | None,
+    float | None,
+    dict[str, float] | None,
+    dict[str, float] | None,
+]:
+    """Build provenance data for a single-objective candidate.
+
+    Extracts acquisition value, uncertainty, and predicted objectives for one
+    candidate in the batch.
+
+    Args:
+        means: Posterior mean predictions
+        stds: Posterior std predictions
+        acq_values: Acquisition function values
+        index: Candidate index in the batch
+        obj_name: Objective name
+        minimize: Whether the objective is minimized
+
+    Returns:
+        Tuple of (acq_val, std_val, confidence_level_unused,
+                  predicted_objectives, predicted_std)
+    """
+    std_val = _extract_scalar_prediction(stds, index)
+    acq_val = _extract_scalar_prediction(acq_values, index)
+
+    # For minimization, means are negated (BoTorch convention) — un-negate for storage.
+    pred_mean = _extract_scalar_prediction(means, index)
+    if pred_mean is not None and not minimize:
+        pred_mean = -pred_mean  # undo BoTorch negation
+
+    predicted_objectives = {obj_name: pred_mean} if pred_mean is not None else None
+    predicted_std_dict = {obj_name: std_val} if std_val is not None else None
+
+    return acq_val, std_val, None, predicted_objectives, predicted_std_dict
+
+
 def _create_single_objective_suggestions(
     candidates: Tensor,
     acq_values: Tensor,
@@ -415,27 +480,18 @@ def _create_single_objective_suggestions(
         best_str = "highest"
 
     obj_name = spec.objectives[0].name
+    acq_name = method.value
+    gen_method = "bo" if turbo_state is None else "turbo"
+
     suggestions = []
     for i in range(batch_size):
         values = decode_categorical(candidates[i], spec)
 
-        std_val = stds[i].item() if i < stds.numel() else None
+        acq_val, std_val, _, predicted_objectives, predicted_std_dict = (
+            _build_single_objective_provenance(means, stds, acq_values, i, obj_name, minimize)
+        )
         confidence_level = _get_confidence_level(std_val)
 
-        if acq_values.dim() == 0:
-            acq_val = acq_values.item() if i == 0 else None
-        else:
-            acq_val = acq_values[i].item() if i < acq_values.numel() else None
-
-        # Store posterior predictions for predicted-vs-actual comparison.
-        # For minimization, means are negated (BoTorch convention) — un-negate for storage.
-        pred_mean = means[i].item() if i < means.numel() else None
-        if pred_mean is not None and not minimize:
-            pred_mean = -pred_mean  # undo BoTorch negation
-        predicted_objectives = {obj_name: pred_mean} if pred_mean is not None else None
-        predicted_std_dict = {obj_name: std_val} if std_val is not None else None
-
-        acq_name = method.value
         explanation = (
             f"Suggested by {acq_name} acquisition function. "
             f"Current {best_str} observed value: {best_observed:.4f}. "
@@ -446,7 +502,7 @@ def _create_single_objective_suggestions(
             parameter_values=values,
             iteration=iteration,
             batch_index=i,
-            generation_method="bo" if turbo_state is None else "turbo",
+            generation_method=gen_method,
             random_seed=random_seed,
             acquisition_value=acq_val,
             model_uncertainty=std_val,
@@ -576,6 +632,75 @@ def _generate_single_objective_batch(
     return suggestions, turbo_state
 
 
+def _build_multi_objective_provenance(
+    means: Tensor,
+    stds: Tensor,
+    acq_values: Tensor,
+    index: int,
+    spec: OptimizationSpec,
+) -> tuple[float | None, float | None, dict[str, float], dict[str, float]]:
+    """Build provenance data for a multi-objective candidate.
+
+    Extracts acquisition value, average uncertainty, and per-objective
+    predictions for one candidate in the batch.
+
+    Args:
+        means: Posterior mean predictions (batch x n_objectives)
+        stds: Posterior std predictions (batch x n_objectives)
+        acq_values: Acquisition function values
+        index: Candidate index in the batch
+        spec: Optimization specification
+
+    Returns:
+        Tuple of (acq_val, avg_std, predicted_objectives, predicted_std)
+    """
+    acq_val = _extract_scalar_prediction(acq_values, index)
+
+    # Average std across objectives for confidence level
+    if stds.dim() > 1 and index < stds.shape[0]:
+        avg_std: float | None = stds[index].mean().item()
+    elif index < stds.numel():
+        avg_std = stds[index].item()
+    else:
+        avg_std = None
+
+    # Per-objective predictions; un-negate maximization objectives.
+    predicted_objectives: dict[str, float] = {}
+    predicted_std_dict: dict[str, float] = {}
+    for j, obj in enumerate(spec.objectives):
+        if means.dim() > 1 and index < means.shape[0] and j < means.shape[1]:
+            pred = means[index, j].item()
+            predicted_objectives[obj.name] = pred if obj.minimize else -pred
+        if stds.dim() > 1 and index < stds.shape[0] and j < stds.shape[1]:
+            predicted_std_dict[obj.name] = stds[index, j].item()
+
+    return acq_val, avg_std, predicted_objectives, predicted_std_dict
+
+
+def _build_multi_objective_explanation(
+    acq_name: str,
+    acq_val: float | None,
+) -> str:
+    """Build a human-readable explanation for a multi-objective suggestion.
+
+    Args:
+        acq_name: Name of the acquisition function
+        acq_val: Acquisition function value (may be None)
+
+    Returns:
+        Explanation string
+    """
+    if acq_val is not None and acq_val > 0:
+        return (
+            f"Suggested by {acq_name} acquisition function with expected improvement "
+            f"of {acq_val:.4f}. This point is predicted to expand the Pareto front."
+        )
+    return (
+        f"Suggested by {acq_name} acquisition function to explore promising regions "
+        "and expand the Pareto front of non-dominated solutions."
+    )
+
+
 def _create_multi_objective_suggestions(
     candidates: Tensor,
     acq_values: Tensor,
@@ -597,55 +722,22 @@ def _create_multi_objective_suggestions(
         iteration: Current iteration number
         random_seed: Random seed for reproducibility
         method: Acquisition method used
-        minimize_mask: Boolean tensor indicating which objectives are minimized
 
     Returns:
         List of SuggestionResult objects
     """
     batch_size = candidates.shape[0]
+    acq_name = method.value
     suggestions = []
 
     for i in range(batch_size):
         values = decode_categorical(candidates[i], spec)
 
-        # Average std across objectives for confidence level
-        if stds.dim() > 1 and i < stds.shape[0]:
-            avg_std = stds[i].mean().item()
-        elif i < stds.numel():
-            avg_std = stds[i].item()
-        else:
-            avg_std = None
+        acq_val, avg_std, predicted_objectives, predicted_std_dict = (
+            _build_multi_objective_provenance(means, stds, acq_values, i, spec)
+        )
         confidence_level = _get_confidence_level(avg_std)
-
-        # Get acquisition value
-        if acq_values.dim() == 0:
-            acq_val = acq_values.item() if i == 0 else None
-        else:
-            acq_val = acq_values[i].item() if i < acq_values.numel() else None
-
-        # Store posterior predictions per objective.
-        # Un-negate maximization objectives (BoTorch works in minimization convention).
-        predicted_objectives: dict[str, float] = {}
-        predicted_std_dict: dict[str, float] = {}
-        for j, obj in enumerate(spec.objectives):
-            if means.dim() > 1 and i < means.shape[0] and j < means.shape[1]:
-                pred = means[i, j].item()
-                predicted_objectives[obj.name] = pred if obj.minimize else -pred
-            if stds.dim() > 1 and i < stds.shape[0] and j < stds.shape[1]:
-                predicted_std_dict[obj.name] = stds[i, j].item()
-
-        # Generate explanation
-        acq_name = method.value
-        if acq_val is not None and acq_val > 0:
-            explanation = (
-                f"Suggested by {acq_name} acquisition function with expected improvement "
-                f"of {acq_val:.4f}. This point is predicted to expand the Pareto front."
-            )
-        else:
-            explanation = (
-                f"Suggested by {acq_name} acquisition function to explore promising regions "
-                "and expand the Pareto front of non-dominated solutions."
-            )
+        explanation = _build_multi_objective_explanation(acq_name, acq_val)
 
         suggestion = SuggestionResult(
             parameter_values=values,

@@ -254,7 +254,7 @@ def _is_diverse_from_selected(
 ) -> bool:
     """Check if a candidate is sufficiently far from all already-selected points."""
     for sel_norm in selected_normalized:
-        if torch.norm(candidate_norm - sel_norm).item() < min_distance:
+        if torch.norm(candidate_norm - sel_norm, dim=-1).item() < min_distance:
             return False
     return True
 

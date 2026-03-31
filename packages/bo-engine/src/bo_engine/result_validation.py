@@ -270,9 +270,9 @@ def _detect_outliers_single_objective(
 
     for fold_idx in range(n_samples):
         train_fold = cv_folds.train_X[fold_idx]
-        train_Y_fold = cv_folds.train_Y[fold_idx]
+        train_y_fold = cv_folds.train_Y[fold_idx]
         test_fold = cv_folds.test_X[fold_idx]
-        test_Y_fold = cv_folds.test_Y[fold_idx]
+        test_y_fold = cv_folds.test_Y[fold_idx]
 
         # Skip if not enough training data
         if train_fold.shape[0] < 2:
@@ -282,7 +282,7 @@ def _detect_outliers_single_objective(
             # Create and fit model on training fold
             model = SingleTaskGP(
                 train_X=train_fold,
-                train_Y=train_Y_fold,
+                train_Y=train_y_fold,
                 input_transform=Normalize(d=train_x.shape[-1], bounds=bounds),
                 outcome_transform=Standardize(m=1),
             )
@@ -296,7 +296,7 @@ def _detect_outliers_single_objective(
                 pred_mean = posterior.mean.squeeze().item()
                 pred_std = posterior.variance.sqrt().squeeze().item()
 
-            actual = test_Y_fold.squeeze().item()
+            actual = test_y_fold.squeeze().item()
 
             # Compute standardized error
             if pred_std > 1e-10:
@@ -356,9 +356,9 @@ def compute_loo_standardized_errors(
 
     for fold_idx in range(n_samples):
         train_fold = cv_folds.train_X[fold_idx]
-        train_Y_fold = cv_folds.train_Y[fold_idx]
+        train_y_fold = cv_folds.train_Y[fold_idx]
         test_fold = cv_folds.test_X[fold_idx]
-        test_Y_fold = cv_folds.test_Y[fold_idx]
+        test_y_fold = cv_folds.test_Y[fold_idx]
 
         if train_fold.shape[0] < 2:
             errors.append(0.0)
@@ -367,7 +367,7 @@ def compute_loo_standardized_errors(
         try:
             model = SingleTaskGP(
                 train_X=train_fold,
-                train_Y=train_Y_fold,
+                train_Y=train_y_fold,
                 input_transform=Normalize(d=train_x.shape[-1], bounds=bounds),
                 outcome_transform=Standardize(m=1),
             )
@@ -380,7 +380,7 @@ def compute_loo_standardized_errors(
                 pred_mean = posterior.mean.squeeze().item()
                 pred_std = posterior.variance.sqrt().squeeze().item()
 
-            actual = test_Y_fold.squeeze().item()
+            actual = test_y_fold.squeeze().item()
             if pred_std > 1e-10:
                 std_error = (actual - pred_mean) / pred_std
             else:

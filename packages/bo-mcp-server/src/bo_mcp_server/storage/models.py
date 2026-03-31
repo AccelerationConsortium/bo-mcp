@@ -14,6 +14,10 @@ from bo_mcp_server.domain.result import ResultSource
 from bo_mcp_server.domain.suggestion import SuggestionStatus
 from bo_mcp_server.domain.utils import utcnow
 
+# Foreign key constants to avoid duplicated literals
+CAMPAIGNS_ID_FK = "campaigns.id"
+SUGGESTIONS_ID_FK = "suggestions.id"
+
 
 class Base(DeclarativeBase):
     """Base class for all ORM models."""
@@ -143,7 +147,7 @@ class SuggestionModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     campaign_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("campaigns.id"), nullable=False, index=True
+        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=False, index=True
     )
     parameter_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     status: Mapped[SuggestionStatus] = mapped_column(
@@ -179,10 +183,10 @@ class ResultModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     campaign_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("campaigns.id"), nullable=False, index=True
+        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=False, index=True
     )
     suggestion_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("suggestions.id"), nullable=True, index=True
+        String(36), ForeignKey(SUGGESTIONS_ID_FK), nullable=True, index=True
     )
     parameter_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     objective_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
@@ -225,7 +229,7 @@ class EventModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     campaign_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("campaigns.id"), nullable=True, index=True
+        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=True, index=True
     )
     event_type: Mapped[EventType] = mapped_column(Enum(EventType), default=EventType.TOOL_CALL)
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False)

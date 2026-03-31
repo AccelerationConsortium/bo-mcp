@@ -38,12 +38,14 @@ dev = [
 [tool.uv.workspace]
 members = [
     "packages/bo-engine",
+    "packages/bo-engine-baybe",
     "packages/bo-mcp-server",
     "packages/bo-mcp-api",
 ]
 
 [tool.uv.sources]
 bo-engine = { workspace = true }
+bo-engine-baybe = { workspace = true }
 bo-mcp-server = { workspace = true }
 bo-mcp-api = { workspace = true }
 
@@ -69,6 +71,7 @@ python = ".venv"
 # uv workspace packages live outside site-packages; ty needs explicit paths
 extra-paths = [
     "packages/bo-engine/src",
+    "packages/bo-engine-baybe/src",
     "packages/bo-mcp-server/src",
     "packages/bo-mcp-api/src",
 ]

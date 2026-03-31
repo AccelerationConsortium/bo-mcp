@@ -112,6 +112,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         transfer_learning = TransferLearningSpec(
             prior_campaign_ids=spec.transfer_learning.prior_campaign_ids,
             num_ranking_samples=spec.transfer_learning.num_ranking_samples,
+            temperature=spec.transfer_learning.temperature,
         )
 
     return OptimizationSpec(

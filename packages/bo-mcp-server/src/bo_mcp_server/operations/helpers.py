@@ -4,12 +4,49 @@ Deduplicates converters used by multiple operations (generate_suggestions,
 submit_results) so bug fixes apply in one place.
 """
 
+import logging
 from typing import Any
+from uuid import UUID
 
 from bo_engine.turbo import TurboState
 from bo_engine.types import ObservationData
 
 from bo_mcp_server.domain import Result
+from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.response_formatter import VerbosityLevel
+
+logger = logging.getLogger(__name__)
+
+
+def parse_verbosity(verbosity: str) -> VerbosityLevel | dict[str, Any]:
+    """Parse a verbosity string into a VerbosityLevel.
+
+    Returns VerbosityLevel on success, or an error response dict on failure.
+    """
+    try:
+        return VerbosityLevel(verbosity)
+    except ValueError:
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=(
+                f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed"
+            ),
+        )
+
+
+def parse_campaign_id(campaign_id: str) -> UUID | dict[str, Any]:
+    """Parse a campaign_id string into a UUID.
+
+    Returns UUID on success, or an error response dict on failure.
+    """
+    try:
+        return UUID(campaign_id)
+    except ValueError:
+        logger.warning("Invalid campaign_id format: %s", campaign_id)
+        return make_error_response(
+            ErrorCode.INVALID_CAMPAIGN_ID,
+            details={"campaign_id": campaign_id},
+        )
 
 
 def results_to_observations(results: list[Result]) -> list[ObservationData]:

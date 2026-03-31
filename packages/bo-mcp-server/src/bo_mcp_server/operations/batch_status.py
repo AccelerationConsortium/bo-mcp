@@ -6,6 +6,7 @@ from uuid import UUID
 
 from bo_mcp_server.domain import Campaign, CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.operations.helpers import parse_verbosity
 from bo_mcp_server.response_formatter import VerbosityLevel
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -111,13 +112,10 @@ def _validate_batch_request(
     campaign_ids: list[str], verbosity: str
 ) -> dict[str, Any] | VerbosityLevel:
     """Validate batch request parameters. Returns error dict or VerbosityLevel."""
-    try:
-        verbosity_level = VerbosityLevel(verbosity)
-    except ValueError:
-        return make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
-        )
+    verbosity_result = parse_verbosity(verbosity)
+    if isinstance(verbosity_result, dict):
+        return verbosity_result
+    verbosity_level = verbosity_result
 
     if not campaign_ids:
         return make_error_response(

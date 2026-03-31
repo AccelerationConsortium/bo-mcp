@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from botorch.models.model_list_gp_regression import ModelListGP
     from torch import Tensor
 
+    from bo_engine.saasbo import SAASBOConfig
+
     GPModel = SingleTaskGP | ModelListGP
     OutcomeConstraintModel = tuple[SingleTaskGP, float]
 
@@ -177,7 +179,7 @@ class OptimizationSpec:
     # v2.0: Transfer learning from prior campaigns
     transfer_learning: TransferLearningSpec | None = None
     # v2.0: SAASBO for high-dimensional optimization (None = disabled)
-    saasbo_config: Any | None = None  # SAASBOConfig (avoid circular import)
+    saasbo_config: SAASBOConfig | None = None
 
     @property
     def use_turbo(self) -> bool:

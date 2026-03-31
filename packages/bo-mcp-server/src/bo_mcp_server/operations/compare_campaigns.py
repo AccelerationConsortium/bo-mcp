@@ -14,8 +14,12 @@ from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.operations.helpers import results_to_observations
-from bo_mcp_server.response_formatter import VerbosityLevel, format_compare_campaigns_response
+from bo_mcp_server.operations.helpers import (
+    parse_campaign_id,
+    parse_verbosity,
+    results_to_observations,
+)
+from bo_mcp_server.response_formatter import format_compare_campaigns_response
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -187,15 +191,11 @@ async def compare_campaigns_operation(
     """Compare multiple campaigns."""
     logger.info("Comparing %d campaigns, verbosity=%s", len(campaign_ids), verbosity)
 
-    try:
-        verbosity_level = VerbosityLevel(verbosity)
-    except ValueError:
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
-        )
-        response.update({"campaigns": [], "comparison": None})
-        return response
+    verbosity_result = parse_verbosity(verbosity)
+    if isinstance(verbosity_result, dict):
+        verbosity_result.update({"campaigns": [], "comparison": None})
+        return verbosity_result
+    verbosity_level = verbosity_result
 
     if len(campaign_ids) < 2:
         response = make_error_response(
@@ -217,16 +217,11 @@ async def compare_campaigns_operation(
 
     campaign_uuids: list[UUID] = []
     for campaign_id in campaign_ids:
-        try:
-            campaign_uuids.append(UUID(campaign_id))
-        except ValueError:
-            response = make_error_response(
-                ErrorCode.INVALID_CAMPAIGN_ID,
-                message=f"Invalid campaign_id format: {campaign_id}",
-                details={"campaign_id": campaign_id},
-            )
-            response.update({"campaigns": [], "comparison": None})
-            return response
+        parsed_id = parse_campaign_id(campaign_id)
+        if isinstance(parsed_id, dict):
+            parsed_id.update({"campaigns": [], "comparison": None})
+            return parsed_id
+        campaign_uuids.append(parsed_id)
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)

@@ -61,7 +61,7 @@ ignore = ["S101", "N806"]  # N806: X, Y are standard ML variable names
 max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
-"scripts/**" = ["C901"]  # Demo scripts have long main() functions; complexity rule applies to packages only
+"scripts/**" = ["C901", "PLR0912", "PLR0915", "PLR0911"]  # Demo scripts have long main() functions; complexity rules apply to packages only
 
 [tool.ty.environment]
 python-version = "3.13"

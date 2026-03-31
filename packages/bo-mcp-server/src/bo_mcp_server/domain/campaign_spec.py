@@ -174,6 +174,7 @@ class TransferLearningConfig(BaseModel):
 
     prior_campaign_ids: list[str] = Field(..., min_length=1)
     num_ranking_samples: int = Field(default=512, ge=1)
+    temperature: float = Field(default=0.5, gt=0.0)
 
 
 class TurboConfig(BaseModel):

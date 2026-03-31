@@ -38,6 +38,7 @@ from bo_mcp_server.cache import diagnostics_cache
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result, Suggestion, SuggestionStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.operations.helpers import parse_campaign_id, parse_verbosity
 from bo_mcp_server.response_formatter import VerbosityLevel, format_diagnostics_response
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -975,15 +976,10 @@ def _validate_diagnostics_inputs(
     sections: list[str] | None,
 ) -> tuple[VerbosityLevel, UUID, frozenset[str]] | dict[str, Any]:
     """Validate diagnostics inputs. Returns (level, uuid, sections) or error dict."""
-    try:
-        verbosity_level = VerbosityLevel(verbosity)
-    except ValueError:
-        return make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=(
-                f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed"
-            ),
-        )
+    verbosity_result = parse_verbosity(verbosity)
+    if isinstance(verbosity_result, dict):
+        return verbosity_result
+    verbosity_level = verbosity_result
 
     requested = ALL_SECTIONS if sections is None else frozenset(sections)
     invalid_sections = requested - ALL_SECTIONS
@@ -995,14 +991,10 @@ def _validate_diagnostics_inputs(
             ),
         )
 
-    try:
-        campaign_uuid = UUID(campaign_id)
-    except ValueError:
-        logger.warning("Invalid campaign_id format: %s", campaign_id)
-        return make_error_response(
-            ErrorCode.INVALID_CAMPAIGN_ID,
-            details={"campaign_id": campaign_id},
-        )
+    campaign_id_result = parse_campaign_id(campaign_id)
+    if isinstance(campaign_id_result, dict):
+        return campaign_id_result
+    campaign_uuid = campaign_id_result
 
     return verbosity_level, campaign_uuid, requested
 

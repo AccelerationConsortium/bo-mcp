@@ -6,6 +6,7 @@ from uuid import UUID
 
 from bo_mcp_server.domain import CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.operations.helpers import parse_campaign_id, parse_verbosity
 from bo_mcp_server.response_formatter import VerbosityLevel, format_transfer_candidates_response
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -130,25 +131,17 @@ def _validate_transfer_inputs(
 
     Returns (verbosity_level, target_uuid) on success, or an error response dict.
     """
-    try:
-        verbosity_level = VerbosityLevel(verbosity)
-    except ValueError:
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
-        )
-        response.update({"target_campaign": None, "candidates": []})
-        return response
+    verbosity_result = parse_verbosity(verbosity)
+    if isinstance(verbosity_result, dict):
+        verbosity_result.update({"target_campaign": None, "candidates": []})
+        return verbosity_result
+    verbosity_level = verbosity_result
 
-    try:
-        target_uuid = UUID(campaign_id)
-    except ValueError:
-        response = make_error_response(
-            ErrorCode.INVALID_CAMPAIGN_ID,
-            details={"campaign_id": campaign_id},
-        )
-        response.update({"target_campaign": None, "candidates": []})
-        return response
+    campaign_id_result = parse_campaign_id(campaign_id)
+    if isinstance(campaign_id_result, dict):
+        campaign_id_result.update({"target_campaign": None, "candidates": []})
+        return campaign_id_result
+    target_uuid = campaign_id_result
 
     if not (0.0 <= similarity_threshold <= 1.0):
         response = make_error_response(

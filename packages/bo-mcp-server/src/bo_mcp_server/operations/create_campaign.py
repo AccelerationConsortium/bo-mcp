@@ -16,6 +16,7 @@ from bo_mcp_server.domain import (
     ParameterType,
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.operations.helpers import parse_verbosity
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_create_campaign_response,
@@ -103,15 +104,10 @@ async def create_campaign_operation(
     logger.debug("Intake data: %s", intake_data)
 
     # Validate verbosity parameter
-    try:
-        verbosity_level = VerbosityLevel(verbosity)
-    except ValueError:
-        return make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=(
-                f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed"
-            ),
-        )
+    verbosity_result = parse_verbosity(verbosity)
+    if isinstance(verbosity_result, dict):
+        return verbosity_result
+    verbosity_level = verbosity_result
 
     # Validate the intake (use detailed verbosity for full spec)
     validation = await validate_intake(intake_data, verbosity="detailed")

@@ -14,7 +14,11 @@ from bo_mcp_server.domain import (
     SuggestionStatus,
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.operations.helpers import results_to_observations
+from bo_mcp_server.operations.helpers import (
+    parse_campaign_id,
+    parse_verbosity,
+    results_to_observations,
+)
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_submit_results_response,
@@ -64,22 +68,24 @@ def _validate_submit_inputs(
     Returns (verbosity_level, campaign_uuid, submitter_uuid, result_source)
     on success, or an error response dict.
     """
-    try:
-        verbosity_level = VerbosityLevel(verbosity)
-    except ValueError:
-        return make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
-        )
+    verbosity_result = parse_verbosity(verbosity)
+    if isinstance(verbosity_result, dict):
+        return verbosity_result
+    verbosity_level = verbosity_result
 
-    try:
-        campaign_uuid = UUID(campaign_id)
-    except ValueError:
-        logger.warning("Invalid campaign_id format: %s", campaign_id)
-        return _make_submit_error(
-            ErrorCode.INVALID_CAMPAIGN_ID,
-            details={"campaign_id": campaign_id},
+    campaign_id_result = parse_campaign_id(campaign_id)
+    if isinstance(campaign_id_result, dict):
+        # Preserve submit_results-specific error fields
+        campaign_id_result.update(
+            {
+                "result_ids": [],
+                "warnings": [],
+                "duplicates_detected": [],
+            }
         )
+        return campaign_id_result
+
+    campaign_uuid = campaign_id_result
 
     try:
         submitter_uuid = UUID(submitted_by)

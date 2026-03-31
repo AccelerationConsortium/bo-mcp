@@ -94,23 +94,23 @@ def run_single_objective_optimization() -> None:
         suggestions = generate_next_batch(spec, observations, iteration=iteration)
 
         print(f"\nGenerated {len(suggestions)} suggestions:")
-        print(f"  Method: {suggestions[0].generation_method}")
-        if suggestions[0].acquisition_function:
-            print(f"  Acquisition: {suggestions[0].acquisition_function}")
+        print(f"  Method: {suggestions[0].generation_method}")  # ty: ignore[unresolved-attribute]
+        if suggestions[0].acquisition_function:  # ty: ignore[unresolved-attribute]
+            print(f"  Acquisition: {suggestions[0].acquisition_function}")  # ty: ignore[unresolved-attribute]
 
         # Evaluate suggestions
         for i, sugg in enumerate(suggestions):
-            x1 = sugg.parameter_values["x1"]
-            x2 = sugg.parameter_values["x2"]
+            x1 = sugg.parameter_values["x1"]  # ty: ignore[unresolved-attribute]
+            x2 = sugg.parameter_values["x2"]  # ty: ignore[unresolved-attribute]
             f_val = branin(x1, x2)
 
             print(f"\n  Suggestion {i + 1}:")
             print(f"    x1={x1:.4f}, x2={x2:.4f}")
             print(f"    f(x)={f_val:.4f}")
-            if sugg.confidence_level:
-                print(f"    Confidence: {sugg.confidence_level}")
-            if sugg.explanation:
-                print(f"    Reason: {sugg.explanation[:80]}...")
+            if sugg.confidence_level:  # ty: ignore[unresolved-attribute]
+                print(f"    Confidence: {sugg.confidence_level}")  # ty: ignore[unresolved-attribute]
+            if sugg.explanation:  # ty: ignore[unresolved-attribute]
+                print(f"    Reason: {sugg.explanation[:80]}...")  # ty: ignore[unresolved-attribute]
 
             observations.append(
                 ObservationData(

@@ -174,6 +174,8 @@ class TestCategoricalBatchBO:
 
         donor_cats = fragment_spec.parameters[0].categories
         acceptor_cats = fragment_spec.parameters[1].categories
+        assert donor_cats is not None
+        assert acceptor_cats is not None
 
         for s in suggestions:
             assert s.parameter_values["donor"] in donor_cats, (

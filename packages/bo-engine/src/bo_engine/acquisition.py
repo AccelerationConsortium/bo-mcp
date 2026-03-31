@@ -13,6 +13,7 @@ v2.3: Added GPU auto-detection and acceleration
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any, cast
 
 import torch
 from botorch.acquisition import AcquisitionFunction
@@ -63,7 +64,7 @@ def create_single_objective_acquisition(
 
     if use_noisy:
         # Noisy EI handles noisy observations - recommended default
-        acqf_kwargs = {
+        acqf_kwargs: dict[str, Any] = {
             "model": model,
             "X_baseline": train_x,
             "prune_baseline": True,
@@ -77,11 +78,7 @@ def create_single_objective_acquisition(
         if best_f is None:
             # Compute best_f from training data (assumes minimization)
             best_f = train_y.min().item()
-        acqf_kwargs = {
-            "model": model,
-            "best_f": best_f,
-        }
-        return qLogExpectedImprovement(**acqf_kwargs)
+        return qLogExpectedImprovement(model=model, best_f=best_f)
 
 
 def create_multi_objective_acquisition(
@@ -134,7 +131,7 @@ def create_multi_objective_acquisition(
         if constraints is not None and len(constraints) > 0:
             acqf_kwargs["constraints"] = constraints
 
-        return qLogNoisyExpectedHypervolumeImprovement(**acqf_kwargs)
+        return qLogNoisyExpectedHypervolumeImprovement(**acqf_kwargs)  # ty: ignore[invalid-argument-type]
 
 
 def create_acquisition_from_config(config: AcquisitionConfig) -> AcquisitionFunction:
@@ -208,7 +205,7 @@ def create_acquisition(
         if not isinstance(model, SingleTaskGP):
             # If ModelListGP with single model, extract it
             if isinstance(model, ModelListGP) and len(model.models) == 1:
-                model = model.models[0]  # type: ignore[assignment]
+                model = cast(SingleTaskGP, model.models[0])
             else:
                 raise ValueError("Single-objective requires SingleTaskGP model")
 
@@ -243,7 +240,7 @@ def create_acquisition(
         raise ValueError("Reference point required for multi-objective optimization")
 
     return create_multi_objective_acquisition(
-        model=model,  # type: ignore[arg-type]
+        model=model,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         ref_point=ref_point,
         train_x=train_x,
         train_y=train_y,

@@ -106,7 +106,7 @@ def compute_hypervolume(
     result = hv.compute(-pareto_y)
     # Handle both Tensor and float return types
     if hasattr(result, "item"):
-        return float(result.item())  # type: ignore[union-attr]
+        return float(result.item())  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
     return float(result)
 
 
@@ -1108,16 +1108,16 @@ def extract_hyperparameters(  # noqa: C901
             kernel = getattr(covar, "base_kernel", covar)
             kernel_type = type(kernel).__name__
 
-            ls = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]
+            ls = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]  # ty: ignore[call-non-callable, unresolved-attribute]
             all_lengthscales.append(ls)
 
             # Get noise variance from likelihood
             if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
-                all_noise.append(gp.likelihood.noise.item())  # type: ignore[union-attr]
+                all_noise.append(gp.likelihood.noise.item())  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
 
             # Get output scale if present
             if hasattr(covar, "outputscale"):
-                all_output_scale.append(covar.outputscale.item())  # type: ignore[union-attr]
+                all_output_scale.append(covar.outputscale.item())  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
 
         # Average lengthscales
         if all_lengthscales:
@@ -1136,7 +1136,7 @@ def extract_hyperparameters(  # noqa: C901
         kernel = getattr(covar, "base_kernel", covar)
         kernel_type = type(kernel).__name__
 
-        ls = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]
+        ls = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
         for i, name in enumerate(param_names):
             if ls.numel() == 1:
                 lengthscales_dict[name] = round(float(ls.item()), 4)
@@ -1145,11 +1145,11 @@ def extract_hyperparameters(  # noqa: C901
 
         # Get noise variance from likelihood
         if hasattr(model, "likelihood") and hasattr(model.likelihood, "noise"):
-            noise_variance = float(model.likelihood.noise.item())  # type: ignore[union-attr]
+            noise_variance = float(model.likelihood.noise.item())  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
 
         # Get output scale if present
         if hasattr(covar, "outputscale"):
-            output_scale = float(covar.outputscale.item())  # type: ignore[union-attr]
+            output_scale = float(covar.outputscale.item())  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
 
     return HyperparameterInfo(
         lengthscales=lengthscales_dict,

@@ -338,7 +338,7 @@ def _compute_approximate_loo(
         # Use leave-one-out approximation
         # LOO prediction error ≈ residual / (1 - leverage)
         # For GP, leverage ≈ 1 - noise_variance / posterior_variance
-        noise_var = model.likelihood.noise.item()
+        noise_var = model.likelihood.noise.item()  # ty: ignore[call-non-callable]
         leverage = 1 - noise_var / (train_var + noise_var + 1e-10)
 
         # Approximate LOO errors (PRESS residuals)

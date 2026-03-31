@@ -247,7 +247,7 @@ def generate_thompson_samples_multi_objective(
             scalarized_samples = torch.zeros(config.num_candidates, device=device, dtype=dtype)
 
             for obj_idx in range(n_objectives):
-                posterior = model.models[obj_idx].posterior(candidates)
+                posterior = model.models[obj_idx].posterior(candidates)  # ty: ignore[call-non-callable]
                 sample = posterior.rsample()  # 1 x n_candidates x 1
                 sample = sample.squeeze()
                 scalarized_samples += w[obj_idx] * sample
@@ -265,7 +265,7 @@ def generate_thompson_samples_multi_objective(
         x = samples[i : i + 1]
         # Use first objective for mean/std (or could aggregate)
         with torch.no_grad():
-            posterior = model.models[0].posterior(x)
+            posterior = model.models[0].posterior(x)  # ty: ignore[call-non-callable]
             mean = posterior.mean.item()
             std = posterior.variance.sqrt().item()
             sampled = posterior.rsample().item()

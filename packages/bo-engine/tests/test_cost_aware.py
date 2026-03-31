@@ -238,9 +238,9 @@ class TestCostAwareWithConstraints:
             acquisition_method=AcquisitionMethod.COST_WEIGHTED_EI,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="f",
-                    bound=0.5,
-                    constraint_type="<=",  # f <= 0.5
+                    objective_name="f",
+                    threshold=0.5,
+                    greater_than=False,  # f <= 0.5
                 )
             ],
         )

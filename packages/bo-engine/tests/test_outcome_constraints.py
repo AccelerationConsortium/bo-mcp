@@ -16,19 +16,26 @@ def make_spec_with_constraint(
     greater_than: bool = True,
 ) -> OptimizationSpec:
     """Create optimization spec with an outcome constraint."""
-    constraint_type = ">=" if greater_than else "<="
     return OptimizationSpec(
         parameters=[
-            ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-            ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ParameterSpec(
+                name="x1",
+                type=ParameterType.CONTINUOUS,
+                bounds=(0.0, 1.0),
+            ),
+            ParameterSpec(
+                name="x2",
+                type=ParameterType.CONTINUOUS,
+                bounds=(0.0, 1.0),
+            ),
         ],
         objectives=[ObjectiveSpec(name="yield", minimize=False)],
         batch_size=2,
         outcome_constraints=[
             OutcomeConstraintSpec(
-                name="yield",
-                bound=threshold,
-                constraint_type=constraint_type,
+                objective_name="yield",
+                threshold=threshold,
+                greater_than=greater_than,
             )
         ],
     )
@@ -70,31 +77,23 @@ class TestOutcomeConstraintSpec:
     """Test OutcomeConstraintSpec dataclass."""
 
     def test_greater_than_constraint(self) -> None:
-        """OutcomeConstraintSpec works with constraint_type='>='."""
+        """OutcomeConstraintSpec with greater_than=True."""
         oc = OutcomeConstraintSpec(
-            name="yield",
-            bound=0.8,
-            constraint_type=">=",
+            objective_name="yield",
+            threshold=0.8,
+            greater_than=True,
         )
-        assert oc.name == "yield"
-        assert oc.bound == 0.8
-        assert oc.constraint_type == ">="
-        # Backward compatible properties
         assert oc.objective_name == "yield"
         assert oc.threshold == 0.8
         assert oc.greater_than is True
 
     def test_less_than_constraint(self) -> None:
-        """OutcomeConstraintSpec works with constraint_type='<='."""
+        """OutcomeConstraintSpec with greater_than=False."""
         oc = OutcomeConstraintSpec(
-            name="cost",
-            bound=100.0,
-            constraint_type="<=",
+            objective_name="cost",
+            threshold=100.0,
+            greater_than=False,
         )
-        assert oc.name == "cost"
-        assert oc.bound == 100.0
-        assert oc.constraint_type == "<="
-        # Backward compatible properties
         assert oc.objective_name == "cost"
         assert oc.threshold == 100.0
         assert oc.greater_than is False
@@ -136,9 +135,9 @@ class TestOutcomeConstraintIntegration:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.7,
-                    constraint_type=">=",
+                    objective_name="yield",
+                    threshold=0.7,
+                    greater_than=True,
                 ),
             ],
         )
@@ -177,9 +176,9 @@ class TestOutcomeConstraintIntegration:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="value",
-                    bound=50.0,
-                    constraint_type="<=",  # value <= 50
+                    objective_name="value",
+                    threshold=50.0,
+                    greater_than=False,  # value <= 50
                 )
             ],
         )
@@ -310,14 +309,14 @@ class TestMultipleOutcomeConstraints:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.3,
-                    constraint_type=">=",  # yield >= 0.3
+                    objective_name="yield",
+                    threshold=0.3,
+                    greater_than=True,  # yield >= 0.3
                 ),
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.8,
-                    constraint_type="<=",  # yield <= 0.8
+                    objective_name="yield",
+                    threshold=0.8,
+                    greater_than=False,  # yield <= 0.8
                 ),
             ],
         )
@@ -369,14 +368,14 @@ class TestMultipleOutcomeConstraints:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.5,
-                    constraint_type=">=",  # yield >= 0.5
+                    objective_name="yield",
+                    threshold=0.5,
+                    greater_than=True,  # yield >= 0.5
                 ),
                 OutcomeConstraintSpec(
-                    name="purity",
-                    bound=0.6,
-                    constraint_type=">=",  # purity >= 0.6
+                    objective_name="purity",
+                    threshold=0.6,
+                    greater_than=True,  # purity >= 0.6
                 ),
             ],
         )
@@ -417,9 +416,21 @@ class TestMultipleOutcomeConstraints:
             objectives=[ObjectiveSpec(name="value", minimize=True)],
             batch_size=2,
             outcome_constraints=[
-                OutcomeConstraintSpec(name="value", bound=10.0, constraint_type=">="),
-                OutcomeConstraintSpec(name="value", bound=100.0, constraint_type="<="),
-                OutcomeConstraintSpec(name="value", bound=50.0, constraint_type="<="),
+                OutcomeConstraintSpec(
+                    objective_name="value",
+                    threshold=10.0,
+                    greater_than=True,
+                ),
+                OutcomeConstraintSpec(
+                    objective_name="value",
+                    threshold=100.0,
+                    greater_than=False,
+                ),
+                OutcomeConstraintSpec(
+                    objective_name="value",
+                    threshold=50.0,
+                    greater_than=False,
+                ),
             ],
         )
 
@@ -494,9 +505,9 @@ class TestFeasibilityConversion:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="cost",
-                    bound=50.0,
-                    constraint_type="<=",  # cost <= 50
+                    objective_name="cost",
+                    threshold=50.0,
+                    greater_than=False,  # cost <= 50
                 )
             ],
         )
@@ -572,9 +583,9 @@ class TestOutcomeConstraintWithMinimization:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="cost",
-                    bound=20.0,
-                    constraint_type=">=",  # cost >= 20 (e.g., minimum quality threshold)
+                    objective_name="cost",
+                    threshold=20.0,
+                    greater_than=True,  # cost >= 20 (minimum quality)
                 )
             ],
         )
@@ -604,9 +615,9 @@ class TestOutcomeConstraintWithMinimization:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="cost",
-                    bound=50.0,
-                    constraint_type="<=",  # cost <= 50 (budget)
+                    objective_name="cost",
+                    threshold=50.0,
+                    greater_than=False,  # cost <= 50 (budget)
                 )
             ],
         )
@@ -699,9 +710,9 @@ class TestOutcomeConstraintDataDistribution:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="delta",
-                    bound=-0.5,
-                    constraint_type=">=",  # delta >= -0.5
+                    objective_name="delta",
+                    threshold=-0.5,
+                    greater_than=True,  # delta >= -0.5
                 )
             ],
         )
@@ -739,9 +750,9 @@ class TestOutcomeConstraintMultiObjective:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.5,
-                    constraint_type=">=",
+                    objective_name="yield",
+                    threshold=0.5,
+                    greater_than=True,
                 )
             ],
         )
@@ -787,9 +798,9 @@ class TestOutcomeConstraintMultiObjective:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="f1",
-                    bound=5.0,
-                    constraint_type="<=",  # f1 <= 5.0
+                    objective_name="f1",
+                    threshold=5.0,
+                    greater_than=False,  # f1 <= 5.0
                 )
             ],
         )

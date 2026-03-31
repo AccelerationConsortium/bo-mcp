@@ -144,7 +144,7 @@ async def manage_campaign(
 
     result = await manage_campaign_lifecycle_operation(
         campaign_id=campaign_id,
-        action=request.action,  # pyright: ignore[reportArgumentType]
+        action=request.action,  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type]
     )
     return CampaignLifecycleResponse(**result)
 

@@ -304,13 +304,13 @@ def extract_lengthscales(model: ModelListGP | SingleTaskGP) -> dict[int, Tensor]
     if isinstance(model, SingleTaskGP):
         # Single model - access through covar_module attribute
         covar = model.covar_module  # type: ignore[attr-defined]
-        ls = covar.base_kernel.lengthscale.detach()
+        ls = covar.base_kernel.lengthscale.detach()  # ty: ignore[call-non-callable, unresolved-attribute]
         lengthscales[0] = ls.squeeze()
     else:
         # ModelListGP
         for i, m in enumerate(model.models):
             covar = m.covar_module  # type: ignore[attr-defined]
-            ls = covar.base_kernel.lengthscale.detach()
+            ls = covar.base_kernel.lengthscale.detach()  # ty: ignore[call-non-callable, unresolved-attribute]
             lengthscales[i] = ls.squeeze()
 
     return lengthscales
@@ -334,8 +334,8 @@ def get_warping_parameters(model: SingleTaskGP) -> dict[str, Tensor] | None:
                 c0 = transform.concentration0  # type: ignore[attr-defined]
                 c1 = transform.concentration1  # type: ignore[attr-defined]
                 return {
-                    "concentration0": c0.detach(),
-                    "concentration1": c1.detach(),
+                    "concentration0": c0.detach(),  # ty: ignore[call-non-callable]
+                    "concentration1": c1.detach(),  # ty: ignore[call-non-callable]
                 }
 
     return None

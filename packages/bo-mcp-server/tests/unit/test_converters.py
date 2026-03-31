@@ -42,8 +42,8 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(-5.0, 5.0)),
+                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
+                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(-5.0, 5.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
         )
@@ -101,7 +101,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[
                 Objective(name="loss", direction="minimize"),
@@ -122,8 +122,8 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
+                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             constraints=[
@@ -147,7 +147,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             outcome_constraints=[
@@ -167,7 +167,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             acquisition_method=AcquisitionMethod.NOISY_EI,
@@ -182,12 +182,12 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             fidelity_parameter=FidelityParameter(
                 name="fidelity",
-                bounds=(0.1, 1.0),
+                bounds=(0.1, 1.0),  # ty: ignore[invalid-argument-type]
                 target=1.0,
                 cost_weight=2.0,
                 fixed_cost=10.0,
@@ -208,7 +208,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             transfer_learning=TransferLearningConfig(
@@ -228,7 +228,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             use_input_warping=True,
@@ -253,7 +253,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
         )
@@ -267,7 +267,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
         )
@@ -281,8 +281,8 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
+                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             constraints=[

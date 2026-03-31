@@ -73,7 +73,7 @@ def demo_eipu_basics() -> None:
     print()
 
     # Show acquisition method
-    print(f"Acquisition method: {AcquisitionMethod.EIPU.value}")
+    print(f"Acquisition method: {AcquisitionMethod.EIPU.value}")  # ty: ignore[unresolved-attribute]
     print()
 
 
@@ -120,7 +120,7 @@ def demo_cost_aware_optimization() -> None:
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=2,
         use_cost_aware=True,
-        acquisition_method=AcquisitionMethod.EIPU,
+        acquisition_method=AcquisitionMethod.EIPU,  # ty: ignore[unresolved-attribute]
     )
 
     # Initial observations with cost data
@@ -221,7 +221,7 @@ def demo_comparison() -> None:
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=2,
         use_cost_aware=True,
-        acquisition_method=AcquisitionMethod.EIPU,
+        acquisition_method=AcquisitionMethod.EIPU,  # ty: ignore[unresolved-attribute]
     )
 
     print("Standard BO (qLogNEI):")

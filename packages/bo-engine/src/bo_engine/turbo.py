@@ -189,7 +189,7 @@ def get_turbo_bounds(
     covar = model.covar_module
     if hasattr(covar, "base_kernel"):
         # ScaleKernel case
-        lengthscales = covar.base_kernel.lengthscale.squeeze().detach()
+        lengthscales = covar.base_kernel.lengthscale.squeeze().detach()  # ty: ignore[call-non-callable, unresolved-attribute]
     else:
         # Direct RBF kernel case
         lengthscales = covar.lengthscale.squeeze().detach()

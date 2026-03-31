@@ -457,8 +457,8 @@ def _compute_model_impact(
     )
 
     # Extract lengthscales
-    orig_ls = orig_model.covar_module.base_kernel.lengthscale.detach().squeeze()
-    aug_ls = aug_model.covar_module.base_kernel.lengthscale.detach().squeeze()
+    orig_ls = orig_model.covar_module.base_kernel.lengthscale.detach().squeeze()  # ty: ignore[call-non-callable, unresolved-attribute]
+    aug_ls = aug_model.covar_module.base_kernel.lengthscale.detach().squeeze()  # ty: ignore[call-non-callable, unresolved-attribute]
 
     if orig_ls.dim() == 0:
         orig_ls = orig_ls.unsqueeze(0)
@@ -467,8 +467,8 @@ def _compute_model_impact(
     ls_changes = {f"param_{i}": (aug_ls[i] - orig_ls[i]).item() for i in range(len(orig_ls))}
 
     # Noise variance
-    orig_noise = orig_model.likelihood.noise.item()
-    aug_noise = aug_model.likelihood.noise.item()
+    orig_noise = orig_model.likelihood.noise.item()  # ty: ignore[call-non-callable]
+    aug_noise = aug_model.likelihood.noise.item()  # ty: ignore[call-non-callable]
     noise_change = aug_noise - orig_noise
 
     # Prediction changes (sample at random points)

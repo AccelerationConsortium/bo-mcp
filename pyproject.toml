@@ -74,22 +74,20 @@ extra-paths = [
 ]
 
 [tool.ty.rules]
-# TODO: 189 type errors to fix. These rules are downgraded to warnings so CI
-# passes while we address them incrementally during the refactoring (Steps 2-7).
-# The optimal_scaling project uses botorch+ty with zero errors, proving these
-# are fixable — they are real type issues, not library limitations.
-invalid-argument-type = "warn"
-unresolved-attribute = "warn"
-call-non-callable = "warn"
-unknown-argument = "warn"
-unsupported-operator = "warn"
-invalid-type-form = "warn"
-missing-argument = "warn"
-invalid-assignment = "warn"
-not-subscriptable = "warn"
-invalid-return-type = "warn"
-no-matching-overload = "warn"
-unresolved-import = "warn"
+# All rules promoted to error. Library-typing limitations are handled
+# with targeted `# ty: ignore[rule]` comments on individual lines.
+call-non-callable = "error"
+invalid-argument-type = "error"
+invalid-assignment = "error"
+invalid-return-type = "error"
+invalid-type-form = "error"
+missing-argument = "error"
+no-matching-overload = "error"
+not-subscriptable = "error"
+unknown-argument = "error"
+unresolved-attribute = "error"
+unresolved-import = "error"
+unsupported-operator = "error"
 
 [tool.pytest.ini_options]
 # Note: Run tests per-package to avoid conftest.py collisions

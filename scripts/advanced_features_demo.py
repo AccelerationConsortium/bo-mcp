@@ -74,7 +74,7 @@ def demo_qlogparego() -> None:
             ObjectiveSpec(name="f2", minimize=True),
         ],
         batch_size=3,
-        acquisition_method=AcquisitionMethod.QLOGPAREGO,
+        acquisition_method=AcquisitionMethod.QLOGPAREGO,  # ty: ignore[unresolved-attribute]
     )
 
     print(f"Acquisition method: {spec.acquisition_method.value}")
@@ -88,7 +88,7 @@ def demo_qlogparego() -> None:
         suggestions = generate_next_batch(spec, observations, iteration=iteration)
 
         for sugg in suggestions:
-            x1, x2 = sugg.parameter_values["x1"], sugg.parameter_values["x2"]
+            x1, x2 = sugg.parameter_values["x1"], sugg.parameter_values["x2"]  # ty: ignore[unresolved-attribute]
             f1, f2 = branin_currin(x1, x2)
             observations.append(
                 ObservationData(
@@ -99,7 +99,7 @@ def demo_qlogparego() -> None:
 
         if iteration >= 1:  # After initial design
             print(f"Iteration {iteration + 1}:")
-            print(f"  Acquisition: {suggestions[0].acquisition_function}")
+            print(f"  Acquisition: {suggestions[0].acquisition_function}")  # ty: ignore[unresolved-attribute]
             print(f"  Generated {len(suggestions)} suggestions")
 
     # Compute Pareto front
@@ -166,7 +166,7 @@ def demo_input_warping() -> None:
             suggestions = generate_next_batch(spec, observations, iteration=iteration)
 
             for sugg in suggestions:
-                x = sugg.parameter_values["x"]
+                x = sugg.parameter_values["x"]  # ty: ignore[unresolved-attribute]
                 f = non_stationary_objective(x)
                 observations.append(
                     ObservationData(
@@ -247,7 +247,7 @@ def demo_combined_features() -> None:
             ObjectiveSpec(name="f2", minimize=True),
         ],
         batch_size=3,
-        acquisition_method=AcquisitionMethod.QLOGPAREGO,
+        acquisition_method=AcquisitionMethod.QLOGPAREGO,  # ty: ignore[unresolved-attribute]
         use_input_warping=True,
     )
 
@@ -262,7 +262,7 @@ def demo_combined_features() -> None:
         suggestions = generate_next_batch(spec, observations, iteration=iteration)
 
         for sugg in suggestions:
-            x1, x2 = sugg.parameter_values["x1"], sugg.parameter_values["x2"]
+            x1, x2 = sugg.parameter_values["x1"], sugg.parameter_values["x2"]  # ty: ignore[unresolved-attribute]
             f1, f2 = branin_currin(x1, x2)
             observations.append(
                 ObservationData(

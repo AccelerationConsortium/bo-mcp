@@ -498,6 +498,7 @@ class TestMultiObjectiveAcquisition:
             # Should have BO metadata for iteration > 0
             assert sugg.generation_method == "bo"
             # Should use multi-objective acquisition
+            assert sugg.acquisition_function is not None
             assert (
                 "hypervolume_improvement" in sugg.acquisition_function
                 or "scalarized_multi_objective" in sugg.acquisition_function

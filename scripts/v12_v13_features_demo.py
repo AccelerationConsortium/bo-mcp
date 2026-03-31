@@ -174,7 +174,7 @@ def demo_cost_aware_summary() -> None:
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=2,
         use_cost_aware=True,
-        acquisition_method=AcquisitionMethod.EIPU,
+        acquisition_method=AcquisitionMethod.COST_WEIGHTED_EI,
     )
 
     print("\nProblem: Minimize f(x) while considering evaluation cost")

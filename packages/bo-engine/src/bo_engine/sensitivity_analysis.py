@@ -456,7 +456,7 @@ def _compute_local_sensitivity(
 
     # Get posterior mean
     if isinstance(model, ModelListGP):
-        posterior = model.models[objective_index].posterior(x)
+        posterior = model.models[objective_index].posterior(x)  # ty: ignore[call-non-callable]
     else:
         posterior = model.posterior(x)
 

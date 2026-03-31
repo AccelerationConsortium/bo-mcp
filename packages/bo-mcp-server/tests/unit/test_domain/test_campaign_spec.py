@@ -30,7 +30,7 @@ class TestInputParameter:
             InputParameter(
                 name="temp",
                 type=ParameterType.CONTINUOUS,
-                bounds=(100.0, 20.0),  # Lower > upper
+                bounds=(100.0, 20.0),  # Lower > upper  # ty: ignore[invalid-argument-type]
             )
 
     def test_continuous_param_success(self):
@@ -38,7 +38,7 @@ class TestInputParameter:
         param = InputParameter(
             name="temp",
             type=ParameterType.CONTINUOUS,
-            bounds=(20.0, 100.0),
+            bounds=(20.0, 100.0),  # ty: ignore[invalid-argument-type]
         )
         assert param.name == "temp"
         assert param.bounds is not None
@@ -58,7 +58,7 @@ class TestInputParameter:
         param = InputParameter(
             name="count",
             type=ParameterType.DISCRETE,
-            bounds=(1.0, 10.0),
+            bounds=(1.0, 10.0),  # ty: ignore[invalid-argument-type]
         )
         assert param.name == "count"
 
@@ -87,7 +87,7 @@ class TestInputParameter:
             categories=["Pt", "Pd", "Rh"],
         )
         assert param.name == "catalyst"
-        assert len(param.categories) == 3
+        assert len(param.categories) == 3  # ty: ignore[invalid-argument-type]
 
 
 class TestObjective:
@@ -148,7 +148,7 @@ class TestCampaignSpec:
                     InputParameter(
                         name="temp",
                         type=ParameterType.CONTINUOUS,
-                        bounds=(0.0, 100.0),
+                        bounds=(0.0, 100.0),  # ty: ignore[invalid-argument-type]
                     ),
                 ],
                 objectives=[],
@@ -168,7 +168,7 @@ class TestCampaignSpec:
                     InputParameter(
                         name="temp",
                         type=ParameterType.CONTINUOUS,
-                        bounds=(0.0, 100.0),
+                        bounds=(0.0, 100.0),  # ty: ignore[invalid-argument-type]
                     ),
                 ],
                 objectives=[

@@ -39,7 +39,7 @@ def sample_continuous_param() -> InputParameter:
     return InputParameter(
         name="temperature",
         type=ParameterType.CONTINUOUS,
-        bounds=(20.0, 100.0),
+        bounds=(20.0, 100.0),  # ty: ignore[invalid-argument-type]
         description="Temperature in Celsius",
     )
 
@@ -50,7 +50,7 @@ def sample_discrete_param() -> InputParameter:
     return InputParameter(
         name="pressure",
         type=ParameterType.DISCRETE,
-        bounds=(1.0, 10.0),
+        bounds=(1.0, 10.0),  # ty: ignore[invalid-argument-type]
         description="Pressure in bar",
     )
 

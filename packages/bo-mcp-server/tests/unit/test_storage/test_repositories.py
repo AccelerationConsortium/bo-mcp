@@ -5,7 +5,8 @@ repository pattern.
 See: https://www.cosmicpython.com/book/chapter_02_repository.html
 """
 
-from uuid import uuid4
+from collections.abc import AsyncGenerator
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -30,7 +31,7 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture
-async def session() -> AsyncSession:
+async def session() -> AsyncGenerator[AsyncSession]:
     """Create a test database session."""
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
@@ -110,7 +111,7 @@ class TestSuggestionRepository:
     """Tests for SuggestionRepository."""
 
     @pytest.fixture
-    async def campaign_id(self, session: AsyncSession) -> uuid4:
+    async def campaign_id(self, session: AsyncSession) -> UUID:
         """Create a test campaign and return its ID."""
         # We need to create the necessary parent records
         from bo_mcp_server.storage.models import (
@@ -157,7 +158,7 @@ class TestSuggestionRepository:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_save_batch_single_item(self, session: AsyncSession, campaign_id: uuid4) -> None:
+    async def test_save_batch_single_item(self, session: AsyncSession, campaign_id: UUID) -> None:
         """Test save_batch with single suggestion."""
         repo = SuggestionRepository(session)
         suggestion = Suggestion(
@@ -178,7 +179,7 @@ class TestSuggestionRepository:
 
     @pytest.mark.asyncio
     async def test_save_batch_multiple_items(
-        self, session: AsyncSession, campaign_id: uuid4
+        self, session: AsyncSession, campaign_id: UUID
     ) -> None:
         """Test save_batch with multiple suggestions is more efficient than individual saves."""
         repo = SuggestionRepository(session)
@@ -201,7 +202,7 @@ class TestSuggestionRepository:
         assert len(all_suggestions) == 10
 
     @pytest.mark.asyncio
-    async def test_list_all(self, session: AsyncSession, campaign_id: uuid4) -> None:
+    async def test_list_all(self, session: AsyncSession, campaign_id: UUID) -> None:
         """Test list_all returns all suggestions."""
         repo = SuggestionRepository(session)
 

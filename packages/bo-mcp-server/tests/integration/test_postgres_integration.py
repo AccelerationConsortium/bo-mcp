@@ -206,7 +206,7 @@ class TestPostgresCampaignLifecycle:
                 InputParameter(
                     name="x",
                     type=ParameterType.CONTINUOUS,
-                    bounds=(0.0, 1.0),
+                    bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
                 )
             ],
             objectives=[

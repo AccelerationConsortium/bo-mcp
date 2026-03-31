@@ -221,7 +221,7 @@ def compare_models(
             mll = ExactMarginalLogLikelihood(model.likelihood, model)
             model.train()
             output = model(train_x)
-            log_mll = mll(output, train_y.squeeze()).item()
+            log_mll = mll(output, train_y.squeeze()).item()  # ty: ignore[unresolved-attribute]
             model.eval()
 
             # Compute BIC
@@ -310,6 +310,7 @@ def _build_model(
     # Build input transform
     if candidate.use_warping:
         input_transform = Warp(
+            d=n_dims,
             indices=list(range(n_dims)),
             concentration1_prior=None,
             concentration0_prior=None,

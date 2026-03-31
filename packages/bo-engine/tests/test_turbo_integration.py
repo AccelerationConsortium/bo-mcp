@@ -196,6 +196,7 @@ class TestTurboIntegration:
 
         for sugg in suggestions:
             assert sugg.generation_method == "turbo"
+            assert sugg.explanation is not None
             assert "TuRBO" in sugg.explanation
 
 

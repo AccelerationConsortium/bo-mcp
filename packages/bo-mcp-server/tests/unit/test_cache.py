@@ -153,6 +153,7 @@ class TestResponseCache:
         cache.set("diagnostics:complex-test:5", complex_data)
         result = cache.get("diagnostics:complex-test:5")
 
+        assert result is not None
         assert result == complex_data
         assert result["pareto_front"][0]["obj1"] == 1.5
         assert result["convergence"]["converged"] is False

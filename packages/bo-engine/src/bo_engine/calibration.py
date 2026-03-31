@@ -146,7 +146,7 @@ def compute_calibration_score(
     # Get posterior predictions
     with torch.no_grad():
         if isinstance(model, ModelListGP):
-            posterior = model.models[objective_index].posterior(train_x)
+            posterior = model.models[objective_index].posterior(train_x)  # ty: ignore[call-non-callable]
         else:
             posterior = model.posterior(train_x)
 

@@ -34,8 +34,8 @@ class TestInputTransformCreation:
 
         # Should be ChainedInputTransform
         assert hasattr(transform, "keys")  # ChainedInputTransform has keys()
-        assert "normalize" in transform.keys()
-        assert "warp" in transform.keys()
+        assert "normalize" in transform.keys()  # ty: ignore[call-non-callable]
+        assert "warp" in transform.keys()  # ty: ignore[call-non-callable]
 
 
 class TestSingleTaskModelWithWarping:

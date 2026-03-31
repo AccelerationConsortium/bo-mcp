@@ -167,7 +167,7 @@ def compute_prediction_intervals(
             # Get posterior for this objective
             with torch.no_grad():
                 if isinstance(model, ModelListGP):
-                    posterior = model.models[obj_idx].posterior(xi)
+                    posterior = model.models[obj_idx].posterior(xi)  # ty: ignore[call-non-callable]
                 else:
                     posterior = model.posterior(xi)
 
@@ -482,7 +482,7 @@ def _estimate_pareto_probability(
 
     with torch.no_grad():
         for obj_idx in range(n_objectives):
-            posterior = model.models[obj_idx].posterior(x)
+            posterior = model.models[obj_idx].posterior(x)  # ty: ignore[call-non-callable]
             sample = posterior.rsample(torch.Size([n_samples])).squeeze(-1).squeeze(-1)
             samples[:, obj_idx] = sample
 

@@ -247,7 +247,40 @@ def apply_local_penalization(
     return penalized_acq
 
 
-def filter_diverse_candidates(  # noqa: C901
+def _is_diverse_from_selected(
+    candidate_norm: Tensor,
+    selected_normalized: list[Tensor],
+    min_distance: float,
+) -> bool:
+    """Check if a candidate is sufficiently far from all already-selected points."""
+    for sel_norm in selected_normalized:
+        if torch.norm(candidate_norm - sel_norm).item() < min_distance:
+            return False
+    return True
+
+
+def _greedy_diverse_selection(
+    normalized: Tensor,
+    sorted_indices: Tensor,
+    batch_size: int,
+    min_distance: float,
+) -> list[int]:
+    """Greedily select diverse candidates by acquisition value, enforcing min distance."""
+    selected_indices: list[int] = []
+    selected_normalized: list[Tensor] = []
+
+    for idx in sorted_indices:
+        idx_val = int(idx.item())
+        if _is_diverse_from_selected(normalized[idx_val], selected_normalized, min_distance):
+            selected_indices.append(idx_val)
+            selected_normalized.append(normalized[idx_val])
+        if len(selected_indices) >= batch_size:
+            break
+
+    return selected_indices
+
+
+def filter_diverse_candidates(
     candidates: Tensor,
     acq_values: Tensor,
     bounds: Tensor,
@@ -269,50 +302,33 @@ def filter_diverse_candidates(  # noqa: C901
     Returns:
         Tuple of (selected_candidates, selected_acq_values)
     """
-    n_candidates = candidates.shape[0]
-
-    if n_candidates <= batch_size:
+    if candidates.shape[0] <= batch_size:
         return candidates, acq_values
 
-    # Normalize for distance computation
     ranges = bounds[1] - bounds[0]
     ranges = torch.where(ranges < 1e-10, torch.ones_like(ranges), ranges)
     normalized = (candidates - bounds[0]) / ranges
-
-    # Sort by acquisition value (descending)
     sorted_indices = torch.argsort(acq_values, descending=True)
 
-    selected_indices = []
-    selected_normalized = []
+    selected_indices = _greedy_diverse_selection(
+        normalized,
+        sorted_indices,
+        batch_size,
+        min_distance,
+    )
 
-    for idx in sorted_indices:
-        idx_val = int(idx.item())
-
-        # Check distance to already selected
-        candidate_norm = normalized[idx_val]
-
-        is_diverse = True
-        for sel_norm in selected_normalized:
-            dist = torch.norm(candidate_norm - sel_norm).item()
-            if dist < min_distance:
-                is_diverse = False
-                break
-
-        if is_diverse:
-            selected_indices.append(idx_val)
-            selected_normalized.append(candidate_norm)
-
-        if len(selected_indices) >= batch_size:
-            break
-
-    # If we couldn't find enough diverse candidates, fill with best remaining
+    # Fill with best remaining if not enough diverse candidates found
     if len(selected_indices) < batch_size:
+        selected_set = set(selected_indices)
         for idx in sorted_indices:
-            idx_val = idx.item()
-            if idx_val not in selected_indices:
+            idx_val = int(idx.item())
+            if idx_val not in selected_set:
                 selected_indices.append(idx_val)
+                selected_set.add(idx_val)
             if len(selected_indices) >= batch_size:
                 break
 
-    selected_indices_tensor = torch.tensor(selected_indices, dtype=torch.long)
+    selected_indices_tensor = torch.tensor(
+        selected_indices, dtype=torch.long, device=candidates.device
+    )
     return candidates[selected_indices_tensor], acq_values[selected_indices_tensor]

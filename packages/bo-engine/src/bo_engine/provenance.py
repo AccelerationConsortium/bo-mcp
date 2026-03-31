@@ -544,7 +544,76 @@ def compute_parameter_deviation(
     }
 
 
-def format_provenance_report(provenance: ResultProvenance | SuggestionProvenance) -> str:  # noqa: C901
+def _format_result_provenance(provenance: ResultProvenance) -> list[str]:
+    """Format a ResultProvenance into report lines."""
+    lines = [
+        "=== Result Provenance ===",
+        f"Result ID: {provenance.result_id}",
+        f"Submitted: {provenance.timestamp.isoformat()}",
+        f"Source: {provenance.source}",
+    ]
+    if provenance.submitted_by:
+        lines.append(f"Submitted by: {provenance.submitted_by}")
+    lines.append("")
+    lines.append("Objective Values:")
+    for name, value in provenance.objective_values.items():
+        lines.append(f"  {name}: {value}")
+    lines.append("")
+    lines.append("Parameters (as executed):")
+    for name, value in provenance.parameters_as_executed.items():
+        lines.append(f"  {name}: {value}")
+
+    if provenance.parameter_deviation > 0:
+        lines.append("")
+        lines.append(f"Parameter deviation from suggestion: {provenance.parameter_deviation:.6f}")
+
+    if provenance.suggestion_provenance:
+        sp = provenance.suggestion_provenance
+        lines.extend(
+            [
+                "",
+                "--- Linked Suggestion ---",
+                f"Suggestion ID: {sp.suggestion_id}",
+                f"Generated: {sp.timestamp.isoformat()}",
+                f"Iteration: {sp.iteration}",
+                f"Acquisition: {sp.acquisition_method}",
+            ]
+        )
+    return lines
+
+
+def _format_suggestion_provenance(provenance: SuggestionProvenance) -> list[str]:
+    """Format a SuggestionProvenance into report lines."""
+    lines = [
+        "=== Suggestion Provenance ===",
+        f"Suggestion ID: {provenance.suggestion_id}",
+        f"Campaign: {provenance.campaign_id}",
+        f"Generated: {provenance.timestamp.isoformat()}",
+        f"Iteration: {provenance.iteration}, Batch Index: {provenance.batch_index}",
+        f"Acquisition Method: {provenance.acquisition_method}",
+    ]
+    if provenance.acquisition_value is not None:
+        lines.append(f"Acquisition Value: {provenance.acquisition_value}")
+    if provenance.random_seed is not None:
+        lines.append(f"Random Seed: {provenance.random_seed}")
+    lines.append("")
+    lines.append("Suggested Parameters:")
+    for name, value in provenance.parameters.items():
+        lines.append(f"  {name}: {value}")
+    ms = provenance.model_snapshot
+    lines.extend(
+        [
+            "",
+            "Model Snapshot:",
+            f"  Type: {ms.model_type}",
+            f"  Kernel: {ms.kernel_type}",
+            f"  Training Points: {ms.n_training_points}",
+        ]
+    )
+    return lines
+
+
+def format_provenance_report(provenance: ResultProvenance | SuggestionProvenance) -> str:
     """Format provenance information as a human-readable report.
 
     Args:
@@ -553,60 +622,10 @@ def format_provenance_report(provenance: ResultProvenance | SuggestionProvenance
     Returns:
         Formatted string report.
     """
-    lines: list[str] = []
-
     if isinstance(provenance, ResultProvenance):
-        lines.append("=== Result Provenance ===")
-        lines.append(f"Result ID: {provenance.result_id}")
-        lines.append(f"Submitted: {provenance.timestamp.isoformat()}")
-        lines.append(f"Source: {provenance.source}")
-        if provenance.submitted_by:
-            lines.append(f"Submitted by: {provenance.submitted_by}")
-        lines.append("")
-        lines.append("Objective Values:")
-        for name, value in provenance.objective_values.items():
-            lines.append(f"  {name}: {value}")
-        lines.append("")
-        lines.append("Parameters (as executed):")
-        for name, value in provenance.parameters_as_executed.items():
-            lines.append(f"  {name}: {value}")
-
-        if provenance.parameter_deviation > 0:
-            lines.append("")
-            lines.append(
-                f"Parameter deviation from suggestion: {provenance.parameter_deviation:.6f}"
-            )
-
-        if provenance.suggestion_provenance:
-            lines.append("")
-            lines.append("--- Linked Suggestion ---")
-            lines.append(f"Suggestion ID: {provenance.suggestion_provenance.suggestion_id}")
-            lines.append(f"Generated: {provenance.suggestion_provenance.timestamp.isoformat()}")
-            lines.append(f"Iteration: {provenance.suggestion_provenance.iteration}")
-            lines.append(f"Acquisition: {provenance.suggestion_provenance.acquisition_method}")
-
-    elif isinstance(provenance, SuggestionProvenance):
-        lines.append("=== Suggestion Provenance ===")
-        lines.append(f"Suggestion ID: {provenance.suggestion_id}")
-        lines.append(f"Campaign: {provenance.campaign_id}")
-        lines.append(f"Generated: {provenance.timestamp.isoformat()}")
-        lines.append(f"Iteration: {provenance.iteration}, Batch Index: {provenance.batch_index}")
-        lines.append(f"Acquisition Method: {provenance.acquisition_method}")
-        if provenance.acquisition_value is not None:
-            lines.append(f"Acquisition Value: {provenance.acquisition_value}")
-        if provenance.random_seed is not None:
-            lines.append(f"Random Seed: {provenance.random_seed}")
-        lines.append("")
-        lines.append("Suggested Parameters:")
-        for name, value in provenance.parameters.items():
-            lines.append(f"  {name}: {value}")
-        lines.append("")
-        lines.append("Model Snapshot:")
-        ms = provenance.model_snapshot
-        lines.append(f"  Type: {ms.model_type}")
-        lines.append(f"  Kernel: {ms.kernel_type}")
-        lines.append(f"  Training Points: {ms.n_training_points}")
-
+        lines = _format_result_provenance(provenance)
+    else:
+        lines = _format_suggestion_provenance(provenance)
     return "\n".join(lines)
 
 

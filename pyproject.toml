@@ -54,7 +54,7 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "B", "S", "UP", "C901"]
+select = ["E", "F", "I", "N", "W", "B", "S", "UP", "C901", "PLR0912", "PLR0915", "PLR0911"]
 ignore = ["S101", "N806"]  # N806: X, Y are standard ML variable names
 
 [tool.ruff.lint.mccabe]

@@ -11,7 +11,7 @@ v2.3: Added GPU auto-detection and acceleration
 """
 
 from dataclasses import dataclass
-from typing import overload
+from typing import Any, overload
 
 import torch
 from botorch.cross_validation import batch_cross_validation, gen_loo_cv_folds
@@ -33,9 +33,7 @@ from bo_engine.constants import (
     DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS,
     DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS,
     IMPROVEMENT_TOLERANCE_ABSOLUTE,
-    PROGRESS_IMPROVING_MULTIPLIER,
     PROGRESS_IMPROVING_THRESHOLD,
-    PROGRESS_REGRESSING_MULTIPLIER,
     PROGRESS_REGRESSING_THRESHOLD,
 )
 from bo_engine.device import ensure_device, to_device
@@ -323,6 +321,15 @@ def determine_health_status(
         return "healthy", warnings
 
 
+def _classify_improvement(rate: float) -> str:
+    """Classify an improvement rate as improving, stagnant, or regressing."""
+    if rate > PROGRESS_IMPROVING_THRESHOLD:
+        return "improving"
+    if rate < PROGRESS_REGRESSING_THRESHOLD:
+        return "regressing"
+    return "stagnant"
+
+
 def determine_progress_status(
     hypervolume_history: list[float],
     window: int = 3,
@@ -337,18 +344,13 @@ def determine_progress_status(
         Progress status: 'improving', 'stagnant', or 'regressing'
     """
     if len(hypervolume_history) < 2:
-        return "improving"  # Assume improving at start
+        return "improving"
 
     if len(hypervolume_history) < window * 2:
-        # Compare just last two values
-        if hypervolume_history[-1] > hypervolume_history[-2] * PROGRESS_IMPROVING_MULTIPLIER:
-            return "improving"
-        elif hypervolume_history[-1] < hypervolume_history[-2] * PROGRESS_REGRESSING_MULTIPLIER:
-            return "regressing"
-        else:
-            return "stagnant"
+        last, prev = hypervolume_history[-1], hypervolume_history[-2]
+        rate = (last - prev) / abs(prev) if prev != 0 else 1.0
+        return _classify_improvement(rate)
 
-    # Compare recent window to previous window
     recent_avg = sum(hypervolume_history[-window:]) / window
     previous_avg = sum(hypervolume_history[-2 * window : -window]) / window
 
@@ -356,13 +358,7 @@ def determine_progress_status(
         return "improving"
 
     improvement_rate = (recent_avg - previous_avg) / previous_avg
-
-    if improvement_rate > PROGRESS_IMPROVING_THRESHOLD:
-        return "improving"
-    elif improvement_rate < PROGRESS_REGRESSING_THRESHOLD:
-        return "regressing"
-    else:
-        return "stagnant"
+    return _classify_improvement(improvement_rate)
 
 
 def compute_exploration_exploitation_ratio(
@@ -1075,7 +1071,39 @@ def compute_exploration_exploitation_metrics(
     )
 
 
-def extract_hyperparameters(  # noqa: C901
+def _extract_gp_kernel_info(
+    gp: Any,
+) -> tuple[str, Tensor, float, float]:
+    """Extract kernel type, lengthscales, noise variance, and output scale from a single GP."""
+    covar = gp.covar_module
+    kernel = getattr(covar, "base_kernel", covar)
+    kernel_type = type(kernel).__name__
+
+    ls = kernel.lengthscale.detach().squeeze()
+
+    noise_variance = 0.0
+    if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
+        noise_variance = float(gp.likelihood.noise.item())
+
+    output_scale = 1.0
+    if hasattr(covar, "outputscale"):
+        output_scale = float(covar.outputscale.item())
+
+    return kernel_type, ls, noise_variance, output_scale
+
+
+def _lengthscales_to_dict(ls: Tensor, param_names: list[str]) -> dict[str, float]:
+    """Convert a lengthscale tensor to a named dict."""
+    result: dict[str, float] = {}
+    for i, name in enumerate(param_names):
+        if ls.numel() == 1:
+            result[name] = round(float(ls.item()), 4)
+        elif i < ls.numel():
+            result[name] = round(float(ls[i].item()), 4)
+    return result
+
+
+def extract_hyperparameters(
     model: SingleTaskGP | ModelListGP,
     param_names: list[str],
 ) -> HyperparameterInfo:
@@ -1091,65 +1119,21 @@ def extract_hyperparameters(  # noqa: C901
     Returns:
         HyperparameterInfo with extracted hyperparameters
     """
-    lengthscales_dict: dict[str, float] = {}
-    noise_variance = 0.0
-    output_scale = 1.0
-    kernel_type = "Unknown"
     model_type = type(model).__name__
 
     if isinstance(model, ModelListGP):
-        # Average across objectives for multi-objective
-        all_lengthscales = []
-        all_noise = []
-        all_output_scale = []
-
-        for gp in model.models:
-            covar = gp.covar_module
-            kernel = getattr(covar, "base_kernel", covar)
-            kernel_type = type(kernel).__name__
-
-            ls = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]  # ty: ignore[call-non-callable, unresolved-attribute]
-            all_lengthscales.append(ls)
-
-            # Get noise variance from likelihood
-            if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
-                all_noise.append(gp.likelihood.noise.item())  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
-
-            # Get output scale if present
-            if hasattr(covar, "outputscale"):
-                all_output_scale.append(covar.outputscale.item())  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
-
-        # Average lengthscales
-        if all_lengthscales:
-            avg_ls = torch.stack(all_lengthscales).mean(dim=0)
-            for i, name in enumerate(param_names):
-                if i < avg_ls.numel():
-                    lengthscales_dict[name] = round(float(avg_ls[i].item()), 4)
-
-        if all_noise:
-            noise_variance = sum(all_noise) / len(all_noise)
-        if all_output_scale:
-            output_scale = sum(all_output_scale) / len(all_output_scale)
+        all_info = [_extract_gp_kernel_info(gp) for gp in model.models]
+        kernel_type = all_info[-1][0] if all_info else "Unknown"
+        all_ls = [info[1] for info in all_info]
+        avg_ls = torch.stack(all_ls).mean(dim=0) if all_ls else torch.tensor([])
+        lengthscales_dict = _lengthscales_to_dict(avg_ls, param_names)
+        noise_values = [info[2] for info in all_info]
+        noise_variance = sum(noise_values) / len(noise_values) if noise_values else 0.0
+        scale_values = [info[3] for info in all_info]
+        output_scale = sum(scale_values) / len(scale_values) if scale_values else 1.0
     else:
-        # SingleTaskGP
-        covar = model.covar_module
-        kernel = getattr(covar, "base_kernel", covar)
-        kernel_type = type(kernel).__name__
-
-        ls = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
-        for i, name in enumerate(param_names):
-            if ls.numel() == 1:
-                lengthscales_dict[name] = round(float(ls.item()), 4)
-            elif i < ls.numel():
-                lengthscales_dict[name] = round(float(ls[i].item()), 4)
-
-        # Get noise variance from likelihood
-        if hasattr(model, "likelihood") and hasattr(model.likelihood, "noise"):
-            noise_variance = float(model.likelihood.noise.item())  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
-
-        # Get output scale if present
-        if hasattr(covar, "outputscale"):
-            output_scale = float(covar.outputscale.item())  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
+        kernel_type, ls, noise_variance, output_scale = _extract_gp_kernel_info(model)
+        lengthscales_dict = _lengthscales_to_dict(ls, param_names)
 
     return HyperparameterInfo(
         lengthscales=lengthscales_dict,
@@ -1160,7 +1144,45 @@ def extract_hyperparameters(  # noqa: C901
     )
 
 
-def compute_constraint_satisfaction(  # noqa: C901
+def _check_constraint_feasibility(result: dict[str, float], constraint: dict) -> bool:
+    """Check if a single result satisfies a single constraint."""
+    ctype = constraint.get("type", "")
+    params = constraint.get("parameters", [])
+    value = constraint.get("value", 0.0)
+    coefficients = constraint.get("coefficients")
+
+    param_values = [result.get(p, 0.0) for p in params]
+
+    if ctype == "sum_equals":
+        return abs(sum(param_values) - value) < 1e-6
+    if ctype == "sum_less_than":
+        return sum(param_values) <= value
+    if ctype == "sum_greater_than":
+        return sum(param_values) >= value
+    if ctype == "linear" and coefficients:
+        weighted_sum = sum(c * v for c, v in zip(coefficients, param_values, strict=False))
+        return weighted_sum <= value
+    return True
+
+
+def _compute_satisfaction_trend(
+    feasibility_history: list[bool],
+    recent_rate: float,
+    window: int,
+) -> str:
+    """Determine the satisfaction trend from history."""
+    if len(feasibility_history) < 2 * window:
+        return "stable"
+    previous = feasibility_history[-2 * window : -window]
+    previous_rate = sum(previous) / len(previous)
+    if recent_rate > previous_rate + 0.1:
+        return "improving"
+    if recent_rate < previous_rate - 0.1:
+        return "worsening"
+    return "stable"
+
+
+def compute_constraint_satisfaction(
     results: list[dict[str, float]],
     constraints: list[dict],
     window: int = 10,
@@ -1186,56 +1208,18 @@ def compute_constraint_satisfaction(  # noqa: C901
             trend="stable",
         )
 
-    def check_feasibility(result: dict[str, float], constraint: dict) -> bool:
-        """Check if result satisfies a constraint."""
-        ctype = constraint.get("type", "")
-        params = constraint.get("parameters", [])
-        value = constraint.get("value", 0.0)
-        coefficients = constraint.get("coefficients")
-
-        param_values = [result.get(p, 0.0) for p in params]
-
-        if ctype == "sum_equals":
-            return abs(sum(param_values) - value) < 1e-6
-        elif ctype == "sum_less_than":
-            return sum(param_values) <= value
-        elif ctype == "sum_greater_than":
-            return sum(param_values) >= value
-        elif ctype == "linear" and coefficients:
-            weighted_sum = sum(c * v for c, v in zip(coefficients, param_values, strict=False))
-            return weighted_sum <= value
-        return True
-
-    feasibility_history = []
-    for result in results:
-        is_feasible = all(check_feasibility(result, c) for c in constraints)
-        feasibility_history.append(is_feasible)
+    feasibility_history = [
+        all(_check_constraint_feasibility(result, c) for c in constraints) for result in results
+    ]
 
     feasible_count = sum(feasibility_history)
     infeasible_count = len(feasibility_history) - feasible_count
+    satisfaction_rate = feasible_count / len(feasibility_history)
 
-    satisfaction_rate = feasible_count / len(feasibility_history) if feasibility_history else 1.0
-
-    # Recent satisfaction rate
-    if len(feasibility_history) >= window:
-        recent = feasibility_history[-window:]
-    else:
-        recent = feasibility_history
+    recent = feasibility_history[-window:]
     recent_satisfaction_rate = sum(recent) / len(recent) if recent else 1.0
 
-    # Determine trend
-    if len(feasibility_history) >= 2 * window:
-        previous = feasibility_history[-2 * window : -window]
-        previous_rate = sum(previous) / len(previous)
-
-        if recent_satisfaction_rate > previous_rate + 0.1:
-            trend = "improving"
-        elif recent_satisfaction_rate < previous_rate - 0.1:
-            trend = "worsening"
-        else:
-            trend = "stable"
-    else:
-        trend = "stable"
+    trend = _compute_satisfaction_trend(feasibility_history, recent_satisfaction_rate, window)
 
     return ConstraintSatisfactionMetrics(
         satisfaction_rate=round(satisfaction_rate, 4),

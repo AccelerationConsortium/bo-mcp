@@ -969,35 +969,12 @@ ALL_SECTIONS = frozenset(
 )
 
 
-async def get_diagnostics_operation(
+def _validate_diagnostics_inputs(
     campaign_id: str,
-    use_cache: bool = True,
-    verbosity: str = "standard",
-    sections: list[str] | None = None,
-) -> dict[str, Any]:
-    """Compute diagnostic information for a campaign.
-
-    Protocol-neutral operation used by MCP tools and REST routes.
-
-    Args:
-        campaign_id: UUID of the campaign
-        use_cache: Whether to use cached results (default True).
-        verbosity: Response verbosity level (minimal, standard, detailed).
-        sections: Optional list of sections to compute. When omitted, all
-            sections are computed. Valid: health, objectives, model,
-            convergence, suggestions, outliers, constraints.
-
-    Returns:
-        Formatted diagnostics dictionary.
-    """
-    logger.info(
-        "Getting diagnostics for campaign_id=%s, use_cache=%s, verbosity=%s, sections=%s",
-        campaign_id,
-        use_cache,
-        verbosity,
-        sections,
-    )
-
+    verbosity: str,
+    sections: list[str] | None,
+) -> tuple[VerbosityLevel, UUID, frozenset[str]] | dict[str, Any]:
+    """Validate diagnostics inputs. Returns (level, uuid, sections) or error dict."""
     try:
         verbosity_level = VerbosityLevel(verbosity)
     except ValueError:
@@ -1027,6 +1004,43 @@ async def get_diagnostics_operation(
             details={"campaign_id": campaign_id},
         )
 
+    return verbosity_level, campaign_uuid, requested
+
+
+async def get_diagnostics_operation(
+    campaign_id: str,
+    use_cache: bool = True,
+    verbosity: str = "standard",
+    sections: list[str] | None = None,
+) -> dict[str, Any]:
+    """Compute diagnostic information for a campaign.
+
+    Protocol-neutral operation used by MCP tools and REST routes.
+
+    Args:
+        campaign_id: UUID of the campaign
+        use_cache: Whether to use cached results (default True).
+        verbosity: Response verbosity level (minimal, standard, detailed).
+        sections: Optional list of sections to compute. When omitted, all
+            sections are computed. Valid: health, objectives, model,
+            convergence, suggestions, outliers, constraints.
+
+    Returns:
+        Formatted diagnostics dictionary.
+    """
+    logger.info(
+        "Getting diagnostics for campaign_id=%s, use_cache=%s, verbosity=%s, sections=%s",
+        campaign_id,
+        use_cache,
+        verbosity,
+        sections,
+    )
+
+    validated = _validate_diagnostics_inputs(campaign_id, verbosity, sections)
+    if isinstance(validated, dict):
+        return validated
+    verbosity_level, campaign_uuid, requested = validated
+
     is_full = requested == ALL_SECTIONS
 
     async with get_session() as session:
@@ -1043,15 +1057,11 @@ async def get_diagnostics_operation(
                 details={"campaign_id": campaign_id},
             )
 
-        # Version-aware cache key
         cache_key = f"diagnostics:{campaign_id}:{campaign.version}"
         if use_cache and is_full:
             cached = diagnostics_cache.get(cache_key)
             if cached is not None:
-                logger.debug(
-                    "Returning cached diagnostics for campaign %s",
-                    campaign_id,
-                )
+                logger.debug("Returning cached diagnostics for campaign %s", campaign_id)
                 return format_diagnostics_response(cached, verbosity_level)
 
         spec = await spec_repo.get(campaign.spec_id)

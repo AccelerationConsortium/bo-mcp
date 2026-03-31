@@ -121,20 +121,15 @@ def _generate_transfer_recommendation(
     )
 
 
-async def discover_transfer_candidates_operation(  # noqa: C901
+def _validate_transfer_inputs(
     campaign_id: str,
-    similarity_threshold: float = 0.5,
-    max_candidates: int = 5,
-    verbosity: str = "standard",
-) -> dict[str, Any]:
-    """Discover campaigns suitable for transfer learning."""
-    logger.info(
-        "Discovering transfer candidates for campaign %s (threshold=%.2f, verbosity=%s)",
-        campaign_id,
-        similarity_threshold,
-        verbosity,
-    )
+    similarity_threshold: float,
+    verbosity: str,
+) -> tuple[VerbosityLevel, UUID] | dict[str, Any]:
+    """Validate inputs for transfer candidate discovery.
 
+    Returns (verbosity_level, target_uuid) on success, or an error response dict.
+    """
     try:
         verbosity_level = VerbosityLevel(verbosity)
     except ValueError:
@@ -164,6 +159,104 @@ async def discover_transfer_candidates_operation(  # noqa: C901
         response.update({"target_campaign": None, "candidates": []})
         return response
 
+    return verbosity_level, target_uuid
+
+
+async def _evaluate_candidates(
+    campaign_repo: CampaignRepository,
+    spec_repo: CampaignSpecRepository,
+    result_repo: ResultRepository,
+    target_uuid: UUID,
+    target_spec: CampaignSpec,
+    similarity_threshold: float,
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    """Evaluate all campaigns for transfer learning similarity."""
+    candidates: list[dict[str, Any]] = []
+
+    for candidate_campaign in await campaign_repo.list_all():
+        if candidate_campaign.id == target_uuid:
+            continue
+
+        candidate_results = await result_repo.list_by_campaign(candidate_campaign.id)
+        if len(candidate_results) < 3 or candidate_campaign.status == CampaignStatus.FAILED:
+            continue
+
+        candidate_spec = await spec_repo.get(candidate_campaign.spec_id)
+        if candidate_spec is None:
+            continue
+
+        overall_similarity, component_scores = _compute_overall_similarity(
+            candidate_spec,
+            target_spec,
+            len(candidate_results),
+        )
+        if overall_similarity < similarity_threshold:
+            continue
+
+        candidates.append(
+            {
+                "campaign_id": str(candidate_campaign.id),
+                "name": candidate_spec.name,
+                "status": candidate_campaign.status.value,
+                "n_results": len(candidate_results),
+                "iteration": candidate_campaign.iteration,
+                "similarity_score": round(overall_similarity, 4),
+                "component_scores": component_scores,
+                "recommendation": _generate_transfer_recommendation(
+                    overall_similarity,
+                    candidate_spec.name,
+                    len(candidate_results),
+                ),
+            }
+        )
+
+    candidates.sort(key=lambda c: c["similarity_score"], reverse=True)
+    return candidates[:max_candidates]
+
+
+def _build_overall_recommendation(candidates: list[dict[str, Any]]) -> str:
+    """Build the overall transfer learning recommendation string."""
+    if not candidates:
+        return (
+            "No suitable transfer candidates found. The target campaign's parameter "
+            "space and objectives are sufficiently different from existing campaigns. "
+            "Optimization will proceed without transfer learning."
+        )
+    if candidates[0]["similarity_score"] >= 0.7:
+        top = candidates[0]
+        return (
+            f"Recommend transferring from '{top['name']}' (similarity: "
+            f"{top['similarity_score']:.0%}, {top['n_results']} results). "
+            f'Use prior_campaign_ids: ["{top["campaign_id"]}"] when creating '
+            "the campaign spec to enable transfer learning."
+        )
+    return (
+        "Moderate transfer candidates found. Transfer learning may provide "
+        "some benefit but is not guaranteed. Consider running initial design "
+        "without transfer and comparing performance."
+    )
+
+
+async def discover_transfer_candidates_operation(
+    campaign_id: str,
+    similarity_threshold: float = 0.5,
+    max_candidates: int = 5,
+    verbosity: str = "standard",
+) -> dict[str, Any]:
+    """Discover campaigns suitable for transfer learning."""
+    logger.info(
+        "Discovering transfer candidates for campaign %s (threshold=%.2f, verbosity=%s)",
+        campaign_id,
+        similarity_threshold,
+        verbosity,
+    )
+
+    validated = _validate_transfer_inputs(campaign_id, similarity_threshold, verbosity)
+    if isinstance(validated, dict):
+        return validated
+    verbosity_level, target_uuid = validated
+
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
         spec_repo = CampaignSpecRepository(session)
@@ -192,77 +285,25 @@ async def discover_transfer_candidates_operation(  # noqa: C901
             "name": target_spec.name,
             "n_parameters": len(target_spec.parameters),
             "n_objectives": len(target_spec.objectives),
-            "parameter_names": [parameter.name for parameter in target_spec.parameters],
-            "objective_names": [objective.name for objective in target_spec.objectives],
+            "parameter_names": [p.name for p in target_spec.parameters],
+            "objective_names": [o.name for o in target_spec.objectives],
         }
 
-        candidates: list[dict[str, Any]] = []
-        for candidate_campaign in await campaign_repo.list_all():
-            if candidate_campaign.id == target_uuid:
-                continue
-
-            candidate_results = await result_repo.list_by_campaign(candidate_campaign.id)
-            if len(candidate_results) < 3 or candidate_campaign.status == CampaignStatus.FAILED:
-                continue
-
-            candidate_spec = await spec_repo.get(candidate_campaign.spec_id)
-            if candidate_spec is None:
-                continue
-
-            overall_similarity, component_scores = _compute_overall_similarity(
-                candidate_spec,
-                target_spec,
-                len(candidate_results),
-            )
-            if overall_similarity < similarity_threshold:
-                continue
-
-            candidates.append(
-                {
-                    "campaign_id": str(candidate_campaign.id),
-                    "name": candidate_spec.name,
-                    "status": candidate_campaign.status.value,
-                    "n_results": len(candidate_results),
-                    "iteration": candidate_campaign.iteration,
-                    "similarity_score": round(overall_similarity, 4),
-                    "component_scores": component_scores,
-                    "recommendation": _generate_transfer_recommendation(
-                        overall_similarity,
-                        candidate_spec.name,
-                        len(candidate_results),
-                    ),
-                }
-            )
-
-        candidates.sort(key=lambda candidate: candidate["similarity_score"], reverse=True)
-        candidates = candidates[:max_candidates]
-
-        if not candidates:
-            overall_recommendation = (
-                "No suitable transfer candidates found. The target campaign's parameter "
-                "space and objectives are sufficiently different from existing campaigns. "
-                "Optimization will proceed without transfer learning."
-            )
-        elif candidates[0]["similarity_score"] >= 0.7:
-            top_candidate = candidates[0]
-            overall_recommendation = (
-                f"Recommend transferring from '{top_candidate['name']}' (similarity: "
-                f"{top_candidate['similarity_score']:.0%}, {top_candidate['n_results']} results). "
-                f'Use prior_campaign_ids: ["{top_candidate["campaign_id"]}"] when creating '
-                "the campaign spec to enable transfer learning."
-            )
-        else:
-            overall_recommendation = (
-                "Moderate transfer candidates found. Transfer learning may provide "
-                "some benefit but is not guaranteed. Consider running initial design "
-                "without transfer and comparing performance."
-            )
+        candidates = await _evaluate_candidates(
+            campaign_repo,
+            spec_repo,
+            result_repo,
+            target_uuid,
+            target_spec,
+            similarity_threshold,
+            max_candidates,
+        )
 
         full_response = {
             "success": True,
             "target_campaign": target_info,
             "candidates": candidates,
-            "overall_recommendation": overall_recommendation,
+            "overall_recommendation": _build_overall_recommendation(candidates),
             "errors": [],
         }
         return format_transfer_candidates_response(full_response, verbosity_level)

@@ -225,7 +225,7 @@ def _build_success_response(
     return response
 
 
-async def generate_suggestions_operation(  # noqa: C901
+async def generate_suggestions_operation(
     campaign_id: str,
     batch_size: int | None = None,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",

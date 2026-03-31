@@ -32,7 +32,69 @@ class MethodSelection:
     warnings: list[str] = field(default_factory=list)
 
 
-def select_methods(spec: OptimizationSpec, n_observations: int) -> MethodSelection:  # noqa: C901
+def _select_acquisition(
+    spec: OptimizationSpec,
+    n_objectives: int,
+) -> tuple[str, list[dict[str, str]]]:
+    """Select acquisition function and alternatives."""
+    alternatives: list[dict[str, str]] = []
+    if spec.acquisition_method != AcquisitionMethod.AUTO:
+        return spec.acquisition_method.value, alternatives
+    if n_objectives == 1:
+        alternatives.append(
+            {
+                "acquisition": AcquisitionMethod.EXPECTED_IMPROVEMENT.value,
+                "reason": "Use if observations are noiseless",
+            }
+        )
+        return AcquisitionMethod.NOISY_EI.value, alternatives
+    alternatives.append(
+        {
+            "acquisition": AcquisitionMethod.SCALARIZED_MULTI_OBJ.value,
+            "reason": "Better diversity in Pareto front exploration",
+        }
+    )
+    return AcquisitionMethod.HYPERVOLUME_IMPROVEMENT.value, alternatives
+
+
+def _select_strategy(
+    n_observations: int,
+    n_objectives: int,
+    is_high_dim: bool,
+    warnings: list[str],
+) -> str:
+    """Select optimization strategy."""
+    if n_observations == 0:
+        return "Sobol sequence (initial design)"
+    if is_high_dim:
+        if n_objectives > 1:
+            warnings.append(
+                "TuRBO is designed for single-objective optimization. "
+                "Using standard L-BFGS-B instead for multi-objective."
+            )
+            return "L-BFGS-B with random restarts"
+        return "TuRBO (Trust Region)"
+    return "L-BFGS-B with random restarts"
+
+
+def _assess_confidence(
+    n_observations: int,
+    n_parameters: int,
+    warnings: list[str],
+) -> str:
+    """Assess confidence level and add data-related warnings."""
+    if n_observations == 0:
+        return "high"
+    if n_observations < MIN_DATA_PARAM_MULTIPLIER * n_parameters:
+        warnings.append(
+            f"Only {n_observations} observations with {n_parameters} parameters. "
+            "Model predictions will improve with more data."
+        )
+        return "medium"
+    return "high"
+
+
+def select_methods(spec: OptimizationSpec, n_observations: int) -> MethodSelection:
     """Automatically select optimal BO methods based on problem structure.
 
     Analyzes the optimization specification and number of observations to
@@ -51,74 +113,19 @@ def select_methods(spec: OptimizationSpec, n_observations: int) -> MethodSelecti
     has_categorical = any(p.type == ParameterType.CATEGORICAL for p in spec.parameters)
     is_high_dim = n_parameters > HIGH_DIMENSION_WARNING_THRESHOLD
 
-    # Initialize result
-    input_transforms = ["Normalize (scale inputs to [0,1])"]
-    alternatives: list[dict[str, str]] = []
     warnings: list[str] = []
+    model_type = "SingleTaskGP" if n_objectives == 1 else "ModelListGP"
+    acquisition_function, alternatives = _select_acquisition(spec, n_objectives)
+    optimization_strategy = _select_strategy(n_observations, n_objectives, is_high_dim, warnings)
+    confidence = _assess_confidence(n_observations, n_parameters, warnings)
 
-    # === Model Selection ===
-    if n_objectives == 1:
-        model_type = "SingleTaskGP"
-    else:
-        model_type = "ModelListGP"
-
-    # === Acquisition Function Selection ===
-    if spec.acquisition_method != AcquisitionMethod.AUTO:
-        # User explicitly specified acquisition
-        acquisition_function = spec.acquisition_method.value
-    elif n_objectives == 1:
-        acquisition_function = AcquisitionMethod.NOISY_EI.value
-        alternatives.append(
-            {
-                "acquisition": AcquisitionMethod.EXPECTED_IMPROVEMENT.value,
-                "reason": "Use if observations are noiseless",
-            }
-        )
-    else:
-        acquisition_function = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT.value
-        alternatives.append(
-            {
-                "acquisition": AcquisitionMethod.SCALARIZED_MULTI_OBJ.value,
-                "reason": ("Better diversity in Pareto front exploration"),
-            }
-        )
-
-    # === Optimization Strategy ===
-    if n_observations == 0:
-        optimization_strategy = "Sobol sequence (initial design)"
-    elif is_high_dim:
-        optimization_strategy = "TuRBO (Trust Region)"
-        if n_objectives > 1:
-            warnings.append(
-                "TuRBO is designed for single-objective optimization. "
-                "Using standard L-BFGS-B instead for multi-objective."
-            )
-            optimization_strategy = "L-BFGS-B with random restarts"
-    else:
-        optimization_strategy = "L-BFGS-B with random restarts"
-
-    # === Input Transforms ===
+    input_transforms = ["Normalize (scale inputs to [0,1])"]
     if has_categorical:
         input_transforms.append("One-hot encoding (categorical parameters)")
-
     if spec.use_input_warping:
         input_transforms.append("Kumaraswamy CDF warping (non-stationary)")
-
     input_transforms.append("Standardize (normalize outputs)")
 
-    # === Confidence Level ===
-    if n_observations == 0:
-        confidence = "high"  # Initial design is deterministic
-    elif n_observations < MIN_DATA_PARAM_MULTIPLIER * n_parameters:
-        confidence = "medium"
-        warnings.append(
-            f"Only {n_observations} observations with {n_parameters} parameters. "
-            "Model predictions will improve with more data."
-        )
-    else:
-        confidence = "high"
-
-    # === Build Explanation ===
     explanation = _build_explanation(
         model_type=model_type,
         acquisition_function=acquisition_function,

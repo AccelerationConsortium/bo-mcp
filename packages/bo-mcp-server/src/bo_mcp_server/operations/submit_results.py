@@ -1,6 +1,7 @@
 """Submit results operation — protocol-neutral business logic."""
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
 
@@ -32,7 +33,401 @@ logger = logging.getLogger(__name__)
 DUPLICATE_DETECTION_TOLERANCE = 1e-6
 
 
-async def submit_results_operation(  # noqa: C901
+def _make_submit_error(
+    code: ErrorCode,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+    duplicates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build a standardized error response for submit_results."""
+    response = make_error_response(code, message=message, details=details)
+    response.update(
+        {
+            "result_ids": [],
+            "warnings": warnings or [],
+            "duplicates_detected": duplicates or [],
+        }
+    )
+    return response
+
+
+def _validate_submit_inputs(
+    campaign_id: str,
+    submitted_by: str,
+    source: str,
+    results: list[ResultSubmissionInput],
+    verbosity: str,
+) -> tuple[VerbosityLevel, UUID, UUID, ResultSource] | dict[str, Any]:
+    """Validate all submit_results inputs.
+
+    Returns (verbosity_level, campaign_uuid, submitter_uuid, result_source)
+    on success, or an error response dict.
+    """
+    try:
+        verbosity_level = VerbosityLevel(verbosity)
+    except ValueError:
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
+        )
+
+    try:
+        campaign_uuid = UUID(campaign_id)
+    except ValueError:
+        logger.warning("Invalid campaign_id format: %s", campaign_id)
+        return _make_submit_error(
+            ErrorCode.INVALID_CAMPAIGN_ID,
+            details={"campaign_id": campaign_id},
+        )
+
+    try:
+        submitter_uuid = UUID(submitted_by)
+    except ValueError:
+        return _make_submit_error(
+            ErrorCode.VALIDATION_FAILED,
+            message="Invalid submitted_by format",
+            details={"submitted_by": submitted_by},
+        )
+
+    try:
+        result_source = ResultSource(source)
+    except ValueError:
+        return _make_submit_error(
+            ErrorCode.VALIDATION_FAILED,
+            message=f"Invalid source '{source}', must be gui, file_upload, or api",
+            details={"source": source},
+        )
+
+    if not results:
+        return _make_submit_error(
+            ErrorCode.VALIDATION_FAILED,
+            message="At least one result is required",
+        )
+
+    return verbosity_level, campaign_uuid, submitter_uuid, result_source
+
+
+def _check_duplicates_for_result(
+    index: int,
+    params: dict[str, Any],
+    existing_params: list[dict[str, Any]],
+    backend: Any,
+    atomic: bool,
+    warnings: list[str],
+    duplicates_detected: list[dict[str, Any]],
+) -> str | None:
+    """Run duplicate detection for a single result. Returns error string or None."""
+    if not existing_params:
+        return None
+    duplicates = backend.detect_duplicates(
+        new_params=params,
+        existing_params=existing_params,
+        tolerance=DUPLICATE_DETECTION_TOLERANCE,
+    )
+    if not duplicates:
+        return None
+
+    result_error = None
+    for dup in duplicates:
+        duplicates_detected.append(
+            {
+                "result_index": index,
+                "duplicate_of_index": dup.index,
+                "is_exact": dup.is_exact,
+                "parameter_distance": dup.parameter_distance,
+            }
+        )
+        if dup.is_exact:
+            warnings.append(
+                f"Result {index} appears to be an exact duplicate of "
+                f"existing result at index {dup.index}. Use force=True to submit anyway."
+            )
+            if atomic:
+                result_error = f"Result {index} is exact duplicate. Use force=True to override."
+        else:
+            warnings.append(
+                f"Result {index} is very close to existing result at "
+                f"index {dup.index} (distance={dup.parameter_distance:.6f}). "
+                "This may indicate a duplicate measurement."
+            )
+    return result_error
+
+
+async def _resolve_suggestion_id(
+    suggestion_id_str: str | None,
+    index: int,
+    campaign_uuid: UUID,
+    suggestion_repo: SuggestionRepository,
+    warnings: list[str],
+) -> UUID | None:
+    """Resolve and validate a suggestion_id, marking it completed if valid."""
+    if not suggestion_id_str:
+        return None
+    try:
+        suggestion_id = UUID(suggestion_id_str)
+    except ValueError:
+        warnings.append(f"Result {index}: invalid suggestion_id format")
+        return None
+
+    suggestion = await suggestion_repo.get(suggestion_id)
+    if suggestion is None:
+        warnings.append(f"Result {index}: suggestion {suggestion_id_str} not found")
+        return None
+    if suggestion.campaign_id != campaign_uuid:
+        warnings.append(f"Result {index}: suggestion belongs to different campaign")
+        return None
+    await suggestion_repo.save(suggestion.with_status(SuggestionStatus.COMPLETED))
+    return suggestion_id
+
+
+@dataclass
+class _SubmitTracking:
+    """Mutable state accumulated during result validation."""
+
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    duplicates_detected: list[dict[str, Any]] = field(default_factory=list)
+    partial_results: dict[int, str | dict[str, str]] = field(default_factory=dict)
+
+
+async def _validate_and_create_results(
+    results: list[ResultSubmissionInput],
+    spec: Any,
+    campaign_uuid: UUID,
+    submitter_uuid: UUID,
+    result_source: ResultSource,
+    backend: Any,
+    existing_params: list[dict[str, Any]],
+    suggestion_repo: SuggestionRepository,
+    force: bool,
+    atomic: bool,
+    continue_on_error: bool,
+    tracking: _SubmitTracking,
+) -> tuple[list[Result], dict[int, int]]:
+    """Validate each result and create Result entities.
+
+    Returns (result_entities, entity_to_input_index).
+    """
+    param_names = {p.name for p in spec.parameters}
+    objective_names = {o.name for o in spec.objectives}
+    result_entities: list[Result] = []
+    entity_to_input_index: dict[int, int] = {}
+
+    for i, r in enumerate(results):
+        result_error = _validate_single_result(
+            i,
+            r,
+            param_names,
+            objective_names,
+            existing_params,
+            backend,
+            force,
+            atomic,
+            tracking.warnings,
+            tracking.duplicates_detected,
+        )
+
+        if result_error is not None:
+            tracking.errors.append(result_error)
+            if not atomic and continue_on_error:
+                tracking.partial_results[i] = {"error": result_error}
+            continue
+
+        suggestion_id = await _resolve_suggestion_id(
+            r.suggestion_id,
+            i,
+            campaign_uuid,
+            suggestion_repo,
+            tracking.warnings,
+        )
+
+        result = Result(
+            campaign_id=campaign_uuid,
+            suggestion_id=suggestion_id,
+            parameter_values=r.parameter_values,
+            objective_values=r.objective_values,
+            source=result_source,
+            submitted_by=submitter_uuid,
+            metadata=r.metadata,
+        )
+        entity_to_input_index[len(result_entities)] = i
+        result_entities.append(result)
+
+    return result_entities, entity_to_input_index
+
+
+def _validate_single_result(
+    index: int,
+    r: ResultSubmissionInput,
+    param_names: set[str],
+    objective_names: set[str],
+    existing_params: list[dict[str, Any]],
+    backend: Any,
+    force: bool,
+    atomic: bool,
+    warnings: list[str],
+    duplicates_detected: list[dict[str, Any]],
+) -> str | None:
+    """Validate a single result's parameters, duplicates, and objectives. Returns error or None."""
+    if missing_params := (param_names - set(r.parameter_values.keys())):
+        return f"Result {index} missing parameters: {missing_params}"
+
+    if not force:
+        dup_error = _check_duplicates_for_result(
+            index,
+            r.parameter_values,
+            existing_params,
+            backend,
+            atomic,
+            warnings,
+            duplicates_detected,
+        )
+        if dup_error is not None:
+            return dup_error
+
+    if missing_objectives := (objective_names - set(r.objective_values.keys())):
+        return f"Result {index} missing objectives: {missing_objectives}"
+
+    return None
+
+
+async def _update_campaign_state(
+    campaign: Any,
+    spec: Any,
+    backend: Any,
+    campaign_uuid: UUID,
+    campaign_id: str,
+    result_entities: list[Result],
+    result_repo: ResultRepository,
+    campaign_repo: CampaignRepository,
+    warnings: list[str],
+) -> None:
+    """Update hypervolume history and backend state after results are saved."""
+    updated_campaign = campaign
+    opt_spec = campaign_spec_to_optimization_spec(spec)
+
+    if len(spec.objectives) >= 2:
+        try:
+            all_results = await result_repo.list_by_campaign(campaign_uuid)
+            all_observations = results_to_observations(all_results)
+            hv = backend.compute_hypervolume(opt_spec, all_observations)
+            if hv is not None:
+                updated_campaign = updated_campaign.with_hypervolume(hv)
+                logger.debug(
+                    "Updated hypervolume history for campaign %s: hv=%.4f",
+                    campaign_id,
+                    hv,
+                )
+        except Exception as e:
+            logger.debug("Failed to compute hypervolume: %s", e)
+            warnings.append(f"Could not compute hypervolume: {e}")
+
+    if len(spec.objectives) == 1 and campaign.turbo_state is not None:
+        try:
+            new_obs = results_to_observations(result_entities)
+            new_state = backend.update_state_after_results(opt_spec, new_obs, campaign.turbo_state)
+            if new_state is not None:
+                updated_campaign = updated_campaign.with_turbo_state(new_state)
+        except Exception as e:
+            logger.debug("Failed to update backend state: %s", e)
+            warnings.append(f"Could not update backend state: {e}")
+
+    if updated_campaign.version != campaign.version:
+        await campaign_repo.save(updated_campaign, expected_version=campaign.version)
+
+
+async def _fetch_campaign_and_spec(
+    campaign_id: str,
+    campaign_uuid: UUID,
+    campaign_repo: CampaignRepository,
+    spec_repo: CampaignSpecRepository,
+) -> tuple[Any, Any] | dict[str, Any]:
+    """Fetch and validate campaign and spec. Returns (campaign, spec) or error dict."""
+    campaign = await campaign_repo.get(campaign_uuid)
+    if campaign is None:
+        return _make_submit_error(
+            ErrorCode.CAMPAIGN_NOT_FOUND,
+            message=f"Campaign {campaign_id} not found",
+            details={"campaign_id": campaign_id},
+        )
+    if not campaign.can_submit_results:
+        return _make_submit_error(
+            ErrorCode.INVALID_STATE_TRANSITION,
+            message=f"Campaign status is {campaign.status.value}, cannot submit results",
+            details={"current_status": campaign.status.value},
+        )
+    spec = await spec_repo.get(campaign.spec_id)
+    if spec is None:
+        return _make_submit_error(
+            ErrorCode.DATABASE_ERROR,
+            message="Campaign spec not found",
+            details={"spec_id": str(campaign.spec_id)},
+        )
+    return campaign, spec
+
+
+def _check_atomic_failures(
+    atomic: bool,
+    force: bool,
+    campaign_id: str,
+    tracking: _SubmitTracking,
+) -> dict[str, Any] | None:
+    """Check for atomic-mode failures (validation errors, exact duplicates).
+
+    Returns error response dict or None.
+    """
+    if atomic and tracking.errors:
+        logger.warning("Result submission validation failed (atomic mode): %s", tracking.errors)
+        return {
+            "success": False,
+            "result_ids": [],
+            "errors": tracking.errors,
+            "warnings": tracking.warnings,
+            "duplicates_detected": tracking.duplicates_detected,
+        }
+
+    exact_duplicates = [d for d in tracking.duplicates_detected if d.get("is_exact")]
+    if atomic and exact_duplicates and not force:
+        logger.warning(
+            "Exact duplicates detected for campaign %s: %s",
+            campaign_id,
+            exact_duplicates,
+        )
+        return _make_submit_error(
+            ErrorCode.DUPLICATE_RESULT,
+            message="Exact duplicate results detected. Use force=True to override.",
+            details={"duplicate_count": len(exact_duplicates)},
+            warnings=tracking.warnings,
+            duplicates=tracking.duplicates_detected,
+        )
+    return None
+
+
+def _build_submit_response(
+    result_ids: list[str],
+    tracking: _SubmitTracking,
+    atomic: bool,
+    continue_on_error: bool,
+) -> dict[str, Any]:
+    """Build the final success/partial-success response dict."""
+    has_errors = len(tracking.errors) > 0
+    partial_success_allowed = not atomic and continue_on_error
+    overall_success = len(result_ids) > 0 and (not has_errors or partial_success_allowed)
+
+    response_data: dict[str, Any] = {
+        "success": overall_success,
+        "result_ids": result_ids,
+        "errors": tracking.errors,
+        "warnings": tracking.warnings,
+        "duplicates_detected": tracking.duplicates_detected,
+    }
+    if not atomic and continue_on_error:
+        response_data["partial_results"] = tracking.partial_results
+    return response_data
+
+
+async def submit_results_operation(
     campaign_id: str,
     results: list[ResultSubmissionInput],
     submitted_by: str,
@@ -46,32 +441,16 @@ async def submit_results_operation(  # noqa: C901
 
     Args:
         campaign_id: UUID of the campaign
-        results: List of result payloads, each containing:
-            - parameter_values: Dict of parameter name -> value
-            - objective_values: Dict of objective name -> observed value
-            - suggestion_id: Optional UUID of the suggestion
-            - metadata: Optional additional metadata
+        results: List of result payloads
         submitted_by: UUID of the user submitting results
         source: Result source ("gui", "file_upload", or "api")
-        force: If True, skip duplicate detection and submit anyway
-        atomic: If True (default), rollback all results if any fail
-            validation. Either all results are saved or none are.
-        continue_on_error: If True, continue processing remaining
-            results after errors. Ignored if atomic=True.
-        verbosity: Response verbosity level. Options:
-            - "minimal": ~40 tokens - n_submitted only
-            - "standard": ~100 tokens - result_ids, warnings count
-            - "detailed": ~300+ tokens - all fields
+        force: If True, skip duplicate detection
+        atomic: If True, rollback all results if any fail validation
+        continue_on_error: If True, continue after errors (ignored if atomic)
+        verbosity: Response detail level
 
     Returns:
-        Dictionary with:
-            - success: Boolean indicating if submission succeeded
-            - result_ids: List of created result UUIDs
-            - errors: List of error messages (if any)
-            - warnings: List of warning messages
-            - duplicates_detected: List of detected duplicate info
-            - partial_results: (if continue_on_error=True) Dict
-              mapping index to result_id or error message
+        Dictionary with success, result_ids, errors, warnings, duplicates_detected.
     """
     logger.info(
         "Submitting %d results for campaign_id=%s by user=%s, verbosity=%s",
@@ -81,89 +460,12 @@ async def submit_results_operation(  # noqa: C901
         verbosity,
     )
 
-    # Validate verbosity parameter
-    try:
-        verbosity_level = VerbosityLevel(verbosity)
-    except ValueError:
-        return make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=(
-                f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed"
-            ),
-        )
+    validated = _validate_submit_inputs(campaign_id, submitted_by, source, results, verbosity)
+    if isinstance(validated, dict):
+        return validated
+    verbosity_level, campaign_uuid, submitter_uuid, result_source = validated
 
-    errors: list[str] = []
-    warnings: list[str] = []
-
-    # Validate campaign_id
-    try:
-        campaign_uuid = UUID(campaign_id)
-    except ValueError:
-        logger.warning("Invalid campaign_id format: %s", campaign_id)
-        response = make_error_response(
-            ErrorCode.INVALID_CAMPAIGN_ID,
-            details={"campaign_id": campaign_id},
-        )
-        response.update(
-            {
-                "result_ids": [],
-                "warnings": [],
-                "duplicates_detected": [],
-            }
-        )
-        return response
-
-    # Validate submitted_by
-    try:
-        submitter_uuid = UUID(submitted_by)
-    except ValueError:
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message="Invalid submitted_by format",
-            details={"submitted_by": submitted_by},
-        )
-        response.update(
-            {
-                "result_ids": [],
-                "warnings": [],
-                "duplicates_detected": [],
-            }
-        )
-        return response
-
-    # Validate source
-    try:
-        result_source = ResultSource(source)
-    except ValueError:
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=(f"Invalid source '{source}', must be gui, file_upload, or api"),
-            details={"source": source},
-        )
-        response.update(
-            {
-                "result_ids": [],
-                "warnings": [],
-                "duplicates_detected": [],
-            }
-        )
-        return response
-
-    if not results:
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message="At least one result is required",
-        )
-        response.update(
-            {
-                "result_ids": [],
-                "warnings": [],
-                "duplicates_detected": [],
-            }
-        )
-        return response
-
-    # Obtain backend once before entering the DB session
+    tracking = _SubmitTracking()
     backend = get_backend()
 
     async with get_session() as session:
@@ -172,289 +474,68 @@ async def submit_results_operation(  # noqa: C901
         result_repo = ResultRepository(session)
         suggestion_repo = SuggestionRepository(session)
 
-        # Get campaign
-        campaign = await campaign_repo.get(campaign_uuid)
-        if campaign is None:
-            response = make_error_response(
-                ErrorCode.CAMPAIGN_NOT_FOUND,
-                message=f"Campaign {campaign_id} not found",
-                details={"campaign_id": campaign_id},
-            )
-            response.update(
-                {
-                    "result_ids": [],
-                    "warnings": [],
-                    "duplicates_detected": [],
-                }
-            )
-            return response
+        fetched = await _fetch_campaign_and_spec(
+            campaign_id,
+            campaign_uuid,
+            campaign_repo,
+            spec_repo,
+        )
+        if isinstance(fetched, dict):
+            return fetched
+        campaign, spec = fetched
 
-        # Check campaign status
-        if not campaign.can_submit_results:
-            response = make_error_response(
-                ErrorCode.INVALID_STATE_TRANSITION,
-                message=(f"Campaign status is {campaign.status.value}, cannot submit results"),
-                details={
-                    "current_status": campaign.status.value,
-                },
-            )
-            response.update(
-                {
-                    "result_ids": [],
-                    "warnings": [],
-                    "duplicates_detected": [],
-                }
-            )
-            return response
-
-        # Get spec for validation
-        spec = await spec_repo.get(campaign.spec_id)
-        if spec is None:
-            response = make_error_response(
-                ErrorCode.DATABASE_ERROR,
-                message="Campaign spec not found",
-                details={"spec_id": str(campaign.spec_id)},
-            )
-            response.update(
-                {
-                    "result_ids": [],
-                    "warnings": [],
-                    "duplicates_detected": [],
-                }
-            )
-            return response
-
-        # Fetch existing results for duplicate detection
         existing_results = await result_repo.list_by_campaign(campaign_uuid)
         existing_params = [r.parameter_values for r in existing_results]
 
-        # Track duplicates detected across all submitted results
-        duplicates_detected: list[dict[str, Any]] = []
+        result_entities, entity_to_input_index = await _validate_and_create_results(
+            results,
+            spec,
+            campaign_uuid,
+            submitter_uuid,
+            result_source,
+            backend,
+            existing_params,
+            suggestion_repo,
+            force,
+            atomic,
+            continue_on_error,
+            tracking,
+        )
 
-        # Track partial results when continue_on_error=True
-        partial_results: dict[int, str | dict[str, str]] = {}
+        atomic_error = _check_atomic_failures(atomic, force, campaign_id, tracking)
+        if atomic_error is not None:
+            return atomic_error
 
-        # Validate and create result entities
-        result_entities: list[Result] = []
-        # Map from result entity index to original input index
-        entity_to_input_index: dict[int, int] = {}
-        param_names = {p.name for p in spec.parameters}
-        objective_names = {o.name for o in spec.objectives}
-
-        for i, r in enumerate(results):
-            result_error: str | None = None
-
-            # Validate parameter_values
-            if missing_params := (param_names - set(r.parameter_values.keys())):
-                result_error = f"Result {i} missing parameters: {missing_params}"
-
-            # Duplicate detection (Section 1.2)
-            if result_error is None and not force and existing_params:
-                duplicates = backend.detect_duplicates(
-                    new_params=r.parameter_values,
-                    existing_params=existing_params,
-                    tolerance=DUPLICATE_DETECTION_TOLERANCE,
-                )
-                if duplicates:
-                    for dup in duplicates:
-                        dup_info = {
-                            "result_index": i,
-                            "duplicate_of_index": dup.index,
-                            "is_exact": dup.is_exact,
-                            "parameter_distance": (dup.parameter_distance),
-                        }
-                        duplicates_detected.append(dup_info)
-                        if dup.is_exact:
-                            warnings.append(
-                                f"Result {i} appears to be "
-                                "an exact duplicate of "
-                                "existing result at index "
-                                f"{dup.index}. Use "
-                                "force=True to submit "
-                                "anyway."
-                            )
-                            # Treat exact duplicate as error
-                            # in atomic mode
-                            if atomic:
-                                result_error = (
-                                    f"Result {i} is exact duplicate. Use force=True to override."
-                                )
-                        else:
-                            dist = dup.parameter_distance
-                            warnings.append(
-                                f"Result {i} is very close "
-                                "to existing result at "
-                                f"index {dup.index} "
-                                f"(distance={dist:.6f}). "
-                                "This may indicate a "
-                                "duplicate measurement."
-                            )
-
-            # Validate objective_values
-            if result_error is None:
-                if missing_objectives := (objective_names - set(r.objective_values.keys())):
-                    result_error = f"Result {i} missing objectives: {missing_objectives}"
-
-            # Handle validation error based on mode
-            if result_error is not None:
-                errors.append(result_error)
-                if not atomic and continue_on_error:
-                    partial_results[i] = {
-                        "error": result_error,
-                    }
-                    continue
-                elif atomic:
-                    # In atomic mode, continue collecting errors
-                    # but don't create entity
-                    continue
-                else:
-                    # Non-atomic, non-continue: stop on first
-                    # error
-                    continue
-
-            # Parse optional suggestion_id
-            suggestion_id = None
-            if r.suggestion_id:
-                try:
-                    suggestion_id = UUID(r.suggestion_id)
-                    # Verify suggestion exists and belongs
-                    # to campaign
-                    suggestion = await suggestion_repo.get(suggestion_id)
-                    if suggestion is None:
-                        warnings.append(f"Result {i}: suggestion {r.suggestion_id} not found")
-                        suggestion_id = None
-                    elif suggestion.campaign_id != campaign_uuid:
-                        warnings.append(f"Result {i}: suggestion belongs to different campaign")
-                        suggestion_id = None
-                    else:
-                        # Mark suggestion as completed
-                        updated_suggestion = suggestion.with_status(SuggestionStatus.COMPLETED)
-                        await suggestion_repo.save(updated_suggestion)
-                except ValueError:
-                    warnings.append(f"Result {i}: invalid suggestion_id format")
-
-            # Create result entity
-            result = Result(
-                campaign_id=campaign_uuid,
-                suggestion_id=suggestion_id,
-                parameter_values=r.parameter_values,
-                objective_values=r.objective_values,
-                source=result_source,
-                submitted_by=submitter_uuid,
-                metadata=r.metadata,
-            )
-            entity_to_input_index[len(result_entities)] = i
-            result_entities.append(result)
-
-        # In atomic mode, if any errors occurred, fail the batch
-        if atomic and errors:
-            logger.warning(
-                "Result submission validation failed (atomic mode): %s",
-                errors,
-            )
-            return {
-                "success": False,
-                "result_ids": [],
-                "errors": errors,
-                "warnings": warnings,
-                "duplicates_detected": duplicates_detected,
-            }
-
-        # If exact duplicates detected and not forcing, reject
-        # submission (atomic mode only)
-        exact_duplicates = [d for d in duplicates_detected if d.get("is_exact")]
-        if atomic and exact_duplicates and not force:
-            logger.warning(
-                "Exact duplicates detected for campaign %s: %s",
-                campaign_id,
-                exact_duplicates,
-            )
-            response = make_error_response(
-                ErrorCode.DUPLICATE_RESULT,
-                message=("Exact duplicate results detected. Use force=True to override."),
-                details={
-                    "duplicate_count": len(exact_duplicates),
-                },
-            )
-            response.update(
-                {
-                    "result_ids": [],
-                    "warnings": warnings,
-                    "duplicates_detected": duplicates_detected,
-                }
-            )
-            return response
-
-        # Save results based on mode
         if not result_entities:
-            # No valid results to save
             response_data: dict[str, Any] = {
                 "success": False,
                 "result_ids": [],
-                "errors": (errors if errors else ["No valid results to submit"]),
-                "warnings": warnings,
-                "duplicates_detected": duplicates_detected,
+                "errors": tracking.errors if tracking.errors else ["No valid results to submit"],
+                "warnings": tracking.warnings,
+                "duplicates_detected": tracking.duplicates_detected,
             }
             if not atomic and continue_on_error:
-                response_data["partial_results"] = partial_results
+                response_data["partial_results"] = tracking.partial_results
             return response_data
 
-        # Save all valid results
         saved_results = await result_repo.save_batch(result_entities)
         result_ids = [str(r.id) for r in saved_results]
 
-        # Populate partial_results for successful saves
         if not atomic and continue_on_error:
             for entity_idx, saved in enumerate(saved_results):
-                input_idx = entity_to_input_index[entity_idx]
-                partial_results[input_idx] = str(saved.id)
+                tracking.partial_results[entity_to_input_index[entity_idx]] = str(saved.id)
 
-        # Get all results for campaign (including newly submitted)
-        all_results = await result_repo.list_by_campaign(campaign_uuid)
-
-        # Track if campaign needs updating
-        updated_campaign = campaign
-
-        # Convert spec once for backend calls
-        opt_spec = campaign_spec_to_optimization_spec(spec)
-
-        # Section 4.2: Update hypervolume history for
-        # multi-objective campaigns
-        if len(spec.objectives) >= 2:
-            try:
-                all_observations = results_to_observations(all_results)
-                hv = backend.compute_hypervolume(opt_spec, all_observations)
-                if hv is not None:
-                    updated_campaign = updated_campaign.with_hypervolume(hv)
-                    logger.debug(
-                        "Updated hypervolume history for campaign %s: hv=%.4f",
-                        campaign_id,
-                        hv,
-                    )
-            except Exception as e:
-                logger.debug("Failed to compute hypervolume: %s", e)
-                warnings.append(f"Could not compute hypervolume: {e}")
-
-        # Section 4.3: Update backend state for
-        # single-objective campaigns
-        if len(spec.objectives) == 1 and campaign.turbo_state is not None:
-            try:
-                new_obs = results_to_observations(result_entities)
-                new_state = backend.update_state_after_results(
-                    opt_spec, new_obs, campaign.turbo_state
-                )
-                if new_state is not None:
-                    updated_campaign = updated_campaign.with_turbo_state(new_state)
-            except Exception as e:
-                logger.debug("Failed to update backend state: %s", e)
-                warnings.append(f"Could not update backend state: {e}")
-
-        # Save campaign if updated
-        if updated_campaign.version != campaign.version:
-            await campaign_repo.save(
-                updated_campaign,
-                expected_version=campaign.version,
-            )
+        await _update_campaign_state(
+            campaign,
+            spec,
+            backend,
+            campaign_uuid,
+            campaign_id,
+            result_entities,
+            result_repo,
+            campaign_repo,
+            tracking.warnings,
+        )
 
         logger.info(
             "Successfully submitted %d results for campaign %s",
@@ -462,24 +543,7 @@ async def submit_results_operation(  # noqa: C901
             campaign_id,
         )
 
-        # Determine overall success based on mode
-        # In continue_on_error mode, partial success is still
-        # "success" but we include errors that occurred
-        has_errors = len(errors) > 0
-        partial_success_allowed = not atomic and continue_on_error
-        overall_success = len(result_ids) > 0 and (not has_errors or partial_success_allowed)
-
-        response_data: dict[str, Any] = {
-            "success": overall_success,
-            "result_ids": result_ids,
-            "errors": errors,
-            "warnings": warnings,
-            "duplicates_detected": duplicates_detected,
-        }
-
-        # Include partial_results in non-atomic
-        # continue_on_error mode
-        if not atomic and continue_on_error:
-            response_data["partial_results"] = partial_results
-
-        return format_submit_results_response(response_data, verbosity_level)
+        return format_submit_results_response(
+            _build_submit_response(result_ids, tracking, atomic, continue_on_error),
+            verbosity_level,
+        )

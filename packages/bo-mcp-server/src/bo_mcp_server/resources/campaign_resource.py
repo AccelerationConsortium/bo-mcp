@@ -1,13 +1,47 @@
 """Campaign resource for MCP."""
 
+from typing import Any
 from uuid import UUID
 
 from bo_mcp_server.server import mcp
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 
 
+def _format_parameters_section(spec: Any) -> list[str]:
+    """Format the parameters section of a campaign resource."""
+    lines: list[str] = []
+    for param in spec.parameters:
+        if param.bounds:
+            bounds_str = f"[{param.bounds.lower}, {param.bounds.upper}]"
+            lines.append(f"- **{param.name}** ({param.type.value}): {bounds_str}")
+        elif param.categories:
+            lines.append(f"- **{param.name}** ({param.type.value}): {param.categories}")
+        elif param.values:
+            lines.append(f"- **{param.name}** ({param.type.value}): {param.values}")
+    return lines
+
+
+def _format_objectives_section(spec: Any) -> list[str]:
+    """Format the objectives section of a campaign resource."""
+    lines: list[str] = []
+    for obj in spec.objectives:
+        target = f" (target: {obj.target})" if obj.target else ""
+        lines.append(f"- **{obj.name}**: {obj.direction}{target}")
+    return lines
+
+
+def _format_constraints_section(spec: Any) -> list[str]:
+    """Format the constraints section of a campaign resource."""
+    if not spec.constraints:
+        return []
+    lines = ["", "## Constraints", ""]
+    for constraint in spec.constraints:
+        lines.append(f"- {constraint.type.value}: {constraint.parameters} = {constraint.value}")
+    return lines
+
+
 @mcp.resource("campaign://{campaign_id}")
-async def get_campaign(campaign_id: str) -> str:  # noqa: C901
+async def get_campaign(campaign_id: str) -> str:
     """Get campaign details as a resource.
 
     Args:
@@ -33,7 +67,6 @@ async def get_campaign(campaign_id: str) -> str:  # noqa: C901
         if spec is None:
             return f"Error: Campaign spec not found for campaign {campaign_id}"
 
-        # Format campaign info
         lines = [
             f"# Campaign: {spec.name}",
             "",
@@ -44,29 +77,13 @@ async def get_campaign(campaign_id: str) -> str:  # noqa: C901
             "",
             "## Parameters",
             "",
+            *_format_parameters_section(spec),
+            "",
+            "## Objectives",
+            "",
+            *_format_objectives_section(spec),
+            *_format_constraints_section(spec),
         ]
-
-        for param in spec.parameters:
-            if param.bounds:
-                bounds_str = f"[{param.bounds.lower}, {param.bounds.upper}]"
-                lines.append(f"- **{param.name}** ({param.type.value}): {bounds_str}")
-            elif param.categories:
-                lines.append(f"- **{param.name}** ({param.type.value}): {param.categories}")
-            elif param.values:
-                lines.append(f"- **{param.name}** ({param.type.value}): {param.values}")
-
-        lines.extend(["", "## Objectives", ""])
-
-        for obj in spec.objectives:
-            target = f" (target: {obj.target})" if obj.target else ""
-            lines.append(f"- **{obj.name}**: {obj.direction}{target}")
-
-        if spec.constraints:
-            lines.extend(["", "## Constraints", ""])
-            for constraint in spec.constraints:
-                lines.append(
-                    f"- {constraint.type.value}: {constraint.parameters} = {constraint.value}"
-                )
 
         return "\n".join(lines)
 

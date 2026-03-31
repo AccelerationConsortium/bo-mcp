@@ -25,6 +25,7 @@ References:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -40,6 +41,8 @@ from torch import Tensor
 
 from bo_engine.cross_validation import CVConfig, CVMetrics, compute_loo_cv_optimized
 from bo_engine.device import ensure_device
+
+logger = logging.getLogger(__name__)
 
 
 class KernelType(Enum):
@@ -240,10 +243,8 @@ def compare_models(
             )
             results.append(result)
 
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).warning(f"Failed to fit model '{candidate.name}': {e}")
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.warning(f"Failed to fit model '{candidate.name}': {e}")
             # Create failed result
             results.append(
                 ModelComparisonResult(

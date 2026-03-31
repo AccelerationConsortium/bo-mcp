@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import random
+import warnings
 from typing import Any
 
 import numpy as np
@@ -276,8 +277,6 @@ def generate_next_batch(
     else:
         # TuRBO not supported for multi-objective
         if turbo_state is not None or spec.use_turbo:
-            import warnings
-
             warnings.warn(
                 "TuRBO is designed for single-objective optimization. "
                 "It will be ignored for multi-objective problems. "

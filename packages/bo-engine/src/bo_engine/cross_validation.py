@@ -26,6 +26,7 @@ References:
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +43,8 @@ from torch import Tensor
 
 from bo_engine.constants import MIN_OBSERVATIONS_FOR_LOO_CV
 from bo_engine.device import ensure_device
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -290,10 +293,8 @@ def _compute_batch_loo_cv(
             method="batch_loo",
         )
 
-    except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).warning(f"Batch LOO-CV failed: {e}")
+    except (RuntimeError, ValueError, TypeError) as e:
+        logger.warning(f"Batch LOO-CV failed: {e}")
         return _create_nan_metrics("batch_loo_failed")
 
 
@@ -499,10 +500,8 @@ def _compute_kfold_cv(
             all_variances[test_indices] = pred_var
             per_fold_errors.append((pred_mean - test_y_fold.squeeze()).abs().mean().item())
 
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).warning(f"K-fold CV failed for fold {fold_idx}: {e}")
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.warning(f"K-fold CV failed for fold {fold_idx}: {e}")
             continue
 
     return _compute_cv_metrics_from_predictions(

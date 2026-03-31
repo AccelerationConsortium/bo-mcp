@@ -10,13 +10,17 @@ v1.1: Added LOO cross-validation for model quality assessment
 v2.3: Added GPU auto-detection and acceleration
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Any, overload
 
 import torch
 from botorch.cross_validation import batch_cross_validation, gen_loo_cv_folds
+from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
+from botorch.models.transforms.input import Normalize
+from botorch.models.transforms.outcome import Standardize
 from botorch.utils.multi_objective.hypervolume import Hypervolume
 from botorch.utils.multi_objective.pareto import is_non_dominated
 from gpytorch.mlls import ExactMarginalLogLikelihood
@@ -37,6 +41,8 @@ from bo_engine.constants import (
     PROGRESS_REGRESSING_THRESHOLD,
 )
 from bo_engine.device import ensure_device, to_device
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -252,12 +258,8 @@ def compute_rank_correlation(
         result = scipy_stats.spearmanr(pred_np, actual_np)
         corr = float(result.statistic)  # type: ignore[union-attr]
         return corr if not (corr != corr) else 0.0  # Handle NaN
-    except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).debug(
-            f"Rank correlation calculation failed with {len(pred_np)} samples: {e!r}"
-        )
+    except (RuntimeError, ValueError, TypeError) as e:
+        logger.debug(f"Rank correlation calculation failed with {len(pred_np)} samples: {e!r}")
         return 0.0
 
 
@@ -493,10 +495,6 @@ def compute_loo_cv_metrics(
 
         try:
             # Create and fit model on training fold
-            from botorch.fit import fit_gpytorch_mll
-            from botorch.models.transforms.input import Normalize
-            from botorch.models.transforms.outcome import Standardize
-
             model = SingleTaskGP(
                 train_X=train_fold,
                 train_Y=train_Y_fold,
@@ -523,13 +521,9 @@ def compute_loo_cv_metrics(
             std_err = (pred_mean - test_Y_fold).abs() / (pred_var.sqrt() + 1e-10)
             standardized_errors.append(std_err.item())
 
-        except Exception as e:  # noqa: S112 - intentionally skip failed folds
+        except (RuntimeError, ValueError, TypeError) as e:  # noqa: S112 - intentionally skip failed folds
             # Skip folds that fail to fit, but log for debugging
-            import logging
-
-            logging.getLogger(__name__).debug(
-                f"LOO-CV fold {fold_idx} failed to fit: {type(e).__name__}: {e}"
-            )
+            logger.debug(f"LOO-CV fold {fold_idx} failed to fit: {type(e).__name__}: {e}")
             continue
 
     if len(predictions) < 2:
@@ -638,10 +632,8 @@ def compute_loo_cv_for_model(
                 per_fold_errors=errors.tolist(),
                 coverage_95=coverage_95,
             )
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).debug(
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug(
                 f"Cross-validation for single-objective model failed: {type(e).__name__}: {e}"
             )
             return LOOCVMetrics(
@@ -692,12 +684,8 @@ def compute_loo_cv_for_model(
                     per_fold_errors=errors.tolist(),
                     coverage_95=coverage_95,
                 )
-            except Exception as e:
-                import logging
-
-                logging.getLogger(__name__).debug(
-                    f"Cross-validation for objective {i} failed: {type(e).__name__}: {e}"
-                )
+            except (RuntimeError, ValueError, TypeError) as e:
+                logger.debug(f"Cross-validation for objective {i} failed: {type(e).__name__}: {e}")
                 results[i] = LOOCVMetrics(
                     rmse=float("nan"),
                     mae=float("nan"),

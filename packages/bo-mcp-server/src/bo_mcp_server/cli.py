@@ -44,14 +44,13 @@ async def _verify_setup() -> None:
     try:
         await init_database()
         status["database"] = "connected"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - DB drivers raise varied exception types
         status["status"] = "error"
         status["database"] = f"error: {e}"
     finally:
         try:
             await close_database()
-        except Exception as e:
-            # Verification already captured DB status; teardown errors should not block exit.
+        except Exception as e:  # noqa: BLE001 - teardown must not block exit
             status["database_close_warning"] = str(e)
 
     print(json.dumps(status, indent=2))

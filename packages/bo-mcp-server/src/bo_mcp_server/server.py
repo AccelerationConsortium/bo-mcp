@@ -71,12 +71,12 @@ def create_mcp_server() -> FastMCP:
     """
     logger.info("Creating MCP server...")
 
-    from bo_mcp_server.resources import (  # noqa: F401
+    from bo_mcp_server.resources import (  # noqa: F401, PLC0415
         campaign_resource,
         events_resource,
         suggestion_resource,
     )
-    from bo_mcp_server.tools import (  # noqa: F401
+    from bo_mcp_server.tools import (  # noqa: F401, PLC0415
         batch_operations,
         campaign_lifecycle,
         compare_campaigns,

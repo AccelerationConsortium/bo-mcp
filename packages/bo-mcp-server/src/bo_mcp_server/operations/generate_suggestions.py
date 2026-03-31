@@ -187,7 +187,7 @@ def _compute_diversity_info(
             "diversity_score": round(metrics.diversity_score, 4),
             "is_diverse": metrics.is_diverse,
         }
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Could not compute batch diversity: %s", e)
         return None
 

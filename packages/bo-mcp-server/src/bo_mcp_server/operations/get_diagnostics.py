@@ -341,12 +341,12 @@ def _compute_model_diagnostics(
                 elif objective_names:
                     loo_cv_by_objective[objective_names[0]] = _loo_cv_metrics_to_dict(loo_metrics)
                 diagnostics["loo_cv_metrics"] = loo_cv_by_objective
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError) as e:
                 logger.debug("LOO-CV computation failed: %s", e)
                 diagnostics["loo_cv_metrics"] = None
         else:
             diagnostics["loo_cv_metrics"] = None
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         # Model-based diagnostics are optional - don't fail
         logger.debug("Model-based diagnostics computation failed: %s", e)
         diagnostics["feature_importance"] = None
@@ -543,7 +543,7 @@ def _compute_exploration_exploitation(
             "balance_assessment": metrics.balance_assessment,
             "recommendation": metrics.recommendation,
         }
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Exploration/exploitation metrics computation failed: %s", e)
         diagnostics["exploration_exploitation"] = None
 
@@ -567,7 +567,7 @@ def _compute_hyperparameters(
             "model_type": hp_info.model_type,
             "interpretation": _interpret_lengthscales(hp_info.lengthscales),
         }
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Hyperparameter extraction failed: %s", e)
         diagnostics["hyperparameters"] = None
 
@@ -631,7 +631,7 @@ def _compute_constraint_satisfaction_metrics(
             "trend": metrics.trend,
             "interpretation": _interpret_constraint_satisfaction(metrics),
         }
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Constraint satisfaction computation failed: %s", e)
         diagnostics["constraint_satisfaction"] = None
 
@@ -687,7 +687,7 @@ def _compute_suggestion_diversity_metrics(
             "n_suggestions": len(sugg_list),
             "interpretation": _interpret_diversity(diversity),
         }
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Suggestion diversity computation failed: %s", e)
         diagnostics["suggestion_diversity"] = None
 
@@ -784,7 +784,7 @@ def _compute_convergence_diagnostics(
                         "Submit results to build hypervolume history for convergence detection."
                     ),
                 }
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Convergence detection failed: %s", e)
         diagnostics["convergence"] = None
 
@@ -955,7 +955,7 @@ def _compute_outlier_diagnostics(
                 "outlier_results": [],
                 "recommendation": "No outliers detected. Results appear consistent.",
             }
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Outlier detection failed: %s", e)
         diagnostics["outliers"] = None
 
@@ -1206,6 +1206,6 @@ def _compute_hyperparameters_section(
                 use_input_warping=spec.use_input_warping,
             )
         _compute_hyperparameters(model, param_names, diagnostics)
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Model fitting for hyperparameters failed: %s", e)
         diagnostics["hyperparameters"] = None

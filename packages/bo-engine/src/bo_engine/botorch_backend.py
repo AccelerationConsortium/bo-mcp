@@ -237,7 +237,7 @@ class BoTorchBackend:
                 diversity_score=m.diversity_score,
                 is_diverse=m.is_diverse,
             )
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Batch diversity computation failed: %s", e)
             return None
 

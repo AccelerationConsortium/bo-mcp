@@ -42,6 +42,5 @@ async def log_tool_call(
         async with get_session() as session:
             repo = EventRepository(session)
             await repo.save(event)
-    except Exception:
-        # Audit logging must never break the tool call
+    except Exception:  # noqa: BLE001 - audit logging must never break the tool call
         logger.debug("Failed to log audit event for %s", tool_name, exc_info=True)

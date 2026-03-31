@@ -63,7 +63,7 @@ def parse_prefixed_result_rows(
                     metadata=metadata_factory(row_num) if metadata_factory else {},
                 )
             )
-        except Exception as e:
+        except (ValueError, TypeError, KeyError, IndexError) as e:
             parse_errors.append(f"Row {row_num}: {e!s}")
 
     return parsed_results, parse_errors
@@ -117,7 +117,7 @@ def parse_named_result_rows(
                     metadata=metadata_factory(row_num) if metadata_factory else {},
                 )
             )
-        except Exception as e:
+        except (ValueError, TypeError, KeyError, IndexError) as e:
             parse_errors.append(f"Row {row_num}: {e!s}")
 
     return parsed_results, parse_errors

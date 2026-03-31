@@ -39,6 +39,7 @@ from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
+from sklearn.metrics import roc_auc_score
 from torch import Tensor
 
 from bo_engine.device import ensure_device, get_device, get_dtype, to_device
@@ -521,8 +522,6 @@ def assess_constraint_model_quality(
     auc = 0.5  # Default to random
     if actual_feasible.sum() > 0 and actual_feasible.sum() < len(actual_feasible):
         try:
-            from sklearn.metrics import roc_auc_score
-
             auc = roc_auc_score(actual_feasible.cpu().numpy(), probs.detach().cpu().numpy())
         except ImportError:
             # Compute simple AUC approximation

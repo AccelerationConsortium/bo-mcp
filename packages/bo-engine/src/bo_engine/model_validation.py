@@ -238,5 +238,5 @@ def compute_model_convergence_score(
                 # Clamp to [0, 1]
                 return max(0.0, min(1.0, r_squared))
             return 0.5  # Neutral if no variance
-    except Exception:
+    except (RuntimeError, ValueError, TypeError):
         return 0.0

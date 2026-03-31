@@ -63,7 +63,7 @@ def create_app() -> FastAPI:
             async with get_session() as session:
                 await session.execute(text("SELECT 1"))
                 db_status = "connected"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - health checks must never crash
             logger.warning("API health check failed: %s", e)
 
         healthy = db_status == "connected"

@@ -16,8 +16,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 from dataclasses import dataclass, field
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -134,10 +136,6 @@ class ReproducibilityManager:
         Returns:
             SeedState with all seeds set.
         """
-        import random
-
-        import numpy as np
-
         master = self._config.master_seed
 
         # Derive seeds from master

@@ -137,7 +137,8 @@ class OutcomeConstraint(BaseModel):
 
     objective_name: str  # Which objective to constrain
     threshold: float  # Constraint value
-    greater_than: bool = True  # True: obj >= threshold, False: obj <= threshold
+    greater_than: bool = True  # obj >= threshold (True) or <= threshold
+    feasibility_threshold: float = Field(default=0.5, ge=0.0, le=1.0)  # P(feasible) cutoff
 
 
 class FidelityParameter(BaseModel):
@@ -151,7 +152,7 @@ class FidelityParameter(BaseModel):
     bounds: Bounds  # (min_fidelity, max_fidelity)
     target: float  # Target fidelity for final optimization (usually max)
     cost_weight: float = 1.0  # Cost scaling factor for fidelity
-    fixed_cost: float = 5.0  # Fixed base cost
+    fixed_cost: float = Field(default=0.0, ge=0.0)  # Fixed base cost
 
     @field_validator("bounds", mode="before")
     @classmethod

@@ -60,6 +60,7 @@ class RGPEConfig:
 
     num_samples: int = 512  # Samples for ranking
     use_input_warping: bool = False  # Whether to use input warping
+    temperature: float = 0.5  # Softmax temperature for weight distribution
 
 
 class RGPE(torch.nn.Module):
@@ -74,6 +75,7 @@ class RGPE(torch.nn.Module):
         base_models: list[SingleTaskGP],
         target_model: SingleTaskGP,
         weights: Tensor | None = None,
+        temperature: float = 0.5,
     ) -> None:
         """Initialize RGPE.
 
@@ -81,11 +83,13 @@ class RGPE(torch.nn.Module):
             base_models: List of fitted GP models from prior tasks
             target_model: GP model for the current target task
             weights: Optional pre-computed weights (will be computed if None)
+            temperature: Softmax temperature for weight distribution (0.5 default)
         """
         super().__init__()
         self.base_models = torch.nn.ModuleList(base_models)
         self.target_model = target_model
         self._weights = weights
+        self.temperature = temperature
 
     @property
     def num_models(self) -> int:
@@ -167,9 +171,8 @@ class RGPE(torch.nn.Module):
 
         # Apply softmax with temperature to get weights
         # Higher temperature = smoother (more uniform) weights
-        temperature = 0.5  # Tuned for reasonable weight distribution
         log_scores = torch.log(scores + 1e-10)
-        weights = torch.softmax(log_scores / temperature, dim=0)
+        weights = torch.softmax(log_scores / self.temperature, dim=0)
 
         self._weights = weights
         return weights

@@ -1,5 +1,6 @@
 """SQLAlchemy ORM models."""
 
+import functools
 import json
 from datetime import datetime
 from typing import Any
@@ -57,17 +58,30 @@ class CampaignSpecModel(Base):
     # Relationships
     campaigns: Mapped[list["CampaignModel"]] = relationship(back_populates="spec")
 
-    def get_parameters(self) -> list[dict[str, Any]]:
-        """Deserialize parameters JSON."""
+    @functools.cached_property
+    def parsed_parameters(self) -> list[dict[str, Any]]:
+        """Deserialize parameters JSON (cached per instance)."""
         return json.loads(self.parameters_json)
 
-    def get_objectives(self) -> list[dict[str, Any]]:
-        """Deserialize objectives JSON."""
+    @functools.cached_property
+    def parsed_objectives(self) -> list[dict[str, Any]]:
+        """Deserialize objectives JSON (cached per instance)."""
         return json.loads(self.objectives_json)
 
-    def get_constraints(self) -> list[dict[str, Any]]:
-        """Deserialize constraints JSON."""
+    @functools.cached_property
+    def parsed_constraints(self) -> list[dict[str, Any]]:
+        """Deserialize constraints JSON (cached per instance)."""
         return json.loads(self.constraints_json)
+
+    # Backward-compat aliases for code using the old method names
+    def get_parameters(self) -> list[dict[str, Any]]:
+        return self.parsed_parameters
+
+    def get_objectives(self) -> list[dict[str, Any]]:
+        return self.parsed_objectives
+
+    def get_constraints(self) -> list[dict[str, Any]]:
+        return self.parsed_constraints
 
 
 class CampaignModel(Base):
@@ -101,17 +115,25 @@ class CampaignModel(Base):
     suggestions: Mapped[list["SuggestionModel"]] = relationship(back_populates="campaign")
     results: Mapped[list["ResultModel"]] = relationship(back_populates="campaign")
 
-    def get_turbo_state(self) -> dict[str, Any] | None:
-        """Deserialize TuRBO state JSON."""
+    @functools.cached_property
+    def parsed_turbo_state(self) -> dict[str, Any] | None:
+        """Deserialize TuRBO state JSON (cached per instance)."""
         if self.turbo_state_json is None:
             return None
         return json.loads(self.turbo_state_json)
 
-    def get_hypervolume_history(self) -> list[float]:
-        """Deserialize hypervolume history JSON."""
+    @functools.cached_property
+    def parsed_hypervolume_history(self) -> list[float]:
+        """Deserialize hypervolume history JSON (cached per instance)."""
         if not self.hypervolume_history_json:
             return []
         return json.loads(self.hypervolume_history_json)
+
+    def get_turbo_state(self) -> dict[str, Any] | None:
+        return self.parsed_turbo_state
+
+    def get_hypervolume_history(self) -> list[float]:
+        return self.parsed_hypervolume_history
 
 
 class SuggestionModel(Base):
@@ -135,13 +157,19 @@ class SuggestionModel(Base):
     campaign: Mapped["CampaignModel"] = relationship(back_populates="suggestions")
     result: Mapped["ResultModel | None"] = relationship(back_populates="suggestion")
 
-    def get_parameter_values(self) -> dict[str, Any]:
-        """Deserialize parameter values JSON."""
+    @functools.cached_property
+    def parsed_parameter_values(self) -> dict[str, Any]:
         return json.loads(self.parameter_values_json)
 
-    def get_provenance(self) -> dict[str, Any]:
-        """Deserialize provenance JSON."""
+    @functools.cached_property
+    def parsed_provenance(self) -> dict[str, Any]:
         return json.loads(self.provenance_json)
+
+    def get_parameter_values(self) -> dict[str, Any]:
+        return self.parsed_parameter_values
+
+    def get_provenance(self) -> dict[str, Any]:
+        return self.parsed_provenance
 
 
 class ResultModel(Base):
@@ -168,17 +196,26 @@ class ResultModel(Base):
     campaign: Mapped["CampaignModel"] = relationship(back_populates="results")
     suggestion: Mapped["SuggestionModel | None"] = relationship(back_populates="result")
 
-    def get_parameter_values(self) -> dict[str, Any]:
-        """Deserialize parameter values JSON."""
+    @functools.cached_property
+    def parsed_parameter_values(self) -> dict[str, Any]:
         return json.loads(self.parameter_values_json)
 
-    def get_objective_values(self) -> dict[str, float]:
-        """Deserialize objective values JSON."""
+    @functools.cached_property
+    def parsed_objective_values(self) -> dict[str, float]:
         return json.loads(self.objective_values_json)
 
-    def get_metadata(self) -> dict[str, Any]:
-        """Deserialize metadata JSON."""
+    @functools.cached_property
+    def parsed_metadata(self) -> dict[str, Any]:
         return json.loads(self.metadata_json)
+
+    def get_parameter_values(self) -> dict[str, Any]:
+        return self.parsed_parameter_values
+
+    def get_objective_values(self) -> dict[str, float]:
+        return self.parsed_objective_values
+
+    def get_metadata(self) -> dict[str, Any]:
+        return self.parsed_metadata
 
 
 class EventModel(Base):

@@ -106,6 +106,7 @@ class OutcomeConstraintSpec:
     objective_name: str  # Which objective to constrain
     threshold: float  # Constraint value
     greater_than: bool = True  # True: obj >= threshold, False: obj <= threshold
+    feasibility_threshold: float = 0.5  # P(feasible) cutoff (0-1)
 
 
 @dataclass(frozen=True)
@@ -120,7 +121,7 @@ class FidelityParameterSpec:
     bounds: tuple[float, float]  # (min_fidelity, max_fidelity)
     target: float  # Target fidelity for final optimization (usually max)
     cost_weight: float = 1.0  # Cost scaling factor for fidelity
-    fixed_cost: float = 5.0  # Fixed base cost
+    fixed_cost: float = 0.0  # Fixed base cost (set > 0 if evaluations have overhead)
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,7 @@ class TransferLearningSpec:
 
     prior_campaign_ids: list[str]  # IDs of prior campaigns to transfer from
     num_ranking_samples: int = 512  # Samples for rank computation
+    temperature: float = 0.5  # RGPE softmax temperature for weight distribution
 
 
 @dataclass(frozen=True)

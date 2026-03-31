@@ -360,8 +360,9 @@ POSTERIOR_CHECK_KURTOSIS_THRESHOLD = 2.0
 # Thompson Sampling (Section 3.5)
 # =============================================================================
 
-# Number of posterior samples for Thompson Sampling
-THOMPSON_NUM_POSTERIOR_SAMPLES = 1
+# Number of posterior samples for Thompson Sampling (5+ recommended
+# for better exploration-exploitation tradeoff)
+THOMPSON_NUM_POSTERIOR_SAMPLES = 5
 
 # Number of candidates to consider
 THOMPSON_NUM_CANDIDATES = 1000

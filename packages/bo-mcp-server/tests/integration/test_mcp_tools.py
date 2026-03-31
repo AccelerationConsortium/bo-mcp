@@ -24,7 +24,7 @@ class TestValidateIntake:
     @pytest.mark.xfail(
         reason=(
             "Response structure differs: standard verbosity returns 'spec_summary' "
-            "not 'spec' - see IMPLEMENTATION_PLAN.md"
+            "not 'spec' - see TODO.md Step 10"
         )
     )
     async def test_validate_intake_success(self):
@@ -654,9 +654,7 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="partial_results feature not yet implemented - see IMPLEMENTATION_PLAN.md"
-    )
+    @pytest.mark.xfail(reason="partial_results feature not yet implemented - see TODO.md Step 10")
     async def test_continue_on_error_partial_success(self, setup_database):
         """Continue on error mode allows partial success."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -739,10 +737,7 @@ class TestSubmitResultsBatchOperations:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason=(
-            "partial_results key with UUIDs feature not yet implemented "
-            "- see IMPLEMENTATION_PLAN.md"
-        )
+        reason=("partial_results key with UUIDs feature not yet implemented - see TODO.md Step 10")
     )
     async def test_partial_results_contains_result_ids(self, setup_database):
         """Partial results contain actual result IDs for successful saves."""
@@ -1434,9 +1429,7 @@ class TestAgentUsabilityDiagnostics:
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(
-        reason=(
-            "hyperparameters key with sub-fields not yet implemented - see IMPLEMENTATION_PLAN.md"
-        )
+        reason=("hyperparameters key with sub-fields not yet implemented - see TODO.md Step 10")
     )
     async def test_diagnostics_includes_hyperparameters(self, setup_database):
         """Diagnostics include GP hyperparameters when model is fitted."""

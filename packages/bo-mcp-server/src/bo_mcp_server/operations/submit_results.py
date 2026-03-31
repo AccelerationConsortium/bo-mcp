@@ -4,25 +4,16 @@ import logging
 from typing import Any, Literal
 from uuid import UUID
 
-import torch
-from bo_engine.diagnostics import compute_hypervolume, compute_pareto_front
-from bo_engine.result_validation import detect_duplicates
-from bo_engine.suggestions import update_turbo_after_evaluation
-
+from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
-    CampaignSpec,
     Result,
     ResultSource,
     ResultSubmissionInput,
     SuggestionStatus,
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.operations.helpers import (
-    dict_to_turbo_state,
-    results_to_observations,
-    turbo_state_to_dict,
-)
+from bo_mcp_server.operations.helpers import results_to_observations
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_submit_results_response,
@@ -39,56 +30,6 @@ logger = logging.getLogger(__name__)
 
 # Constants for duplicate detection
 DUPLICATE_DETECTION_TOLERANCE = 1e-6
-
-
-def _compute_current_hypervolume(
-    spec: CampaignSpec,
-    results: list[Result],
-) -> float | None:
-    """Compute the current hypervolume for multi-objective campaigns.
-
-    Args:
-        spec: Campaign specification
-        results: All results for the campaign
-
-    Returns:
-        Hypervolume value, or None if not applicable or insufficient data
-    """
-    # Only compute for multi-objective
-    if len(spec.objectives) < 2:
-        return None
-
-    if len(results) < 2:
-        return 0.0
-
-    objective_names = [o.name for o in spec.objectives]
-    minimize_mask = torch.tensor([o.is_minimize for o in spec.objectives], dtype=torch.bool)
-
-    # Build objective tensor
-    y_list = []
-    for r in results:
-        y = torch.tensor(
-            [r.objective_values[name] for name in objective_names],
-            dtype=torch.double,
-        )
-        y_list.append(y)
-
-    y_tensor = torch.stack(y_list)
-
-    # Negate maximization objectives for internal computation
-    y_bo = y_tensor.clone()
-    y_bo[:, ~minimize_mask] = -y_bo[:, ~minimize_mask]
-
-    # Compute Pareto front
-    pareto_y, _pareto_mask = compute_pareto_front(y_bo)
-
-    # Compute reference point and hypervolume
-    worst = y_bo.max(dim=0).values
-    ranges = y_bo.max(dim=0).values - y_bo.min(dim=0).values
-    ranges = torch.where(ranges < 1e-6, torch.ones_like(ranges), ranges)
-    ref_point = worst + 0.1 * ranges
-
-    return compute_hypervolume(pareto_y, ref_point)
 
 
 async def submit_results_operation(  # noqa: C901
@@ -222,6 +163,9 @@ async def submit_results_operation(  # noqa: C901
         )
         return response
 
+    # Obtain backend once before entering the DB session
+    backend = get_backend()
+
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
         spec_repo = CampaignSpecRepository(session)
@@ -306,7 +250,7 @@ async def submit_results_operation(  # noqa: C901
 
             # Duplicate detection (Section 1.2)
             if result_error is None and not force and existing_params:
-                duplicates = detect_duplicates(
+                duplicates = backend.detect_duplicates(
                     new_params=r.parameter_values,
                     existing_params=existing_params,
                     tolerance=DUPLICATE_DETECTION_TOLERANCE,
@@ -322,10 +266,11 @@ async def submit_results_operation(  # noqa: C901
                         duplicates_detected.append(dup_info)
                         if dup.is_exact:
                             warnings.append(
-                                f"Result {i} appears to be an "
-                                "exact duplicate of existing "
-                                f"result at index {dup.index}. "
-                                "Use force=True to submit "
+                                f"Result {i} appears to be "
+                                "an exact duplicate of "
+                                "existing result at index "
+                                f"{dup.index}. Use "
+                                "force=True to submit "
                                 "anyway."
                             )
                             # Treat exact duplicate as error
@@ -470,11 +415,15 @@ async def submit_results_operation(  # noqa: C901
         # Track if campaign needs updating
         updated_campaign = campaign
 
+        # Convert spec once for backend calls
+        opt_spec = campaign_spec_to_optimization_spec(spec)
+
         # Section 4.2: Update hypervolume history for
         # multi-objective campaigns
         if len(spec.objectives) >= 2:
             try:
-                hv = _compute_current_hypervolume(spec, all_results)
+                all_observations = results_to_observations(all_results)
+                hv = backend.compute_hypervolume(opt_spec, all_observations)
                 if hv is not None:
                     updated_campaign = updated_campaign.with_hypervolume(hv)
                     logger.debug(
@@ -486,33 +435,19 @@ async def submit_results_operation(  # noqa: C901
                 logger.debug("Failed to compute hypervolume: %s", e)
                 warnings.append(f"Could not compute hypervolume: {e}")
 
-        # Section 4.3: Update TuRBO state for single-objective
-        # campaigns
+        # Section 4.3: Update backend state for
+        # single-objective campaigns
         if len(spec.objectives) == 1 and campaign.turbo_state is not None:
             try:
-                opt_spec = campaign_spec_to_optimization_spec(spec)
-                turbo_state = dict_to_turbo_state(campaign.turbo_state)
-                new_observations = results_to_observations(result_entities)
-
-                new_turbo_state = update_turbo_after_evaluation(
-                    turbo_state=turbo_state,
-                    new_observations=new_observations,
-                    spec=opt_spec,
+                new_obs = results_to_observations(result_entities)
+                new_state = backend.update_state_after_results(
+                    opt_spec, new_obs, campaign.turbo_state
                 )
-
-                updated_campaign = updated_campaign.with_turbo_state(
-                    turbo_state_to_dict(new_turbo_state)
-                )
-                logger.debug(
-                    "Updated TuRBO state for campaign %s: length=%.4f, success=%d, failure=%d",
-                    campaign_id,
-                    new_turbo_state.length,
-                    new_turbo_state.success_counter,
-                    new_turbo_state.failure_counter,
-                )
+                if new_state is not None:
+                    updated_campaign = updated_campaign.with_turbo_state(new_state)
             except Exception as e:
-                logger.debug("Failed to update TuRBO state: %s", e)
-                warnings.append(f"Could not update TuRBO state: {e}")
+                logger.debug("Failed to update backend state: %s", e)
+                warnings.append(f"Could not update backend state: {e}")
 
         # Save campaign if updated
         if updated_campaign.version != campaign.version:

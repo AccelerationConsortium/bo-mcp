@@ -33,6 +33,15 @@ from bo_engine.acquisition import (
     optimize_acquisition,
 )
 
+# Backend protocol (Step 8)
+from bo_engine.backend import (
+    BatchDiversityMetrics,
+    BOBackend,
+    DuplicateInfo,
+    Feature,
+    SuggestionBatch,
+)
+
 # New modules for critical missing functionality (v2.5)
 from bo_engine.batch_diversity import (
     DiversityMetrics,
@@ -41,6 +50,7 @@ from bo_engine.batch_diversity import (
     enforce_diversity,
     filter_diverse_candidates,
 )
+from bo_engine.botorch_backend import BoTorchBackend
 
 # Model Calibration (v2.7 - Section 3.3)
 from bo_engine.calibration import (
@@ -646,4 +656,11 @@ __all__ = [
     "get_whatif_summary",
     "simulate_multiple_results",
     "simulate_result",
+    # Backend Protocol (Step 8)
+    "BOBackend",
+    "BatchDiversityMetrics",
+    "BoTorchBackend",
+    "DuplicateInfo",
+    "Feature",
+    "SuggestionBatch",
 ]

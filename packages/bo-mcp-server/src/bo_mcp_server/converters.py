@@ -66,6 +66,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
             objective_name=oc.objective_name,
             threshold=oc.threshold,
             greater_than=oc.greater_than,
+            feasibility_threshold=oc.feasibility_threshold,
         )
         for oc in spec.outcome_constraints
     ]

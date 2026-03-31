@@ -4,17 +4,17 @@ import logging
 from typing import Any
 from uuid import UUID
 
-import torch
 from bo_engine.diagnostics import (
     compute_best_value,
-    compute_hypervolume,
     compute_improvement_history,
-    compute_pareto_front,
     compute_single_objective_improvement_rate,
 )
 
+from bo_mcp_server.backend import get_backend
+from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.operations.helpers import results_to_observations
 from bo_mcp_server.response_formatter import VerbosityLevel, format_compare_campaigns_response
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -75,35 +75,18 @@ def _compute_campaign_metrics(
         )
         return metrics
 
-    objective_names = [objective.name for objective in spec.objectives]
-    minimize_mask = torch.tensor([objective.is_minimize for objective in spec.objectives])
-    y_tensor = torch.stack(
-        [
-            torch.tensor(
-                [result.objective_values[name] for name in objective_names],
-                dtype=torch.double,
-            )
-            for result in results
-        ]
-    )
-
-    y_bo = y_tensor.clone()
-    y_bo[:, ~minimize_mask] = -y_bo[:, ~minimize_mask]
-
-    pareto_y, _ = compute_pareto_front(y_bo)
-    worst = y_bo.max(dim=0).values
-    ranges = y_bo.max(dim=0).values - y_bo.min(dim=0).values
-    ranges = torch.where(ranges < 1e-6, torch.ones_like(ranges), ranges)
-    ref_point = worst + 0.1 * ranges
-    hypervolume = compute_hypervolume(pareto_y, ref_point)
+    backend = get_backend()
+    opt_spec = campaign_spec_to_optimization_spec(spec)
+    observations = results_to_observations(results)
+    hypervolume = backend.compute_hypervolume(opt_spec, observations)
 
     metrics.update(
         {
             "best_value": None,
             "improvement_rate": None,
-            "sample_efficiency": round(hypervolume / len(results), 6),
-            "hypervolume": round(hypervolume, 6),
-            "n_pareto_points": pareto_y.shape[0],
+            "sample_efficiency": (round(hypervolume / len(results), 6) if hypervolume else 0.0),
+            "hypervolume": round(hypervolume, 6) if hypervolume else None,
+            "n_pareto_points": None,  # Computed internally by backend
         }
     )
     return metrics

@@ -1,10 +1,10 @@
-"""Add indexes on foreign key columns for query performance.
+"""Add missing index on campaigns.spec_id for query performance.
 
 Step 5 item 2.3: list_by_campaign queries scan full tables without indexes.
-Adds indexes on campaigns.spec_id, campaigns.owner_id, suggestions.campaign_id,
-results.campaign_id, and results.suggestion_id.
-
-Note: events.campaign_id already has an index from migration 002.
+Adds the missing index on campaigns.spec_id. Other FK indexes
+(campaigns.owner_id, suggestions.campaign_id, results.campaign_id,
+results.suggestion_id) already exist from migration 001_initial.
+events.campaign_id already has an index from migration 002.
 
 Revision ID: 003_fk_indexes
 Revises: 002_events_and_uncertainty
@@ -22,18 +22,10 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add indexes on foreign key columns."""
+    """Add missing index on campaigns.spec_id foreign key."""
     op.create_index("ix_campaigns_spec_id", "campaigns", ["spec_id"])
-    op.create_index("ix_campaigns_owner_id", "campaigns", ["owner_id"])
-    op.create_index("ix_suggestions_campaign_id", "suggestions", ["campaign_id"])
-    op.create_index("ix_results_campaign_id", "results", ["campaign_id"])
-    op.create_index("ix_results_suggestion_id", "results", ["suggestion_id"])
 
 
 def downgrade() -> None:
-    """Remove foreign key indexes."""
-    op.drop_index("ix_results_suggestion_id", "results")
-    op.drop_index("ix_results_campaign_id", "results")
-    op.drop_index("ix_suggestions_campaign_id", "suggestions")
-    op.drop_index("ix_campaigns_owner_id", "campaigns")
+    """Remove campaigns.spec_id index."""
     op.drop_index("ix_campaigns_spec_id", "campaigns")

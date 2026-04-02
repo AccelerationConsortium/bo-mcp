@@ -92,7 +92,7 @@ initial_points = backend.generate_initial_design(spec, n_points=5)
 ### Development setup
 
 ```bash
-git clone <repo-url> && cd bo-mcp-ui
+git clone https://github.com/willigott/bo-mcp && cd bo-mcp
 uv sync          # installs all workspace packages in editable mode
 ```
 
@@ -219,12 +219,16 @@ pre-commit run --all   # manual run
 | `BO_BACKEND` | `botorch` | Default backend (`botorch` or `baybe`) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/bo_mcp.db` | Database connection string |
 | `SQL_ECHO` | `false` | Log SQL queries |
-| `BO_MCP_LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `MCP_ALLOWED_HOSTS` | `127.0.0.1:*,localhost:*,[::1]:*,mcp:*` | Allowed Host headers for SSE (comma-separated) |
-| `MCP_ALLOWED_ORIGINS` | `http://127.0.0.1:*,http://localhost:*,http://[::1]:*,http://mcp:*` | CORS origins for SSE (comma-separated) |
+| `BO_MCP_LOG_LEVEL` | `INFO` | Logging verbosity |
+| `MCP_ALLOWED_HOSTS` | *(see below)* | Allowed Host headers for SSE |
+| `MCP_ALLOWED_ORIGINS` | *(see below)* | CORS origins for SSE |
 | `BO_ENGINE_DEVICE` | *(auto)* | Force compute device: `cuda`, `mps`, `cpu` |
 | `BO_ENGINE_DISABLE_GPU` | *(unset)* | Set to `1` to disable GPU acceleration |
 | `CUDA_VISIBLE_DEVICES` | *(system)* | Standard CUDA device selection |
+
+`MCP_ALLOWED_HOSTS` defaults to `127.0.0.1:*,localhost:*,[::1]:*,mcp:*`.
+`MCP_ALLOWED_ORIGINS` defaults to `http://127.0.0.1:*,http://localhost:*,http://[::1]:*,http://mcp:*`.
+Both accept comma-separated patterns; set them to extend defaults for proxies or containers.
 
 ## Troubleshooting
 

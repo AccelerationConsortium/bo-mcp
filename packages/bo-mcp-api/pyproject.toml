@@ -5,7 +5,7 @@ description = "REST API proxy for the BO MCP server - enables web frontend integ
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
-authors = [{ name = "Your Name", email = "your@email.com" }]
+authors = [{ name = "Willi Gottstein", email = "willi.gottstein@gmail.com" }]
 keywords = ["fastapi", "bayesian-optimization", "rest-api"]
 classifiers = [
     "Development Status :: 4 - Beta",

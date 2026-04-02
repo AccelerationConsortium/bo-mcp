@@ -5,7 +5,7 @@ description = "MCP server for Bayesian Optimization - use with Claude or any MCP
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
-authors = [{ name = "Your Name", email = "your@email.com" }]
+authors = [{ name = "Willi Gottstein", email = "willi.gottstein@gmail.com" }]
 keywords = ["mcp", "bayesian-optimization", "claude", "llm", "ai-agents"]
 classifiers = [
     "Development Status :: 4 - Beta",

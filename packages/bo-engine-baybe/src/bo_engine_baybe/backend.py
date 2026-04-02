@@ -35,14 +35,27 @@ from bo_engine.backend import (
 from bo_engine.batch_diversity import compute_batch_diversity
 from bo_engine.device import get_device, get_dtype
 from bo_engine.diagnostics import (
+    compute_best_value,
+    compute_improvement_history,
+    compute_single_objective_improvement_rate,
+    summarize_pareto_front,
+)
+from bo_engine.diagnostics import (
     compute_hypervolume as engine_compute_hypervolume,
 )
 from bo_engine.diagnostics import (
     compute_pareto_front as engine_compute_pareto_front,
 )
-from bo_engine.result_validation import detect_duplicates as engine_detect_duplicates
-from bo_engine.transforms import get_bounds_tensor
+from bo_engine.reference_point import get_reference_point
+from bo_engine.result_validation import (
+    detect_duplicates as engine_detect_duplicates,
+)
+from bo_engine.result_validation import (
+    detect_outliers,
+)
+from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.types import ObservationData, OptimizationSpec
+from scipy import stats as scipy_stats
 
 from bo_engine_baybe.converters import (
     dataframe_to_suggestions,
@@ -232,6 +245,25 @@ def _extract_model_info(campaign: Campaign) -> dict[str, Any]:
     return info
 
 
+def _extract_feature_importance(campaign: Campaign) -> dict[str, float] | None:
+    """Extract SHAP-based feature importance from BayBE (optional).
+
+    Requires baybe[insights] to be installed. Returns None if unavailable.
+    """
+    try:
+        from baybe.insights.shap import SHAPInsight
+
+        insight = SHAPInsight.from_campaign(campaign)
+        values = insight.explanation.values  # ty: ignore[unresolved-attribute]
+        feature_names = insight.explanation.feature_names  # ty: ignore[unresolved-attribute]
+        if values is not None and feature_names is not None:
+            mean_abs = [float(abs(v).mean()) for v in values.T]
+            return dict(zip(feature_names, mean_abs, strict=False))
+    except (ImportError, RuntimeError, ValueError, TypeError, AttributeError) as e:
+        logger.debug("SHAP feature importance extraction failed: %s", e)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # BayBEBackend
 # ---------------------------------------------------------------------------
@@ -402,6 +434,255 @@ class BayBEBackend:
             "alternatives": [],
             "warnings": [],
         }
+
+    def compute_diagnostics(
+        self,
+        spec: OptimizationSpec,
+        observations: list[ObservationData],
+        sections: frozenset[str] | None = None,
+    ) -> dict[str, Any]:
+        """Compute model-based diagnostics using BayBE's surrogate.
+
+        Uses BayBE-native APIs where available (posterior_stats, get_surrogate,
+        SHAP) and delegates to bo_engine for Pareto/hypervolume and outliers.
+        """
+        all_sections = frozenset(["objectives", "model", "outliers", "suggestions_tensor"])
+        requested = all_sections if sections is None else sections
+        result: dict[str, Any] = {}
+
+        if "objectives" in requested:
+            result.update(self._compute_objective_diagnostics(spec, observations))
+
+        if "model" in requested:
+            result.update(self._compute_model_diagnostics(spec, observations))
+
+        if "outliers" in requested:
+            result.update(self._compute_outlier_diagnostics(spec, observations))
+
+        if "suggestions_tensor" in requested:
+            result.update(self._compute_hyperparameter_diagnostics(spec, observations))
+
+        return result
+
+    def _compute_objective_diagnostics(
+        self,
+        spec: OptimizationSpec,
+        observations: list[ObservationData],
+    ) -> dict[str, Any]:
+        """Compute objective metrics (best value, Pareto front, hypervolume)."""
+        if spec.n_objectives == 1:
+            obj = spec.objectives[0]
+            values = [obs.objective_values[obj.name] for obs in observations]
+            if not values:
+                return {
+                    "best_value": None,
+                    "best_parameters": None,
+                    "improvement_history": [],
+                    "improvement_rate": 0.0,
+                    "pareto_front": None,
+                    "hypervolume": None,
+                    "n_pareto_points": None,
+                }
+            best_val, best_idx = compute_best_value(values, minimize=obj.minimize)
+            imp_hist = compute_improvement_history(values, minimize=obj.minimize)
+            return {
+                "best_value": best_val,
+                "best_parameters": observations[best_idx].parameter_values,
+                "improvement_history": imp_hist,
+                "improvement_rate": compute_single_objective_improvement_rate(imp_hist),
+                "pareto_front": None,
+                "hypervolume": None,
+                "n_pareto_points": None,
+            }
+
+        # Multi-objective
+        if len(observations) < 2:
+            return {
+                "best_value": None,
+                "best_parameters": None,
+                "improvement_history": None,
+                "improvement_rate": None,
+                "pareto_front": [],
+                "hypervolume": 0.0,
+                "n_pareto_points": 0,
+            }
+
+        y_bo = _observations_to_minimization_tensor(spec, observations)
+        minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
+        pareto_y, _ = engine_compute_pareto_front(y_bo)
+        pareto_display = pareto_y.clone()
+        pareto_display[:, ~minimize_mask] = -pareto_display[:, ~minimize_mask]
+
+        obj_names = [o.name for o in spec.objectives]
+        ref_point = get_reference_point(y_bo, minimize_mask)
+        hv = engine_compute_hypervolume(pareto_y, ref_point)
+
+        return {
+            "best_value": None,
+            "best_parameters": None,
+            "improvement_history": None,
+            "improvement_rate": None,
+            "pareto_front": summarize_pareto_front(pareto_display, obj_names),
+            "hypervolume": hv,
+            "n_pareto_points": len(pareto_y),
+        }
+
+    def _compute_model_diagnostics(
+        self,
+        spec: OptimizationSpec,
+        observations: list[ObservationData],
+    ) -> dict[str, Any]:
+        """Compute model diagnostics using BayBE's surrogate."""
+        empty: dict[str, Any] = {
+            "feature_importance": None,
+            "loo_cv_metrics": None,
+            "model_correlation": None,
+        }
+
+        min_data = max(3, 2 * len(spec.parameters))
+        if len(observations) < min_data:
+            return empty
+
+        try:
+            campaign = _build_campaign(spec)
+            obs_df = observations_to_dataframe(observations, spec)
+            campaign.add_measurements(obs_df)
+            # Force model fitting by requesting a recommendation
+            campaign.recommend(batch_size=1)
+
+            # BayBE-native: model info extraction
+            model_info = _extract_model_info(campaign)
+            fi = _extract_feature_importance(campaign)
+
+            # Model correlation via BayBE posterior_stats
+            corr = self._baybe_model_correlation(campaign, obs_df, spec)
+
+            return {
+                "model_correlation": corr,
+                "feature_importance": fi,
+                "loo_cv_metrics": None,  # BayBE has no LOO-CV API
+                "hyperparameters": {
+                    "kernel_type": model_info.get("kernel_type"),
+                    "lengthscales": model_info.get("lengthscales"),
+                    "noise_variance": model_info.get("noise_variance"),
+                    "output_scale": model_info.get("output_scale"),
+                },
+            }
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug("BayBE model diagnostics failed: %s", e)
+            return empty
+
+    def _baybe_model_correlation(
+        self,
+        campaign: Campaign,
+        obs_df: Any,
+        spec: OptimizationSpec,
+    ) -> float:
+        """Compute rank correlation between BayBE posterior mean and actuals."""
+        try:
+            stats_df = campaign.posterior_stats(candidates=obs_df, stats=("mean",))
+            mean_cols = [c for c in stats_df.columns if "mean" in str(c).lower()]
+            if not mean_cols:
+                return 0.0
+
+            obj_name = spec.objectives[0].name
+            predicted = stats_df[mean_cols[0]].values
+            actual = obs_df[obj_name].values
+            result = scipy_stats.spearmanr(predicted, actual)
+            corr = float(result.statistic)
+            return corr if corr == corr else 0.0  # Handle NaN  # noqa: PLR0124
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug("BayBE model correlation failed: %s", e)
+            return 0.0
+
+    def _compute_outlier_diagnostics(
+        self,
+        spec: OptimizationSpec,
+        observations: list[ObservationData],
+    ) -> dict[str, Any]:
+        """Detect outliers — delegates to bo_engine (BayBE has no outlier API)."""
+        if len(observations) < 5:
+            return {"outliers": None}
+
+        try:
+            train_x, train_y, bounds = self._prepare_tensors(spec, observations)
+            minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
+            train_y_bo = train_y.clone()
+            train_y_bo[:, ~minimize_mask] = -train_y_bo[:, ~minimize_mask]
+            obj_names = [o.name for o in spec.objectives]
+
+            outliers = detect_outliers(
+                train_x=train_x,
+                train_y=train_y_bo,
+                bounds=bounds,
+                objective_names=obj_names,
+            )
+            if outliers:
+                return {
+                    "outliers": [
+                        {
+                            "result_index": o.index,
+                            "standardized_error": round(o.standardized_error, 2),
+                            "objective_name": o.objective_name,
+                        }
+                        for o in outliers
+                    ]
+                }
+            return {"outliers": []}
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug("Outlier detection failed: %s", e)
+            return {"outliers": None}
+
+    def _compute_hyperparameter_diagnostics(
+        self,
+        spec: OptimizationSpec,
+        observations: list[ObservationData],
+    ) -> dict[str, Any]:
+        """Extract GP hyperparameters from BayBE's surrogate."""
+        if len(observations) < max(3, 2 * len(spec.parameters)):
+            return {"hyperparameters": None}
+
+        try:
+            campaign = _build_campaign(spec)
+            obs_df = observations_to_dataframe(observations, spec)
+            campaign.add_measurements(obs_df)
+            campaign.recommend(batch_size=1)
+
+            model_info = _extract_model_info(campaign)
+            return {
+                "hyperparameters": {
+                    "kernel_type": model_info.get("kernel_type"),
+                    "lengthscales": model_info.get("lengthscales"),
+                    "noise_variance": model_info.get("noise_variance"),
+                    "output_scale": model_info.get("output_scale"),
+                }
+            }
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug("BayBE hyperparameter extraction failed: %s", e)
+            return {"hyperparameters": None}
+
+    def _prepare_tensors(
+        self,
+        spec: OptimizationSpec,
+        observations: list[ObservationData],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Prepare train_x, train_y, bounds tensors from observations."""
+        obj_names = [o.name for o in spec.objectives]
+        opt_spec = _to_opt_spec(spec)
+
+        x_rows = [encode_categorical(obs.parameter_values, opt_spec) for obs in observations]
+        train_x = torch.tensor(x_rows, dtype=get_dtype(), device=get_device())
+
+        y_rows = [[obs.objective_values[n] for n in obj_names] for obs in observations]
+        train_y = torch.tensor(y_rows, dtype=get_dtype(), device=get_device())
+
+        bounds = get_bounds_tensor(opt_spec)
+        return train_x, train_y, bounds
+
+
+def _to_opt_spec(spec: OptimizationSpec) -> OptimizationSpec:
+    """Identity pass-through — spec is already an OptimizationSpec."""
+    return spec
 
 
 # ---------------------------------------------------------------------------

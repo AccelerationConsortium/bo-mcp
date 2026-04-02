@@ -231,6 +231,8 @@ class CampaignSpec(BaseModel):
     transfer_learning: TransferLearningConfig | None = None
     # v2.0: SAASBO for high-dimensional optimization (None = disabled)
     saasbo_config: SaasboConfig | None = None
+    # v3.0: Backend selection (default uses BO_BACKEND env var)
+    backend: str = "botorch"
 
     model_config = {"frozen": True}
 

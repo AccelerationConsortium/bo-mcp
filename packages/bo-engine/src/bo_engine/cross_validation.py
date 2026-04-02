@@ -148,7 +148,7 @@ def _dispatch_cv_method(
         return _compute_kfold_cv(train_x, train_y, bounds, k)
     if method == "approximate_loo":
         return _compute_approximate_loo(train_x, train_y, bounds)
-    return _compute_batch_loo_cv(train_x, train_y, bounds)
+    return _compute_batch_loo_cv(train_x, train_y)
 
 
 def _check_cv_cache(
@@ -232,7 +232,6 @@ def compute_loo_cv_optimized(
 def _compute_batch_loo_cv(
     train_x: Tensor,
     train_y: Tensor,
-    bounds: Tensor,
 ) -> CVMetrics:
     """Compute LOO-CV using BoTorch's batch_cross_validation.
 
@@ -592,7 +591,6 @@ def _create_nan_metrics(method: str) -> CVMetrics:
 
 def estimate_cv_time(
     n_samples: int,
-    n_dims: int,
     method: str = "auto",
     k_folds: int | None = None,
 ) -> float:
@@ -603,7 +601,6 @@ def estimate_cv_time(
 
     Args:
         n_samples: Number of training samples
-        n_dims: Number of input dimensions
         method: "batch_loo", "approximate_loo", "kfold", or "auto"
         k_folds: Number of folds for kfold method (default 5)
 
@@ -637,7 +634,6 @@ def estimate_cv_time(
 
 def get_cv_time_estimates(
     n_samples: int,
-    n_dims: int,
 ) -> dict[str, Any]:
     """Get estimated computation times for all CV methods.
 
@@ -646,7 +642,6 @@ def get_cv_time_estimates(
 
     Args:
         n_samples: Number of training samples
-        n_dims: Number of input dimensions
 
     Returns:
         Dictionary with estimated times in seconds for each method

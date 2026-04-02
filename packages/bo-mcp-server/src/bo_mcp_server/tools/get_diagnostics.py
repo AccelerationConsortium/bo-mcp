@@ -21,6 +21,10 @@ async def get_diagnostics(
 ) -> dict[str, Any]:
     """Get diagnostic information for a campaign.
 
+    Workflow: Call after bo_submit_results to check model health, convergence,
+    and get a next_action recommendation. Use sections=["health"] for fast
+    status checks in tight loops.
+
     Args:
         campaign_id: UUID of the campaign
         use_cache: Whether to use cached results (default True).

@@ -92,7 +92,9 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
     ),
     ErrorCode.INVALID_STATE_TRANSITION: (
         "Check current status with campaign://{id} resource. "
-        "Valid transitions: CREATED->RUNNING, RUNNING<->PAUSED, *->COMPLETED"
+        "Valid transitions: CREATED->RUNNING (on first suggestion), "
+        "RUNNING->PAUSED (pause), PAUSED->RUNNING (resume), "
+        "CREATED/RUNNING/PAUSED->COMPLETED (terminate)."
     ),
     ErrorCode.DUPLICATE_RESULT: (
         "Use force=True parameter to override duplicate detection, or skip this result."
@@ -110,7 +112,8 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "Check that constraint parameters exist and bounds are valid."
     ),
     ErrorCode.SUGGESTION_NOT_FOUND: (
-        "Verify suggestion_id is correct. Use suggestions://{campaign_id} to list suggestions."
+        "Verify suggestion_id is correct. "
+        "Use bo_list_suggestions to list suggestions for the campaign."
     ),
     ErrorCode.MODEL_FITTING_FAILED: (
         "Check data quality with bo_get_diagnostics. May need more observations (minimum 2)."

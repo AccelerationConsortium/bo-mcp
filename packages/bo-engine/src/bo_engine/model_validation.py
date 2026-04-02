@@ -51,9 +51,45 @@ class ModelHealthReport:
     param_ranges: list[float]
 
 
+def _compute_data_variance(train_y: Tensor) -> float:
+    """Compute data variance, averaging across objectives for multi-output."""
+    if train_y.dim() == 1:
+        return train_y.var().item()
+    return train_y.var(dim=0).mean().item()
+
+
+def _validate_model_list_gp(
+    model: ModelListGP,
+    param_ranges: list[float],
+    param_names: list[str] | None,
+) -> tuple[dict[int, float], float, list[str], list[str]]:
+    """Validate a ModelListGP (multi-objective) and aggregate results."""
+    issues: list[str] = []
+    warnings: list[str] = []
+    noise_variances: list[float] = []
+    all_lengthscales: list[Tensor] = []
+
+    for i, gp in enumerate(model.models):
+        ls, nv, ls_issues, ls_warnings = _validate_single_gp(
+            gp, param_ranges, param_names, objective_idx=i
+        )
+        all_lengthscales.append(ls)
+        noise_variances.append(nv)
+        issues.extend(ls_issues)
+        warnings.extend(ls_warnings)
+
+    lengthscales_dict: dict[int, float] = {}
+    if all_lengthscales:
+        avg_ls = torch.stack(all_lengthscales).mean(dim=0)
+        for j in range(avg_ls.numel()):
+            lengthscales_dict[j] = avg_ls[j].item()
+
+    noise_variance = sum(noise_variances) / len(noise_variances) if noise_variances else 0.0
+    return lengthscales_dict, noise_variance, issues, warnings
+
+
 def validate_model_health(
     model: SingleTaskGP | ModelListGP,
-    train_x: Tensor,
     train_y: Tensor,
     bounds: Tensor,
     param_names: list[str] | None = None,
@@ -65,7 +101,6 @@ def validate_model_health(
 
     Args:
         model: Fitted GP model (SingleTaskGP or ModelListGP)
-        train_x: Training inputs of shape (n_samples, n_dims)
         train_y: Training outputs of shape (n_samples, n_objectives)
         bounds: Parameter bounds of shape (2, n_dims)
         param_names: Optional parameter names for human-readable messages
@@ -76,48 +111,16 @@ def validate_model_health(
     Reference:
         Section 1.1 of Implementation Plan - Model Validation Before Suggestions
     """
-    issues: list[str] = []
-    warnings: list[str] = []
-    lengthscales_dict: dict[int, float] = {}
-
-    # Compute parameter ranges from bounds
     param_ranges = (bounds[1] - bounds[0]).tolist()
+    data_variance = _compute_data_variance(train_y)
 
-    # Get data variance
-    if train_y.dim() == 1:
-        data_variance = train_y.var().item()
-    else:
-        # For multi-objective, use mean variance across objectives
-        data_variance = train_y.var(dim=0).mean().item()
-
-    # Handle different model types
     if isinstance(model, ModelListGP):
-        noise_variances = []
-        all_lengthscales = []
-        for i, gp in enumerate(model.models):
-            ls, nv, ls_issues, ls_warnings = _validate_single_gp(
-                gp, bounds, param_ranges, param_names, objective_idx=i
-            )
-            all_lengthscales.append(ls)
-            noise_variances.append(nv)
-            issues.extend(ls_issues)
-            warnings.extend(ls_warnings)
-
-        # Average lengthscales across objectives
-        if all_lengthscales:
-            avg_ls = torch.stack(all_lengthscales).mean(dim=0)
-            for j in range(avg_ls.numel()):
-                lengthscales_dict[j] = avg_ls[j].item()
-
-        noise_variance = sum(noise_variances) / len(noise_variances) if noise_variances else 0.0
-    else:
-        ls, noise_variance, ls_issues, ls_warnings = _validate_single_gp(
-            model, bounds, param_ranges, param_names
+        lengthscales_dict, noise_variance, issues, warnings = _validate_model_list_gp(
+            model, param_ranges, param_names
         )
-        issues.extend(ls_issues)
-        warnings.extend(ls_warnings)
-        for j in range(ls.numel()):
-            lengthscales_dict[j] = ls[j].item()
+    else:
+        ls, noise_variance, issues, warnings = _validate_single_gp(model, param_ranges, param_names)
+        lengthscales_dict = {j: ls[j].item() for j in range(ls.numel())}
 
     # Check noise-to-signal ratio
     if data_variance > 0 and noise_variance > data_variance * MODEL_VALIDATION_MAX_NOISE_RATIO:
@@ -126,10 +129,8 @@ def validate_model_health(
             "Model may be fitting noise rather than signal."
         )
 
-    is_healthy = len(issues) == 0
-
     return ModelHealthReport(
-        is_healthy=is_healthy,
+        is_healthy=len(issues) == 0,
         issues=issues,
         warnings=warnings,
         lengthscales=lengthscales_dict,
@@ -139,9 +140,43 @@ def validate_model_health(
     )
 
 
+def _extract_noise_variance(gp: Any) -> float:
+    """Extract noise variance from a GP model's likelihood."""
+    if not (hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise")):
+        return 0.0
+    noise = gp.likelihood.noise
+    if hasattr(noise, "item"):
+        return noise.item()
+    if isinstance(noise, Tensor):
+        return noise.squeeze().item()
+    return 0.0
+
+
+def _check_lengthscale(
+    ls_val: float,
+    param_range: float,
+    param_name: str,
+    obj_prefix: str,
+) -> tuple[str | None, str | None]:
+    """Check a single lengthscale against parameter range. Returns (issue, warning)."""
+    if param_range <= 0:
+        return None, None
+    ratio = ls_val / param_range
+    if ratio < MODEL_VALIDATION_MIN_LENGTHSCALE_RATIO:
+        return (
+            f"{obj_prefix}Lengthscale for '{param_name}' is very small "
+            f"(ratio={ratio:.4f}). Model may be overfitting."
+        ), None
+    if ratio > MODEL_VALIDATION_MAX_LENGTHSCALE_RATIO:
+        return None, (
+            f"{obj_prefix}Lengthscale for '{param_name}' is very large "
+            f"(ratio={ratio:.4f}). Parameter may have little effect."
+        )
+    return None, None
+
+
 def _validate_single_gp(
     gp: Any,
-    bounds: Tensor,
     param_ranges: list[float],
     param_names: list[str] | None = None,
     objective_idx: int | None = None,
@@ -150,7 +185,6 @@ def _validate_single_gp(
 
     Args:
         gp: Single GP model (SingleTaskGP or similar)
-        bounds: Parameter bounds
         param_ranges: Range of each parameter
         param_names: Optional parameter names
         objective_idx: Optional objective index for multi-objective models
@@ -166,39 +200,18 @@ def _validate_single_gp(
     covar = gp.covar_module
     kernel = getattr(covar, "base_kernel", covar)
     lengthscales = kernel.lengthscale.detach().squeeze()
-
-    # Ensure lengthscales is 1D
     if lengthscales.dim() == 0:
         lengthscales = lengthscales.unsqueeze(0)
 
-    # Check each lengthscale
-    for i, (ls, pr) in enumerate(zip(lengthscales, param_ranges, strict=False)):
-        ls_val = ls.item()
+    for i, (ls, pr) in enumerate(zip(lengthscales, param_ranges, strict=True)):
         param_name = param_names[i] if param_names and i < len(param_names) else f"param_{i}"
+        issue, warning = _check_lengthscale(ls.item(), pr, param_name, obj_prefix)
+        if issue:
+            issues.append(issue)
+        if warning:
+            warnings.append(warning)
 
-        # Check if lengthscale is too small (indicates poor fit / noise fitting)
-        if pr > 0:
-            ratio = ls_val / pr
-            if ratio < MODEL_VALIDATION_MIN_LENGTHSCALE_RATIO:
-                issues.append(
-                    f"{obj_prefix}Lengthscale for '{param_name}' is very small "
-                    f"(ratio={ratio:.4f}). Model may be overfitting."
-                )
-            elif ratio > MODEL_VALIDATION_MAX_LENGTHSCALE_RATIO:
-                warnings.append(
-                    f"{obj_prefix}Lengthscale for '{param_name}' is very large "
-                    f"(ratio={ratio:.4f}). Parameter may have little effect."
-                )
-
-    # Extract noise variance
-    noise_variance = 0.0
-    if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
-        noise = gp.likelihood.noise
-        if hasattr(noise, "item"):
-            noise_variance = noise.item()
-        elif isinstance(noise, Tensor):
-            noise_variance = noise.squeeze().item()
-
+    noise_variance = _extract_noise_variance(gp)
     return lengthscales, noise_variance, issues, warnings
 
 

@@ -85,5 +85,12 @@ def create_app() -> FastAPI:
     return app
 
 
+def main() -> None:
+    """CLI entry point for bo-mcp-api."""
+    import uvicorn
+
+    uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)  # noqa: S104
+
+
 # Create default app instance
 app = create_app()

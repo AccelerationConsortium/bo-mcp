@@ -9,6 +9,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Copy only dependency metadata so source edits do not invalidate this layer.
 COPY pyproject.toml uv.lock ./
 COPY packages/bo-engine/pyproject.toml packages/bo-engine/README.md ./packages/bo-engine/
+COPY packages/bo-engine-baybe/pyproject.toml packages/bo-engine-baybe/README.md ./packages/bo-engine-baybe/
 COPY packages/bo-mcp-server/pyproject.toml packages/bo-mcp-server/README.md ./packages/bo-mcp-server/
 COPY packages/bo-mcp-api/pyproject.toml packages/bo-mcp-api/README.md ./packages/bo-mcp-api/
 
@@ -18,6 +19,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN uv venv /opt/venv && \
     uv sync --frozen --no-dev \
     --package bo-engine \
+    --package bo-engine-baybe \
     --package bo-mcp-server \
     --package bo-mcp-api \
     --no-install-workspace
@@ -55,6 +57,7 @@ COPY packages/ ./packages/
 
 RUN uv sync --frozen --no-dev \
     --package bo-engine \
+    --package bo-engine-baybe \
     --package bo-mcp-server \
     --package bo-mcp-api \
     --no-editable
@@ -72,7 +75,7 @@ COPY --from=runtime-builder /opt/venv /opt/venv
 COPY packages/ ./packages/
 
 ENV PATH="/opt/venv/bin:$PATH"
-ENV PYTHONPATH="/app/packages/bo-engine/src:/app/packages/bo-mcp-server/src:/app/packages/bo-mcp-api/src"
+ENV PYTHONPATH="/app/packages/bo-engine/src:/app/packages/bo-engine-baybe/src:/app/packages/bo-mcp-server/src:/app/packages/bo-mcp-api/src"
 
 EXPOSE 8000
 

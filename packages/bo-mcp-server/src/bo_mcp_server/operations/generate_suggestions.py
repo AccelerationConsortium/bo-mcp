@@ -12,12 +12,16 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
+from bo_engine.backend import BOBackend
+from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
 from bo_engine.pending_points import filter_pending_points
+from bo_engine.types import OptimizationSpec
 
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     CampaignStatus,
+    Result,
     Suggestion,
     SuggestionProvenance,
     SuggestionStatus,
@@ -41,9 +45,6 @@ from bo_mcp_server.storage import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Constants for pending point handling
-PENDING_SUGGESTION_MAX_AGE_HOURS = 24
 
 # Type alias for suggestion data tuples (params, provenance)
 SuggestionDataList = list[tuple[dict[str, Any], dict[str, Any]]]
@@ -107,7 +108,7 @@ async def _handle_pending_suggestions(
 
     valid_pending: list[Suggestion] = []
     stale_count = 0
-    for sugg, info in zip(pending, point_info, strict=False):
+    for sugg, info in zip(pending, point_info, strict=True):
         if info.is_stale:
             await suggestion_repo.save(sugg.with_status(SuggestionStatus.EXPIRED))
             stale_count += 1
@@ -164,8 +165,8 @@ def _build_initial_design_data(
 
 
 def _compute_diversity_info(
-    backend: Any,
-    opt_spec: Any,
+    backend: BOBackend,
+    opt_spec: OptimizationSpec,
     suggestions: list[Suggestion],
 ) -> dict[str, Any] | None:
     """Compute batch diversity metrics via the backend.
@@ -354,7 +355,7 @@ async def _generate_within_session(
     actual_batch_size = batch_size or spec.batch_size
     opt_spec = campaign_spec_to_optimization_spec(spec)
     new_iteration = campaign.iteration + 1
-    backend = get_backend()
+    backend = get_backend(spec.backend)
 
     logger.debug(
         "Generation context: n_results=%d, batch_size=%d, iteration=%d",
@@ -414,9 +415,9 @@ async def _generate_within_session(
 
 
 def _generate_via_backend(
-    backend: Any,
-    opt_spec: Any,
-    results: list[Any],
+    backend: BOBackend,
+    opt_spec: OptimizationSpec,
+    results: list[Result],
     batch_size: int,
     iteration: int,
     turbo_state: dict[str, Any] | None,

@@ -16,6 +16,10 @@ async def generate_suggestions(
 ) -> dict[str, Any]:
     """Generate next batch of experiment suggestions for a campaign.
 
+    Workflow: Call after bo_create_campaign (first batch) or after
+    bo_submit_results (subsequent batches). Check results with
+    bo_get_diagnostics afterward.
+
     Args:
         campaign_id: UUID of the campaign.
         batch_size: Number of suggestions (default: campaign's batch_size).

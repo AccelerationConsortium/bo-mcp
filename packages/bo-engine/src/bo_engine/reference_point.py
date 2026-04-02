@@ -380,7 +380,7 @@ def _select_best_strategy(
     # Dynamic is valid — check if nadir is also valid and tighter
     if quality_nadir["is_valid"]:
         nadir_tighter = all(
-            nr < dr for nr, dr in zip(ref_nadir.tolist(), ref_dynamic.tolist(), strict=False)
+            nr < dr for nr, dr in zip(ref_nadir.tolist(), ref_dynamic.tolist(), strict=True)
         )
         if nadir_tighter:
             explanation_parts.append("Nadir-based reference is tighter and valid.")

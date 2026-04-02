@@ -227,7 +227,6 @@ def simulate_result(
             aug_y=aug_y,
             bounds=bounds,
             n_suggestions=n_suggestions,
-            use_input_warping=use_input_warping,
             parameter_names=parameter_names,
         )
 
@@ -237,7 +236,6 @@ def simulate_result(
         pareto_impact = _compute_pareto_impact(
             train_y=train_y,
             aug_y=aug_y,
-            hyp_y=hyp_y,
         )
 
     # Estimate value of information
@@ -248,12 +246,7 @@ def simulate_result(
     )
 
     # Generate recommendation
-    recommendation = _generate_whatif_recommendation(
-        model_impact=model_impact,
-        suggestion_impact=suggestion_impact,
-        pareto_impact=pareto_impact,
-        voi=voi,
-    )
+    recommendation = _generate_whatif_recommendation(voi=voi)
 
     return WhatIfReport(
         hypothetical=hypothetical,
@@ -503,7 +496,6 @@ def _compute_suggestion_impact(
     aug_y: Tensor,
     bounds: Tensor,
     n_suggestions: int,
-    use_input_warping: bool,
     parameter_names: list[str],
 ) -> SuggestionImpact:
     """Compute impact on next suggestions."""
@@ -572,7 +564,6 @@ def _compute_suggestion_impact(
 def _compute_pareto_impact(
     train_y: Tensor,
     aug_y: Tensor,
-    hyp_y: Tensor,
 ) -> ParetoImpact:
     """Compute impact on Pareto front."""
     # Get original Pareto front
@@ -652,10 +643,10 @@ def _compute_diversity(
     # Normalize
     ranges = bounds[1] - bounds[0]
     ranges = torch.clamp(ranges, min=1e-8)
-    X_norm = (X - bounds[0]) / ranges
+    x_norm = (X - bounds[0]) / ranges
 
     # Compute pairwise distances
-    dists = torch.cdist(X_norm, X_norm)
+    dists = torch.cdist(x_norm, x_norm)
     mask = torch.triu(torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1)
 
     return dists[mask].mean().item()
@@ -688,9 +679,6 @@ def _estimate_value_of_information(
 
 
 def _generate_whatif_recommendation(
-    model_impact: ModelImpact | None,
-    suggestion_impact: SuggestionImpact | None,
-    pareto_impact: ParetoImpact | None,
     voi: float,
 ) -> str:
     """Generate actionable recommendation based on analysis."""

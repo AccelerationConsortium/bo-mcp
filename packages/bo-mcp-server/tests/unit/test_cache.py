@@ -6,8 +6,11 @@ entries become unreachable after mutations — no explicit invalidation needed.
 Reference: BO-MCP-UI Implementation Plan Step 5, Section 2.5.
 """
 
+import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+import pytest
 
 from bo_mcp_server.cache import MAX_CACHE_ENTRIES, ResponseCache, diagnostics_cache
 
@@ -26,42 +29,46 @@ class TestResponseCache:
         cache = ResponseCache(ttl_seconds=60)
         assert cache._ttl == timedelta(seconds=60)
 
-    def test_cache_set_and_get(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_set_and_get(self) -> None:
         """Cache should store and retrieve values correctly."""
         cache = ResponseCache(ttl_seconds=10)
         test_data = {"success": True, "health_status": "healthy"}
 
-        cache.set("diagnostics:test-campaign:1", test_data)
-        result = cache.get("diagnostics:test-campaign:1")
+        await cache.set("diagnostics:test-campaign:1", test_data)
+        result = await cache.get("diagnostics:test-campaign:1")
 
         assert result == test_data
 
-    def test_cache_get_nonexistent_key(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_get_nonexistent_key(self) -> None:
         """Cache should return None for nonexistent keys."""
         cache = ResponseCache()
-        result = cache.get("nonexistent-key")
+        result = await cache.get("nonexistent-key")
 
         assert result is None
 
-    def test_cache_ttl_expiration(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_ttl_expiration(self) -> None:
         """Cache entries should expire after TTL.
 
         Reference: TTL-based caching is essential for balancing freshness
         with avoiding redundant computation during optimization loops.
         """
         cache = ResponseCache(ttl_seconds=1)
-        cache.set("test-key", {"value": 42})
+        await cache.set("test-key", {"value": 42})
 
         # Immediately after set, value should be retrievable
-        assert cache.get("test-key") == {"value": 42}
+        assert await cache.get("test-key") == {"value": 42}
 
         # Wait for TTL to expire
-        time.sleep(1.1)
+        await asyncio.sleep(1.1)
 
         # After TTL, value should be None
-        assert cache.get("test-key") is None
+        assert await cache.get("test-key") is None
 
-    def test_version_aware_keys_auto_invalidate(self) -> None:
+    @pytest.mark.asyncio
+    async def test_version_aware_keys_auto_invalidate(self) -> None:
         """Version-aware keys mean old versions become unreachable.
 
         Reference: Section 2.5 — Use diagnostics:{campaign_id}:{version}
@@ -72,60 +79,64 @@ class TestResponseCache:
         campaign_id = "abc-123-def-456"
 
         # Store diagnostics for version 1
-        cache.set(f"diagnostics:{campaign_id}:1", {"health": "healthy"})
+        await cache.set(f"diagnostics:{campaign_id}:1", {"health": "healthy"})
 
         # After a mutation, version increments to 2
         # The old key is no longer looked up
-        assert cache.get(f"diagnostics:{campaign_id}:2") is None
+        assert await cache.get(f"diagnostics:{campaign_id}:2") is None
 
         # Old version entry is still technically in cache but unreachable
-        assert cache.get(f"diagnostics:{campaign_id}:1") == {"health": "healthy"}
+        assert await cache.get(f"diagnostics:{campaign_id}:1") == {"health": "healthy"}
 
-    def test_cache_clear(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_clear(self) -> None:
         """Cache clear should remove all entries."""
         cache = ResponseCache()
-        cache.set("key1", "value1")
-        cache.set("key2", "value2")
-        cache.set("key3", "value3")
+        await cache.set("key1", "value1")
+        await cache.set("key2", "value2")
+        await cache.set("key3", "value3")
 
         assert cache.size == 3
 
-        cache.clear()
+        await cache.clear()
 
         assert cache.size == 0
-        assert cache.get("key1") is None
-        assert cache.get("key2") is None
-        assert cache.get("key3") is None
+        assert await cache.get("key1") is None
+        assert await cache.get("key2") is None
+        assert await cache.get("key3") is None
 
-    def test_cache_size_property(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_size_property(self) -> None:
         """Cache size should reflect number of entries."""
         cache = ResponseCache()
         assert cache.size == 0
 
-        cache.set("key1", "value1")
+        await cache.set("key1", "value1")
         assert cache.size == 1
 
-        cache.set("key2", "value2")
+        await cache.set("key2", "value2")
         assert cache.size == 2
 
-    def test_cache_overwrite_existing_key(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_overwrite_existing_key(self) -> None:
         """Setting same key should overwrite previous value and reset TTL."""
         cache = ResponseCache(ttl_seconds=2)
 
-        cache.set("test-key", {"version": 1})
-        time.sleep(1)
+        await cache.set("test-key", {"version": 1})
+        await asyncio.sleep(1)
 
         # Overwrite with new value
-        cache.set("test-key", {"version": 2})
+        await cache.set("test-key", {"version": 2})
 
         # Value should be updated
-        assert cache.get("test-key") == {"version": 2}
+        assert await cache.get("test-key") == {"version": 2}
 
         # Wait a bit more - original entry would have expired, but new one shouldn't
-        time.sleep(1.1)
-        assert cache.get("test-key") == {"version": 2}
+        await asyncio.sleep(1.1)
+        assert await cache.get("test-key") == {"version": 2}
 
-    def test_cache_handles_complex_values(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_handles_complex_values(self) -> None:
         """Cache should handle complex nested dictionaries.
 
         Reference: get_diagnostics returns complex nested responses with
@@ -150,28 +161,29 @@ class TestResponseCache:
             },
         }
 
-        cache.set("diagnostics:complex-test:5", complex_data)
-        result = cache.get("diagnostics:complex-test:5")
+        await cache.set("diagnostics:complex-test:5", complex_data)
+        result = await cache.get("diagnostics:complex-test:5")
 
         assert result is not None
         assert result == complex_data
         assert result["pareto_front"][0]["obj1"] == 1.5
         assert result["convergence"]["converged"] is False
 
-    def test_cache_evicts_oldest_at_capacity(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_evicts_oldest_at_capacity(self) -> None:
         """Cache should evict oldest entry when at MAX_CACHE_ENTRIES."""
         cache = ResponseCache(ttl_seconds=60)
 
         # Fill to capacity
         for i in range(MAX_CACHE_ENTRIES):
-            cache.set(f"key-{i}", {"i": i})
+            await cache.set(f"key-{i}", {"i": i})
 
         assert cache.size == MAX_CACHE_ENTRIES
 
         # One more should evict the oldest
-        cache.set("overflow-key", {"new": True})
+        await cache.set("overflow-key", {"new": True})
         assert cache.size == MAX_CACHE_ENTRIES
-        assert cache.get("overflow-key") == {"new": True}
+        assert await cache.get("overflow-key") == {"new": True}
 
 
 class TestGlobalDiagnosticsCache:
@@ -186,56 +198,61 @@ class TestGlobalDiagnosticsCache:
         """Global cache should have 120 second TTL (version-aware keys)."""
         assert diagnostics_cache._ttl == timedelta(seconds=120)
 
-    def test_global_cache_operations(self) -> None:
+    @pytest.mark.asyncio
+    async def test_global_cache_operations(self) -> None:
         """Global cache should support standard operations."""
-        test_key = f"test-{datetime.now().timestamp()}"
+        test_key = f"test-{time.time()}"
 
         # Set
-        diagnostics_cache.set(test_key, {"test": True})
+        await diagnostics_cache.set(test_key, {"test": True})
 
         # Get
-        result = diagnostics_cache.get(test_key)
+        result = await diagnostics_cache.get(test_key)
         assert result == {"test": True}
 
         # Clear (cleanup)
-        diagnostics_cache.clear()
+        await diagnostics_cache.clear()
 
 
 class TestCacheEdgeCases:
     """Edge case tests for cache behavior."""
 
-    def test_cache_with_none_value(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_with_none_value(self) -> None:
         """Cache should handle None values correctly.
 
         This is important because we need to distinguish between
         'not in cache' and 'cached value is None'.
         """
         cache = ResponseCache()
-        cache.set("none-value-key", None)
+        await cache.set("none-value-key", None)
 
         # The value is None, but it is cached
         # Note: Our implementation returns None for both cases
         # This is acceptable since diagnostics shouldn't return None
-        result = cache.get("none-value-key")
+        result = await cache.get("none-value-key")
         assert result is None
 
-    def test_cache_with_empty_dict(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_with_empty_dict(self) -> None:
         """Cache should handle empty dictionaries."""
         cache = ResponseCache()
-        cache.set("empty-dict", {})
+        await cache.set("empty-dict", {})
 
-        result = cache.get("empty-dict")
+        result = await cache.get("empty-dict")
         assert result == {}
 
-    def test_cache_with_empty_list(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_with_empty_list(self) -> None:
         """Cache should handle empty lists."""
         cache = ResponseCache()
-        cache.set("empty-list", [])
+        await cache.set("empty-list", [])
 
-        result = cache.get("empty-list")
+        result = await cache.get("empty-list")
         assert result == []
 
-    def test_cache_concurrent_like_access_patterns(self) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_concurrent_like_access_patterns(self) -> None:
         """Cache should handle rapid set/get patterns.
 
         This simulates tight optimization loops where diagnostics
@@ -245,6 +262,6 @@ class TestCacheEdgeCases:
         campaign_id = "tight-loop-test"
 
         for i in range(100):
-            cache.set(f"diagnostics:{campaign_id}:{i}", {"iteration": i})
-            result = cache.get(f"diagnostics:{campaign_id}:{i}")
+            await cache.set(f"diagnostics:{campaign_id}:{i}", {"iteration": i})
+            result = await cache.get(f"diagnostics:{campaign_id}:{i}")
             assert result == {"iteration": i}

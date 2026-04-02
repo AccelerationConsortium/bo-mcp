@@ -21,14 +21,18 @@ bo_create_campaign → [bo_generate_suggestions → bo_submit_results]* → bo_g
 
 | User Intent | Recommended Tool(s) |
 |-------------|---------------------|
+| Check backend features | `bo_list_capabilities` |
+| Validate before creating | `bo_validate_intake` |
 | Start new optimization | `bo_create_campaign` |
 | List all campaigns | `bo_list_campaigns` |
 | Get next experiments | `bo_generate_suggestions` |
 | Record experiment outcomes | `bo_submit_results` or `bo_upload_results_file` |
 | Check optimization progress | `bo_get_diagnostics` (includes `next_action_recommendation`) |
+| Review results | `bo_list_results`, `bo_export_campaign` |
+| Review suggestions | `bo_list_suggestions`, `bo_update_suggestion_status` |
 | Monitor multiple campaigns | `bo_batch_get_status` |
 | Understand a suggestion | `bo_get_suggestion_explanation` |
-| Pause/resume/terminate | `bo_manage_campaign_lifecycle` (consolidated) |
+| Pause/resume/terminate | `bo_pause_campaign`, `bo_resume_campaign`, `bo_terminate_campaign` |
 | Compare multiple optimizations | `bo_compare_campaigns` |
 | Find related prior work | `bo_discover_transfer_candidates` |
 
@@ -45,16 +49,16 @@ bo_create_campaign → [bo_generate_suggestions → bo_submit_results]* → bo_g
 
 ## Overview
 
-The MCP server exposes 12 tools organized into six categories:
+The MCP server exposes 19 tools organized into six categories:
 
 | Category | Tools |
 |----------|-------|
-| **Server Health** | `bo_health_check` |
-| **Campaign Management** | `bo_create_campaign`, `bo_list_campaigns`, `bo_manage_campaign_lifecycle` |
-| **Suggestion Generation** | `bo_generate_suggestions`, `bo_get_suggestion_explanation` |
-| **Result Submission** | `bo_submit_results`, `bo_upload_results_file` |
-| **Analysis & Strategy** | `bo_get_diagnostics`, `bo_compare_campaigns`, `bo_discover_transfer_candidates` |
-| **Agent Efficiency (v3.3)** | `bo_batch_get_status` |
+| **Server Health** | `bo_health_check`, `bo_list_capabilities` |
+| **Campaign Management** | `bo_create_campaign`, `bo_list_campaigns`, `bo_validate_intake` |
+| **Campaign Lifecycle** | `bo_pause_campaign`, `bo_resume_campaign`, `bo_terminate_campaign` |
+| **Suggestion Generation** | `bo_generate_suggestions`, `bo_get_suggestion_explanation`, `bo_list_suggestions`, `bo_update_suggestion_status` |
+| **Result Submission** | `bo_submit_results`, `bo_upload_results_file`, `bo_list_results`, `bo_export_campaign` |
+| **Analysis & Strategy** | `bo_get_diagnostics`, `bo_compare_campaigns`, `bo_discover_transfer_candidates`, `bo_batch_get_status` |
 
 ---
 
@@ -147,11 +151,7 @@ Several tools support a `verbosity` parameter to control response payload size:
 - `bo_generate_suggestions(verbosity="minimal|standard|detailed")`
 - `bo_compare_campaigns(verbosity="minimal|standard|detailed")`
 - `bo_discover_transfer_candidates(verbosity="minimal|standard|detailed")`
-- `bo_create_campaign(verbosity="minimal|standard|detailed")` (v3.3+)
-- `bo_submit_results(verbosity="minimal|standard|detailed")` (v3.3+)
-- `bo_list_campaigns(verbosity="minimal|standard|detailed")` (v3.3+)
-- `bo_batch_get_status(verbosity="minimal|standard|detailed")` (v3.3+)
-
+- `bo_create_campaign(verbosity="minimal|standard|detailed")`- `bo_submit_results(verbosity="minimal|standard|detailed")`- `bo_list_campaigns(verbosity="minimal|standard|detailed")`- `bo_batch_get_status(verbosity="minimal|standard|detailed")`
 ---
 
 ## Error Codes (v3.1+)
@@ -240,8 +240,7 @@ Creates a new optimization campaign from validated intake data.
 
 ---
 
-### `bo_list_campaigns` (v3.3+)
-
+### `bo_list_campaigns`
 Lists all campaigns with optional filtering. Tool-based alternative to `campaigns://list` resource.
 
 **Input Schema:**
@@ -276,15 +275,14 @@ Lists all campaigns with optional filtering. Tool-based alternative to `campaign
 
 ---
 
-### `bo_manage_campaign_lifecycle` (v3.3+)
+### `bo_pause_campaign`
 
-Consolidated lifecycle management tool. Combines pause, resume, and terminate into a single interface for reduced cognitive load.
+Pauses a running campaign.
 
 **Input Schema:**
 ```json
 {
-  "campaign_id": "string (UUID)",
-  "action": "pause | resume | terminate"
+  "campaign_id": "string (UUID)"
 }
 ```
 
@@ -299,14 +297,63 @@ Consolidated lifecycle management tool. Combines pause, resume, and terminate in
 }
 ```
 
-**State Transitions:**
-- `pause`: RUNNING → PAUSED
-- `resume`: PAUSED → RUNNING
-- `terminate`: CREATED/RUNNING/PAUSED → COMPLETED
+**State Transition:** RUNNING → PAUSED
 
 ---
 
-## Agent Efficiency Tools (v3.3+)
+### `bo_resume_campaign`
+
+Resumes a paused campaign.
+
+**Input Schema:**
+```json
+{
+  "campaign_id": "string (UUID)"
+}
+```
+
+**Output Schema:**
+```json
+{
+  "success": "boolean",
+  "campaign_id": "string",
+  "status": "string (new status)",
+  "previous_status": "string",
+  "errors": ["string"]
+}
+```
+
+**State Transition:** PAUSED → RUNNING
+
+---
+
+### `bo_terminate_campaign`
+
+Terminates a campaign, marking it as completed.
+
+**Input Schema:**
+```json
+{
+  "campaign_id": "string (UUID)"
+}
+```
+
+**Output Schema:**
+```json
+{
+  "success": "boolean",
+  "campaign_id": "string",
+  "status": "string (new status)",
+  "previous_status": "string",
+  "errors": ["string"]
+}
+```
+
+**State Transition:** CREATED/RUNNING/PAUSED → COMPLETED
+
+---
+
+## Batch Status Tools
 
 ### `bo_batch_get_status`
 
@@ -824,10 +871,10 @@ Example error response:
 
 ## Version History
 
-- **v3.3**: Added Agent Efficiency improvements:
+- Added Agent Efficiency improvements:
   - `bo_list_campaigns` - Tool-based campaign listing with filters
   - `bo_batch_get_status` - Multi-campaign status in one call
-  - `bo_manage_campaign_lifecycle` - Consolidated pause/resume/terminate
+  - `bo_pause_campaign`, `bo_resume_campaign`, `bo_terminate_campaign` - Individual lifecycle tools
   - Verbosity parameter added to `bo_create_campaign` and `bo_submit_results`
   - `next_action_recommendation` added to `bo_get_diagnostics`
 - **v3.1**: Added `bo_health_check` tool, response verbosity parameter, structured error codes with recovery actions, and AGENT_COOKBOOK.md reference

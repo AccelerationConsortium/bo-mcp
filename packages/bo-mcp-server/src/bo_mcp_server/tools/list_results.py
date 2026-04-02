@@ -30,6 +30,8 @@ async def list_results(
 ) -> dict[str, Any]:
     """List experimental results for a campaign.
 
+    Workflow: Call to review submitted results or audit past submissions.
+
     Returns structured result data for review, audit, or correction workflows.
 
     Args:
@@ -142,6 +144,8 @@ async def export_campaign(
     format: str = "csv",
 ) -> dict[str, Any]:
     """Export all results for a campaign as CSV.
+
+    Workflow: Call to export all campaign data for offline analysis.
 
     Returns the full dataset (parameters + objectives) in a format suitable
     for downstream analysis or archival.

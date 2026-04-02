@@ -14,7 +14,6 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import torch
 from botorch.models import ModelListGP, SingleTaskGP
@@ -26,9 +25,6 @@ from bo_engine.constants import (
     PREDICTION_INTERVAL_EPSILON,
 )
 from bo_engine.device import get_device, get_dtype
-
-if TYPE_CHECKING:
-    pass
 
 
 @dataclass
@@ -236,7 +232,6 @@ def compute_suggestion_predictions(
     model: SingleTaskGP | ModelListGP,
     suggestions: list[dict[str, float]],
     parameter_names: list[str],
-    bounds: Tensor,
     best_value: float | None = None,
     minimize: bool = True,
     objective_names: list[str] | None = None,
@@ -251,7 +246,6 @@ def compute_suggestion_predictions(
         model: Fitted GP model.
         suggestions: List of parameter dictionaries.
         parameter_names: Names of parameters (for ordering).
-        bounds: Parameter bounds (2 x d tensor).
         best_value: Current best observed value (for improvement calculation).
         minimize: Whether objective is being minimized.
         objective_names: Names for objectives.

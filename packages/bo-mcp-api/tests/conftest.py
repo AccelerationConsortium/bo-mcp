@@ -27,6 +27,7 @@ from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
     UserRepository,
+    close_database,
     get_session,
     init_database,
 )
@@ -94,14 +95,13 @@ async def setup_database():
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     # Dispose existing engine if present to release connections
-    if database.engine is not None:
-        await database.engine.dispose()
+    await close_database()
 
-    # Reset module-level singletons to force fresh database creation
+    # Reset lazy singletons to force fresh database creation
     # This ensures each test gets a completely fresh in-memory database
-    database.engine = database._create_engine_with_options()
-    database.async_session_factory = async_sessionmaker(
-        database.engine,
+    database._engine = database._create_engine_with_options()
+    database._session_factory = async_sessionmaker(
+        database._engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
@@ -111,8 +111,7 @@ async def setup_database():
     yield
 
     # Cleanup: dispose engine to release connections
-    if database.engine is not None:
-        await database.engine.dispose()
+    await close_database()
 
 
 @pytest_asyncio.fixture

@@ -20,6 +20,9 @@ async def submit_results(
 ) -> dict[str, Any]:
     """Submit experimental results for a campaign.
 
+    Workflow: Call after running experiments from bo_generate_suggestions.
+    Follow up with bo_get_diagnostics to check progress and convergence.
+
     Args:
         campaign_id: UUID of the campaign.
         results: List of result payloads with parameter_values and

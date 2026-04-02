@@ -50,6 +50,9 @@ async def upload_results_file(
 ) -> dict[str, Any]:
     """Upload experimental results from a CSV file.
 
+    Workflow: Alternative to bo_submit_results for bulk uploads. Use when
+    you have historical data in CSV format.
+
     CSV format should have columns:
     - param_<name>: Parameter values (e.g., param_temperature, param_pressure)
     - obj_<name>: Objective values (e.g., obj_yield, obj_cost)

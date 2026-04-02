@@ -87,7 +87,7 @@ def filter_pending_points(
     valid_params: list[dict[str, float]] = []
     pending_info: list[PendingPoint] = []
 
-    for params, created_at in zip(pending_params, pending_created_at, strict=False):
+    for params, created_at in zip(pending_params, pending_created_at, strict=True):
         age = compute_pending_age(created_at, now)
         is_stale = age > max_age_hours
 

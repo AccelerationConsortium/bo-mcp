@@ -25,6 +25,8 @@ async def list_suggestions(
 ) -> dict[str, Any]:
     """List suggestions for a campaign with optional status filtering.
 
+    Workflow: Call to review pending, accepted, or completed suggestions.
+
     Args:
         campaign_id: UUID of the campaign.
         status_filter: Optional status to filter by. Valid values:

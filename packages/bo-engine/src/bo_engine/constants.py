@@ -275,6 +275,17 @@ RGPE_NUM_SAMPLES = 512
 RGPE_HELPFUL_WEIGHT_THRESHOLD = 0.1
 
 # =============================================================================
+# Transfer Learning Similarity Weights
+# =============================================================================
+
+# Weights for computing overall similarity between campaigns for transfer learning.
+# Higher weights = more influence on the overall score.
+TRANSFER_WEIGHT_PARAMETER = 0.4
+TRANSFER_WEIGHT_OBJECTIVE = 0.3
+TRANSFER_WEIGHT_BOUNDS = 0.2
+TRANSFER_WEIGHT_DATA_RICHNESS = 0.1
+
+# =============================================================================
 # Outcome Constraint Modeling (Section 2.3)
 # =============================================================================
 

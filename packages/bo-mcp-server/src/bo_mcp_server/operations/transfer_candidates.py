@@ -4,6 +4,14 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from bo_engine.constants import (
+    INITIAL_DESIGN_MULTIPLIER,
+    TRANSFER_WEIGHT_BOUNDS,
+    TRANSFER_WEIGHT_DATA_RICHNESS,
+    TRANSFER_WEIGHT_OBJECTIVE,
+    TRANSFER_WEIGHT_PARAMETER,
+)
+
 from bo_mcp_server.domain import CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_campaign_id, parse_verbosity
@@ -77,13 +85,18 @@ def _compute_overall_similarity(
     parameter_similarity = _compute_parameter_similarity(source_spec, target_spec)
     objective_similarity = _compute_objective_similarity(source_spec, target_spec)
     bounds_overlap = _compute_bounds_overlap(source_spec, target_spec)
-    data_richness = min(1.0, n_results / 20)
+
+    # Scale data richness threshold with source problem dimensionality:
+    # more parameters need more data to be considered "rich"
+    n_params = len(source_spec.parameters)
+    richness_threshold = INITIAL_DESIGN_MULTIPLIER * n_params + 1
+    data_richness = min(1.0, n_results / richness_threshold)
 
     overall = (
-        0.4 * parameter_similarity
-        + 0.3 * objective_similarity
-        + 0.2 * bounds_overlap
-        + 0.1 * data_richness
+        TRANSFER_WEIGHT_PARAMETER * parameter_similarity
+        + TRANSFER_WEIGHT_OBJECTIVE * objective_similarity
+        + TRANSFER_WEIGHT_BOUNDS * bounds_overlap
+        + TRANSFER_WEIGHT_DATA_RICHNESS * data_richness
     )
 
     return overall, {
@@ -164,42 +177,57 @@ async def _evaluate_candidates(
     similarity_threshold: float,
     max_candidates: int,
 ) -> list[dict[str, Any]]:
-    """Evaluate all campaigns for transfer learning similarity."""
+    """Evaluate all campaigns for transfer learning similarity.
+
+    Uses batch queries to avoid N+1: loads all campaigns, then batch-loads
+    specs and result counts in two queries instead of per-campaign queries.
+    """
+    all_campaigns = await campaign_repo.list_all()
+
+    # Filter out the target campaign and failed campaigns with too few results
+    candidate_campaigns = [
+        c for c in all_campaigns if c.id != target_uuid and c.status != CampaignStatus.FAILED
+    ]
+    if not candidate_campaigns:
+        return []
+
+    # Batch-load specs and result counts (2 queries instead of 2*N)
+    campaign_ids = [c.id for c in candidate_campaigns]
+    spec_ids = list({c.spec_id for c in candidate_campaigns})
+    specs_by_id = await spec_repo.get_by_ids(spec_ids)
+    result_counts = await result_repo.count_by_campaigns(campaign_ids)
+
     candidates: list[dict[str, Any]] = []
-
-    for candidate_campaign in await campaign_repo.list_all():
-        if candidate_campaign.id == target_uuid:
+    for campaign in candidate_campaigns:
+        n_results = result_counts.get(campaign.id, 0)
+        if n_results < 3:
             continue
 
-        candidate_results = await result_repo.list_by_campaign(candidate_campaign.id)
-        if len(candidate_results) < 3 or candidate_campaign.status == CampaignStatus.FAILED:
-            continue
-
-        candidate_spec = await spec_repo.get(candidate_campaign.spec_id)
+        candidate_spec = specs_by_id.get(campaign.spec_id)
         if candidate_spec is None:
             continue
 
         overall_similarity, component_scores = _compute_overall_similarity(
             candidate_spec,
             target_spec,
-            len(candidate_results),
+            n_results,
         )
         if overall_similarity < similarity_threshold:
             continue
 
         candidates.append(
             {
-                "campaign_id": str(candidate_campaign.id),
+                "campaign_id": str(campaign.id),
                 "name": candidate_spec.name,
-                "status": candidate_campaign.status.value,
-                "n_results": len(candidate_results),
-                "iteration": candidate_campaign.iteration,
+                "status": campaign.status.value,
+                "n_results": n_results,
+                "iteration": campaign.iteration,
                 "similarity_score": round(overall_similarity, 4),
                 "component_scores": component_scores,
                 "recommendation": _generate_transfer_recommendation(
                     overall_similarity,
                     candidate_spec.name,
-                    len(candidate_results),
+                    n_results,
                 ),
             }
         )

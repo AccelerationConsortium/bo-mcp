@@ -26,7 +26,6 @@ from bo_mcp_server.storage import (
     CampaignSpecRepository,
     get_session,
 )
-from bo_mcp_server.tools.validate_intake import validate_intake
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +107,9 @@ async def create_campaign_operation(
     if isinstance(verbosity_result, dict):
         return verbosity_result
     verbosity_level = verbosity_result
+
+    # Lazy import to avoid circular dependency (tools -> operations -> tools)
+    from bo_mcp_server.tools.validate_intake import validate_intake
 
     # Validate the intake (use detailed verbosity for full spec)
     validation = await validate_intake(intake_data, verbosity="detailed")

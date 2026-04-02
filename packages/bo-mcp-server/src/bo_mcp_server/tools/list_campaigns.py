@@ -125,6 +125,8 @@ async def list_campaigns(
 ) -> dict[str, Any]:
     """List optimization campaigns with optional filtering and pagination.
 
+    Workflow: Call anytime to find campaign IDs or check campaign statuses.
+
     Args:
         owner_id: Optional UUID of the owner to filter campaigns by.
         status: Optional status filter. Valid values:

@@ -15,6 +15,9 @@ async def create_campaign(
 ) -> dict[str, Any]:
     """Create a new optimization campaign from validated intake data.
 
+    Workflow: Call once at the start. Use bo_validate_intake first to dry-run
+    check your spec, and bo_list_capabilities to verify feature support.
+
     Args:
         intake_data: Campaign intake payload validated via CampaignIntakeInput.
         owner_id: UUID of the user creating the campaign.

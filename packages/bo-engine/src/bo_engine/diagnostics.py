@@ -257,7 +257,7 @@ def compute_rank_correlation(
     try:
         result = scipy_stats.spearmanr(pred_np, actual_np)
         corr = float(result.statistic)  # type: ignore[union-attr]
-        return corr if not (corr != corr) else 0.0  # Handle NaN
+        return corr if corr == corr else 0.0  # Handle NaN
     except (RuntimeError, ValueError, TypeError) as e:
         logger.debug(f"Rank correlation calculation failed with {len(pred_np)} samples: {e!r}")
         return 0.0
@@ -416,7 +416,7 @@ def compute_suggestion_diversity(
 
     for i in range(n):
         for j in range(i + 1, n):
-            dist = torch.norm(suggestions[i] - suggestions[j]).item()
+            dist = torch.linalg.vector_norm(suggestions[i] - suggestions[j]).item()
             total_distance += dist
             count += 1
 
@@ -940,7 +940,7 @@ def compute_uncertainty_trend(
 
     Args:
         uncertainty_history: List of mean uncertainties per iteration
-        window: Window size for trend analysis
+        window: Window size for trend analysis (uses last ``window`` points for slope)
 
     Returns:
         UncertaintyTrend with trend assessment
@@ -958,12 +958,13 @@ def compute_uncertainty_trend(
     variance = sum((u - mean_unc) ** 2 for u in uncertainty_history) / len(uncertainty_history)
     std_unc = variance**0.5
 
-    # Compute slope using simple linear regression
-    n = len(uncertainty_history)
+    # Use the last `window` points for trend computation
+    recent = uncertainty_history[-window:]
+    n = len(recent)
     x_mean = (n - 1) / 2
-    y_mean = mean_unc
+    y_mean = sum(recent) / n
 
-    numerator = sum((i - x_mean) * (y - y_mean) for i, y in enumerate(uncertainty_history))
+    numerator = sum((i - x_mean) * (y - y_mean) for i, y in enumerate(recent))
     denominator = sum((i - x_mean) ** 2 for i in range(n))
 
     slope = numerator / denominator if denominator > 0 else 0.0
@@ -1148,7 +1149,7 @@ def _check_constraint_feasibility(result: dict[str, float], constraint: dict) ->
     if ctype == "sum_greater_than":
         return sum(param_values) >= value
     if ctype == "linear" and coefficients:
-        weighted_sum = sum(c * v for c, v in zip(coefficients, param_values, strict=False))
+        weighted_sum = sum(c * v for c, v in zip(coefficients, param_values, strict=True))
         return weighted_sum <= value
     return True
 

@@ -5,9 +5,14 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
 
+from bo_engine.backend import BOBackend
+from bo_engine.constants import DUPLICATE_DETECTION_TOLERANCE
+
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
+    Campaign,
+    CampaignSpec,
     Result,
     ResultSource,
     ResultSubmissionInput,
@@ -32,9 +37,6 @@ from bo_mcp_server.storage import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Constants for duplicate detection
-DUPLICATE_DETECTION_TOLERANCE = 1e-6
 
 
 def _make_submit_error(
@@ -118,7 +120,7 @@ def _check_duplicates_for_result(
     index: int,
     params: dict[str, Any],
     existing_params: list[dict[str, Any]],
-    backend: Any,
+    backend: BOBackend,
     atomic: bool,
     warnings: list[str],
     duplicates_detected: list[dict[str, Any]],
@@ -199,11 +201,11 @@ class _SubmitTracking:
 
 async def _validate_and_create_results(
     results: list[ResultSubmissionInput],
-    spec: Any,
+    spec: CampaignSpec,
     campaign_uuid: UUID,
     submitter_uuid: UUID,
     result_source: ResultSource,
-    backend: Any,
+    backend: BOBackend,
     existing_params: list[dict[str, Any]],
     suggestion_repo: SuggestionRepository,
     force: bool,
@@ -255,6 +257,7 @@ async def _validate_and_create_results(
             objective_values=r.objective_values,
             source=result_source,
             submitted_by=submitter_uuid,
+            measurement_uncertainty=r.measurement_uncertainty,
             metadata=r.metadata,
         )
         entity_to_input_index[len(result_entities)] = i
@@ -299,9 +302,9 @@ def _validate_single_result(
 
 
 async def _update_campaign_state(
-    campaign: Any,
-    spec: Any,
-    backend: Any,
+    campaign: Campaign,
+    spec: CampaignSpec,
+    backend: BOBackend,
     campaign_uuid: UUID,
     campaign_id: str,
     result_entities: list[Result],
@@ -348,7 +351,7 @@ async def _fetch_campaign_and_spec(
     campaign_uuid: UUID,
     campaign_repo: CampaignRepository,
     spec_repo: CampaignSpecRepository,
-) -> tuple[Any, Any] | dict[str, Any]:
+) -> tuple[Campaign, CampaignSpec] | dict[str, Any]:
     """Fetch and validate campaign and spec. Returns (campaign, spec) or error dict."""
     campaign = await campaign_repo.get(campaign_uuid)
     if campaign is None:
@@ -472,7 +475,6 @@ async def submit_results_operation(
     verbosity_level, campaign_uuid, submitter_uuid, result_source = validated
 
     tracking = _SubmitTracking()
-    backend = get_backend()
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
@@ -489,6 +491,7 @@ async def submit_results_operation(
         if isinstance(fetched, dict):
             return fetched
         campaign, spec = fetched
+        backend = get_backend(spec.backend)
 
         existing_results = await result_repo.list_by_campaign(campaign_uuid)
         existing_params = [r.parameter_values for r in existing_results]

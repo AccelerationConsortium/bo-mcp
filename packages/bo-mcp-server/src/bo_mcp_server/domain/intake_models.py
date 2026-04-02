@@ -47,6 +47,7 @@ class ResultSubmissionInput(BaseModel):
     parameter_values: dict[str, Any]
     objective_values: dict[str, float]
     suggestion_id: str | None = None
+    measurement_uncertainty: dict[str, float] | None = None  # Per-objective noise std
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}

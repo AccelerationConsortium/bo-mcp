@@ -79,7 +79,7 @@ def _compute_campaign_metrics(
         )
         return metrics
 
-    backend = get_backend()
+    backend = get_backend(spec.backend)
     opt_spec = campaign_spec_to_optimization_spec(spec)
     observations = results_to_observations(results)
     hypervolume = backend.compute_hypervolume(opt_spec, observations)

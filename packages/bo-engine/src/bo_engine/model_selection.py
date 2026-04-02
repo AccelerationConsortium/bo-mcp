@@ -278,7 +278,7 @@ def compare_models(
         best_model = best_result.model
 
     # Generate recommendation
-    recommendation, confidence = _generate_recommendation(results, config)
+    recommendation, confidence = _generate_recommendation(results)
 
     return ModelSelectionResult(
         best_model=best_model,
@@ -408,10 +408,11 @@ def _rank_models(
     Returns:
         Results sorted by rank (best first)
     """
-    if criterion == "cv_rmse":
-        key = _get_cv_rmse
-        reverse = False
-    elif criterion == "cv_r2":
+    # Default to RMSE for unknown criteria
+    key = _get_cv_rmse
+    reverse = False
+
+    if criterion == "cv_r2":
         key = _get_cv_r2
         reverse = True  # Higher is better
     elif criterion == "lml":
@@ -420,10 +421,6 @@ def _rank_models(
     elif criterion == "bic":
         key = _get_bic
         reverse = False  # Lower is better
-    else:
-        # Default to RMSE
-        key = _get_cv_rmse
-        reverse = False
 
     # Sort results
     sorted_results = sorted(results, key=key, reverse=reverse)
@@ -437,13 +434,11 @@ def _rank_models(
 
 def _generate_recommendation(
     results: list[ModelComparisonResult],
-    config: ModelSelectionConfig,
 ) -> tuple[str, str]:
     """Generate a human-readable recommendation based on results.
 
     Args:
         results: Ranked comparison results
-        config: Model selection configuration
 
     Returns:
         Tuple of (recommendation, confidence)

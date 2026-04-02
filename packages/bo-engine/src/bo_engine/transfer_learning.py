@@ -107,7 +107,6 @@ class RGPE(torch.nn.Module):
         self,
         target_x: Tensor,
         target_y: Tensor,
-        num_samples: int = 512,
     ) -> Tensor:
         """Compute rank-based weights for the ensemble.
 
@@ -125,7 +124,6 @@ class RGPE(torch.nn.Module):
         Args:
             target_x: Target task inputs
             target_y: Target task outputs
-            num_samples: Number of samples for ranking computation
 
         Returns:
             Tensor of weights with shape (num_models,)
@@ -322,7 +320,6 @@ def create_rgpe_model(
     rgpe.compute_weights(
         target_x=target_x,
         target_y=target_y,
-        num_samples=config.num_samples,
     )
 
     return rgpe
@@ -451,7 +448,7 @@ class RGPEAcquisition(AcquisitionFunction):
         pdf = torch.exp(normal.log_prob(z))
         cdf = normal.cdf(z)
 
-        # EI = std * (z * cdf + pdf)
+        # Closed-form Expected Improvement
         ei = std * (z * cdf + pdf)
 
         # Average over q dimension for joint acquisition

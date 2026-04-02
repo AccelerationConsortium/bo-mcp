@@ -17,7 +17,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -209,7 +209,7 @@ class ProvenanceTracker:
             lengthscales=lengthscales,
             noise_variance=noise_variance,
             n_training_points=n_training_points,
-            timestamp=datetime.now(),
+            timestamp=datetime.now(UTC),
             config_hash=config_hash,
         )
 
@@ -266,7 +266,7 @@ class ProvenanceTracker:
             acquisition_value=acquisition_value,
             parameters=parameters,
             random_seed=random_seed,
-            timestamp=datetime.now(),
+            timestamp=datetime.now(UTC),
         )
 
         self._suggestions[suggestion_id] = provenance
@@ -336,7 +336,7 @@ class ProvenanceTracker:
             constraint_values=constraint_values,
             submitted_by=submitted_by,
             source=source,
-            timestamp=datetime.now(),
+            timestamp=datetime.now(UTC),
             notes=notes,
         )
 
@@ -382,7 +382,7 @@ class ProvenanceTracker:
         event = ProvenanceEvent(
             event_type=ProvenanceEventType.PARAMETERS_MODIFIED,
             event_id=_generate_id("mod"),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(UTC),
             entity_id=suggestion_id,
             data={
                 "original": original_parameters,

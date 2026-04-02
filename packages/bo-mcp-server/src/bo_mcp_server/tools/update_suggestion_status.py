@@ -32,6 +32,9 @@ async def update_suggestion_status(
 ) -> dict[str, Any]:
     """Update the status of a suggestion.
 
+    Workflow: Call after reviewing suggestions from bo_list_suggestions to
+    accept, reject, or expire them.
+
     Use this to accept, reject, or expire a suggestion. The "completed"
     status is set automatically when results are submitted via bo_submit_results.
 

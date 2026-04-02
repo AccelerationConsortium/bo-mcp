@@ -6,7 +6,8 @@ and SQLite (testing). It supports two initialization modes:
 1. Alembic migrations (PostgreSQL): Schema versioning with upgrade/downgrade
 2. Direct creation (SQLite): Fast setup for unit tests using Base.metadata.create_all()
 
-The initialization mode is automatically selected based on DATABASE_URL.
+The engine is lazily initialized on first use via get_session() or init_database(),
+so importing this module does not require DATABASE_URL to be set.
 """
 
 import asyncio
@@ -40,6 +41,30 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bo_mcp.db")
 # Use Alembic for PostgreSQL, direct creation for SQLite (testing)
 USE_ALEMBIC = os.getenv("USE_ALEMBIC", "auto")  # "auto", "true", or "false"
 
+# Lazy-initialized engine and session factory
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def _get_engine() -> AsyncEngine:
+    """Get or create the async engine (lazy initialization)."""
+    global _engine  # noqa: PLW0603
+    if _engine is None:
+        _engine = _create_engine_with_options()
+    return _engine
+
+
+def _get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Get or create the session factory (lazy initialization)."""
+    global _session_factory  # noqa: PLW0603
+    if _session_factory is None:
+        _session_factory = async_sessionmaker(
+            _get_engine(),
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+    return _session_factory
+
 
 def _create_engine_with_options() -> AsyncEngine:
     """Create async engine with database-specific options."""
@@ -59,15 +84,6 @@ def _create_engine_with_options() -> AsyncEngine:
     else:
         # SQLite (used for testing)
         return create_async_engine(DATABASE_URL, **common_options)
-
-
-engine = _create_engine_with_options()
-
-async_session_factory = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
 
 
 def _should_use_alembic() -> bool:
@@ -112,6 +128,8 @@ async def init_database() -> None:
     For PostgreSQL: Uses Alembic migrations for versioned schema management.
     For SQLite: Uses direct Base.metadata.create_all() for fast test setup.
     """
+    engine = _get_engine()
+
     # Log with credentials masked (only shows host:port/db)
     logger.info("Initializing database: %s", DATABASE_URL.split("@")[-1])
 
@@ -137,7 +155,8 @@ async def init_database() -> None:
 @asynccontextmanager
 async def get_session() -> AsyncGenerator[AsyncSession]:
     """Get a database session."""
-    async with async_session_factory() as session:
+    factory = _get_session_factory()
+    async with factory() as session:
         try:
             yield session
             await session.commit()
@@ -148,7 +167,11 @@ async def get_session() -> AsyncGenerator[AsyncSession]:
 
 async def close_database() -> None:
     """Close database connections and dispose of the engine."""
-    await engine.dispose()
+    global _engine, _session_factory  # noqa: PLW0603
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
+        _session_factory = None
 
 
 @asynccontextmanager
@@ -165,4 +188,4 @@ async def lifespan() -> AsyncGenerator[None]:
     try:
         yield
     finally:
-        await engine.dispose()
+        await close_database()

@@ -26,8 +26,8 @@ async def validate_intake(
 ) -> dict[str, Any]:
     """Validate a campaign specification without creating a campaign (dry-run).
 
-    Use this to check a campaign spec for errors before committing to creation.
-    This is side-effect-free: no database writes, no campaign created.
+    Workflow: Call before bo_create_campaign to check for errors without
+    side effects. Fix any issues, then call bo_create_campaign.
 
     Args:
         intake_data: Campaign intake payload validated via CampaignIntakeInput.

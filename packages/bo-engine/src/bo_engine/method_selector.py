@@ -129,7 +129,6 @@ def select_methods(spec: OptimizationSpec, n_observations: int) -> MethodSelecti
     explanation = _build_explanation(
         model_type=model_type,
         acquisition_function=acquisition_function,
-        optimization_strategy=optimization_strategy,
         n_objectives=n_objectives,
         n_parameters=n_parameters,
         n_observations=n_observations,
@@ -151,7 +150,6 @@ def select_methods(spec: OptimizationSpec, n_observations: int) -> MethodSelecti
 def _build_explanation(
     model_type: str,
     acquisition_function: str,
-    optimization_strategy: str,
     n_objectives: int,
     n_parameters: int,
     n_observations: int,

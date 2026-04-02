@@ -180,3 +180,31 @@ class BOBackend(Protocol):
     ) -> dict[str, Any]:
         """Select and explain the methods used for this problem."""
         ...
+
+    def compute_diagnostics(
+        self,
+        spec: OptimizationSpec,
+        observations: list[ObservationData],
+        sections: frozenset[str] | None = None,
+    ) -> dict[str, Any]:
+        """Compute model-based diagnostics for a campaign.
+
+        This handles all computation that requires ML framework access
+        (model fitting, LOO-CV, feature importance, outlier detection,
+        multi-objective Pareto/hypervolume, exploration metrics).
+
+        Server-side concerns (campaign state, suggestion provenance,
+        caching, formatting) are NOT part of this method.
+
+        Args:
+            spec: Problem specification.
+            observations: All observations for the campaign.
+            sections: Which diagnostic sections to compute. When None,
+                compute all. Valid: objectives, model, outliers,
+                suggestions_tensor.
+
+        Returns:
+            Dictionary with computed diagnostics. Keys depend on
+            requested sections. Returns empty sections as None.
+        """
+        ...

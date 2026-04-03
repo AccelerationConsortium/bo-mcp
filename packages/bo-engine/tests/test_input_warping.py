@@ -1,5 +1,6 @@
 """Tests for input warping with Kumaraswamy CDF (v1.1)."""
 
+import numpy as np
 import torch
 
 from bo_engine import (
@@ -41,7 +42,7 @@ class TestInputTransformCreation:
 class TestSingleTaskModelWithWarping:
     """Test SingleTaskGP with input warping."""
 
-    def test_create_model_with_warping(self) -> None:
+    def test_create_model_with_warping(self, torch_rng) -> None:
         """Test SingleTaskGP creation with warping enabled."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -52,7 +53,7 @@ class TestSingleTaskModelWithWarping:
         # Should have ChainedInputTransform
         assert hasattr(model.input_transform, "keys")
 
-    def test_create_and_fit_model_with_warping(self) -> None:
+    def test_create_and_fit_model_with_warping(self, torch_rng) -> None:
         """Test creating and fitting SingleTaskGP with warping."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -67,7 +68,7 @@ class TestSingleTaskModelWithWarping:
             posterior = model.posterior(test_x)
             assert posterior.mean.shape == (5, 1)
 
-    def test_get_warping_parameters(self) -> None:
+    def test_get_warping_parameters(self, torch_rng) -> None:
         """Test extracting warping parameters from model."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -82,7 +83,7 @@ class TestSingleTaskModelWithWarping:
         assert params["concentration0"].shape[-1] == 2  # 2 dimensions
         assert params["concentration1"].shape[-1] == 2
 
-    def test_no_warping_parameters_without_warping(self) -> None:
+    def test_no_warping_parameters_without_warping(self, torch_rng) -> None:
         """Test that no warping parameters are returned without warping."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -97,7 +98,7 @@ class TestSingleTaskModelWithWarping:
 class TestModelListGPWithWarping:
     """Test ModelListGP with input warping."""
 
-    def test_create_model_list_with_warping(self) -> None:
+    def test_create_model_list_with_warping(self, torch_rng) -> None:
         """Test ModelListGP creation with warping enabled."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 2, dtype=torch.double)
@@ -130,7 +131,7 @@ class TestModelListGPWithWarping:
 class TestWarpingInWorkflow:
     """Test input warping in optimization workflow."""
 
-    def test_single_objective_with_warping(self) -> None:
+    def test_single_objective_with_warping(self, rng: np.random.Generator) -> None:
         """Test single-objective optimization with input warping."""
         spec = OptimizationSpec(
             parameters=[
@@ -167,12 +168,12 @@ class TestWarpingInWorkflow:
             ),
         ]
 
-        suggestions, _ = generate_next_batch(spec, observations, iteration=1)
+        suggestions, _ = generate_next_batch(spec, observations, iteration=1, rng=rng)
 
         assert len(suggestions) == 2
         assert all(s.generation_method == "bo" for s in suggestions)
 
-    def test_multi_objective_with_warping(self) -> None:
+    def test_multi_objective_with_warping(self, rng: np.random.Generator) -> None:
         """Test multi-objective optimization with input warping."""
         spec = OptimizationSpec(
             parameters=[
@@ -210,7 +211,7 @@ class TestWarpingInWorkflow:
             ),
         ]
 
-        suggestions, _ = generate_next_batch(spec, observations, iteration=1)
+        suggestions, _ = generate_next_batch(spec, observations, iteration=1, rng=rng)
 
         assert len(suggestions) == 2
         assert all(s.generation_method == "bo" for s in suggestions)

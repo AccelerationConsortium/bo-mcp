@@ -7,6 +7,8 @@ References:
   https://botorch.org/docs/acquisition
 """
 
+import numpy as np
+
 from bo_engine import (
     AcquisitionMethod,
     ObjectiveSpec,
@@ -80,7 +82,7 @@ class TestCostAwareSpec:
 class TestCostAwareOptimization:
     """Test cost-aware BO integration."""
 
-    def test_generates_suggestions_with_cost(self) -> None:
+    def test_generates_suggestions_with_cost(self, rng: np.random.Generator) -> None:
         """generate_next_batch works with cost-aware optimization."""
         spec = make_cost_aware_spec()
         observations = generate_observations_with_cost()
@@ -90,6 +92,7 @@ class TestCostAwareOptimization:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -99,7 +102,7 @@ class TestCostAwareOptimization:
             assert 0.0 <= sugg.parameter_values["x1"] <= 1.0
             assert 0.0 <= sugg.parameter_values["x2"] <= 1.0
 
-    def test_acquisition_function_is_eipu(self) -> None:
+    def test_acquisition_function_is_eipu(self, rng: np.random.Generator) -> None:
         """Suggestions show EIpu as acquisition function."""
         spec = make_cost_aware_spec()
         observations = generate_observations_with_cost()
@@ -109,12 +112,13 @@ class TestCostAwareOptimization:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         for sugg in suggestions:
             assert sugg.acquisition_function == "cost_weighted_ei"
 
-    def test_cost_aware_with_missing_cost(self) -> None:
+    def test_cost_aware_with_missing_cost(self, rng: np.random.Generator) -> None:
         """Falls back gracefully when some observations lack cost."""
         spec = make_cost_aware_spec()
         observations = [
@@ -151,11 +155,12 @@ class TestCostAwareOptimization:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_cost_aware_disabled(self) -> None:
+    def test_cost_aware_disabled(self, rng: np.random.Generator) -> None:
         """Works normally when cost-aware is disabled."""
         spec = OptimizationSpec(
             parameters=[
@@ -189,6 +194,7 @@ class TestCostAwareOptimization:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -224,7 +230,7 @@ class TestObservationDataWithCost:
 class TestCostAwareWithConstraints:
     """Test cost-aware BO combined with other features."""
 
-    def test_cost_aware_with_outcome_constraint(self) -> None:
+    def test_cost_aware_with_outcome_constraint(self, rng: np.random.Generator) -> None:
         """Cost-aware works with outcome constraints."""
         from bo_engine import OutcomeConstraintSpec
 
@@ -268,11 +274,12 @@ class TestCostAwareWithConstraints:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_cost_aware_not_for_multi_objective(self) -> None:
+    def test_cost_aware_not_for_multi_objective(self, rng: np.random.Generator) -> None:
         """Cost-aware (EIpu) is single-objective only."""
         spec = OptimizationSpec(
             parameters=[
@@ -309,6 +316,7 @@ class TestCostAwareWithConstraints:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2

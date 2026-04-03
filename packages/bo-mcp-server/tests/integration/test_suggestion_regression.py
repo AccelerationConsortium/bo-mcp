@@ -11,6 +11,7 @@ References:
 - Section 3.7: Full Reproducibility Guarantees
 """
 
+import random
 from uuid import uuid4
 
 import pytest
@@ -148,6 +149,7 @@ class TestSuggestionQualityRegression:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
+        random.seed(42)
         torch.manual_seed(42)
         owner_id = str(uuid4())
 
@@ -208,6 +210,7 @@ class TestSuggestionQualityRegression:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
+        random.seed(42)
         torch.manual_seed(42)
         owner_id = str(uuid4())
 

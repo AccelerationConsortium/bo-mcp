@@ -20,6 +20,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
+import numpy as np
 import pytest
 import torch
 
@@ -182,6 +183,27 @@ def seeded(seed: int) -> Generator[int]:
     """
     set_all_seeds(seed)
     yield seed
+
+
+@pytest.fixture
+def rng() -> np.random.Generator:
+    """Reproducible NumPy random generator for stochastic tests.
+
+    Use this for tests that call generate_next_batch() or other functions
+    accepting an rng parameter.
+    """
+    return np.random.default_rng(42)
+
+
+@pytest.fixture
+def torch_rng() -> Generator[None]:
+    """Fixture that seeds torch for reproducible model fitting and tensor ops.
+
+    Use this for tests that call torch.rand(), create_and_fit_model(), or
+    other torch-level stochastic operations.
+    """
+    torch.manual_seed(42)
+    yield
 
 
 @pytest.fixture

@@ -1,5 +1,6 @@
 """Tests for single-objective Bayesian Optimization (v1.0.1)."""
 
+import numpy as np
 import pytest
 import torch
 from botorch.exceptions.errors import InputDataError
@@ -84,10 +85,10 @@ class TestSingleObjectiveGeneration:
     """Test single-objective suggestion generation."""
 
     def test_generate_initial_design_single_objective(
-        self, single_obj_spec: OptimizationSpec
+        self, rng: np.random.Generator, single_obj_spec: OptimizationSpec
     ) -> None:
         """Test initial design generation for single-objective."""
-        suggestions, _ = generate_next_batch(single_obj_spec, [], batch_size=3)
+        suggestions, _ = generate_next_batch(single_obj_spec, [], batch_size=3, rng=rng)
 
         assert len(suggestions) == 3
         assert all(s.generation_method == "initial_design" for s in suggestions)
@@ -96,6 +97,7 @@ class TestSingleObjectiveGeneration:
 
     def test_generate_bo_suggestions_single_objective(
         self,
+        rng: np.random.Generator,
         single_obj_spec: OptimizationSpec,
         sample_observations_single: list[ObservationData],
     ) -> None:
@@ -105,6 +107,7 @@ class TestSingleObjectiveGeneration:
             sample_observations_single,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -114,6 +117,7 @@ class TestSingleObjectiveGeneration:
 
     def test_generate_single_objective_maximization(
         self,
+        rng: np.random.Generator,
         single_obj_maximize_spec: OptimizationSpec,
         sample_observations_single: list[ObservationData],
     ) -> None:
@@ -123,6 +127,7 @@ class TestSingleObjectiveGeneration:
             sample_observations_single,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -134,7 +139,7 @@ class TestSingleObjectiveGeneration:
 class TestSingleObjectiveModel:
     """Test single-objective model creation and fitting."""
 
-    def test_create_and_fit_single_task_model(self) -> None:
+    def test_create_and_fit_single_task_model(self, torch_rng) -> None:
         """Test SingleTaskGP creation and fitting."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -150,7 +155,7 @@ class TestSingleObjectiveModel:
             assert posterior.mean.shape == (5, 1)
             assert posterior.variance.shape == (5, 1)
 
-    def test_create_single_task_model_with_1d_y(self) -> None:
+    def test_create_single_task_model_with_1d_y(self, torch_rng) -> None:
         """Test SingleTaskGP creation with 1D y."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, dtype=torch.double)  # 1D
@@ -165,7 +170,7 @@ class TestSingleObjectiveModel:
 class TestSingleObjectiveAcquisition:
     """Test single-objective acquisition functions."""
 
-    def test_create_single_objective_acquisition_qlognei(self) -> None:
+    def test_create_single_objective_acquisition_qlognei(self, torch_rng) -> None:
         """Test qLogNEI acquisition creation."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -275,7 +280,7 @@ class TestSingleObjectiveDiagnostics:
 class TestSingleObjectiveIntegration:
     """Integration tests for single-objective BO workflow."""
 
-    def test_single_objective_full_workflow(self) -> None:
+    def test_single_objective_full_workflow(self, rng: np.random.Generator) -> None:
         """Test complete single-objective BO workflow."""
         # Define simple 1D minimization problem
         spec = OptimizationSpec(
@@ -296,7 +301,7 @@ class TestSingleObjectiveIntegration:
 
         # Run 3 iterations
         for iteration in range(3):
-            suggestions, _ = generate_next_batch(spec, observations, iteration=iteration)
+            suggestions, _ = generate_next_batch(spec, observations, iteration=iteration, rng=rng)
 
             # Evaluate suggestions
             for sugg in suggestions:
@@ -320,7 +325,7 @@ class TestSingleObjectiveIntegration:
         assert abs(best_x - 5.0) < 3.0  # Allow some tolerance
         assert best_f < 10.0  # Should be better than random
 
-    def test_acquisition_method_selection(self) -> None:
+    def test_acquisition_method_selection(self, rng: np.random.Generator) -> None:
         """Test that acquisition method selection works correctly."""
         spec_auto = OptimizationSpec(
             parameters=[
@@ -351,8 +356,8 @@ class TestSingleObjectiveIntegration:
         ]
 
         # Both should work and produce qLogNEI for single objective
-        sugg_auto, _ = generate_next_batch(spec_auto, observations, iteration=1)
-        sugg_qlognei, _ = generate_next_batch(spec_qlognei, observations, iteration=1)
+        sugg_auto, _ = generate_next_batch(spec_auto, observations, iteration=1, rng=rng)
+        sugg_qlognei, _ = generate_next_batch(spec_qlognei, observations, iteration=1, rng=rng)
 
         assert sugg_auto[0].acquisition_function == "noisy_expected_improvement"
         assert sugg_qlognei[0].acquisition_function == "noisy_expected_improvement"
@@ -361,7 +366,7 @@ class TestSingleObjectiveIntegration:
 class TestModelActuallyLearns:
     """Test that GP models actually learn from data."""
 
-    def test_model_learns_simple_quadratic(self) -> None:
+    def test_model_learns_simple_quadratic(self, torch_rng) -> None:
         """Model should approximate y = (x - 0.5)^2."""
         # Create training data from quadratic function
         train_x = torch.linspace(0, 1, 15).unsqueeze(-1).double()
@@ -432,7 +437,7 @@ class TestModelActuallyLearns:
 class TestEdgeCasesAndFailures:
     """Test error handling and edge cases."""
 
-    def test_handles_nan_in_observations(self) -> None:
+    def test_handles_nan_in_observations(self, rng: np.random.Generator) -> None:
         """Should handle or raise clear error for NaN values."""
         spec = OptimizationSpec(
             parameters=[
@@ -450,12 +455,12 @@ class TestEdgeCasesAndFailures:
 
         # Should either filter NaN or raise informative error
         with pytest.raises((ValueError, RuntimeError, InputDataError)) as exc_info:
-            generate_next_batch(spec, observations, iteration=1)
+            generate_next_batch(spec, observations, iteration=1, rng=rng)
 
         # If it raises, message should be helpful
         assert "nan" in str(exc_info.value).lower() or len(str(exc_info.value)) > 0
 
-    def test_handles_inf_in_observations(self) -> None:
+    def test_handles_inf_in_observations(self, rng: np.random.Generator) -> None:
         """Should handle or raise clear error for Inf values."""
         spec = OptimizationSpec(
             parameters=[
@@ -472,9 +477,9 @@ class TestEdgeCasesAndFailures:
         ]
 
         with pytest.raises((ValueError, RuntimeError, InputDataError)):
-            generate_next_batch(spec, observations, iteration=1)
+            generate_next_batch(spec, observations, iteration=1, rng=rng)
 
-    def test_handles_very_small_bounds(self) -> None:
+    def test_handles_very_small_bounds(self, rng: np.random.Generator) -> None:
         """Should work with very small parameter ranges."""
         spec = OptimizationSpec(
             parameters=[
@@ -491,7 +496,7 @@ class TestEdgeCasesAndFailures:
         ]
 
         # Should work without numerical issues
-        suggestions, _ = generate_next_batch(spec, observations, iteration=1)
+        suggestions, _ = generate_next_batch(spec, observations, iteration=1, rng=rng)
         assert len(suggestions) == 2
         for s in suggestions:
             assert 0.0 <= s.parameter_values["x"] <= 1e-10

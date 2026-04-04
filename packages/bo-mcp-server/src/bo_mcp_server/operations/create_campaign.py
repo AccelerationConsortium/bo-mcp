@@ -4,6 +4,7 @@ import logging
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+from bo_mcp_server.backend import resolve_backend_name
 from bo_mcp_server.domain import (
     Campaign,
     CampaignIntakeInput,
@@ -74,6 +75,7 @@ def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
         max_iterations=data.get("max_iterations"),
         initial_design_size=data.get("initial_design_size"),
         random_seed=data.get("random_seed"),
+        backend=data.get("backend", "botorch"),
     )
 
 
@@ -147,6 +149,11 @@ async def create_campaign_operation(
 
     # Reconstruct CampaignSpec from validated data
     spec_data = validation["spec"]
+
+    # Resolve "auto" backend to a concrete backend name
+    raw_backend = spec_data.get("backend", "auto")
+    spec_data["backend"] = resolve_backend_name(raw_backend, spec_data)
+
     spec = _build_spec_from_dict(spec_data)
 
     # Generate IDs

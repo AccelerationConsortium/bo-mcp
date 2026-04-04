@@ -19,6 +19,7 @@ class CampaignIntakeInput(BaseModel):
     max_iterations: int | None = None
     initial_design_size: int | None = None
     random_seed: int | None = 42
+    backend: str = Field(default="auto", pattern="^(auto|botorch|baybe)$")
 
     model_config = {"extra": "forbid"}
 

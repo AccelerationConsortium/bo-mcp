@@ -135,6 +135,7 @@ class CampaignSpecRepository:
             max_iterations=spec.max_iterations,
             initial_design_size=spec.initial_design_size,
             random_seed=spec.random_seed,
+            backend=spec.backend,
         )
         merged = await self.session.merge(model)
         return self._to_entity(merged)
@@ -217,6 +218,7 @@ class CampaignSpecRepository:
             max_iterations=model.max_iterations,
             initial_design_size=model.initial_design_size,
             random_seed=model.random_seed,
+            backend=getattr(model, "backend", "botorch"),
         )
 
 

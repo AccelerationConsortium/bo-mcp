@@ -57,6 +57,7 @@ class CampaignSpecModel(Base):
     max_iterations: Mapped[int | None] = mapped_column(Integer, nullable=True)
     initial_design_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     random_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    backend: Mapped[str] = mapped_column(String(50), default="botorch", server_default="botorch")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationships

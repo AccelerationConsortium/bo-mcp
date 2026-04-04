@@ -35,6 +35,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       - SQL_ECHO=${SQL_ECHO:-false}
+      - BO_BACKEND=${BO_BACKEND:-botorch}
       - BO_MCP_LOG_LEVEL=${BO_MCP_LOG_LEVEL:-INFO}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

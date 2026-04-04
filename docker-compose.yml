@@ -93,6 +93,7 @@ volumes:
   postgres-data:
 networks:
   bo-mcp-network:
+    external: true
     # Non-external: created automatically by docker-compose.
     # For multi-stack setups, change to "external: true" and run:
     #   docker network create bo-mcp-network

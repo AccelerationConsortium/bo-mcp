@@ -49,7 +49,7 @@ bo_create_campaign → [bo_generate_suggestions → bo_submit_results]* → bo_g
 
 ## Overview
 
-The MCP server exposes 19 tools organized into six categories:
+The MCP server exposes 20 tools organized into six categories:
 
 | Category | Tools |
 |----------|-------|

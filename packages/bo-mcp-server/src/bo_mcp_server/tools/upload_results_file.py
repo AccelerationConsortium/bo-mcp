@@ -7,9 +7,9 @@ from typing import Any
 from uuid import UUID
 
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.result_upload_parser import parse_prefixed_result_rows
 from bo_mcp_server.server import mcp
-from bo_mcp_server.tools.submit_results import submit_results
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ async def upload_results_file(
             response["errors"] = parse_errors
         return response
 
-    submit_result = await submit_results(
+    submit_result = await submit_results_operation(
         campaign_id=campaign_id,
         results=parsed_results,
         submitted_by=str(submitter_uuid),

@@ -112,7 +112,7 @@ async def create_campaign_operation(
         return verbosity_result
     verbosity_level = verbosity_result
 
-    validation = await validate_intake_operation(intake_data)
+    validation = validate_intake_operation(intake_data)
 
     if not validation["valid"]:
         logger.warning(

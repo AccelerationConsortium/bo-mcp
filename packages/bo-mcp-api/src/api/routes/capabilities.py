@@ -1,7 +1,6 @@
 """Capabilities routes."""
 
-from bo_mcp_server import __version__
-from bo_mcp_server.backend import get_backend
+from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
 from fastapi import APIRouter
 
 from api.deps import CurrentUser
@@ -15,9 +14,5 @@ async def list_capabilities(
     current_user: CurrentUser,
 ) -> CapabilitiesResponse:
     """List the capabilities of the active BO backend."""
-    backend = get_backend()
-    return CapabilitiesResponse(
-        backend=backend.name,
-        supported_features=sorted(backend.supported_features),
-        server_version=__version__,
-    )
+    result = list_capabilities_operation()
+    return CapabilitiesResponse(**result)

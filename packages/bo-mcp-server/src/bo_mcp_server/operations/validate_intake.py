@@ -14,7 +14,7 @@ from bo_mcp_server.errors import ErrorCode, make_error_response
 logger = logging.getLogger(__name__)
 
 
-async def validate_intake_operation(
+def validate_intake_operation(
     intake_data: CampaignIntakeInput | dict[str, Any],
 ) -> dict[str, Any]:
     """Validate a campaign intake specification without creating a campaign.

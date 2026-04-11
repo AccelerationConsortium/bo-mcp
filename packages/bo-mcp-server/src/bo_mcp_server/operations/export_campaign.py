@@ -67,11 +67,14 @@ async def export_campaign_operation(
         result_repo = ResultRepository(session)
         results = await result_repo.list_by_campaign(campaign_uuid)
 
+    campaign_name = spec.name if spec else f"campaign_{campaign_id[:8]}"
+
     if not results:
         return {
             "success": True,
             "format": "csv",
             "content": "",
+            "campaign_name": campaign_name,
             "n_results": 0,
             "errors": [],
         }
@@ -114,6 +117,7 @@ async def export_campaign_operation(
         "success": True,
         "format": "csv",
         "content": csv_content,
+        "campaign_name": campaign_name,
         "n_results": len(results),
         "errors": [],
     }

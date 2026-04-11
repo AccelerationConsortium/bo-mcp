@@ -112,7 +112,7 @@ async def validate_campaign_intake(
     current_user: CurrentUser,
 ) -> ValidateIntakeResponse:
     """Validate a campaign specification without creating a campaign (dry-run)."""
-    full_result = await validate_intake_operation(request.intake.to_dict())
+    full_result = validate_intake_operation(request.intake.to_dict())
     formatted = format_validate_intake_response(full_result, VerbosityLevel.STANDARD)
 
     return ValidateIntakeResponse(
@@ -216,7 +216,7 @@ async def export_campaign(
     format: str = Query(default="csv"),
 ) -> StreamingResponse:
     """Export all campaign results as a downloadable CSV file."""
-    campaign = await get_authorized_campaign(campaign_id, current_user)
+    await get_authorized_campaign(campaign_id, current_user)
 
     result = await export_campaign_operation(
         campaign_id=campaign_id,
@@ -231,22 +231,17 @@ async def export_campaign(
             else result.get("message", "Export failed"),
         )
 
-    # Build a filename from the campaign name via spec lookup
-    campaign_name = f"campaign_{campaign_id[:8]}"
-    async with get_session() as session:
-        spec_repo = CampaignSpecRepository(session)
-        spec = await spec_repo.get(campaign.spec_id)
-        if spec:
-            # Sanitize name for filename
-            safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in spec.name)
-            campaign_name = safe_name.strip().replace(" ", "_")
+    # Sanitize campaign name for filename (name comes from the operation)
+    raw_name = result.get("campaign_name", f"campaign_{campaign_id[:8]}")
+    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in raw_name)
+    filename = safe_name.strip().replace(" ", "_")
 
     csv_content = result.get("content", "")
     return StreamingResponse(
         iter([csv_content]),
         media_type="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="{campaign_name}.csv"',
+            "Content-Disposition": f'attachment; filename="{filename}.csv"',
         },
     )
 

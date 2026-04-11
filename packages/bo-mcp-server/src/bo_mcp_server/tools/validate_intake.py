@@ -52,5 +52,5 @@ async def validate_intake(
             message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
         )
 
-    full_response = await validate_intake_operation(intake_data)
+    full_response = validate_intake_operation(intake_data)
     return format_validate_intake_response(full_response, verbosity_level)

@@ -80,7 +80,7 @@ def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
 
 
 async def create_campaign_operation(
-    intake_data: CampaignIntakeInput,
+    intake_data: CampaignIntakeInput | dict[str, Any],
     owner_id: str,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
 ) -> dict[str, Any]:
@@ -90,7 +90,8 @@ async def create_campaign_operation(
     independent of any transport protocol (MCP, REST, etc.).
 
     Args:
-        intake_data: The campaign intake specification.
+        intake_data: The campaign intake specification. Accepts either a
+            CampaignIntakeInput instance or a raw dict (validated internally).
         owner_id: UUID string identifying the campaign owner.
         verbosity: Response detail level.
 

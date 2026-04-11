@@ -1,11 +1,13 @@
 """Suggestion routes."""
 
 from bo_mcp_server.domain import SuggestionStatus
+from bo_mcp_server.operations.generate_suggestions import (
+    generate_suggestions_operation,
+)
 from bo_mcp_server.operations.suggestion_explanation import (
     get_suggestion_explanation_operation,
 )
 from bo_mcp_server.storage import CampaignRepository, SuggestionRepository, get_session
-from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from fastapi import APIRouter, HTTPException, Query, status
 
 from api.deps import (
@@ -32,14 +34,10 @@ async def generate_campaign_suggestions(
     current_user: CurrentUser,
     batch_size: int | None = Query(default=None, ge=1),
 ) -> SuggestionsGenerateResponse:
-    """Generate new suggestions for a campaign.
-
-    This is a thin proxy to the MCP bo_generate_suggestions tool.
-    """
+    """Generate new suggestions for a campaign."""
     await get_authorized_campaign(campaign_id, current_user)
 
-    # Generate suggestions via MCP tool
-    result = await generate_suggestions(
+    result = await generate_suggestions_operation(
         campaign_id=campaign_id,
         batch_size=batch_size,
     )

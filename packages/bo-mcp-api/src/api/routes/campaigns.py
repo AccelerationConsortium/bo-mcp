@@ -3,11 +3,11 @@
 from bo_mcp_server.operations.batch_status import batch_get_status_operation
 from bo_mcp_server.operations.campaign_lifecycle import manage_campaign_lifecycle_operation
 from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
+from bo_mcp_server.operations.create_campaign import create_campaign_operation
 from bo_mcp_server.operations.transfer_candidates import (
     discover_transfer_candidates_operation,
 )
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
-from bo_mcp_server.tools.create_campaign import create_campaign
 from fastapi import APIRouter, HTTPException, status
 
 from api.deps import (
@@ -39,11 +39,8 @@ async def create_new_campaign(
     request: CampaignCreate,
     current_user: CurrentUser,
 ) -> CampaignCreateResponse:
-    """Create a new optimization campaign.
-
-    This is a thin proxy to the MCP bo_create_campaign tool.
-    """
-    result = await create_campaign(
+    """Create a new optimization campaign."""
+    result = await create_campaign_operation(
         intake_data=request.intake.to_dict(),
         owner_id=str(current_user.id),
     )

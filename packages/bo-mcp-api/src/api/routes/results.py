@@ -5,6 +5,7 @@ from typing import Any
 
 import pandas as pd
 from bo_mcp_server.domain import ResultSubmissionInput
+from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.result_upload_parser import parse_named_result_rows
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -12,7 +13,6 @@ from bo_mcp_server.storage import (
     ResultRepository,
     get_session,
 )
-from bo_mcp_server.tools.submit_results import submit_results
 from fastapi import APIRouter, HTTPException, UploadFile, status
 
 from api.deps import CurrentUser, get_authorized_campaign, validate_uuid
@@ -31,13 +31,9 @@ async def submit_campaign_results(
     request: ResultBatchCreate,
     current_user: CurrentUser,
 ) -> ResultSubmitResponse:
-    """Submit results for a campaign.
-
-    This is a thin proxy to the MCP bo_submit_results tool.
-    """
+    """Submit results for a campaign."""
     await get_authorized_campaign(campaign_id, current_user)
 
-    # Convert to MCP format
     results_data = [
         ResultSubmissionInput(
             parameter_values=r.parameter_values,
@@ -48,8 +44,7 @@ async def submit_campaign_results(
         for r in request.results
     ]
 
-    # Submit via MCP tool
-    result = await submit_results(
+    result = await submit_results_operation(
         campaign_id=campaign_id,
         results=results_data,
         submitted_by=str(current_user.id),
@@ -132,8 +127,7 @@ async def upload_results_file(
             detail=parse_errors,
         )
 
-    # Submit via MCP tool
-    result = await submit_results(
+    result = await submit_results_operation(
         campaign_id=campaign_id,
         results=results_data,
         submitted_by=str(current_user.id),

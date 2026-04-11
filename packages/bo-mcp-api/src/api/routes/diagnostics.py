@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from bo_mcp_server.tools.get_diagnostics import get_diagnostics
+from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
 from fastapi import APIRouter, HTTPException, status
 
 from api.deps import CurrentUser, get_authorized_campaign
@@ -15,14 +15,10 @@ async def get_campaign_diagnostics(
     campaign_id: str,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
-    """Get diagnostic information for a campaign.
-
-    This is a thin proxy to the MCP bo_get_diagnostics tool.
-    """
+    """Get diagnostic information for a campaign."""
     await get_authorized_campaign(campaign_id, current_user)
 
-    # Get diagnostics via MCP tool
-    result = await get_diagnostics(campaign_id)
+    result = await get_diagnostics_operation(campaign_id=campaign_id)
 
     if not result["success"]:
         raise HTTPException(

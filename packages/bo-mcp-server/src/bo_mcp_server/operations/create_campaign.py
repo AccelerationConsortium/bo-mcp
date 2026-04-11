@@ -18,6 +18,7 @@ from bo_mcp_server.domain import (
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_verbosity
+from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_create_campaign_response,
@@ -111,11 +112,7 @@ async def create_campaign_operation(
         return verbosity_result
     verbosity_level = verbosity_result
 
-    # Lazy import to avoid circular dependency (tools -> operations -> tools)
-    from bo_mcp_server.tools.validate_intake import validate_intake
-
-    # Validate the intake (use detailed verbosity for full spec)
-    validation = await validate_intake(intake_data, verbosity="detailed")
+    validation = await validate_intake_operation(intake_data)
 
     if not validation["valid"]:
         logger.warning(

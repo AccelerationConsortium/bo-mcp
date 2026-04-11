@@ -249,3 +249,153 @@ class TestSuggestionParityRoutes:
 
         assert response.status_code == 403
         assert "not authorized" in response.json()["detail"].lower()
+
+
+class TestValidateIntakeRoute:
+    @pytest.mark.asyncio
+    async def test_validate_valid_intake(self, api_client, auth_headers, persisted_user):
+        response = await api_client.post(
+            "/api/campaigns/validate",
+            json={
+                "intake": {
+                    "name": "Validate Test",
+                    "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+                    "objectives": [{"name": "y", "direction": "minimize"}],
+                },
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["valid"] is True
+        assert data["errors"] == []
+        assert data["spec_summary"] is not None
+        assert data["spec_summary"]["name"] == "Validate Test"
+
+    @pytest.mark.asyncio
+    async def test_validate_invalid_intake(self, api_client, auth_headers, persisted_user):
+        response = await api_client.post(
+            "/api/campaigns/validate",
+            json={
+                "intake": {
+                    "name": "Bad Campaign",
+                    "parameters": [{"name": "x", "type": "invalid_type", "bounds": [0.0, 1.0]}],
+                    "objectives": [{"name": "y", "direction": "minimize"}],
+                },
+            },
+            headers=auth_headers,
+        )
+
+        # FastAPI validates the schema — invalid type pattern rejects before operation
+        assert response.status_code == 422
+
+
+class TestCapabilitiesRoute:
+    @pytest.mark.asyncio
+    async def test_list_capabilities(self, api_client, auth_headers, persisted_user):
+        response = await api_client.get(
+            "/api/capabilities",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "backend" in data
+        assert "supported_features" in data
+        assert "server_version" in data
+        assert isinstance(data["supported_features"], list)
+
+
+class TestExportCampaignRoute:
+    @pytest.mark.asyncio
+    async def test_export_campaign_csv(self, api_client, auth_headers, persisted_user):
+        owner_id = str(persisted_user.id)
+        campaign_id = await _create_campaign_for_owner(owner_id, "Export Route Test")
+        await generate_suggestions(campaign_id)
+        await submit_results(
+            campaign_id,
+            _to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]),
+            owner_id,
+        )
+
+        response = await api_client.get(
+            f"/api/campaigns/{campaign_id}/export?format=csv",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "text/csv; charset=utf-8"
+        assert "attachment" in response.headers["content-disposition"]
+        assert "param_x" in response.text
+        assert "obj_y" in response.text
+
+    @pytest.mark.asyncio
+    async def test_export_campaign_enforces_ownership(
+        self, api_client, auth_headers, persisted_user, persisted_another_user
+    ):
+        foreign_campaign_id = await _create_campaign_for_owner(
+            str(persisted_another_user.id), "Foreign Export Test"
+        )
+
+        response = await api_client.get(
+            f"/api/campaigns/{foreign_campaign_id}/export",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 403
+
+
+class TestSuggestionStatusRoute:
+    @pytest.mark.asyncio
+    async def test_update_suggestion_status_accept(self, api_client, auth_headers, persisted_user):
+        owner_id = str(persisted_user.id)
+        campaign_id = await _create_campaign_for_owner(owner_id, "Status Route Test")
+        generated = await generate_suggestions(campaign_id)
+        suggestion_id = generated["suggestions"][0]["id"]
+
+        response = await api_client.post(
+            f"/api/suggestions/{suggestion_id}/status",
+            json={"status": "accepted"},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["status"] == "accepted"
+        assert data["previous_status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_update_suggestion_status_enforces_ownership(
+        self, api_client, auth_headers, persisted_user, persisted_another_user
+    ):
+        foreign_campaign_id = await _create_campaign_for_owner(
+            str(persisted_another_user.id), "Foreign Status Test"
+        )
+        generated = await generate_suggestions(foreign_campaign_id)
+        suggestion_id = generated["suggestions"][0]["id"]
+
+        response = await api_client.post(
+            f"/api/suggestions/{suggestion_id}/status",
+            json={"status": "accepted"},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_update_suggestion_invalid_status(self, api_client, auth_headers, persisted_user):
+        owner_id = str(persisted_user.id)
+        campaign_id = await _create_campaign_for_owner(owner_id, "Invalid Status Test")
+        generated = await generate_suggestions(campaign_id)
+        suggestion_id = generated["suggestions"][0]["id"]
+
+        response = await api_client.post(
+            f"/api/suggestions/{suggestion_id}/status",
+            json={"status": "completed"},
+            headers=auth_headers,
+        )
+
+        # FastAPI validates the regex pattern — "completed" is not in the allowed set
+        assert response.status_code == 422

@@ -7,6 +7,9 @@ from bo_mcp_server.operations.generate_suggestions import (
 from bo_mcp_server.operations.suggestion_explanation import (
     get_suggestion_explanation_operation,
 )
+from bo_mcp_server.operations.update_suggestion_status import (
+    update_suggestion_status_operation,
+)
 from bo_mcp_server.storage import CampaignRepository, SuggestionRepository, get_session
 from fastapi import APIRouter, HTTPException, Query, status
 
@@ -20,6 +23,8 @@ from api.schemas.suggestion import (
     SuggestionExplanationResponse,
     SuggestionResponse,
     SuggestionsGenerateResponse,
+    SuggestionStatusUpdateRequest,
+    SuggestionStatusUpdateResponse,
 )
 from api.schemas.suggestion import (
     SuggestionProvenance as SuggestionProvenanceSchema,
@@ -84,6 +89,31 @@ async def get_campaign_suggestion_explanation(
 
     result = await get_suggestion_explanation_operation(suggestion_id)
     return SuggestionExplanationResponse(**result)
+
+
+@router.post(
+    "/{suggestion_id}/status",
+    response_model=SuggestionStatusUpdateResponse,
+)
+async def update_suggestion_status(
+    suggestion_id: str,
+    request: SuggestionStatusUpdateRequest,
+    current_user: CurrentUser,
+) -> SuggestionStatusUpdateResponse:
+    """Update the status of a suggestion (accept, reject, or expire)."""
+    await get_authorized_suggestion(suggestion_id, current_user)
+
+    result = await update_suggestion_status_operation(
+        suggestion_id=suggestion_id,
+        status=request.status,
+    )
+    return SuggestionStatusUpdateResponse(
+        success=result["success"],
+        suggestion_id=result.get("suggestion_id"),
+        status=result.get("status"),
+        previous_status=result.get("previous_status"),
+        errors=result.get("errors", []),
+    )
 
 
 @router.get("/{campaign_id}", response_model=list[SuggestionResponse])

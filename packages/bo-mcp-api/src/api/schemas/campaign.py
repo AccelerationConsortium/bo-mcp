@@ -47,6 +47,29 @@ class CampaignListResponse(BaseModel):
     total: int
 
 
+class ValidateIntakeRequest(BaseModel):
+    """Intake validation request (dry-run, no campaign created)."""
+
+    intake: IntakeData
+
+
+class ValidateIntakeResponse(BaseModel):
+    """Intake validation response."""
+
+    valid: bool
+    errors: list[str]
+    warnings: list[str] = []
+    spec_summary: dict[str, Any] | None = None
+
+
+class CapabilitiesResponse(BaseModel):
+    """Backend capabilities response."""
+
+    backend: str
+    supported_features: list[str]
+    server_version: str
+
+
 class CampaignLifecycleRequest(BaseModel):
     """Lifecycle action request."""
 

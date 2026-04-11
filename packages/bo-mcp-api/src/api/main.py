@@ -12,7 +12,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 
 from api.dev_auth import ensure_dev_user
-from api.routes import campaigns, diagnostics, results, suggestions
+from api.routes import campaigns, capabilities, diagnostics, results, suggestions
 
 logger = logging.getLogger(__name__)
 _api_start_time = time.time()
@@ -54,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(suggestions.router, prefix="/api/suggestions", tags=["suggestions"])
     app.include_router(results.router, prefix="/api/results", tags=["results"])
     app.include_router(diagnostics.router, prefix="/api/diagnostics", tags=["diagnostics"])
+    app.include_router(capabilities.router, prefix="/api/capabilities", tags=["capabilities"])
 
     @app.get("/health")
     async def health_check() -> dict[str, str | bool | int]:

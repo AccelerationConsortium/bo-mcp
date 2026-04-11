@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SuggestionProvenance(BaseModel):
@@ -41,6 +41,22 @@ class SuggestionsGenerateResponse(BaseModel):
     suggestions: list[SuggestionResponse]
     iteration: int | None = None
     errors: list[str]
+
+
+class SuggestionStatusUpdateRequest(BaseModel):
+    """Request to update a suggestion's status."""
+
+    status: str = Field(pattern="^(accepted|rejected|expired)$")
+
+
+class SuggestionStatusUpdateResponse(BaseModel):
+    """Response for suggestion status update."""
+
+    success: bool
+    suggestion_id: str | None = None
+    status: str | None = None
+    previous_status: str | None = None
+    errors: list[str] = []
 
 
 class SuggestionExplanationResponse(BaseModel):

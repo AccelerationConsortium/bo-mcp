@@ -16,20 +16,27 @@ from bo_mcp_server.storage import (
 logger = logging.getLogger(__name__)
 
 
+MAX_SUGGESTIONS_LIMIT = 500
+
+
 async def list_suggestions_operation(
     campaign_id: str,
     status_filter: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
     verbosity: str = "standard",
 ) -> dict[str, Any]:
-    """List suggestions for a campaign with optional status filtering.
+    """List suggestions for a campaign with optional status filtering and pagination.
 
     Args:
         campaign_id: UUID string of the campaign.
         status_filter: Optional suggestion status string to filter by.
+        limit: Maximum number of suggestions to return. None returns all (backward-compatible).
+        offset: Number of suggestions to skip for pagination.
         verbosity: Response verbosity level (minimal, standard, detailed).
 
     Returns:
-        Dictionary with success, suggestions, total_count, errors.
+        Dictionary with success, suggestions, total_count, limit, offset, errors.
     """
     logger.info(
         "Listing suggestions: campaign_id=%s, status_filter=%s",
@@ -82,6 +89,15 @@ async def list_suggestions_operation(
 
     # Sort by created_at descending
     suggestions.sort(key=lambda s: s.created_at, reverse=True)
+    total_count = len(suggestions)
+
+    # Apply pagination
+    offset = max(0, offset)
+    if limit is not None:
+        limit = max(1, min(limit, MAX_SUGGESTIONS_LIMIT))
+        suggestions = suggestions[offset : offset + limit]
+    else:
+        suggestions = suggestions[offset:]
 
     suggestions_out: list[dict[str, Any]] = []
     for s in suggestions:
@@ -127,6 +143,8 @@ async def list_suggestions_operation(
     return {
         "success": True,
         "suggestions": suggestions_out,
-        "total_count": len(suggestions_out),
+        "total_count": total_count,
+        "limit": limit,
+        "offset": offset,
         "errors": [],
     }

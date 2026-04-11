@@ -5,6 +5,7 @@ from bo_mcp_server.operations.campaign_lifecycle import manage_campaign_lifecycl
 from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
 from bo_mcp_server.operations.create_campaign import create_campaign_operation
 from bo_mcp_server.operations.export_campaign import export_campaign_operation
+from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 from bo_mcp_server.operations.transfer_candidates import (
     discover_transfer_candidates_operation,
 )
@@ -28,6 +29,8 @@ from api.schemas.campaign import (
     CampaignLifecycleRequest,
     CampaignLifecycleResponse,
     CampaignListResponse,
+    CampaignQueryRequest,
+    CampaignQueryResponse,
     CampaignResponse,
     CompareCampaignsRequest,
     CompareCampaignsResponse,
@@ -118,6 +121,22 @@ async def validate_campaign_intake(
         warnings=formatted.get("warnings", []),
         spec_summary=formatted.get("spec_summary"),
     )
+
+
+@router.post("/query", response_model=CampaignQueryResponse)
+async def query_campaigns(
+    request: CampaignQueryRequest,
+    current_user: CurrentUser,
+) -> CampaignQueryResponse:
+    """Query campaigns with filtering, pagination, and verbosity control."""
+    result = await list_campaigns_operation(
+        owner_id=current_user.id,
+        status=request.status,
+        limit=request.limit,
+        offset=request.offset,
+        verbosity=request.verbosity,
+    )
+    return CampaignQueryResponse(**result)
 
 
 @router.post("/status/batch", response_model=BatchStatusResponse)

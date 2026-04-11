@@ -399,3 +399,179 @@ class TestSuggestionStatusRoute:
 
         # FastAPI validates the regex pattern — "completed" is not in the allowed set
         assert response.status_code == 422
+
+
+class TestCampaignQueryRoute:
+    @pytest.mark.asyncio
+    async def test_query_campaigns_returns_envelope(self, api_client, auth_headers, persisted_user):
+        owner_id = str(persisted_user.id)
+        await _create_campaign_for_owner(owner_id, "Query Test A")
+        await _create_campaign_for_owner(owner_id, "Query Test B")
+
+        response = await api_client.post(
+            "/api/campaigns/query",
+            json={},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["total_count"] == 2
+        assert len(data["campaigns"]) == 2
+        assert "limit" in data
+        assert "offset" in data
+
+    @pytest.mark.asyncio
+    async def test_query_campaigns_pagination(self, api_client, auth_headers, persisted_user):
+        owner_id = str(persisted_user.id)
+        for i in range(3):
+            await _create_campaign_for_owner(owner_id, f"Page Test {i}")
+
+        response = await api_client.post(
+            "/api/campaigns/query",
+            json={"limit": 2, "offset": 0},
+            headers=auth_headers,
+        )
+
+        data = response.json()
+        assert data["total_count"] == 3
+        assert len(data["campaigns"]) == 2
+
+        response2 = await api_client.post(
+            "/api/campaigns/query",
+            json={"limit": 2, "offset": 2},
+            headers=auth_headers,
+        )
+
+        data2 = response2.json()
+        assert data2["total_count"] == 3
+        assert len(data2["campaigns"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_query_campaigns_only_returns_own(
+        self, api_client, auth_headers, persisted_user, persisted_another_user
+    ):
+        """Query must only return campaigns owned by the authenticated user."""
+        await _create_campaign_for_owner(str(persisted_user.id), "My Campaign")
+        await _create_campaign_for_owner(str(persisted_another_user.id), "Foreign Campaign")
+
+        response = await api_client.post(
+            "/api/campaigns/query",
+            json={},
+            headers=auth_headers,
+        )
+
+        data = response.json()
+        assert data["total_count"] == 1
+        assert data["campaigns"][0]["name"] == "My Campaign"
+
+
+class TestResultQueryRoute:
+    @pytest.mark.asyncio
+    async def test_query_results_returns_envelope(self, api_client, auth_headers, persisted_user):
+        owner_id = str(persisted_user.id)
+        campaign_id = await _create_campaign_for_owner(owner_id, "Result Query Test")
+        await generate_suggestions(campaign_id)
+        await submit_results(
+            campaign_id,
+            _to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]),
+            owner_id,
+        )
+
+        response = await api_client.post(
+            f"/api/results/{campaign_id}/query",
+            json={},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["total_count"] == 1
+        assert len(data["results"]) == 1
+        assert "limit" in data
+        assert "offset" in data
+
+    @pytest.mark.asyncio
+    async def test_query_results_enforces_ownership(
+        self, api_client, auth_headers, persisted_user, persisted_another_user
+    ):
+        foreign_campaign_id = await _create_campaign_for_owner(
+            str(persisted_another_user.id), "Foreign Result Query"
+        )
+
+        response = await api_client.post(
+            f"/api/results/{foreign_campaign_id}/query",
+            json={},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 403
+
+
+class TestSuggestionQueryRoute:
+    @pytest.mark.asyncio
+    async def test_query_suggestions_returns_envelope(
+        self, api_client, auth_headers, persisted_user
+    ):
+        owner_id = str(persisted_user.id)
+        campaign_id = await _create_campaign_for_owner(owner_id, "Suggestion Query Test")
+        await generate_suggestions(campaign_id)
+
+        response = await api_client.post(
+            f"/api/suggestions/{campaign_id}/query",
+            json={},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["total_count"] > 0
+        assert len(data["suggestions"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_query_suggestions_with_status_filter(
+        self, api_client, auth_headers, persisted_user
+    ):
+        owner_id = str(persisted_user.id)
+        campaign_id = await _create_campaign_for_owner(owner_id, "Sugg Filter Query")
+        await generate_suggestions(campaign_id)
+
+        # All suggestions are "pending" after generation
+        response = await api_client.post(
+            f"/api/suggestions/{campaign_id}/query",
+            json={"status_filter": "pending"},
+            headers=auth_headers,
+        )
+
+        data = response.json()
+        assert data["success"] is True
+        assert data["total_count"] > 0
+
+        # No "accepted" suggestions yet
+        response2 = await api_client.post(
+            f"/api/suggestions/{campaign_id}/query",
+            json={"status_filter": "accepted"},
+            headers=auth_headers,
+        )
+
+        data2 = response2.json()
+        assert data2["total_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_query_suggestions_enforces_ownership(
+        self, api_client, auth_headers, persisted_user, persisted_another_user
+    ):
+        foreign_campaign_id = await _create_campaign_for_owner(
+            str(persisted_another_user.id), "Foreign Sugg Query"
+        )
+
+        response = await api_client.post(
+            f"/api/suggestions/{foreign_campaign_id}/query",
+            json={},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 403

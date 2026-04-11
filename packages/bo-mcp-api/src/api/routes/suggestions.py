@@ -4,6 +4,7 @@ from bo_mcp_server.domain import SuggestionStatus
 from bo_mcp_server.operations.generate_suggestions import (
     generate_suggestions_operation,
 )
+from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
 from bo_mcp_server.operations.suggestion_explanation import (
     get_suggestion_explanation_operation,
 )
@@ -21,6 +22,8 @@ from api.deps import (
 )
 from api.schemas.suggestion import (
     SuggestionExplanationResponse,
+    SuggestionQueryRequest,
+    SuggestionQueryResponse,
     SuggestionResponse,
     SuggestionsGenerateResponse,
     SuggestionStatusUpdateRequest,
@@ -89,6 +92,25 @@ async def get_campaign_suggestion_explanation(
 
     result = await get_suggestion_explanation_operation(suggestion_id)
     return SuggestionExplanationResponse(**result)
+
+
+@router.post("/{campaign_id}/query", response_model=SuggestionQueryResponse)
+async def query_campaign_suggestions(
+    campaign_id: str,
+    request: SuggestionQueryRequest,
+    current_user: CurrentUser,
+) -> SuggestionQueryResponse:
+    """Query suggestions for a campaign with filtering, pagination, and verbosity control."""
+    await get_authorized_campaign(campaign_id, current_user)
+
+    result = await list_suggestions_operation(
+        campaign_id=campaign_id,
+        status_filter=request.status_filter,
+        limit=request.limit,
+        offset=request.offset,
+        verbosity=request.verbosity,
+    )
+    return SuggestionQueryResponse(**result)
 
 
 @router.post(

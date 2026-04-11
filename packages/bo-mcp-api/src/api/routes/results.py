@@ -5,6 +5,7 @@ from typing import Any
 
 import pandas as pd
 from bo_mcp_server.domain import ResultSubmissionInput
+from bo_mcp_server.operations.list_results import list_results_operation
 from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.result_upload_parser import parse_named_result_rows
 from bo_mcp_server.storage import (
@@ -18,6 +19,8 @@ from fastapi import APIRouter, HTTPException, UploadFile, status
 from api.deps import CurrentUser, get_authorized_campaign, validate_uuid
 from api.schemas.result import (
     ResultBatchCreate,
+    ResultQueryRequest,
+    ResultQueryResponse,
     ResultResponse,
     ResultSubmitResponse,
 )
@@ -140,6 +143,24 @@ async def upload_results_file(
         errors=result["errors"],
         warnings=result["warnings"],
     )
+
+
+@router.post("/{campaign_id}/query", response_model=ResultQueryResponse)
+async def query_campaign_results(
+    campaign_id: str,
+    request: ResultQueryRequest,
+    current_user: CurrentUser,
+) -> ResultQueryResponse:
+    """Query results for a campaign with pagination and verbosity control."""
+    await get_authorized_campaign(campaign_id, current_user)
+
+    result = await list_results_operation(
+        campaign_id=campaign_id,
+        limit=request.limit,
+        offset=request.offset,
+        verbosity=request.verbosity,
+    )
+    return ResultQueryResponse(**result)
 
 
 @router.get("/{campaign_id}", response_model=list[ResultResponse])

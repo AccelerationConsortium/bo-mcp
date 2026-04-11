@@ -35,6 +35,25 @@ class ResultResponse(BaseModel):
     created_at: datetime
 
 
+class ResultQueryRequest(BaseModel):
+    """Result query request with pagination."""
+
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+    verbosity: str = "standard"
+
+
+class ResultQueryResponse(BaseModel):
+    """Result query response with pagination envelope."""
+
+    success: bool
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    total_count: int = 0
+    limit: int = 50
+    offset: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class ResultSubmitResponse(BaseModel):
     """Response for result submission."""
 

@@ -96,6 +96,9 @@ class BoTorchBackend:
     def supported_features(self) -> frozenset[Feature]:
         return frozenset(Feature)  # BoTorch supports all features
 
+    def validate_spec(self, spec: OptimizationSpec) -> list[str]:
+        return []  # BoTorch supports all features
+
     # ----- Suggestion Generation -----
 
     def generate_initial_design(

@@ -428,12 +428,14 @@ async def _update_campaign_state(
             logger.debug("Failed to compute hypervolume: %s", e)
             warnings.append(f"Could not compute hypervolume: {e}")
 
-    if len(spec.objectives) == 1 and campaign.turbo_state is not None:
+    if campaign.backend_state is not None:
         try:
             new_obs = results_to_observations(result_entities)
-            new_state = backend.update_state_after_results(opt_spec, new_obs, campaign.turbo_state)
+            new_state = backend.update_state_after_results(
+                opt_spec, new_obs, campaign.backend_state
+            )
             if new_state is not None:
-                updated_campaign = updated_campaign.with_turbo_state(new_state)
+                updated_campaign = updated_campaign.with_backend_state(new_state)
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Failed to update backend state: %s", e)
             warnings.append(f"Could not update backend state: {e}")

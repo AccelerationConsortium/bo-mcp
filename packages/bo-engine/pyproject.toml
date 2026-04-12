@@ -34,6 +34,9 @@ shap = [
     "shap>=0.45",
 ]
 
+[project.entry-points."bo_mcp.backends"]
+botorch = "bo_engine.botorch_backend:BoTorchBackend"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

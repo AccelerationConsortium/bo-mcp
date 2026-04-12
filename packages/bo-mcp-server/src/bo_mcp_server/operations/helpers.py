@@ -8,7 +8,6 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from bo_engine.turbo import TurboState
 from bo_engine.types import ObservationData
 
 from bo_mcp_server.domain import Result
@@ -109,73 +108,3 @@ def results_to_observations(results: list[Result]) -> list[ObservationData]:
         )
         for r in results
     ]
-
-
-def turbo_state_to_dict(state: TurboState) -> dict[str, Any]:
-    """Serialize TurboState to dictionary for JSON storage."""
-    return {
-        "dim": state.dim,
-        "batch_size": state.batch_size,
-        "length": state.length,
-        "length_min": state.length_min,
-        "length_max": state.length_max,
-        "failure_counter": state.failure_counter,
-        "failure_tolerance": state.failure_tolerance,
-        "success_counter": state.success_counter,
-        "success_tolerance": state.success_tolerance,
-        "best_value": state.best_value,
-        "restart_triggered": state.restart_triggered,
-    }
-
-
-_TURBO_REQUIRED_KEYS = frozenset(
-    {
-        "dim",
-        "batch_size",
-        "length",
-        "length_min",
-        "length_max",
-        "failure_counter",
-        "failure_tolerance",
-        "success_counter",
-        "success_tolerance",
-        "best_value",
-        "restart_triggered",
-    }
-)
-
-
-def dict_to_turbo_state(data: dict[str, Any], *, n_parameters: int | None = None) -> TurboState:
-    """Deserialize dictionary to TurboState.
-
-    Args:
-        data: Serialized TuRBO state dictionary.
-        n_parameters: If provided, validates that ``data["dim"]`` matches
-            the current campaign's parameter count to catch stale state.
-
-    Raises:
-        ValueError: On missing keys or dimension mismatch.
-    """
-    missing = _TURBO_REQUIRED_KEYS - data.keys()
-    if missing:
-        raise ValueError(f"Corrupted TuRBO state — missing keys: {sorted(missing)}")
-
-    if n_parameters is not None and data["dim"] != n_parameters:
-        raise ValueError(
-            f"TuRBO state dimension mismatch: state has dim={data['dim']} "
-            f"but campaign has {n_parameters} parameters"
-        )
-
-    return TurboState(
-        dim=data["dim"],
-        batch_size=data["batch_size"],
-        length=data["length"],
-        length_min=data["length_min"],
-        length_max=data["length_max"],
-        failure_counter=data["failure_counter"],
-        failure_tolerance=data["failure_tolerance"],
-        success_counter=data["success_counter"],
-        success_tolerance=data["success_tolerance"],
-        best_value=data["best_value"],
-        restart_triggered=data["restart_triggered"],
-    )

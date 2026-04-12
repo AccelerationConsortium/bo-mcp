@@ -333,7 +333,7 @@ class CampaignRepository:
             "updated_at": campaign.updated_at,
             "completed_at": campaign.completed_at,
             "turbo_state_json": (
-                json.dumps(campaign.turbo_state) if campaign.turbo_state else None
+                json.dumps(campaign.backend_state) if campaign.backend_state else None
             ),
             "hypervolume_history_json": json.dumps(campaign.hypervolume_history),
         }
@@ -390,7 +390,7 @@ class CampaignRepository:
             created_at=model.created_at,
             updated_at=model.updated_at,
             completed_at=model.completed_at,
-            turbo_state=model.get_turbo_state(),
+            backend_state=model.get_turbo_state(),
             hypervolume_history=model.get_hypervolume_history(),
         )
 

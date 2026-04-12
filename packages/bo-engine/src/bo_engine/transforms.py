@@ -283,6 +283,21 @@ def encode_categorical(values: dict[str, Any], spec: OptimizationSpec) -> Tensor
     return torch.tensor(encoded, dtype=get_dtype(), device=get_device())
 
 
+def stack_encoded_values(
+    value_dicts: list[dict[str, Any]],
+    spec: OptimizationSpec,
+) -> Tensor:
+    """Encode multiple parameter-value dicts and stack into a 2-D tensor.
+
+    This is a convenience wrapper around :func:`encode_categorical` +
+    ``torch.stack`` that lets callers avoid importing ``torch`` directly.
+
+    Returns tensor of shape ``(len(value_dicts), n_dims)``.
+    """
+    tensors = [encode_categorical(v, spec) for v in value_dicts]
+    return torch.stack(tensors)
+
+
 def _decode_param_value(
     param: ParameterSpec, tensor: Tensor, idx: int
 ) -> tuple[int | float | str, int]:

@@ -285,6 +285,32 @@ class BayBEBackend:
     def supported_features(self) -> frozenset[Feature]:
         return _SUPPORTED_FEATURES
 
+    # -- Spec features that BayBE does NOT support --------------------------
+    _UNSUPPORTED_CHECKS: list[tuple[str, str]] = [
+        ("turbo_config", "TuRBO trust-region optimization"),
+        ("saasbo_config", "SAASBO high-dimensional optimization"),
+        ("fidelity_parameter", "Multi-fidelity optimization"),
+        ("transfer_learning", "Transfer learning (RGPE)"),
+    ]
+
+    _UNSUPPORTED_BOOL_CHECKS: list[tuple[str, str]] = [
+        ("use_cost_aware", "Cost-aware optimization (EIpu)"),
+        ("use_input_warping", "Input warping"),
+    ]
+
+    def validate_spec(self, spec: OptimizationSpec) -> list[str]:
+        """Return warnings for spec features that BayBE will silently ignore."""
+        warnings: list[str] = []
+        for attr, label in self._UNSUPPORTED_CHECKS:
+            if getattr(spec, attr, None) is not None:
+                warnings.append(f"{label} is not supported by BayBE and will be ignored.")
+        for attr, label in self._UNSUPPORTED_BOOL_CHECKS:
+            if getattr(spec, attr, False):
+                warnings.append(f"{label} is not supported by BayBE and will be ignored.")
+        if spec.outcome_constraints:
+            warnings.append("Outcome constraints are not supported by BayBE and will be ignored.")
+        return warnings
+
     def generate_initial_design(
         self,
         spec: OptimizationSpec,

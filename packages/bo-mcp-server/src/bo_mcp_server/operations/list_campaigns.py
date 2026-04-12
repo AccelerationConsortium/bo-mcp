@@ -65,7 +65,7 @@ def _build_detailed_summary(
         "spec_id": str(campaign.spec_id),
         "spec_summary": spec_summary,
         "has_hypervolume_history": len(campaign.hypervolume_history) > 0,
-        "has_turbo_state": campaign.turbo_state is not None,
+        "has_backend_state": campaign.backend_state is not None,
     }
 
 

@@ -382,7 +382,7 @@ async def _generate_within_session(
         results,
         actual_batch_size,
         new_iteration,
-        campaign.turbo_state,
+        campaign.backend_state,
         random_seed=spec.random_seed,
     )
 
@@ -399,7 +399,7 @@ async def _generate_within_session(
     if campaign.status == CampaignStatus.CREATED:
         updated_campaign = updated_campaign.with_status(CampaignStatus.RUNNING)
     if new_backend_state is not None:
-        updated_campaign = updated_campaign.with_turbo_state(new_backend_state)
+        updated_campaign = updated_campaign.with_backend_state(new_backend_state)
     await campaign_repo.save(
         updated_campaign,
         expected_version=campaign.version,
@@ -432,7 +432,7 @@ def _generate_via_backend(
     results: list[Result],
     batch_size: int,
     iteration: int,
-    turbo_state: dict[str, Any] | None,
+    prior_backend_state: dict[str, Any] | None,
     random_seed: int | None = None,
 ) -> tuple[
     SuggestionDataList,
@@ -456,7 +456,7 @@ def _generate_via_backend(
         observations=observations,
         batch_size=batch_size,
         iteration=iteration,
-        backend_state=turbo_state,
+        backend_state=prior_backend_state,
     )
     suggestion_data = [(item["parameter_values"], item["provenance"]) for item in batch.suggestions]
     return (

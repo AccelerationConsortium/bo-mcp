@@ -11,6 +11,8 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from bo_engine.backend import DiagnosticSection
+
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.cache import diagnostics_cache
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
@@ -93,13 +95,13 @@ def _validate_diagnostics_inputs(
 
 
 def _map_backend_sections(requested: frozenset[str]) -> frozenset[str]:
-    """Map server-side section names to backend section names."""
-    mapping = {
-        "objectives": "objectives",
-        "health": "objectives",  # health needs objective data
-        "model": "model",
-        "outliers": "outliers",
-        "suggestions": "suggestions_tensor",
+    """Map server-side section names to backend DiagnosticSection values."""
+    mapping: dict[str, str] = {
+        "objectives": DiagnosticSection.OBJECTIVES,
+        "health": DiagnosticSection.OBJECTIVES,  # health needs objective data
+        "model": DiagnosticSection.MODEL,
+        "outliers": DiagnosticSection.OUTLIERS,
+        "suggestions": DiagnosticSection.SUGGESTIONS_TENSOR,
     }
     return frozenset(mapping[s] for s in requested if s in mapping)
 

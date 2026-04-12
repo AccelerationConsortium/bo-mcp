@@ -21,6 +21,19 @@ from typing import Any, Protocol, runtime_checkable
 from bo_engine.types import ObservationData, OptimizationSpec
 
 
+class DiagnosticSection(StrEnum):
+    """Valid section names for :meth:`BOBackend.compute_diagnostics`.
+
+    Using this enum (instead of bare strings) lets the type checker catch
+    typos and gives new backend implementers a definitive list.
+    """
+
+    OBJECTIVES = "objectives"
+    MODEL = "model"
+    OUTLIERS = "outliers"
+    SUGGESTIONS_TENSOR = "suggestions_tensor"
+
+
 class Feature(StrEnum):
     """Capabilities a backend can advertise."""
 
@@ -51,7 +64,15 @@ class SuggestionBatch:
     """Method selection metadata (model type, acquisition function, etc.)."""
 
     backend_state: dict[str, Any] | None = None
-    """Opaque backend state to persist (e.g. TuRBO trust region)."""
+    """Opaque backend state to persist between iterations.
+
+    **Serialization contract:** The server stores this value via
+    ``json.dumps()`` and restores it with ``json.loads()``.  All values
+    must therefore be JSON-serializable (``str``, ``int``, ``float``,
+    ``bool``, ``None``, ``list``, or ``dict``).  Putting non-serializable
+    objects (tensors, numpy arrays, fitted models) here will crash at
+    persist time.
+    """
 
     warnings: list[str] = field(default_factory=list)
 
@@ -92,6 +113,24 @@ class BOBackend(Protocol):
     @property
     def supported_features(self) -> frozenset[Feature]:
         """Set of features this backend supports."""
+        ...
+
+    # ----- Validation -----
+
+    def validate_spec(self, spec: OptimizationSpec) -> list[str]:
+        """Check whether this backend can handle *spec*.
+
+        Returns a (possibly empty) list of warnings.  Each warning
+        describes a spec feature that the backend does not support and
+        will silently ignore (e.g. ``"TuRBO is not supported by BayBE;
+        ignored"``).
+
+        Raise ``ValueError`` if the spec is fundamentally incompatible
+        and optimization cannot proceed.  For gracefully-degraded
+        operation return warnings instead.
+
+        The default implementation returns ``[]`` (no warnings).
+        """
         ...
 
     # ----- Suggestion Generation -----
@@ -199,12 +238,12 @@ class BOBackend(Protocol):
         Args:
             spec: Problem specification.
             observations: All observations for the campaign.
-            sections: Which diagnostic sections to compute. When None,
-                compute all. Valid: objectives, model, outliers,
-                suggestions_tensor.
+            sections: Which diagnostic sections to compute.  When *None*,
+                compute all.  Valid values are defined in
+                :class:`DiagnosticSection`.
 
         Returns:
-            Dictionary with computed diagnostics. Keys depend on
-            requested sections. Returns empty sections as None.
+            Dictionary with computed diagnostics.  Keys depend on
+            requested sections.  Returns empty sections as ``None``.
         """
         ...

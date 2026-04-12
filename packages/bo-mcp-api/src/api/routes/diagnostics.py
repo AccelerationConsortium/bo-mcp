@@ -2,8 +2,9 @@
 
 from typing import Annotated, Any
 
+from bo_mcp_server.errors import http_status_for_error
 from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query
 
 from api.deps import CurrentUser, get_authorized_campaign
 
@@ -29,8 +30,9 @@ async def get_campaign_diagnostics(
     )
 
     if not result["success"]:
+        status_code = http_status_for_error(result)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status_code,
             detail=result.get("errors", ["Unknown error"])[0],
         )
 

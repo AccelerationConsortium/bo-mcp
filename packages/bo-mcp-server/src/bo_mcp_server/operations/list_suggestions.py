@@ -85,19 +85,21 @@ async def list_suggestions_operation(
             )
 
         suggestion_repo = SuggestionRepository(session)
-        suggestions = await suggestion_repo.list_by_campaign(campaign_uuid, status=status)
 
-    # Sort by created_at descending
-    suggestions.sort(key=lambda s: s.created_at, reverse=True)
-    total_count = len(suggestions)
+        # Apply pagination
+        offset = max(0, offset)
+        if limit is not None:
+            effective_limit = max(1, min(limit, MAX_SUGGESTIONS_LIMIT))
+        else:
+            effective_limit = MAX_SUGGESTIONS_LIMIT
 
-    # Apply pagination
-    offset = max(0, offset)
-    if limit is not None:
-        limit = max(1, min(limit, MAX_SUGGESTIONS_LIMIT))
-        suggestions = suggestions[offset : offset + limit]
-    else:
-        suggestions = suggestions[offset:]
+        suggestions, total_count = await suggestion_repo.list_by_campaign_paginated(
+            campaign_uuid,
+            status=status,
+            limit=effective_limit,
+            offset=offset,
+        )
+        limit = effective_limit
 
     suggestions_out: list[dict[str, Any]] = []
     for s in suggestions:

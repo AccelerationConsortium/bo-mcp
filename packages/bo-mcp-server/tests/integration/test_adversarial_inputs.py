@@ -577,9 +577,6 @@ class TestBoundaryValues:
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Out-of-bounds parameter validation not yet implemented - see TODO.md Step 10"
-    )
     async def test_parameter_outside_bounds_rejected(self, setup_database):
         """Parameter value outside bounds should be rejected or warned."""
         from bo_mcp_server.tools.create_campaign import create_campaign

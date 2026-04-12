@@ -71,17 +71,16 @@ async def _create_and_save_suggestions(
     return suggestions
 
 
-def _make_error_response(
-    errors: list[str],
+def _make_suggestions_error(
+    code: ErrorCode,
+    message: str,
     iteration: int | None = None,
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a standardized error response."""
-    return {
-        "success": False,
-        "suggestions": [],
-        "iteration": iteration,
-        "errors": errors,
-    }
+    """Create an error response with suggestion-specific fields."""
+    response = make_error_response(code, message=message, details=details)
+    response.update({"suggestions": [], "iteration": iteration})
+    return response
 
 
 async def _handle_pending_suggestions(

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -540,7 +541,7 @@ def compute_parameter_deviation(
         "max_parameter": max_deviation_key,
         "max_deviation": max_deviation,
         "avg_normalized": avg_normalized,
-        "is_exact": total_deviation == 0.0,
+        "is_exact": math.isclose(total_deviation, 0.0, abs_tol=1e-12),
     }
 
 

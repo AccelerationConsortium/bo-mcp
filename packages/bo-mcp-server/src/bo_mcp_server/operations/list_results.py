@@ -71,12 +71,9 @@ async def list_results_operation(
             )
 
         result_repo = ResultRepository(session)
-        all_results = await result_repo.list_by_campaign(campaign_uuid)
-
-    # Sort by created_at descending (most recent first)
-    all_results.sort(key=lambda r: r.created_at, reverse=True)
-    total_count = len(all_results)
-    page = all_results[offset : offset + limit]
+        page, total_count = await result_repo.list_by_campaign_paginated(
+            campaign_uuid, limit=limit, offset=offset
+        )
 
     results_out: list[dict[str, Any]] = []
     for r in page:

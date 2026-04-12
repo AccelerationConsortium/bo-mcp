@@ -18,6 +18,7 @@ from bo_mcp_server.domain import (
     ResultSubmissionInput,
     SuggestionStatus,
 )
+from bo_mcp_server.domain.campaign_spec import InputParameter, ParameterType
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
@@ -234,6 +235,7 @@ async def _validate_and_create_results(
             atomic,
             tracking.warnings,
             tracking.duplicates_detected,
+            parameters=list(spec.parameters),
         )
 
         if result_error is not None:
@@ -266,6 +268,60 @@ async def _validate_and_create_results(
     return result_entities, entity_to_input_index
 
 
+def _check_numeric_bounds(
+    param: InputParameter,
+    value: Any,
+    index: int,
+    warnings: list[str],
+) -> None:
+    """Check a numeric value against parameter bounds."""
+    if param.bounds is None:
+        return
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        pname = param.name
+        vtype = type(value).__name__
+        warnings.append(f"Result {index}: parameter '{pname}' expected numeric, got {vtype}")
+        return
+    if numeric < param.bounds.lower or numeric > param.bounds.upper:
+        warnings.append(
+            f"Result {index}: parameter '{param.name}' value {numeric} "
+            f"is outside spec bounds "
+            f"[{param.bounds.lower}, {param.bounds.upper}]"
+        )
+
+
+def _validate_parameter_value(
+    param: InputParameter,
+    value: Any,
+    index: int,
+    warnings: list[str],
+) -> None:
+    """Check a single parameter value against its spec definition.
+
+    Out-of-bounds values are reported as warnings rather than hard errors
+    because real experiments may intentionally exceed spec bounds.
+    """
+    if param.type == ParameterType.CONTINUOUS:
+        _check_numeric_bounds(param, value, index, warnings)
+    elif param.type == ParameterType.DISCRETE:
+        if param.values is not None and value not in param.values:
+            warnings.append(
+                f"Result {index}: parameter '{param.name}' value {value} "
+                f"is not in allowed discrete values {param.values}"
+            )
+        else:
+            _check_numeric_bounds(param, value, index, warnings)
+    elif param.type == ParameterType.CATEGORICAL:
+        if param.categories is not None and value not in param.categories:
+            warnings.append(
+                f"Result {index}: parameter '{param.name}' value "
+                f"'{value}' is not in allowed categories "
+                f"{param.categories}"
+            )
+
+
 def _validate_single_result(
     index: int,
     r: ResultSubmissionInput,
@@ -277,10 +333,18 @@ def _validate_single_result(
     atomic: bool,
     warnings: list[str],
     duplicates_detected: list[dict[str, Any]],
+    parameters: list[InputParameter] | None = None,
 ) -> str | None:
     """Validate a single result's parameters, duplicates, and objectives. Returns error or None."""
     if missing_params := (param_names - set(r.parameter_values.keys())):
         return f"Result {index} missing parameters: {missing_params}"
+
+    # Validate parameter values against spec bounds/categories
+    if parameters is not None:
+        param_by_name = {p.name: p for p in parameters}
+        for pname, pvalue in r.parameter_values.items():
+            if pname in param_by_name:
+                _validate_parameter_value(param_by_name[pname], pvalue, index, warnings)
 
     if not force:
         dup_error = _check_duplicates_for_result(

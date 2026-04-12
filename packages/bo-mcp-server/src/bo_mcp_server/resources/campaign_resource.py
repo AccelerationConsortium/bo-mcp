@@ -1,13 +1,13 @@
 """Campaign resource for MCP."""
 
-from typing import Any
 from uuid import UUID
 
+from bo_mcp_server.domain import CampaignSpec
 from bo_mcp_server.server import mcp
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 
 
-def _format_parameters_section(spec: Any) -> list[str]:
+def _format_parameters_section(spec: CampaignSpec) -> list[str]:
     """Format the parameters section of a campaign resource."""
     lines: list[str] = []
     for param in spec.parameters:
@@ -21,7 +21,7 @@ def _format_parameters_section(spec: Any) -> list[str]:
     return lines
 
 
-def _format_objectives_section(spec: Any) -> list[str]:
+def _format_objectives_section(spec: CampaignSpec) -> list[str]:
     """Format the objectives section of a campaign resource."""
     lines: list[str] = []
     for obj in spec.objectives:
@@ -30,7 +30,7 @@ def _format_objectives_section(spec: Any) -> list[str]:
     return lines
 
 
-def _format_constraints_section(spec: Any) -> list[str]:
+def _format_constraints_section(spec: CampaignSpec) -> list[str]:
     """Format the constraints section of a campaign resource."""
     if not spec.constraints:
         return []

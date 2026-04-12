@@ -96,7 +96,8 @@ async def export_campaign_operation(
         + [f"obj_{n}" for n in obj_names]
         + ["result_id", "suggestion_id", "created_at"]
     )
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    # QUOTE_ALL ensures field names containing commas or quotes are safe.
+    writer = csv.DictWriter(output, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
     writer.writeheader()
 
     for r in results:

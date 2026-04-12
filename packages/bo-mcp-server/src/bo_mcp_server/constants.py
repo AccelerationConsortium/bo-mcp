@@ -36,3 +36,10 @@ TRANSFER_SIMILARITY_GOOD = 0.6
 
 # Score above which a candidate is "possible"
 TRANSFER_SIMILARITY_MODERATE = 0.4
+
+# =============================================================================
+# Diagnostics Health (hypervolume analysis fallback)
+# =============================================================================
+
+# Assumed HV improvement when only 2 results exist and HV > 0
+FALLBACK_HYPERVOLUME_IMPROVEMENT = 0.1

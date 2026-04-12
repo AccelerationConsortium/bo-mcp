@@ -11,6 +11,10 @@ from bo_engine.diagnostics import (
     determine_single_objective_health_status,
 )
 
+from bo_mcp_server.constants import (
+    FALLBACK_HYPERVOLUME_IMPROVEMENT,
+    HYPERVOLUME_STABILITY_THRESHOLD,
+)
 from bo_mcp_server.domain import CampaignSpec, Result
 
 logger = logging.getLogger(__name__)
@@ -96,9 +100,9 @@ def _analyze_hypervolume_history(
         hv_improvement = max(0.0, recent_improvement)
 
         threshold = (
-            0.001 * abs(hypervolume_history[-1])
+            HYPERVOLUME_STABILITY_THRESHOLD * abs(hypervolume_history[-1])
             if not math.isclose(hypervolume_history[-1], 0.0, abs_tol=1e-12)
-            else 0.001
+            else HYPERVOLUME_STABILITY_THRESHOLD
         )
         iters_stagnant = 0
         for i in range(len(hypervolume_history) - 1, 0, -1):
@@ -109,7 +113,8 @@ def _analyze_hypervolume_history(
         return hv_improvement, iters_stagnant
 
     if len(results) >= 2:
-        hv_improvement = 0.1 if diagnostics.get("hypervolume", 0) > 0 else 0.0
+        has_hv = diagnostics.get("hypervolume", 0) > 0
+        hv_improvement = FALLBACK_HYPERVOLUME_IMPROVEMENT if has_hv else 0.0
         return hv_improvement, 0
 
     return 0.0, 0

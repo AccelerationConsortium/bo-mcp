@@ -250,7 +250,6 @@ class TestExtremeBounds:
         assert gen["success"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="Bounds validation not yet implemented - see TODO.md Step 10")
     async def test_inverted_bounds_rejected(self, setup_database):
         """Campaign with inverted bounds (lower > upper) should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -271,7 +270,6 @@ class TestExtremeBounds:
         assert any("bound" in e.lower() for e in create_result["errors"])
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="Bounds validation not yet implemented - see TODO.md Step 10")
     async def test_equal_bounds_rejected(self, setup_database):
         """Campaign with equal bounds (zero range) should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -330,12 +328,6 @@ class TestConflictingConstraints:
             )
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=(
-            "Constraint validation does not include 'nonexistent' in error "
-            "message - see TODO.md Step 10"
-        )
-    )
     async def test_constraint_referencing_nonexistent_param(self, setup_database):
         """Constraint referencing unknown parameter should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -423,9 +415,6 @@ class TestMissingAndEmptyFields:
     """Tests for handling missing or empty required fields."""
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Empty parameters validation not yet implemented - see TODO.md Step 10"
-    )
     async def test_create_campaign_empty_parameters(self, setup_database):
         """Campaign with no parameters should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -443,9 +432,6 @@ class TestMissingAndEmptyFields:
         assert any("parameter" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Empty objectives validation not yet implemented - see TODO.md Step 10"
-    )
     async def test_create_campaign_empty_objectives(self, setup_database):
         """Campaign with no objectives should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -615,9 +601,6 @@ class TestBoundaryValues:
             assert any("bounds" in e.lower() or "range" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Zero batch size validation not yet implemented - see TODO.md Step 10"
-    )
     async def test_zero_batch_size(self, setup_database):
         """Batch size of 0 should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -660,9 +643,6 @@ class TestDuplicateAndConflictingData:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=("Duplicate parameter name validation not yet implemented - see TODO.md Step 10")
-    )
     async def test_duplicate_parameter_names(self, setup_database):
         """Duplicate parameter names should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -683,9 +663,6 @@ class TestDuplicateAndConflictingData:
         assert any("duplicate" in e.lower() or "unique" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=("Duplicate objective name validation not yet implemented - see TODO.md Step 10")
-    )
     async def test_duplicate_objective_names(self, setup_database):
         """Duplicate objective names should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign

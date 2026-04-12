@@ -271,7 +271,7 @@ async def _validate_and_create_results(
 
 def _check_numeric_bounds(
     param: InputParameter,
-    value: Any,
+    value: int | float | str,
     index: int,
     warnings: list[str],
 ) -> None:
@@ -295,7 +295,7 @@ def _check_numeric_bounds(
 
 def _validate_parameter_value(
     param: InputParameter,
-    value: Any,
+    value: int | float | str,
     index: int,
     warnings: list[str],
 ) -> None:
@@ -355,7 +355,7 @@ def _validate_single_result(
     param_names: set[str],
     objective_names: set[str],
     existing_params: list[dict[str, Any]],
-    backend: Any,
+    backend: BOBackend,
     force: bool,
     atomic: bool,
     warnings: list[str],

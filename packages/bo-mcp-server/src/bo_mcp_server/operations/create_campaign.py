@@ -126,6 +126,10 @@ async def create_campaign_operation(
                 "validation_errors": validation["errors"],
             },
         )
+        # Surface detailed validation errors in the backward-compat errors list
+        # so callers (including agents) can inspect them without digging into
+        # error.details.
+        response["errors"] = validation["errors"]
         response["campaign_id"] = None
         response["spec_id"] = None
         response["warnings"] = validation.get("warnings", [])

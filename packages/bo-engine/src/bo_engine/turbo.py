@@ -8,7 +8,7 @@ Optimization", NeurIPS 2019.
 """
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -22,6 +22,7 @@ from bo_engine.constants import (
     TURBO_INITIAL_LENGTH,
     TURBO_LENGTH_MAX,
     TURBO_LENGTH_MIN,
+    TURBO_MAX_FAILURE_TOLERANCE,
     TURBO_MIN_DIMENSIONS,
     TURBO_SUCCESS_TOLERANCE,
 )
@@ -63,11 +64,13 @@ class TurboState:
     def __post_init__(self) -> None:
         """Compute failure_tolerance if not provided."""
         if self.failure_tolerance is None:
-            # Default: more tolerance for higher dimensions and smaller batches
+            # Default: more tolerance for higher dimensions and smaller batches,
+            # capped at TURBO_MAX_FAILURE_TOLERANCE to ensure restarts happen.
+            raw = math.ceil(max(4.0 / self.batch_size, self.dim / self.batch_size))
             object.__setattr__(
                 self,
                 "failure_tolerance",
-                math.ceil(max(4.0 / self.batch_size, self.dim / self.batch_size)),
+                min(raw, TURBO_MAX_FAILURE_TOLERANCE),
             )
 
 
@@ -86,10 +89,8 @@ def create_turbo_state(
     Returns:
         Initialized TurboState
     """
-    state = TurboState(dim=dim, batch_size=batch_size)
-    if initial_best_value is not None:
-        state = replace(state, best_value=initial_best_value)
-    return state
+    best = initial_best_value if initial_best_value is not None else float("-inf")
+    return TurboState(dim=dim, batch_size=batch_size, best_value=best)
 
 
 def update_turbo_state(state: TurboState, y_next: Tensor, minimize: bool = True) -> TurboState:
@@ -148,11 +149,16 @@ def update_turbo_state(state: TurboState, y_next: Tensor, minimize: bool = True)
     # Check for restart trigger
     restart_triggered = new_length < state.length_min
 
-    return replace(
-        state,
+    return TurboState(
+        dim=state.dim,
+        batch_size=state.batch_size,
         length=new_length,
-        success_counter=final_success_counter,
+        length_min=state.length_min,
+        length_max=state.length_max,
         failure_counter=final_failure_counter,
+        failure_tolerance=state.failure_tolerance,
+        success_counter=final_success_counter,
+        success_tolerance=state.success_tolerance,
         best_value=new_best_value,
         restart_triggered=restart_triggered,
     )

@@ -76,9 +76,6 @@ class TestSuggestionReproducibility:
                 assert abs(s1["parameter_values"][param] - s2["parameter_values"][param]) < 1e-10
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="random_seed not populated in provenance - Section 3.7 not implemented"
-    )
     async def test_suggestion_provenance_includes_seed(self, setup_database):
         """Suggestion provenance includes random_seed for reproducibility.
 

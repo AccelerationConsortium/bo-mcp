@@ -5,8 +5,9 @@ from typing import Any
 from uuid import UUID
 
 from bo_mcp_server.domain import SuggestionStatus
+from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.storage import SuggestionRepository, get_session
+from bo_mcp_server.storage import EventRepository, SuggestionRepository, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,24 @@ async def update_suggestion_status_operation(
 
         updated = suggestion.with_status(target_status)
         await suggestion_repo.save(updated)
+
+        # Record audit event for traceability
+        event_repo = EventRepository(session)
+        await event_repo.save(
+            Event(
+                campaign_id=suggestion.campaign_id,
+                event_type=EventType.LIFECYCLE,
+                tool_name="bo_update_suggestion_status",
+                input_summary={
+                    "suggestion_id": suggestion_id,
+                    "target_status": target_status.value,
+                },
+                output_summary={
+                    "previous_status": previous_status.value,
+                    "new_status": target_status.value,
+                },
+            )
+        )
 
     logger.info(
         "Suggestion %s status updated: %s -> %s",

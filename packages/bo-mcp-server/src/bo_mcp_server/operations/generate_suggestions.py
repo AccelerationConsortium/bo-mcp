@@ -8,6 +8,7 @@ keeping the server decoupled from specific backend implementations.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -16,6 +17,7 @@ from bo_engine.backend import BOBackend
 from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
 from bo_engine.pending_points import filter_pending_points
 from bo_engine.types import OptimizationSpec
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
@@ -48,6 +50,16 @@ logger = logging.getLogger(__name__)
 
 # Type alias for suggestion data tuples (params, provenance)
 SuggestionDataList = list[tuple[dict[str, Any], dict[str, Any]]]
+
+
+@dataclass
+class _Repositories:
+    """Repository instances for a single database session."""
+
+    campaign: CampaignRepository
+    spec: CampaignSpecRepository
+    result: ResultRepository
+    suggestion: SuggestionRepository
 
 
 async def _create_and_save_suggestions(
@@ -139,6 +151,7 @@ def _build_initial_design_data(
     designs: list[dict[str, Any]],
     iteration: int,
     batch_size: int,
+    random_seed: int | None = None,
 ) -> SuggestionDataList:
     """Build suggestion data tuples from initial design points."""
     return [
@@ -148,6 +161,7 @@ def _build_initial_design_data(
                 "iteration": iteration,
                 "batch_index": i,
                 "generation_method": "initial_design",
+                "random_seed": random_seed,
                 "explanation": (
                     f"Initial design point "
                     f"{i + 1}/{batch_size}"
@@ -278,16 +292,14 @@ async def generate_suggestions_operation(
         )
 
 
-def _init_repositories(
-    session: Any,
-) -> dict[str, Any]:
+def _init_repositories(session: AsyncSession) -> _Repositories:
     """Initialize all repository instances for a session."""
-    return {
-        "campaign": CampaignRepository(session),
-        "spec": CampaignSpecRepository(session),
-        "result": ResultRepository(session),
-        "suggestion": SuggestionRepository(session),
-    }
+    return _Repositories(
+        campaign=CampaignRepository(session),
+        spec=CampaignSpecRepository(session),
+        result=ResultRepository(session),
+        suggestion=SuggestionRepository(session),
+    )
 
 
 async def _generate_within_session(
@@ -295,16 +307,16 @@ async def _generate_within_session(
     campaign_uuid: UUID,
     batch_size: int | None,
     verbosity_level: VerbosityLevel,
-    repos: dict[str, Any],
+    repos: _Repositories,
 ) -> dict[str, Any]:
     """Run the suggestion generation within an active DB session.
 
     Handles fetching, validation, generation, and persistence.
     """
-    campaign_repo = repos["campaign"]
-    spec_repo = repos["spec"]
-    result_repo = repos["result"]
-    suggestion_repo = repos["suggestion"]
+    campaign_repo = repos.campaign
+    spec_repo = repos.spec
+    result_repo = repos.result
+    suggestion_repo = repos.suggestion
 
     # Fetch and validate campaign
     campaign = await campaign_repo.get(campaign_uuid)
@@ -371,6 +383,7 @@ async def _generate_within_session(
         actual_batch_size,
         new_iteration,
         campaign.turbo_state,
+        random_seed=spec.random_seed,
     )
 
     # Create and save suggestion entities
@@ -420,6 +433,7 @@ def _generate_via_backend(
     batch_size: int,
     iteration: int,
     turbo_state: dict[str, Any] | None,
+    random_seed: int | None = None,
 ) -> tuple[
     SuggestionDataList,
     dict[str, Any] | None,
@@ -431,7 +445,9 @@ def _generate_via_backend(
     """
     if len(results) == 0:
         designs = backend.generate_initial_design(opt_spec, batch_size)
-        suggestion_data = _build_initial_design_data(designs, iteration, batch_size)
+        suggestion_data = _build_initial_design_data(
+            designs, iteration, batch_size, random_seed=random_seed
+        )
         return suggestion_data, None, []
 
     observations = results_to_observations(results)

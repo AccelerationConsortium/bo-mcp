@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from bo_engine.diagnostics import compute_constraint_satisfaction
+from bo_engine.diagnostics import ConstraintSatisfactionMetrics, compute_constraint_satisfaction
 
 from bo_mcp_server.domain import CampaignSpec, Result
 
@@ -50,7 +50,7 @@ def compute_constraint_satisfaction_metrics(
         )
 
 
-def _interpret_constraint_satisfaction(metrics: Any) -> str:
+def _interpret_constraint_satisfaction(metrics: ConstraintSatisfactionMetrics) -> str:
     """Provide agent-friendly interpretation of constraint satisfaction."""
     if metrics.satisfaction_rate >= 0.95:
         return "Excellent constraint satisfaction. Almost all suggestions are feasible."

@@ -21,12 +21,6 @@ class TestValidateIntake:
     """Tests for the internal validate_intake helper."""
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=(
-            "Response structure differs: standard verbosity returns 'spec_summary' "
-            "not 'spec' - see TODO.md Step 10"
-        )
-    )
     async def test_validate_intake_success(self):
         """Valid intake data passes validation."""
         from bo_mcp_server.tools.validate_intake import validate_intake
@@ -54,7 +48,8 @@ class TestValidateIntake:
             "batch_size": 2,
         }
 
-        result = await validate_intake(intake_data)
+        # Use detailed verbosity to get the full spec in the response
+        result = await validate_intake(intake_data, verbosity="detailed")
 
         assert result["valid"] is True
         assert len(result["errors"]) == 0
@@ -654,7 +649,6 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="partial_results feature not yet implemented - see TODO.md Step 10")
     async def test_continue_on_error_partial_success(self, setup_database):
         """Continue on error mode allows partial success."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -674,7 +668,10 @@ class TestSubmitResultsBatchOperations:
         campaign_id = create_result["campaign_id"]
         await generate_suggestions(campaign_id)
 
-        # Mix of valid and invalid results
+        # Mix of valid and invalid results.
+        # The invalid result (idx 1) has objective_values present but missing
+        # the required "y" key — this passes Pydantic validation but fails
+        # at the operation level.
         result = await submit_results(
             campaign_id=campaign_id,
             results=_to_result_inputs(
@@ -683,7 +680,10 @@ class TestSubmitResultsBatchOperations:
                         "parameter_values": {"x": 0.3},
                         "objective_values": {"y": 1.5},
                     },  # Valid (idx 0)
-                    {"parameter_values": {"x": 0.5}},  # Missing objective_values (idx 1)
+                    {
+                        "parameter_values": {"x": 0.5},
+                        "objective_values": {"wrong_name": 1.0},
+                    },  # Missing "y" objective (idx 1)
                     {
                         "parameter_values": {"x": 0.7},
                         "objective_values": {"y": 0.8},
@@ -693,6 +693,7 @@ class TestSubmitResultsBatchOperations:
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
+            verbosity="detailed",
         )
 
         # Should succeed with partial results
@@ -736,9 +737,6 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=("partial_results key with UUIDs feature not yet implemented - see TODO.md Step 10")
-    )
     async def test_partial_results_contains_result_ids(self, setup_database):
         """Partial results contain actual result IDs for successful saves."""
         from uuid import UUID
@@ -771,6 +769,7 @@ class TestSubmitResultsBatchOperations:
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
+            verbosity="detailed",
         )
 
         assert result["success"] is True
@@ -1428,9 +1427,6 @@ class TestAgentUsabilityDiagnostics:
         assert "exploration_exploitation" in diag
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=("hyperparameters key with sub-fields not yet implemented - see TODO.md Step 10")
-    )
     async def test_diagnostics_includes_hyperparameters(self, setup_database):
         """Diagnostics include GP hyperparameters when model is fitted."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -1462,7 +1458,8 @@ class TestAgentUsabilityDiagnostics:
         ]
         await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
-        diag = await get_diagnostics(campaign_id)
+        # Use detailed verbosity to include hyperparameters in the response
+        diag = await get_diagnostics(campaign_id, verbosity="detailed")
 
         assert diag["success"] is True
         assert "hyperparameters" in diag

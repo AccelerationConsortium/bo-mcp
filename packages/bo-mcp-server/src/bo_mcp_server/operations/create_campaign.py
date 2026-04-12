@@ -4,7 +4,8 @@ import logging
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from bo_mcp_server.backend import resolve_backend_name
+from bo_mcp_server.backend import get_backend, resolve_backend_name
+from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
     CampaignIntakeInput,
@@ -157,6 +158,13 @@ async def create_campaign_operation(
     spec_data["backend"] = resolve_backend_name(raw_backend, spec_data)
 
     spec = _build_spec_from_dict(spec_data)
+    warnings: list[str] = validation.get("warnings", [])
+
+    # Ask the backend whether it can handle this spec — surface warnings
+    backend = get_backend(spec.backend)
+    opt_spec = campaign_spec_to_optimization_spec(spec)
+    backend_warnings = backend.validate_spec(opt_spec)
+    warnings.extend(backend_warnings)
 
     # Generate IDs
     spec_id = uuid4()
@@ -191,7 +199,7 @@ async def create_campaign_operation(
         "campaign_id": str(campaign_id),
         "spec_id": str(spec_id),
         "campaign_name": spec.name,
-        "warnings": validation.get("warnings", []),
+        "warnings": warnings,
         "errors": [],
     }
 

@@ -15,7 +15,6 @@ from baybe.parameters import (
     CategoricalParameter,
     NumericalContinuousParameter,
 )
-from baybe.recommenders import TwoPhaseMetaRecommender
 from baybe.searchspace import SearchSpace
 from baybe.targets import NumericalTarget
 from bo_engine.types import (
@@ -31,7 +30,6 @@ from bo_engine_baybe.converters import (
     observations_to_dataframe,
     spec_to_objective,
     spec_to_parameters,
-    spec_to_recommender,
     spec_to_searchspace,
 )
 
@@ -83,12 +81,6 @@ class TestSpecToObjective:
         )
         objective = spec_to_objective(spec)
         assert isinstance(objective, ParetoObjective)
-
-
-class TestSpecToRecommender:
-    def test_default_recommender(self) -> None:
-        recommender = spec_to_recommender()
-        assert isinstance(recommender, TwoPhaseMetaRecommender)
 
 
 class TestObservationsToDataframe:

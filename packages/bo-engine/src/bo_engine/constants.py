@@ -111,6 +111,15 @@ MIN_OBJECTIVE_RANGE = 1e-6
 # Numerical Stability
 # =============================================================================
 
+# General-purpose epsilon for division guards and near-zero checks.
+# Use for denominators, range checks, and absolute-value comparisons.
+NUMERICAL_EPSILON = 1e-10
+
+# Epsilon for clamping standard deviations and values before log().
+# Slightly larger than NUMERICAL_EPSILON to avoid log-space underflow
+# while remaining negligible relative to any realistic objective scale.
+SAFE_DIVISION_EPSILON = 1e-6
+
 # Tolerance for improvement detection (relative)
 IMPROVEMENT_TOLERANCE_RELATIVE = 1e-3
 

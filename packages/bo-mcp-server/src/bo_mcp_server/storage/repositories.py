@@ -3,7 +3,7 @@
 import json
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain import (
@@ -318,40 +318,54 @@ class CampaignRepository:
 
         For new campaigns (first save), ``expected_version`` may be ``None``.
         For updates to existing campaigns, ``expected_version`` **must** be
-        provided — the repository will reject the save if the stored version
-        does not match, preventing concurrent modification.
+        provided.  The version check and row update happen in a single
+        ``UPDATE … WHERE version = expected`` statement so the operation is
+        atomic even under concurrent PostgreSQL connections.
         """
+        campaign_id_str = str(campaign.id)
+        values = {
+            "spec_id": str(campaign.spec_id),
+            "owner_id": str(campaign.owner_id),
+            "status": campaign.status,
+            "version": campaign.version,
+            "iteration": campaign.iteration,
+            "created_at": campaign.created_at,
+            "updated_at": campaign.updated_at,
+            "completed_at": campaign.completed_at,
+            "turbo_state_json": (
+                json.dumps(campaign.turbo_state) if campaign.turbo_state else None
+            ),
+            "hypervolume_history_json": json.dumps(campaign.hypervolume_history),
+        }
+
         existing = await self.session.execute(
-            select(CampaignModel).where(CampaignModel.id == str(campaign.id))
+            select(CampaignModel.id).where(CampaignModel.id == campaign_id_str)
         )
-        existing_model = existing.scalar_one_or_none()
+        is_update = existing.scalar_one_or_none() is not None
 
-        if existing_model is not None:
-            # Updating an existing campaign — enforce optimistic locking
+        if is_update:
             if expected_version is None:
-                raise ConcurrentModificationError(
-                    "Campaign",
-                    campaign.id,
-                    -1,
-                )
-            if existing_model.version != expected_version:
-                raise ConcurrentModificationError("Campaign", campaign.id, expected_version)
+                raise ConcurrentModificationError("Campaign", campaign.id, -1)
 
-        model = CampaignModel(
-            id=str(campaign.id),
-            spec_id=str(campaign.spec_id),
-            owner_id=str(campaign.owner_id),
-            status=campaign.status,
-            version=campaign.version,
-            iteration=campaign.iteration,
-            created_at=campaign.created_at,
-            updated_at=campaign.updated_at,
-            completed_at=campaign.completed_at,
-            turbo_state_json=json.dumps(campaign.turbo_state) if campaign.turbo_state else None,
-            hypervolume_history_json=json.dumps(campaign.hypervolume_history),
-        )
-        merged = await self.session.merge(model)
-        return self._to_entity(merged)
+            # Atomic UPDATE … WHERE version = expected
+            stmt = (
+                update(CampaignModel)
+                .where(
+                    CampaignModel.id == campaign_id_str,
+                    CampaignModel.version == expected_version,
+                )
+                .values(**values)
+            )
+            result = await self.session.execute(stmt)
+            if result.rowcount == 0:  # ty: ignore[unresolved-attribute]
+                raise ConcurrentModificationError("Campaign", campaign.id, expected_version)
+            await self.session.flush()
+        else:
+            model = CampaignModel(id=campaign_id_str, **values)
+            await self.session.merge(model)
+            await self.session.flush()
+
+        return campaign
 
     async def delete(self, id: UUID) -> bool:
         """Delete campaign by ID."""

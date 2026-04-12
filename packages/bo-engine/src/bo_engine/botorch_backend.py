@@ -151,10 +151,19 @@ class BoTorchBackend:
         new_state = _turbo_state_to_dict(new_turbo) if new_turbo else None
         method_info = self.select_methods(spec, len(observations))
 
+        batch_warnings: list[str] = []
+        if spec.use_cost_aware and not any(o.cost is not None for o in observations):
+            batch_warnings.append(
+                "Cost-aware optimization was requested but no observations have "
+                "cost data in metadata. Falling back to standard optimization. "
+                "Add 'cost' to result metadata to enable cost weighting."
+            )
+
         return SuggestionBatch(
             suggestions=suggestions,
             method_info=method_info,
             backend_state=new_state,
+            warnings=batch_warnings,
         )
 
     # ----- Metrics -----

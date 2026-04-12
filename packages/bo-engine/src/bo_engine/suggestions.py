@@ -256,7 +256,7 @@ def generate_next_batch(
     # Prepare cost data if cost-aware optimization is enabled
     train_costs = None
     if spec.use_cost_aware:
-        train_costs = _prepare_cost_data(observations)
+        train_costs = _prepare_cost_data(observations, use_cost_aware=True)
 
     # Create generation context to bundle parameters
     ctx = GenerationContext(
@@ -940,8 +940,8 @@ def _build_outcome_constraint_models(
         constraint_model = create_and_fit_single_task_model(
             train_x, feasible, bounds, use_input_warping=False
         )
-        # Threshold for constraint: we want P(feasible) > 0.5
-        constraint_models.append((constraint_model, 0.5))
+        # Use per-constraint feasibility threshold from the spec (default 0.5)
+        constraint_models.append((constraint_model, oc.feasibility_threshold))
 
     return constraint_models if constraint_models else None
 

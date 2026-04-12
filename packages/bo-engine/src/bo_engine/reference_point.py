@@ -171,7 +171,11 @@ def _compute_static_reference_point(
     # So "worst" is always max
     worst = train_y.max(dim=0).values
     ranges = train_y.max(dim=0).values - train_y.min(dim=0).values
-    ranges = torch.where(ranges < MIN_OBJECTIVE_RANGE, torch.ones_like(ranges), ranges)
+
+    # For near-constant objectives, use absolute scale instead of unit range
+    # to avoid distorting hypervolume across objectives with different units.
+    abs_scale = worst.abs().clamp(min=MIN_OBJECTIVE_RANGE)
+    ranges = torch.where(ranges < MIN_OBJECTIVE_RANGE, abs_scale, ranges)
 
     ref_point = worst + config.margin * ranges
     return ref_point

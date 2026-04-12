@@ -1,6 +1,7 @@
 """Submit results operation — protocol-neutral business logic."""
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
@@ -322,6 +323,32 @@ def _validate_parameter_value(
             )
 
 
+def _validate_measurement_uncertainty(
+    uncertainty: dict[str, float],
+    objective_names: set[str],
+    index: int,
+    warnings: list[str],
+) -> None:
+    """Validate measurement uncertainty keys and values."""
+    invalid_keys = set(uncertainty.keys()) - objective_names
+    if invalid_keys:
+        warnings.append(
+            f"Result {index}: measurement_uncertainty has unknown "
+            f"objective keys: {sorted(invalid_keys)}"
+        )
+    for obj_name, unc_val in uncertainty.items():
+        if not isinstance(unc_val, (int, float)) or math.isnan(unc_val) or math.isinf(unc_val):
+            warnings.append(
+                f"Result {index}: measurement_uncertainty['{obj_name}'] "
+                f"is not a finite number: {unc_val}"
+            )
+        elif unc_val < 0:
+            warnings.append(
+                f"Result {index}: measurement_uncertainty['{obj_name}'] "
+                f"is negative ({unc_val}); expected non-negative std"
+            )
+
+
 def _validate_single_result(
     index: int,
     r: ResultSubmissionInput,
@@ -361,6 +388,11 @@ def _validate_single_result(
 
     if missing_objectives := (objective_names - set(r.objective_values.keys())):
         return f"Result {index} missing objectives: {missing_objectives}"
+
+    if r.measurement_uncertainty is not None:
+        _validate_measurement_uncertainty(
+            r.measurement_uncertainty, objective_names, index, warnings
+        )
 
     return None
 

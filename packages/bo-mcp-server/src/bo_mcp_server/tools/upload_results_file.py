@@ -13,6 +13,9 @@ from bo_mcp_server.server import mcp
 
 logger = logging.getLogger(__name__)
 
+# 10 MB — prevents memory exhaustion from arbitrarily large uploads.
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
 
 def _parse_uuids(campaign_id: str, submitted_by: str | None) -> dict[str, Any] | tuple[UUID, UUID]:
     """Validate and parse campaign_id and submitted_by UUIDs.
@@ -75,6 +78,19 @@ async def upload_results_file(
         file_format,
         len(file_content),
     )
+
+    if len(file_content) > MAX_UPLOAD_SIZE_BYTES:
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=(
+                f"File too large ({len(file_content)} bytes). "
+                f"Maximum upload size is {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB."
+            ),
+            details={
+                "size_bytes": len(file_content),
+                "max_bytes": MAX_UPLOAD_SIZE_BYTES,
+            },
+        )
 
     if file_format != "csv":
         logger.warning("Unsupported file format: %s", file_format)

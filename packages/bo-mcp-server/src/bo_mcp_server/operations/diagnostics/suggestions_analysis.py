@@ -12,6 +12,7 @@ from bo_engine.diagnostics import (
 from bo_engine.transforms import encode_categorical
 from bo_engine.types import OptimizationSpec
 
+from bo_mcp_server.constants import DIVERSITY_HIGH_THRESHOLD, DIVERSITY_MODERATE_THRESHOLD
 from bo_mcp_server.domain import CampaignSpec, Result, Suggestion, SuggestionStatus
 
 logger = logging.getLogger(__name__)
@@ -165,9 +166,9 @@ def compute_suggestion_diversity_metrics(
 
 def _interpret_diversity(diversity: float) -> str:
     """Provide agent-friendly interpretation of diversity score."""
-    if diversity >= 0.7:
+    if diversity >= DIVERSITY_HIGH_THRESHOLD:
         return "High diversity. Suggestions explore diverse regions of the parameter space."
-    elif diversity >= 0.4:
+    elif diversity >= DIVERSITY_MODERATE_THRESHOLD:
         return "Moderate diversity. Suggestions cover a reasonable range of the parameter space."
     else:
         return (

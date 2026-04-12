@@ -128,8 +128,44 @@ def turbo_state_to_dict(state: TurboState) -> dict[str, Any]:
     }
 
 
-def dict_to_turbo_state(data: dict[str, Any]) -> TurboState:
-    """Deserialize dictionary to TurboState."""
+_TURBO_REQUIRED_KEYS = frozenset(
+    {
+        "dim",
+        "batch_size",
+        "length",
+        "length_min",
+        "length_max",
+        "failure_counter",
+        "failure_tolerance",
+        "success_counter",
+        "success_tolerance",
+        "best_value",
+        "restart_triggered",
+    }
+)
+
+
+def dict_to_turbo_state(data: dict[str, Any], *, n_parameters: int | None = None) -> TurboState:
+    """Deserialize dictionary to TurboState.
+
+    Args:
+        data: Serialized TuRBO state dictionary.
+        n_parameters: If provided, validates that ``data["dim"]`` matches
+            the current campaign's parameter count to catch stale state.
+
+    Raises:
+        ValueError: On missing keys or dimension mismatch.
+    """
+    missing = _TURBO_REQUIRED_KEYS - data.keys()
+    if missing:
+        raise ValueError(f"Corrupted TuRBO state — missing keys: {sorted(missing)}")
+
+    if n_parameters is not None and data["dim"] != n_parameters:
+        raise ValueError(
+            f"TuRBO state dimension mismatch: state has dim={data['dim']} "
+            f"but campaign has {n_parameters} parameters"
+        )
+
     return TurboState(
         dim=data["dim"],
         batch_size=data["batch_size"],

@@ -108,6 +108,7 @@ markers = [
     "nightly: marks tests for nightly CI runs only (statistical/stochastic tests)",
     "tutorial: marks tests that reproduce BoTorch tutorial results",
     "deterministic: marks tests that require deterministic torch operations",
+    "integration: marks integration tests (auto-applied to tests/ integration/ in bo-mcp-server)",
     "xfail_validation: xfail tests for input validation (roadmap item)",
     "xfail_reproducibility: xfail tests for reproducibility features (roadmap item)",
 ]

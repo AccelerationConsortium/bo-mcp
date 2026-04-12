@@ -7,7 +7,11 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from bo_engine.constants import DISCRETE_ENUMERATION_MAX_POINTS
+from bo_engine.constants import (
+    DISCRETE_ENUMERATION_MAX_POINTS,
+    NUMERICAL_EPSILON,
+    SAFE_DIVISION_EPSILON,
+)
 from bo_engine.device import get_device, get_dtype
 from bo_engine.types import OptimizationSpec, ParameterType
 
@@ -315,7 +319,7 @@ def normalize_inputs(x: Tensor, bounds: Tensor) -> Tensor:
     """
     lower = bounds[0]
     upper = bounds[1]
-    return (x - lower) / (upper - lower + 1e-10)
+    return (x - lower) / (upper - lower + NUMERICAL_EPSILON)
 
 
 def unnormalize_inputs(x_normalized: Tensor, bounds: Tensor) -> Tensor:
@@ -344,7 +348,7 @@ def standardize_outputs(y: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     """
     mean = y.mean(dim=0)
     std = y.std(dim=0)
-    std = torch.where(std < 1e-6, torch.ones_like(std), std)
+    std = torch.where(std < SAFE_DIVISION_EPSILON, torch.ones_like(std), std)
     return (y - mean) / std, mean, std
 
 

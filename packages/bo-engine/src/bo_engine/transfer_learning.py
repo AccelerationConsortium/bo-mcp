@@ -31,6 +31,7 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
 from torch.distributions import Normal
 
+from bo_engine.constants import NUMERICAL_EPSILON, SAFE_DIVISION_EPSILON
 from bo_engine.device import ensure_device
 
 
@@ -135,7 +136,7 @@ class RGPE(torch.nn.Module):
         # Compute mean squared error for each model on target data
         # Use normalized MSE to avoid scale issues
         mses = torch.zeros(n_models, dtype=torch.double)
-        target_var = target_y.var().item() + 1e-6  # For normalization
+        target_var = target_y.var().item() + SAFE_DIVISION_EPSILON  # For normalization
 
         for model_idx, model in enumerate(all_models):
             model.eval()
@@ -157,7 +158,7 @@ class RGPE(torch.nn.Module):
         # For GP, average leverage ≈ 2 * n_dims / n_target
         n_dims = target_x.shape[-1]
         avg_leverage = min(0.5, 2.0 * n_dims / n_target)  # Cap at 0.5
-        loo_factor = 1.0 / ((1.0 - avg_leverage) ** 2 + 1e-6)
+        loo_factor = 1.0 / ((1.0 - avg_leverage) ** 2 + SAFE_DIVISION_EPSILON)
         mses[-1] = mses[-1] * loo_factor
 
         # Convert MSEs to ranking scores (lower MSE = better = higher score)
@@ -169,7 +170,7 @@ class RGPE(torch.nn.Module):
 
         # Apply softmax with temperature to get weights
         # Higher temperature = smoother (more uniform) weights
-        log_scores = torch.log(scores + 1e-10)
+        log_scores = torch.log(scores.clamp(min=NUMERICAL_EPSILON))
         weights = torch.softmax(log_scores / self.temperature, dim=0)
 
         self._weights = weights
@@ -300,6 +301,17 @@ def create_rgpe_model(
 
     if target_y.dim() == 1:
         target_y = target_y.unsqueeze(-1)
+
+    # Validate parameter space compatibility between target and prior tasks
+    target_dim = target_x.shape[-1]
+    for prior_task in prior_tasks:
+        prior_dim = prior_task.train_x.shape[-1]
+        if prior_dim != target_dim:
+            raise ValueError(
+                f"Prior task '{prior_task.name}' has {prior_dim} dimensions "
+                f"but target task has {target_dim}. All tasks must share the "
+                f"same parameter space dimensionality for transfer learning."
+            )
 
     # Create and fit base models from prior tasks
     base_models = []

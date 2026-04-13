@@ -1,7 +1,5 @@
 """Intake data schemas."""
 
-from typing import Any
-
 from pydantic import BaseModel, Field
 
 
@@ -46,7 +44,3 @@ class IntakeData(BaseModel):
     max_iterations: int | None = None
     initial_design_size: int | None = None
     random_seed: int | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for MCP tool."""
-        return self.model_dump()

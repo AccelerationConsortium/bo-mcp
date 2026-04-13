@@ -24,7 +24,7 @@ def validate_intake_operation(
 
     Args:
         intake_data: Campaign intake payload. Accepts either a
-            CampaignIntakeInput instance or a raw dict.
+            CampaignIntakeInput instance or a raw dict (validated internally).
 
     Returns:
         Dictionary with:

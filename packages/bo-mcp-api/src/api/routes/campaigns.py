@@ -1,5 +1,6 @@
 """Campaign routes."""
 
+from bo_mcp_server.domain import CampaignIntakeInput
 from bo_mcp_server.operations.batch_status import batch_get_status_operation
 from bo_mcp_server.operations.campaign_lifecycle import manage_campaign_lifecycle_operation
 from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
@@ -49,8 +50,9 @@ async def create_new_campaign(
     current_user: CurrentUser,
 ) -> CampaignCreateResponse:
     """Create a new optimization campaign."""
+    intake = CampaignIntakeInput.model_validate(request.intake.model_dump())
     result = await create_campaign_operation(
-        intake_data=request.intake.to_dict(),
+        intake_data=intake,
         owner_id=str(current_user.id),
     )
     return CampaignCreateResponse(
@@ -112,7 +114,7 @@ async def validate_campaign_intake(
     current_user: CurrentUser,
 ) -> ValidateIntakeResponse:
     """Validate a campaign specification without creating a campaign (dry-run)."""
-    full_result = validate_intake_operation(request.intake.to_dict())
+    full_result = validate_intake_operation(request.intake.model_dump())
     formatted = format_validate_intake_response(full_result, VerbosityLevel.STANDARD)
 
     return ValidateIntakeResponse(

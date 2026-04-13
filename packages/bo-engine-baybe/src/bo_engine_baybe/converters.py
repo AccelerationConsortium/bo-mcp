@@ -15,11 +15,6 @@ from baybe.parameters import (
     NumericalContinuousParameter,
     NumericalDiscreteParameter,
 )
-from baybe.recommenders import (
-    BotorchRecommender,
-    RandomRecommender,
-    TwoPhaseMetaRecommender,
-)
 from baybe.searchspace import SearchSpace
 from baybe.targets import NumericalTarget
 from bo_engine.types import (
@@ -83,19 +78,6 @@ def spec_to_objective(
     if len(targets) == 1:
         return SingleTargetObjective(target=targets[0])
     return ParetoObjective(targets)  # ty: ignore[invalid-argument-type]
-
-
-def spec_to_recommender() -> TwoPhaseMetaRecommender:
-    """Create default BayBE Recommender.
-
-    Uses TwoPhaseMetaRecommender: RandomRecommender for initial design
-    (works for all space types), then BotorchRecommender for model-guided
-    suggestions.
-    """
-    return TwoPhaseMetaRecommender(
-        initial_recommender=RandomRecommender(),
-        recommender=BotorchRecommender(),
-    )
 
 
 def spec_to_constraints(constraints: list[ConstraintSpec]) -> list[Any] | None:

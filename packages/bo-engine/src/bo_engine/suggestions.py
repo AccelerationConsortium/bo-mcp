@@ -14,7 +14,13 @@ from __future__ import annotations
 import logging
 import random
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from botorch.models import SingleTaskGP
+    from botorch.models.model_list_gp_regression import ModelListGP
+
+    GPModel = SingleTaskGP | ModelListGP
 
 import numpy as np
 import torch
@@ -256,7 +262,7 @@ def generate_next_batch(
     # Prepare cost data if cost-aware optimization is enabled
     train_costs = None
     if spec.use_cost_aware:
-        train_costs = _prepare_cost_data(observations)
+        train_costs = _prepare_cost_data(observations, use_cost_aware=True)
 
     # Create generation context to bundle parameters
     ctx = GenerationContext(
@@ -320,7 +326,7 @@ def _compute_turbo_bounds(
     turbo_state: TurboState | None,
     train_x: Tensor,
     train_y_bo: Tensor,
-    model: Any,
+    model: SingleTaskGP,
     bounds: Tensor,
 ) -> tuple[Tensor, str]:
     """Compute trust region bounds for TuRBO.
@@ -329,7 +335,7 @@ def _compute_turbo_bounds(
         turbo_state: Current TuRBO state
         train_x: Training inputs
         train_y_bo: Training outputs (BoTorch convention)
-        model: Fitted GP model
+        model: Fitted single-objective GP model
         bounds: Original parameter bounds
 
     Returns:
@@ -349,7 +355,7 @@ def _compute_turbo_bounds(
     return opt_bounds, turbo_info
 
 
-def _get_model_predictions(model: Any, candidates: Tensor) -> tuple[Tensor, Tensor]:
+def _get_model_predictions(model: GPModel, candidates: Tensor) -> tuple[Tensor, Tensor]:
     """Get model predictions (mean and std) at candidate points.
 
     Args:
@@ -940,8 +946,8 @@ def _build_outcome_constraint_models(
         constraint_model = create_and_fit_single_task_model(
             train_x, feasible, bounds, use_input_warping=False
         )
-        # Threshold for constraint: we want P(feasible) > 0.5
-        constraint_models.append((constraint_model, 0.5))
+        # Use per-constraint feasibility threshold from the spec (default 0.5)
+        constraint_models.append((constraint_model, oc.feasibility_threshold))
 
     return constraint_models if constraint_models else None
 

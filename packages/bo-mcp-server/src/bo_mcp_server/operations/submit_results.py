@@ -1,6 +1,7 @@
 """Submit results operation — protocol-neutral business logic."""
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
@@ -18,6 +19,7 @@ from bo_mcp_server.domain import (
     ResultSubmissionInput,
     SuggestionStatus,
 )
+from bo_mcp_server.domain.campaign_spec import InputParameter, ParameterType
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
@@ -234,6 +236,7 @@ async def _validate_and_create_results(
             atomic,
             tracking.warnings,
             tracking.duplicates_detected,
+            parameters=list(spec.parameters),
         )
 
         if result_error is not None:
@@ -266,21 +269,109 @@ async def _validate_and_create_results(
     return result_entities, entity_to_input_index
 
 
+def _check_numeric_bounds(
+    param: InputParameter,
+    value: int | float | str,
+    index: int,
+    warnings: list[str],
+) -> None:
+    """Check a numeric value against parameter bounds."""
+    if param.bounds is None:
+        return
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        pname = param.name
+        vtype = type(value).__name__
+        warnings.append(f"Result {index}: parameter '{pname}' expected numeric, got {vtype}")
+        return
+    if numeric < param.bounds.lower or numeric > param.bounds.upper:
+        warnings.append(
+            f"Result {index}: parameter '{param.name}' value {numeric} "
+            f"is outside spec bounds "
+            f"[{param.bounds.lower}, {param.bounds.upper}]"
+        )
+
+
+def _validate_parameter_value(
+    param: InputParameter,
+    value: int | float | str,
+    index: int,
+    warnings: list[str],
+) -> None:
+    """Check a single parameter value against its spec definition.
+
+    Out-of-bounds values are reported as warnings rather than hard errors
+    because real experiments may intentionally exceed spec bounds.
+    """
+    if param.type == ParameterType.CONTINUOUS:
+        _check_numeric_bounds(param, value, index, warnings)
+    elif param.type == ParameterType.DISCRETE:
+        if param.values is not None and value not in param.values:
+            warnings.append(
+                f"Result {index}: parameter '{param.name}' value {value} "
+                f"is not in allowed discrete values {param.values}"
+            )
+        else:
+            _check_numeric_bounds(param, value, index, warnings)
+    elif param.type == ParameterType.CATEGORICAL:
+        if param.categories is not None and value not in param.categories:
+            warnings.append(
+                f"Result {index}: parameter '{param.name}' value "
+                f"'{value}' is not in allowed categories "
+                f"{param.categories}"
+            )
+
+
+def _validate_measurement_uncertainty(
+    uncertainty: dict[str, float],
+    objective_names: set[str],
+    index: int,
+    warnings: list[str],
+) -> None:
+    """Validate measurement uncertainty keys and values."""
+    invalid_keys = set(uncertainty.keys()) - objective_names
+    if invalid_keys:
+        warnings.append(
+            f"Result {index}: measurement_uncertainty has unknown "
+            f"objective keys: {sorted(invalid_keys)}"
+        )
+    for obj_name, unc_val in uncertainty.items():
+        if not isinstance(unc_val, (int, float)) or math.isnan(unc_val) or math.isinf(unc_val):
+            warnings.append(
+                f"Result {index}: measurement_uncertainty['{obj_name}'] "
+                f"is not a finite number: {unc_val}"
+            )
+        elif unc_val < 0:
+            warnings.append(
+                f"Result {index}: measurement_uncertainty['{obj_name}'] "
+                f"is negative ({unc_val}); expected non-negative std"
+            )
+
+
 def _validate_single_result(
     index: int,
     r: ResultSubmissionInput,
     param_names: set[str],
     objective_names: set[str],
     existing_params: list[dict[str, Any]],
-    backend: Any,
+    backend: BOBackend,
     force: bool,
     atomic: bool,
     warnings: list[str],
     duplicates_detected: list[dict[str, Any]],
+    parameters: list[InputParameter] | None = None,
 ) -> str | None:
     """Validate a single result's parameters, duplicates, and objectives. Returns error or None."""
     if missing_params := (param_names - set(r.parameter_values.keys())):
         return f"Result {index} missing parameters: {missing_params}"
+
+    # Validate parameter values against spec bounds/categories
+    if parameters is not None:
+        param_by_name = {p.name: p for p in parameters}
+        for pname, pvalue in r.parameter_values.items():
+            if pname in param_by_name:
+                _validate_parameter_value(param_by_name[pname], pvalue, index, warnings)
 
     if not force:
         dup_error = _check_duplicates_for_result(
@@ -297,6 +388,11 @@ def _validate_single_result(
 
     if missing_objectives := (objective_names - set(r.objective_values.keys())):
         return f"Result {index} missing objectives: {missing_objectives}"
+
+    if r.measurement_uncertainty is not None:
+        _validate_measurement_uncertainty(
+            r.measurement_uncertainty, objective_names, index, warnings
+        )
 
     return None
 
@@ -332,12 +428,14 @@ async def _update_campaign_state(
             logger.debug("Failed to compute hypervolume: %s", e)
             warnings.append(f"Could not compute hypervolume: {e}")
 
-    if len(spec.objectives) == 1 and campaign.turbo_state is not None:
+    if campaign.backend_state is not None:
         try:
             new_obs = results_to_observations(result_entities)
-            new_state = backend.update_state_after_results(opt_spec, new_obs, campaign.turbo_state)
+            new_state = backend.update_state_after_results(
+                opt_spec, new_obs, campaign.backend_state
+            )
             if new_state is not None:
-                updated_campaign = updated_campaign.with_turbo_state(new_state)
+                updated_campaign = updated_campaign.with_backend_state(new_state)
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Failed to update backend state: %s", e)
             warnings.append(f"Could not update backend state: {e}")

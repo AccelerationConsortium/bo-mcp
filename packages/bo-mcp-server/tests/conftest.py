@@ -149,3 +149,22 @@ async def setup_database():
 
     # Cleanup: dispose engine to release connections
     await close_database()
+
+
+# ---------------------------------------------------------------------------
+# Automatic test markers based on directory
+# ---------------------------------------------------------------------------
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Apply markers to tests based on their location.
+
+    - ``unit/``        → ``@pytest.mark.smoke``  (fast, run on every PR)
+    - ``integration/`` → ``@pytest.mark.integration``
+    """
+    for item in items:
+        rel = str(item.path)
+        if "/unit/" in rel:
+            item.add_marker(pytest.mark.smoke)
+        elif "/integration/" in rel:
+            item.add_marker(pytest.mark.integration)

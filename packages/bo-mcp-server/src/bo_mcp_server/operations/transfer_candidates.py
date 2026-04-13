@@ -12,6 +12,11 @@ from bo_engine.constants import (
     TRANSFER_WEIGHT_PARAMETER,
 )
 
+from bo_mcp_server.constants import (
+    TRANSFER_SIMILARITY_GOOD,
+    TRANSFER_SIMILARITY_MODERATE,
+    TRANSFER_SIMILARITY_STRONG,
+)
 from bo_mcp_server.domain import CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_campaign_id, parse_verbosity
@@ -118,13 +123,13 @@ def _generate_transfer_recommendation(
             f"excellent similarity ({similarity:.0%}) and {n_results} results. "
             "Expected significant benefit from transfer."
         )
-    if similarity >= 0.6:
+    if similarity >= TRANSFER_SIMILARITY_GOOD:
         return (
             f"Recommended for transfer learning. '{source_name}' has "
             f"good similarity ({similarity:.0%}). Transfer may accelerate "
             "early optimization but may have limited benefit later."
         )
-    if similarity >= 0.4:
+    if similarity >= TRANSFER_SIMILARITY_MODERATE:
         return (
             f"Possible candidate. '{source_name}' has moderate similarity "
             f"({similarity:.0%}). Consider transfer if few other options exist."
@@ -244,7 +249,7 @@ def _build_overall_recommendation(candidates: list[dict[str, Any]]) -> str:
             "space and objectives are sufficiently different from existing campaigns. "
             "Optimization will proceed without transfer learning."
         )
-    if candidates[0]["similarity_score"] >= 0.7:
+    if candidates[0]["similarity_score"] >= TRANSFER_SIMILARITY_STRONG:
         top = candidates[0]
         return (
             f"Recommend transferring from '{top['name']}' (similarity: "

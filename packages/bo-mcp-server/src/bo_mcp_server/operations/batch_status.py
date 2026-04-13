@@ -1,9 +1,11 @@
 """Shared batch status operations."""
 
 import logging
+import math
 from typing import Any
 from uuid import UUID
 
+from bo_mcp_server.constants import HYPERVOLUME_STABILITY_THRESHOLD
 from bo_mcp_server.domain import Campaign, CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_verbosity
@@ -43,7 +45,10 @@ def _compute_convergence(hypervolume_history: list[float]) -> dict[str, Any]:
     convergence_info: dict[str, Any] = {"converged": False}
     if hypervolume_history and len(hypervolume_history) >= 5:
         recent = hypervolume_history[-5:]
-        if len(set(recent)) == 1 or (max(recent) - min(recent)) < 0.001:
+        if (
+            all(math.isclose(r, recent[0], rel_tol=1e-9) for r in recent)
+            or (max(recent) - min(recent)) < HYPERVOLUME_STABILITY_THRESHOLD
+        ):
             convergence_info["converged"] = True
             convergence_info["reason"] = "Hypervolume stable"
     return convergence_info

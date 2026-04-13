@@ -24,14 +24,28 @@ class CampaignIntakeInput(BaseModel):
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="after")
-    def validate_constraint_parameter_refs(self) -> "CampaignIntakeInput":
-        """Ensure constraints only reference declared parameters."""
-        parameter_names = {p.name for p in self.parameters}
-        invalid_params = []
+    def validate_names_and_constraints(self) -> "CampaignIntakeInput":
+        """Validate unique names and constraint parameter references."""
+        # Duplicate parameter names
+        param_names = [p.name for p in self.parameters]
+        dup_params = {n for n in param_names if param_names.count(n) > 1}
+        if dup_params:
+            msg = f"Duplicate parameter names: {', '.join(sorted(dup_params))}"
+            raise ValueError(msg)
 
+        # Duplicate objective names
+        obj_names = [o.name for o in self.objectives]
+        dup_objs = {n for n in obj_names if obj_names.count(n) > 1}
+        if dup_objs:
+            msg = f"Duplicate objective names: {', '.join(sorted(dup_objs))}"
+            raise ValueError(msg)
+
+        # Constraints reference declared parameters
+        parameter_name_set = set(param_names)
+        invalid_params = []
         for constraint in self.constraints:
             for parameter in constraint.parameters:
-                if parameter not in parameter_names:
+                if parameter not in parameter_name_set:
                     invalid_params.append(parameter)
 
         if invalid_params:

@@ -22,6 +22,53 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Domain exceptions
+# ---------------------------------------------------------------------------
+
+
+class OperationError(Exception):
+    """Base exception for operation-layer errors.
+
+    Carries an ``ErrorCode`` and optional details so that the transport
+    layers (MCP tools, HTTP routes) can convert to the appropriate
+    response format without re-interpreting strings.
+    """
+
+    def __init__(
+        self,
+        code: "ErrorCode",
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.code = code
+        self.error_message = message  # avoid shadowing Exception.args
+        self.details = details
+        super().__init__(message or "")
+
+    def to_response(self) -> dict[str, Any]:
+        """Convert to the standard MCP error response dict."""
+        return make_error_response(self.code, message=self.error_message, details=self.details)
+
+
+class ValidationError(OperationError):
+    """Raised for input validation failures (bad UUIDs, invalid enums, etc.)."""
+
+
+class CampaignNotFoundError(OperationError):
+    """Raised when a campaign is not found."""
+
+    def __init__(self, campaign_id: str) -> None:
+        super().__init__(
+            ErrorCode.CAMPAIGN_NOT_FOUND,
+            message=f"Campaign {campaign_id} not found",
+            details={"campaign_id": campaign_id},
+        )
+
+
+class InvalidStateError(OperationError):
+    """Raised when a campaign is in the wrong state for the requested operation."""
+
 
 class ErrorCode(StrEnum):
     """Error codes for MCP tool failures.
@@ -210,3 +257,38 @@ def make_error_response(
         "error": error.to_dict(),
         "errors": [error_message],  # Backward compatibility
     }
+
+
+# Maps error codes to HTTP status codes for use by the REST API layer.
+ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
+    ErrorCode.INVALID_CAMPAIGN_ID: 400,
+    ErrorCode.CAMPAIGN_NOT_FOUND: 404,
+    ErrorCode.INVALID_STATE_TRANSITION: 409,
+    ErrorCode.DUPLICATE_RESULT: 409,
+    ErrorCode.VALIDATION_FAILED: 400,
+    ErrorCode.MISSING_PARAMETERS: 400,
+    ErrorCode.MISSING_OBJECTIVES: 400,
+    ErrorCode.CONSTRAINT_VIOLATION: 400,
+    ErrorCode.SUGGESTION_NOT_FOUND: 404,
+    ErrorCode.MODEL_FITTING_FAILED: 500,
+    ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: 500,
+    ErrorCode.DATABASE_ERROR: 500,
+    ErrorCode.INSUFFICIENT_DATA: 422,
+}
+
+
+def http_status_for_error(error_response: dict[str, Any]) -> int:
+    """Extract the HTTP status code from an operation error response.
+
+    Looks up the error code in ERROR_CODE_TO_HTTP_STATUS.
+    Returns 500 as the default if the code is missing or unrecognised.
+    """
+    error_dict = error_response.get("error", {})
+    code_value = error_dict.get("code")
+    if code_value is not None:
+        try:
+            code = ErrorCode(code_value)
+            return ERROR_CODE_TO_HTTP_STATUS.get(code, 500)
+        except ValueError:
+            pass
+    return 500

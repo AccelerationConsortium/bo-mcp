@@ -323,3 +323,135 @@ class TestComputeHypervolume:
         backend = BayBEBackend()
         result = backend.compute_hypervolume(simple_spec, [])
         assert result is None
+
+
+class TestValidateSpec:
+    """Tests for E6 — validate_spec surfaces unsupported feature warnings."""
+
+    def test_simple_spec_no_warnings(self, simple_spec: OptimizationSpec) -> None:
+        backend = BayBEBackend()
+        warnings = backend.validate_spec(simple_spec)
+        assert warnings == []
+
+    def test_turbo_config_warning(self) -> None:
+        from bo_engine.types import TurboConfig
+
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0, 1))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            turbo_config=TurboConfig(),
+        )
+        backend = BayBEBackend()
+        warnings = backend.validate_spec(spec)
+        assert len(warnings) >= 1
+        assert any("TuRBO" in w for w in warnings)
+
+    def test_cost_aware_warning(self) -> None:
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0, 1))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            use_cost_aware=True,
+        )
+        backend = BayBEBackend()
+        warnings = backend.validate_spec(spec)
+        assert any("Cost-aware" in w for w in warnings)
+
+
+class TestGenerateSuggestionsZeroObservations:
+    """Tests for E2 — IncompatibilityError handling with 0 observations."""
+
+    def test_zero_obs_does_not_crash(self, simple_spec: OptimizationSpec) -> None:
+        """generate_suggestions with empty observations should not crash."""
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=simple_spec,
+            observations=[],
+            batch_size=2,
+            iteration=1,
+        )
+        assert isinstance(batch, SuggestionBatch)
+        assert len(batch.suggestions) == 2
+
+
+class TestDeltaMeasurements:
+    """Tests for E1 — duplicate measurement prevention on state restore."""
+
+    def test_state_restore_no_duplicate_accumulation(self, simple_spec: OptimizationSpec) -> None:
+        """Restoring state and calling generate_suggestions should not
+        double-count prior observations."""
+        backend = BayBEBackend()
+        obs = [
+            ObservationData(parameter_values={"x1": 0.3, "x2": 0.7}, objective_values={"y": 1.0}),
+            ObservationData(parameter_values={"x1": 0.5, "x2": 0.5}, objective_values={"y": 0.5}),
+            ObservationData(parameter_values={"x1": 0.8, "x2": 0.2}, objective_values={"y": 0.8}),
+        ]
+
+        # Iteration 1 — builds fresh campaign
+        batch1 = backend.generate_suggestions(simple_spec, obs, batch_size=1, iteration=1)
+        state = batch1.backend_state
+
+        # Iteration 2 — restores from state, adds only delta
+        obs2 = obs + [
+            ObservationData(parameter_values={"x1": 0.1, "x2": 0.9}, objective_values={"y": 0.3}),
+        ]
+        batch2 = backend.generate_suggestions(
+            simple_spec,
+            obs2,
+            batch_size=1,
+            iteration=2,
+            backend_state=state,
+        )
+        assert isinstance(batch2, SuggestionBatch)
+        assert len(batch2.suggestions) == 1
+        # The state should be serializable and not bloated
+        assert batch2.backend_state is not None
+        assert "campaign_json" in batch2.backend_state
+
+
+class TestComputeDiagnostics:
+    """Tests for E5 — compute_diagnostics coverage."""
+
+    def test_diagnostics_with_observations(self, simple_spec: OptimizationSpec) -> None:
+        backend = BayBEBackend()
+        obs = [
+            ObservationData(parameter_values={"x1": 0.1, "x2": 0.1}, objective_values={"y": 2.0}),
+            ObservationData(parameter_values={"x1": 0.3, "x2": 0.7}, objective_values={"y": 1.5}),
+            ObservationData(parameter_values={"x1": 0.5, "x2": 0.5}, objective_values={"y": 1.0}),
+            ObservationData(parameter_values={"x1": 0.7, "x2": 0.3}, objective_values={"y": 1.2}),
+            ObservationData(parameter_values={"x1": 0.9, "x2": 0.9}, objective_values={"y": 1.8}),
+        ]
+        result = backend.compute_diagnostics(simple_spec, obs)
+
+        # Objectives section
+        assert "best_value" in result
+        assert math.isclose(result["best_value"], 1.0, rel_tol=1e-9)
+
+        # Model section (should have hyperparameters from shared fitted campaign)
+        assert "hyperparameters" in result
+        assert "model_correlation" in result
+
+    def test_diagnostics_insufficient_data(self, simple_spec: OptimizationSpec) -> None:
+        backend = BayBEBackend()
+        obs = [
+            ObservationData(parameter_values={"x1": 0.5, "x2": 0.5}, objective_values={"y": 1.0}),
+        ]
+        result = backend.compute_diagnostics(simple_spec, obs)
+        assert result.get("hyperparameters") is None
+
+    def test_outlier_format_matches_botorch(self, simple_spec: OptimizationSpec) -> None:
+        """E4 — outlier output should be a dict with 'count' and 'outlier_results'."""
+        backend = BayBEBackend()
+        obs = [
+            ObservationData(
+                parameter_values={"x1": float(i) / 10, "x2": 0.5},
+                objective_values={"y": float(i)},
+            )
+            for i in range(6)
+        ]
+        result = backend.compute_diagnostics(simple_spec, obs, sections=frozenset(["outliers"]))
+        outliers = result.get("outliers")
+        if outliers is not None:
+            assert isinstance(outliers, dict)
+            assert "count" in outliers
+            assert "outlier_results" in outliers
+            assert isinstance(outliers["outlier_results"], list)

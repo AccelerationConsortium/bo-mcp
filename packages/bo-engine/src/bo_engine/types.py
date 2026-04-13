@@ -157,6 +157,13 @@ class OptimizationSpec:
     """Full specification for an optimization problem.
 
     This is the main input type for bo-engine functions.
+
+    **Backend-specific fields:** Several optional fields (``turbo_config``,
+    ``saasbo_config``, ``fidelity_parameter``, ``transfer_learning``,
+    ``use_cost_aware``, ``use_input_warping``) are primarily consumed by
+    the BoTorch backend.  Other backends **should silently ignore** fields
+    they do not support and surface warnings via
+    :meth:`BOBackend.validate_spec` rather than raising.
     """
 
     parameters: list[ParameterSpec]

@@ -1,11 +1,17 @@
 """Suggestion routes."""
 
 from bo_mcp_server.domain import SuggestionStatus
+from bo_mcp_server.operations.generate_suggestions import (
+    generate_suggestions_operation,
+)
+from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
 from bo_mcp_server.operations.suggestion_explanation import (
     get_suggestion_explanation_operation,
 )
+from bo_mcp_server.operations.update_suggestion_status import (
+    update_suggestion_status_operation,
+)
 from bo_mcp_server.storage import CampaignRepository, SuggestionRepository, get_session
-from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from fastapi import APIRouter, HTTPException, Query, status
 
 from api.deps import (
@@ -16,8 +22,12 @@ from api.deps import (
 )
 from api.schemas.suggestion import (
     SuggestionExplanationResponse,
+    SuggestionQueryRequest,
+    SuggestionQueryResponse,
     SuggestionResponse,
     SuggestionsGenerateResponse,
+    SuggestionStatusUpdateRequest,
+    SuggestionStatusUpdateResponse,
 )
 from api.schemas.suggestion import (
     SuggestionProvenance as SuggestionProvenanceSchema,
@@ -32,14 +42,10 @@ async def generate_campaign_suggestions(
     current_user: CurrentUser,
     batch_size: int | None = Query(default=None, ge=1),
 ) -> SuggestionsGenerateResponse:
-    """Generate new suggestions for a campaign.
-
-    This is a thin proxy to the MCP bo_generate_suggestions tool.
-    """
+    """Generate new suggestions for a campaign."""
     await get_authorized_campaign(campaign_id, current_user)
 
-    # Generate suggestions via MCP tool
-    result = await generate_suggestions(
+    result = await generate_suggestions_operation(
         campaign_id=campaign_id,
         batch_size=batch_size,
     )
@@ -86,6 +92,50 @@ async def get_campaign_suggestion_explanation(
 
     result = await get_suggestion_explanation_operation(suggestion_id)
     return SuggestionExplanationResponse(**result)
+
+
+@router.post("/{campaign_id}/query", response_model=SuggestionQueryResponse)
+async def query_campaign_suggestions(
+    campaign_id: str,
+    request: SuggestionQueryRequest,
+    current_user: CurrentUser,
+) -> SuggestionQueryResponse:
+    """Query suggestions for a campaign with filtering, pagination, and verbosity control."""
+    await get_authorized_campaign(campaign_id, current_user)
+
+    result = await list_suggestions_operation(
+        campaign_id=campaign_id,
+        status_filter=request.status_filter,
+        limit=request.limit,
+        offset=request.offset,
+        verbosity=request.verbosity,
+    )
+    return SuggestionQueryResponse(**result)
+
+
+@router.post(
+    "/{suggestion_id}/status",
+    response_model=SuggestionStatusUpdateResponse,
+)
+async def update_suggestion_status(
+    suggestion_id: str,
+    request: SuggestionStatusUpdateRequest,
+    current_user: CurrentUser,
+) -> SuggestionStatusUpdateResponse:
+    """Update the status of a suggestion (accept, reject, or expire)."""
+    await get_authorized_suggestion(suggestion_id, current_user)
+
+    result = await update_suggestion_status_operation(
+        suggestion_id=suggestion_id,
+        status=request.status,
+    )
+    return SuggestionStatusUpdateResponse(
+        success=result["success"],
+        suggestion_id=result.get("suggestion_id"),
+        status=result.get("status"),
+        previous_status=result.get("previous_status"),
+        errors=result.get("errors", []),
+    )
 
 
 @router.get("/{campaign_id}", response_model=list[SuggestionResponse])

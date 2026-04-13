@@ -96,5 +96,6 @@ def create_mcp_server() -> FastMCP:
         validate_intake,
     )
 
-    logger.info("MCP server created with 19 tools and 3 resources")
+    n_tools = len(mcp._tool_manager._tools)
+    logger.info("MCP server created with %d tools and 3 resources", n_tools)
     return mcp

@@ -38,8 +38,9 @@ class Campaign(BaseModel):
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     completed_at: datetime | None = None
-    # v1.2: TuRBO state for high-dimensional optimization
-    turbo_state: dict[str, Any] | None = None
+    # Opaque backend state (e.g. TuRBO trust region, BayBE campaign JSON).
+    # Stored in the DB column ``turbo_state_json`` for backward compatibility.
+    backend_state: dict[str, Any] | None = None
     # v2.8: Hypervolume history for multi-objective convergence detection
     hypervolume_history: list[float] = Field(default_factory=list)
 
@@ -93,11 +94,11 @@ class Campaign(BaseModel):
             }
         )
 
-    def with_turbo_state(self, turbo_state: dict[str, Any] | None) -> "Campaign":
-        """Create new campaign with updated TuRBO state."""
+    def with_backend_state(self, state: dict[str, Any] | None) -> "Campaign":
+        """Create new campaign with updated backend state."""
         return self.model_copy(
             update={
-                "turbo_state": turbo_state,
+                "backend_state": state,
                 "version": self.version + 1,
                 "updated_at": utcnow(),
             }

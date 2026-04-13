@@ -37,6 +37,7 @@ from bo_engine.acquisition import (
 from bo_engine.backend import (
     BatchDiversityMetrics,
     BOBackend,
+    DiagnosticSection,
     DuplicateInfo,
     Feature,
     SuggestionBatch,
@@ -659,6 +660,7 @@ __all__ = [
     "BOBackend",
     "BatchDiversityMetrics",
     "BoTorchBackend",
+    "DiagnosticSection",
     "DuplicateInfo",
     "Feature",
     "SuggestionBatch",

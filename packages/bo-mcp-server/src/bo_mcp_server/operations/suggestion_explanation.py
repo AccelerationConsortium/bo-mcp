@@ -19,8 +19,8 @@ async def get_suggestion_explanation_operation(suggestion_id: str) -> dict[str, 
     except ValueError:
         logger.warning("Invalid suggestion_id format: %s", suggestion_id)
         response = make_error_response(
-            ErrorCode.INVALID_CAMPAIGN_ID,
-            message="Invalid suggestion_id format",
+            ErrorCode.VALIDATION_FAILED,
+            message="Invalid suggestion_id format — expected a UUID v4",
             details={"suggestion_id": suggestion_id},
         )
         response.update({"explanation": None, "provenance": None})

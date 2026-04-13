@@ -1,4 +1,4 @@
-"""List backend capabilities MCP tool.
+"""List backend capabilities MCP tool wrapper.
 
 Returns the active backend's name, supported features, and server version
 so agents and API consumers know what functionality is available.
@@ -6,8 +6,7 @@ so agents and API consumers know what functionality is available.
 
 from typing import Any
 
-from bo_mcp_server import __version__
-from bo_mcp_server.backend import get_backend
+from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
 from bo_mcp_server.server import mcp
 
 
@@ -25,9 +24,4 @@ async def list_capabilities() -> dict[str, Any]:
             - supported_features: List of feature names this backend supports
             - server_version: Server version string
     """
-    backend = get_backend()
-    return {
-        "backend": backend.name,
-        "supported_features": sorted(backend.supported_features),
-        "server_version": __version__,
-    }
+    return list_capabilities_operation()

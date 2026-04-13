@@ -4,7 +4,8 @@ import logging
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from bo_mcp_server.backend import resolve_backend_name
+from bo_mcp_server.backend import get_backend, resolve_backend_name
+from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
     CampaignIntakeInput,
@@ -18,6 +19,7 @@ from bo_mcp_server.domain import (
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_verbosity
+from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_create_campaign_response,
@@ -80,7 +82,7 @@ def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
 
 
 async def create_campaign_operation(
-    intake_data: CampaignIntakeInput,
+    intake_data: CampaignIntakeInput | dict[str, Any],
     owner_id: str,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
 ) -> dict[str, Any]:
@@ -90,7 +92,8 @@ async def create_campaign_operation(
     independent of any transport protocol (MCP, REST, etc.).
 
     Args:
-        intake_data: The campaign intake specification.
+        intake_data: The campaign intake specification. Accepts either a
+            CampaignIntakeInput instance or a raw dict (validated internally).
         owner_id: UUID string identifying the campaign owner.
         verbosity: Response detail level.
 
@@ -110,11 +113,7 @@ async def create_campaign_operation(
         return verbosity_result
     verbosity_level = verbosity_result
 
-    # Lazy import to avoid circular dependency (tools -> operations -> tools)
-    from bo_mcp_server.tools.validate_intake import validate_intake
-
-    # Validate the intake (use detailed verbosity for full spec)
-    validation = await validate_intake(intake_data, verbosity="detailed")
+    validation = validate_intake_operation(intake_data)
 
     if not validation["valid"]:
         logger.warning(
@@ -128,6 +127,10 @@ async def create_campaign_operation(
                 "validation_errors": validation["errors"],
             },
         )
+        # Surface detailed validation errors in the backward-compat errors list
+        # so callers (including agents) can inspect them without digging into
+        # error.details.
+        response["errors"] = validation["errors"]
         response["campaign_id"] = None
         response["spec_id"] = None
         response["warnings"] = validation.get("warnings", [])
@@ -155,6 +158,13 @@ async def create_campaign_operation(
     spec_data["backend"] = resolve_backend_name(raw_backend, spec_data)
 
     spec = _build_spec_from_dict(spec_data)
+    warnings: list[str] = validation.get("warnings", [])
+
+    # Ask the backend whether it can handle this spec — surface warnings
+    backend = get_backend(spec.backend)
+    opt_spec = campaign_spec_to_optimization_spec(spec)
+    backend_warnings = backend.validate_spec(opt_spec)
+    warnings.extend(backend_warnings)
 
     # Generate IDs
     spec_id = uuid4()
@@ -189,7 +199,7 @@ async def create_campaign_operation(
         "campaign_id": str(campaign_id),
         "spec_id": str(spec_id),
         "campaign_name": spec.name,
-        "warnings": validation.get("warnings", []),
+        "warnings": warnings,
         "errors": [],
     }
 

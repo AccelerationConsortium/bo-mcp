@@ -17,36 +17,33 @@ from importlib.metadata import entry_points
 from typing import Any
 
 from bo_engine.backend import BOBackend, Feature
-from bo_engine.botorch_backend import BoTorchBackend
 
 logger = logging.getLogger(__name__)
 
 _backends: dict[str, BOBackend] = {}
 
 DEFAULT_BACKEND = "botorch"
+_ENTRY_POINT_GROUP = "bo_mcp.backends"
 
 
 def _load_backend(name: str) -> BOBackend:
-    """Load a backend by name. Uses entry-point discovery for non-default backends."""
-    if name == DEFAULT_BACKEND:
-        return BoTorchBackend()
-
-    eps = entry_points(group="bo_mcp.backends")
+    """Load a backend by name via entry-point discovery."""
+    eps = entry_points(group=_ENTRY_POINT_GROUP)
     for ep in eps:
         if ep.name == name:
             backend_class = ep.load()
             logger.info("Loaded backend '%s' via entry point: %s", name, ep.value)
             return backend_class()
 
-    available = [DEFAULT_BACKEND] + [ep.name for ep in eps]
+    available = [ep.name for ep in eps]
     msg = f"Unknown backend '{name}'. Available: {available}"
     raise ValueError(msg)
 
 
 def _get_available_backend_names() -> list[str]:
     """Return names of all installed backends."""
-    eps = entry_points(group="bo_mcp.backends")
-    return [DEFAULT_BACKEND] + [ep.name for ep in eps]
+    eps = entry_points(group=_ENTRY_POINT_GROUP)
+    return [ep.name for ep in eps]
 
 
 # Spec keys that directly map to a required feature when truthy.

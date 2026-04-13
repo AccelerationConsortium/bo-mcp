@@ -7,11 +7,14 @@ from typing import Any
 from uuid import UUID
 
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.result_upload_parser import parse_prefixed_result_rows
 from bo_mcp_server.server import mcp
-from bo_mcp_server.tools.submit_results import submit_results
 
 logger = logging.getLogger(__name__)
+
+# 10 MB — prevents memory exhaustion from arbitrarily large uploads.
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
 
 
 def _parse_uuids(campaign_id: str, submitted_by: str | None) -> dict[str, Any] | tuple[UUID, UUID]:
@@ -76,6 +79,19 @@ async def upload_results_file(
         len(file_content),
     )
 
+    if len(file_content) > MAX_UPLOAD_SIZE_BYTES:
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=(
+                f"File too large ({len(file_content)} bytes). "
+                f"Maximum upload size is {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB."
+            ),
+            details={
+                "size_bytes": len(file_content),
+                "max_bytes": MAX_UPLOAD_SIZE_BYTES,
+            },
+        )
+
     if file_format != "csv":
         logger.warning("Unsupported file format: %s", file_format)
         return make_error_response(
@@ -113,7 +129,7 @@ async def upload_results_file(
             response["errors"] = parse_errors
         return response
 
-    submit_result = await submit_results(
+    submit_result = await submit_results_operation(
         campaign_id=campaign_id,
         results=parsed_results,
         submitted_by=str(submitter_uuid),

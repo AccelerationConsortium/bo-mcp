@@ -2,6 +2,7 @@
 
 import functools
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,22 @@ from bo_mcp_server.domain.event import EventType
 from bo_mcp_server.domain.result import ResultSource
 from bo_mcp_server.domain.suggestion import SuggestionStatus
 from bo_mcp_server.domain.utils import utcnow
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_json_loads(raw: str, *, default: Any, context: str = "") -> Any:
+    """Parse JSON with error handling for corrupted data.
+
+    Returns *default* if parsing fails, logging the error at ERROR level
+    so corrupted rows are visible in logs without crashing the request.
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.error("Corrupted JSON in %s: %s (raw=%r)", context, exc, raw[:200])
+        return default
+
 
 # Foreign key constants to avoid duplicated literals
 CAMPAIGNS_ID_FK = "campaigns.id"
@@ -66,17 +83,20 @@ class CampaignSpecModel(Base):
     @functools.cached_property
     def parsed_parameters(self) -> list[dict[str, Any]]:
         """Deserialize parameters JSON (cached per instance)."""
-        return json.loads(self.parameters_json)
+        ctx = f"CampaignSpec({self.id}).parameters"
+        return _safe_json_loads(self.parameters_json, default=[], context=ctx)
 
     @functools.cached_property
     def parsed_objectives(self) -> list[dict[str, Any]]:
         """Deserialize objectives JSON (cached per instance)."""
-        return json.loads(self.objectives_json)
+        ctx = f"CampaignSpec({self.id}).objectives"
+        return _safe_json_loads(self.objectives_json, default=[], context=ctx)
 
     @functools.cached_property
     def parsed_constraints(self) -> list[dict[str, Any]]:
         """Deserialize constraints JSON (cached per instance)."""
-        return json.loads(self.constraints_json)
+        ctx = f"CampaignSpec({self.id}).constraints"
+        return _safe_json_loads(self.constraints_json, default=[], context=ctx)
 
     # Backward-compat aliases for code using the old method names
     def get_parameters(self) -> list[dict[str, Any]]:
@@ -125,14 +145,16 @@ class CampaignModel(Base):
         """Deserialize TuRBO state JSON (cached per instance)."""
         if self.turbo_state_json is None:
             return None
-        return json.loads(self.turbo_state_json)
+        ctx = f"Campaign({self.id}).turbo_state"
+        return _safe_json_loads(self.turbo_state_json, default=None, context=ctx)
 
     @functools.cached_property
     def parsed_hypervolume_history(self) -> list[float]:
         """Deserialize hypervolume history JSON (cached per instance)."""
         if not self.hypervolume_history_json:
             return []
-        return json.loads(self.hypervolume_history_json)
+        ctx = f"Campaign({self.id}).hypervolume_history"
+        return _safe_json_loads(self.hypervolume_history_json, default=[], context=ctx)
 
     def get_turbo_state(self) -> dict[str, Any] | None:
         return self.parsed_turbo_state
@@ -164,11 +186,13 @@ class SuggestionModel(Base):
 
     @functools.cached_property
     def parsed_parameter_values(self) -> dict[str, Any]:
-        return json.loads(self.parameter_values_json)
+        ctx = f"Suggestion({self.id}).parameter_values"
+        return _safe_json_loads(self.parameter_values_json, default={}, context=ctx)
 
     @functools.cached_property
     def parsed_provenance(self) -> dict[str, Any]:
-        return json.loads(self.provenance_json)
+        ctx = f"Suggestion({self.id}).provenance"
+        return _safe_json_loads(self.provenance_json, default={}, context=ctx)
 
     def get_parameter_values(self) -> dict[str, Any]:
         return self.parsed_parameter_values
@@ -203,15 +227,18 @@ class ResultModel(Base):
 
     @functools.cached_property
     def parsed_parameter_values(self) -> dict[str, Any]:
-        return json.loads(self.parameter_values_json)
+        ctx = f"Result({self.id}).parameter_values"
+        return _safe_json_loads(self.parameter_values_json, default={}, context=ctx)
 
     @functools.cached_property
     def parsed_objective_values(self) -> dict[str, float]:
-        return json.loads(self.objective_values_json)
+        ctx = f"Result({self.id}).objective_values"
+        return _safe_json_loads(self.objective_values_json, default={}, context=ctx)
 
     @functools.cached_property
     def parsed_metadata(self) -> dict[str, Any]:
-        return json.loads(self.metadata_json)
+        ctx = f"Result({self.id}).metadata"
+        return _safe_json_loads(self.metadata_json, default={}, context=ctx)
 
     def get_parameter_values(self) -> dict[str, Any]:
         return self.parsed_parameter_values

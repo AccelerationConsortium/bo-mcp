@@ -3,12 +3,17 @@
 from bo_mcp_server.operations.batch_status import batch_get_status_operation
 from bo_mcp_server.operations.campaign_lifecycle import manage_campaign_lifecycle_operation
 from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
+from bo_mcp_server.operations.create_campaign import create_campaign_operation
+from bo_mcp_server.operations.export_campaign import export_campaign_operation
+from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 from bo_mcp_server.operations.transfer_candidates import (
     discover_transfer_candidates_operation,
 )
+from bo_mcp_server.operations.validate_intake import validate_intake_operation
+from bo_mcp_server.response_formatter import VerbosityLevel, format_validate_intake_response
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
-from bo_mcp_server.tools.create_campaign import create_campaign
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 
 from api.deps import (
     CurrentUser,
@@ -24,11 +29,15 @@ from api.schemas.campaign import (
     CampaignLifecycleRequest,
     CampaignLifecycleResponse,
     CampaignListResponse,
+    CampaignQueryRequest,
+    CampaignQueryResponse,
     CampaignResponse,
     CompareCampaignsRequest,
     CompareCampaignsResponse,
     TransferCandidatesRequest,
     TransferCandidatesResponse,
+    ValidateIntakeRequest,
+    ValidateIntakeResponse,
 )
 
 router = APIRouter()
@@ -39,11 +48,8 @@ async def create_new_campaign(
     request: CampaignCreate,
     current_user: CurrentUser,
 ) -> CampaignCreateResponse:
-    """Create a new optimization campaign.
-
-    This is a thin proxy to the MCP bo_create_campaign tool.
-    """
-    result = await create_campaign(
+    """Create a new optimization campaign."""
+    result = await create_campaign_operation(
         intake_data=request.intake.to_dict(),
         owner_id=str(current_user.id),
     )
@@ -98,6 +104,39 @@ async def list_campaigns(current_user: CurrentUser) -> CampaignListResponse:
                 )
 
         return CampaignListResponse(campaigns=responses, total=len(responses))
+
+
+@router.post("/validate", response_model=ValidateIntakeResponse)
+async def validate_campaign_intake(
+    request: ValidateIntakeRequest,
+    current_user: CurrentUser,
+) -> ValidateIntakeResponse:
+    """Validate a campaign specification without creating a campaign (dry-run)."""
+    full_result = validate_intake_operation(request.intake.to_dict())
+    formatted = format_validate_intake_response(full_result, VerbosityLevel.STANDARD)
+
+    return ValidateIntakeResponse(
+        valid=formatted["valid"],
+        errors=formatted.get("errors", []),
+        warnings=formatted.get("warnings", []),
+        spec_summary=formatted.get("spec_summary"),
+    )
+
+
+@router.post("/query", response_model=CampaignQueryResponse)
+async def query_campaigns(
+    request: CampaignQueryRequest,
+    current_user: CurrentUser,
+) -> CampaignQueryResponse:
+    """Query campaigns with filtering, pagination, and verbosity control."""
+    result = await list_campaigns_operation(
+        owner_id=current_user.id,
+        status=request.status,
+        limit=request.limit,
+        offset=request.offset,
+        verbosity=request.verbosity,
+    )
+    return CampaignQueryResponse(**result)
 
 
 @router.post("/status/batch", response_model=BatchStatusResponse)
@@ -168,6 +207,43 @@ async def discover_campaign_transfer_candidates(
         verbosity=request.verbosity.value,
     )
     return TransferCandidatesResponse(**result)
+
+
+@router.get("/{campaign_id}/export")
+async def export_campaign(
+    campaign_id: str,
+    current_user: CurrentUser,
+    format: str = Query(default="csv"),
+) -> StreamingResponse:
+    """Export all campaign results as a downloadable CSV file."""
+    await get_authorized_campaign(campaign_id, current_user)
+
+    result = await export_campaign_operation(
+        campaign_id=campaign_id,
+        format=format,
+    )
+
+    if not result.get("success", False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("errors", ["Export failed"])[0]
+            if result.get("errors")
+            else result.get("message", "Export failed"),
+        )
+
+    # Sanitize campaign name for filename (name comes from the operation)
+    raw_name = result.get("campaign_name", f"campaign_{campaign_id[:8]}")
+    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in raw_name)
+    filename = safe_name.strip().replace(" ", "_")
+
+    csv_content = result.get("content", "")
+    return StreamingResponse(
+        iter([csv_content]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}.csv"',
+        },
+    )
 
 
 @router.get("/spec/{spec_id}")

@@ -12,6 +12,7 @@ v2.3: Added GPU auto-detection and acceleration
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -37,6 +38,8 @@ from bo_engine.transforms import (
     enumerate_discrete_choices,
 )
 from bo_engine.types import AcquisitionConfig, AcquisitionMethod, OptimizationSpec
+
+logger = logging.getLogger(__name__)
 
 
 def create_single_objective_acquisition(
@@ -261,6 +264,12 @@ def _create_single_objective_dispatch(
             outcome_constraint_models=outcome_constraint_models,
         )
 
+    if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is None:
+        logger.warning(
+            "COST_WEIGHTED_EI requested but no cost model available. "
+            "Falling back to standard Noisy Expected Improvement."
+        )
+
     all_constraints = list(constraints) if constraints else []
     if outcome_constraint_models:
         for constraint_model, threshold in outcome_constraint_models:
@@ -453,7 +462,12 @@ class EIpuAcquisition(AcquisitionFunction):
                     prob_feasible = prob_posterior.mean.squeeze(-1)
                     if prob_feasible.dim() > eipu.dim():
                         prob_feasible = prob_feasible.mean(dim=-1)
-                    # Probability of meeting threshold
+                    # Binary thresholding: zero out infeasible points rather than
+                    # smooth weighting (prob * acq).  This is a deliberate stability
+                    # choice — BoTorch's smooth ConstrainedMCObjective can cause
+                    # gradient vanishing near the threshold, making L-BFGS-B stall.
+                    # The hard cutoff is more robust for the EIpu case where the
+                    # cost denominator already introduces numerical sensitivity.
                     constraint_prob = constraint_prob * (prob_feasible > threshold).float()
             eipu = eipu * constraint_prob
 

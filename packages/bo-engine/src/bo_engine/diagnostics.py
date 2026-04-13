@@ -28,6 +28,7 @@ from scipy import stats as scipy_stats
 from torch import Tensor
 
 from bo_engine.constants import (
+    CI_95_Z_SCORE,
     DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS,
     DIAGNOSTICS_HYPERVOLUME_DECREASE_WARNING,
     DIAGNOSTICS_MIN_RESULTS,
@@ -36,9 +37,16 @@ from bo_engine.constants import (
     DIAGNOSTICS_MODEL_CORRELATION_WARNING,
     DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS,
     DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS,
+    EXPECTED_DISTANCE_HYPERCUBE_DIVISOR,
+    EXPLOITATION_HEAVY_THRESHOLD,
+    EXPLORATION_EXPLOITATION_OFFSET,
+    EXPLORATION_HEAVY_THRESHOLD,
+    EXPLORATION_RATIO_MULTIPLIER,
     IMPROVEMENT_TOLERANCE_ABSOLUTE,
     PROGRESS_IMPROVING_THRESHOLD,
     PROGRESS_REGRESSING_THRESHOLD,
+    SATISFACTION_TREND_THRESHOLD,
+    UNCERTAINTY_TREND_SLOPE_THRESHOLD,
 )
 from bo_engine.device import ensure_device, to_device
 
@@ -388,7 +396,7 @@ def compute_exploration_exploitation_ratio(
     # Normalize: high distance + high uncertainty = exploration
     # Simple heuristic: if uncertainty is high relative to distance, it's exploration
     if avg_distance > 0:
-        ratio = min(1.0, avg_uncertainty / (avg_distance + 0.1))
+        ratio = min(1.0, avg_uncertainty / (avg_distance + EXPLORATION_EXPLOITATION_OFFSET))
     else:
         ratio = 0.5
 
@@ -427,9 +435,9 @@ def compute_suggestion_diversity(
 
     # Normalize by expected distance in unit hypercube
     n_dims = suggestions.shape[1]
-    expected_distance = (n_dims / 6) ** 0.5  # Rough expected distance in unit cube
+    expected_distance = (n_dims / EXPECTED_DISTANCE_HYPERCUBE_DIVISOR) ** 0.5
 
-    diversity = min(1.0, avg_distance / (expected_distance + 0.1))
+    diversity = min(1.0, avg_distance / (expected_distance + EXPLORATION_EXPLOITATION_OFFSET))
     return diversity
 
 
@@ -621,7 +629,7 @@ def compute_loo_cv_for_model(
             mean_std_error = standardized_errors.mean().item()
 
             # Coverage: fraction within 1.96 std (95% CI)
-            within_95ci = standardized_errors < 1.96
+            within_95ci = standardized_errors < CI_95_Z_SCORE
             coverage_95 = within_95ci.float().mean().item()
 
             return LOOCVMetrics(
@@ -673,7 +681,7 @@ def compute_loo_cv_for_model(
                 standardized_errors = errors / std
                 mean_std_error = standardized_errors.mean().item()
 
-                within_95ci = standardized_errors < 1.96
+                within_95ci = standardized_errors < CI_95_Z_SCORE
                 coverage_95 = within_95ci.float().mean().item()
 
                 results[i] = LOOCVMetrics(
@@ -802,44 +810,35 @@ def compute_single_objective_improvement_rate(
     return abs(final - initial) / abs(initial)
 
 
-def determine_single_objective_health_status(
+def _count_stagnant_iterations(
     improvement_history: list[float],
-    model_correlation: float,
-    stagnation_threshold: int = DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS,
-) -> tuple[str, list[str]]:
-    """Determine health status for single-objective optimization.
-
-    Args:
-        improvement_history: Running best values over iterations
-        model_correlation: Rank correlation between predictions and actuals
-        stagnation_threshold: Iterations without improvement before warning
-
-    Returns:
-        Tuple of (status, warnings)
-    """
-    warnings = []
-    n_results = len(improvement_history)
-
-    if n_results < DIAGNOSTICS_MIN_RESULTS:
-        return "healthy", ["Collecting initial data - diagnostics will improve with more results"]
-
-    # Check for stagnation
-    iterations_without_improvement = 0
-    for i in range(1, min(stagnation_threshold + 1, n_results)):
-        if (
-            abs(improvement_history[-1] - improvement_history[-i - 1])
-            < IMPROVEMENT_TOLERANCE_ABSOLUTE
-        ):
-            iterations_without_improvement += 1
+    max_lookback: int,
+) -> int:
+    """Count consecutive iterations without improvement from the end of history."""
+    count = 0
+    n = len(improvement_history)
+    for i in range(1, min(max_lookback + 1, n)):
+        diff = abs(improvement_history[-1] - improvement_history[-i - 1])
+        if diff < IMPROVEMENT_TOLERANCE_ABSOLUTE:
+            count += 1
         else:
             break
+    return count
 
-    if iterations_without_improvement >= stagnation_threshold:
+
+def _collect_health_warnings(
+    stagnant: int,
+    stagnation_threshold: int,
+    model_correlation: float,
+    n_results: int,
+) -> list[str]:
+    """Build the warnings list for single-objective health."""
+    warnings: list[str] = []
+    if stagnant >= stagnation_threshold:
         warnings.append(
-            f"Optimization has not improved in {iterations_without_improvement} iterations. "
+            f"Optimization has not improved in {stagnant} iterations. "
             "Consider: reviewing constraints, expanding search space, or stopping."
         )
-
     if (
         model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CORRELATION_WARNING
@@ -848,20 +847,39 @@ def determine_single_objective_health_status(
             "Model predictions are not matching experimental results (low correlation). "
             "The model may need more data or the problem may not suit BO."
         )
+    return warnings
 
-    # Determine status
-    if iterations_without_improvement >= stagnation_threshold or (
+
+def determine_single_objective_health_status(
+    improvement_history: list[float],
+    model_correlation: float,
+    stagnation_threshold: int = DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS,
+) -> tuple[str, list[str]]:
+    """Determine health status for single-objective optimization.
+
+    Returns:
+        Tuple of (status, warnings)
+    """
+    n_results = len(improvement_history)
+    if n_results < DIAGNOSTICS_MIN_RESULTS:
+        return "healthy", ["Collecting initial data - diagnostics will improve with more results"]
+
+    stagnant = _count_stagnant_iterations(improvement_history, stagnation_threshold)
+    warnings = _collect_health_warnings(
+        stagnant, stagnation_threshold, model_correlation, n_results
+    )
+
+    if stagnant >= stagnation_threshold or (
         model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CRITICAL
     ):
         return "critical", warnings
-    elif (
-        iterations_without_improvement >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
+    if (
+        stagnant >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
         or model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
     ):
         return "warning", warnings
-    else:
-        return "healthy", warnings
+    return "healthy", warnings
 
 
 # =============================================================================
@@ -971,9 +989,9 @@ def compute_uncertainty_trend(
 
     # Determine trend based on slope relative to mean
     relative_slope = slope / (mean_unc + 1e-10)
-    if relative_slope < -0.05:
+    if relative_slope < -UNCERTAINTY_TREND_SLOPE_THRESHOLD:
         trend = "decreasing"
-    elif relative_slope > 0.05:
+    elif relative_slope > UNCERTAINTY_TREND_SLOPE_THRESHOLD:
         trend = "increasing"
     else:
         trend = "stable"
@@ -1028,28 +1046,11 @@ def compute_exploration_exploitation_metrics(
         # Higher uncertainty at suggestion points = more exploration
         avg_uncertainty = sum(uncertainties) / len(uncertainties)
         # Normalize to 0-1 (assume uncertainty > 0.5 is high)
-        exploration_ratio = min(1.0, avg_uncertainty * 2)
+        exploration_ratio = min(1.0, avg_uncertainty * EXPLORATION_RATIO_MULTIPLIER)
     else:
         exploration_ratio = 0.5
 
-    # Combine metrics for balance assessment
-    combined_score = (exploration_ratio + diversity) / 2
-
-    if combined_score > 0.65:
-        balance = "exploration_heavy"
-        recommendation = (
-            "Suggestions are primarily exploring new regions. "
-            "If optimization is mature, consider reducing exploration."
-        )
-    elif combined_score < 0.35:
-        balance = "exploitation_heavy"
-        recommendation = (
-            "Suggestions are focused near known good points. "
-            "If stuck in local optima, consider increasing exploration."
-        )
-    else:
-        balance = "balanced"
-        recommendation = "Good balance between exploration and exploitation."
+    balance, recommendation = _classify_exploration_balance(exploration_ratio, diversity)
 
     return ExplorationExploitationMetrics(
         exploration_ratio=exploration_ratio,
@@ -1058,6 +1059,28 @@ def compute_exploration_exploitation_metrics(
         balance_assessment=balance,
         recommendation=recommendation,
     )
+
+
+def _classify_exploration_balance(
+    exploration_ratio: float,
+    diversity: float,
+) -> tuple[str, str]:
+    """Classify the exploration/exploitation balance and return (label, recommendation)."""
+    combined_score = (exploration_ratio + diversity) / 2
+
+    if combined_score > EXPLORATION_HEAVY_THRESHOLD:
+        return (
+            "exploration_heavy",
+            "Suggestions are primarily exploring new regions. "
+            "If optimization is mature, consider reducing exploration.",
+        )
+    if combined_score < EXPLOITATION_HEAVY_THRESHOLD:
+        return (
+            "exploitation_heavy",
+            "Suggestions are focused near known good points. "
+            "If stuck in local optima, consider increasing exploration.",
+        )
+    return ("balanced", "Good balance between exploration and exploitation.")
 
 
 def _extract_gp_kernel_info(
@@ -1164,9 +1187,9 @@ def _compute_satisfaction_trend(
         return "stable"
     previous = feasibility_history[-2 * window : -window]
     previous_rate = sum(previous) / len(previous)
-    if recent_rate > previous_rate + 0.1:
+    if recent_rate > previous_rate + SATISFACTION_TREND_THRESHOLD:
         return "improving"
-    if recent_rate < previous_rate - 0.1:
+    if recent_rate < previous_rate - SATISFACTION_TREND_THRESHOLD:
         return "worsening"
     return "stable"
 

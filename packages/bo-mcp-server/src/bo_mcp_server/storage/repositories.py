@@ -3,7 +3,7 @@
 import json
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain import (
@@ -314,31 +314,58 @@ class CampaignRepository:
         return {UUID(m.id): self._to_entity(m) for m in result.scalars()}
 
     async def save(self, campaign: Campaign, expected_version: int | None = None) -> Campaign:
-        """Save campaign with optional optimistic locking."""
-        if expected_version is not None:
-            # Check version for optimistic locking
-            existing = await self.session.execute(
-                select(CampaignModel).where(CampaignModel.id == str(campaign.id))
-            )
-            existing_model = existing.scalar_one_or_none()
-            if existing_model and existing_model.version != expected_version:
-                raise ConcurrentModificationError("Campaign", campaign.id, expected_version)
+        """Save campaign with optimistic locking.
 
-        model = CampaignModel(
-            id=str(campaign.id),
-            spec_id=str(campaign.spec_id),
-            owner_id=str(campaign.owner_id),
-            status=campaign.status,
-            version=campaign.version,
-            iteration=campaign.iteration,
-            created_at=campaign.created_at,
-            updated_at=campaign.updated_at,
-            completed_at=campaign.completed_at,
-            turbo_state_json=json.dumps(campaign.turbo_state) if campaign.turbo_state else None,
-            hypervolume_history_json=json.dumps(campaign.hypervolume_history),
+        For new campaigns (first save), ``expected_version`` may be ``None``.
+        For updates to existing campaigns, ``expected_version`` **must** be
+        provided.  The version check and row update happen in a single
+        ``UPDATE … WHERE version = expected`` statement so the operation is
+        atomic even under concurrent PostgreSQL connections.
+        """
+        campaign_id_str = str(campaign.id)
+        values = {
+            "spec_id": str(campaign.spec_id),
+            "owner_id": str(campaign.owner_id),
+            "status": campaign.status,
+            "version": campaign.version,
+            "iteration": campaign.iteration,
+            "created_at": campaign.created_at,
+            "updated_at": campaign.updated_at,
+            "completed_at": campaign.completed_at,
+            "turbo_state_json": (
+                json.dumps(campaign.backend_state) if campaign.backend_state else None
+            ),
+            "hypervolume_history_json": json.dumps(campaign.hypervolume_history),
+        }
+
+        existing = await self.session.execute(
+            select(CampaignModel.id).where(CampaignModel.id == campaign_id_str)
         )
-        merged = await self.session.merge(model)
-        return self._to_entity(merged)
+        is_update = existing.scalar_one_or_none() is not None
+
+        if is_update:
+            if expected_version is None:
+                raise ConcurrentModificationError("Campaign", campaign.id, -1)
+
+            # Atomic UPDATE … WHERE version = expected
+            stmt = (
+                update(CampaignModel)
+                .where(
+                    CampaignModel.id == campaign_id_str,
+                    CampaignModel.version == expected_version,
+                )
+                .values(**values)
+            )
+            result = await self.session.execute(stmt)
+            if result.rowcount == 0:  # ty: ignore[unresolved-attribute]
+                raise ConcurrentModificationError("Campaign", campaign.id, expected_version)
+            await self.session.flush()
+        else:
+            model = CampaignModel(id=campaign_id_str, **values)
+            await self.session.merge(model)
+            await self.session.flush()
+
+        return campaign
 
     async def delete(self, id: UUID) -> bool:
         """Delete campaign by ID."""
@@ -363,7 +390,7 @@ class CampaignRepository:
             created_at=model.created_at,
             updated_at=model.updated_at,
             completed_at=model.completed_at,
-            turbo_state=model.get_turbo_state(),
+            backend_state=model.get_turbo_state(),
             hypervolume_history=model.get_hypervolume_history(),
         )
 
@@ -393,6 +420,35 @@ class SuggestionRepository:
             query = query.where(SuggestionModel.status == status)
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
+
+    async def list_by_campaign_paginated(
+        self,
+        campaign_id: UUID,
+        status: SuggestionStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Suggestion], int]:
+        """List suggestions with database-level ordering, pagination, and count.
+
+        Returns:
+            Tuple of (suggestions, total_count).
+        """
+        base = select(SuggestionModel).where(SuggestionModel.campaign_id == str(campaign_id))
+        count_base = (
+            select(func.count())
+            .select_from(SuggestionModel)
+            .where(SuggestionModel.campaign_id == str(campaign_id))
+        )
+        if status is not None:
+            base = base.where(SuggestionModel.status == status)
+            count_base = count_base.where(SuggestionModel.status == status)
+
+        total_result = await self.session.execute(count_base)
+        total_count = total_result.scalar_one()
+
+        query = base.order_by(SuggestionModel.created_at.desc()).offset(offset).limit(limit)
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
 
     async def save(self, suggestion: Suggestion) -> Suggestion:
         """Save suggestion."""
@@ -528,6 +584,55 @@ class ResultRepository:
             select(ResultModel).where(ResultModel.campaign_id == str(campaign_id))
         )
         return [self._to_entity(m) for m in result.scalars()]
+
+    async def list_by_campaign_paginated(
+        self,
+        campaign_id: UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Result], int]:
+        """List results with database-level ordering, pagination, and count.
+
+        Returns:
+            Tuple of (results, total_count).
+        """
+        base_where = ResultModel.campaign_id == str(campaign_id)
+
+        count_result = await self.session.execute(
+            select(func.count()).select_from(ResultModel).where(base_where)
+        )
+        total_count = count_result.scalar_one()
+
+        query = (
+            select(ResultModel)
+            .where(base_where)
+            .order_by(ResultModel.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
+
+    async def list_by_campaigns(self, campaign_ids: list[UUID]) -> dict[UUID, list[Result]]:
+        """List results for multiple campaigns in a single query.
+
+        Args:
+            campaign_ids: List of campaign UUIDs.
+
+        Returns:
+            Dictionary mapping campaign UUID to list of results.
+        """
+        if not campaign_ids:
+            return {}
+        str_ids = [str(cid) for cid in campaign_ids]
+        result = await self.session.execute(
+            select(ResultModel).where(ResultModel.campaign_id.in_(str_ids))
+        )
+        by_campaign: dict[UUID, list[Result]] = {cid: [] for cid in campaign_ids}
+        for m in result.scalars():
+            entity = self._to_entity(m)
+            by_campaign[entity.campaign_id].append(entity)
+        return by_campaign
 
     async def save(self, result: Result) -> Result:
         """Save result."""

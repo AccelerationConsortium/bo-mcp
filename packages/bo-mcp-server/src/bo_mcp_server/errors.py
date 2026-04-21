@@ -94,6 +94,7 @@ class ErrorCode(StrEnum):
     CONSTRAINT_VIOLATION = "E008"
     SUGGESTION_NOT_FOUND = "E009"
     CONCURRENT_MODIFICATION = "E010"
+    SEARCH_SPACE_EXHAUSTED = "E011"
 
     # Processing errors (E1xx)
     MODEL_FITTING_FAILED = "E101"
@@ -173,6 +174,12 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "bo_list_campaigns to get the latest version, then retry the operation. "
         "Wait retry_after_seconds before retrying to avoid re-hitting the race."
     ),
+    ErrorCode.SEARCH_SPACE_EXHAUSTED: (
+        "Use bo_terminate_campaign: the finite (typically purely-categorical) "
+        "search space has no unseen combinations left, so further experiments "
+        "cannot provide new information. Verify via campaign://{id} before "
+        "closing out."
+    ),
     ErrorCode.MODEL_FITTING_FAILED: (
         "Check data quality with bo_get_diagnostics. May need more observations (minimum 2)."
     ),
@@ -203,6 +210,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.CONCURRENT_MODIFICATION: (
         "Entity was modified by another request; your update lost the version race"
     ),
+    ErrorCode.SEARCH_SPACE_EXHAUSTED: "Search space has no remaining unique combinations",
     ErrorCode.MODEL_FITTING_FAILED: "Model fitting failed",
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: "Acquisition optimization failed",
     ErrorCode.DATABASE_ERROR: "Database operation failed",
@@ -285,6 +293,7 @@ ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.CONSTRAINT_VIOLATION: 400,
     ErrorCode.SUGGESTION_NOT_FOUND: 404,
     ErrorCode.CONCURRENT_MODIFICATION: 409,
+    ErrorCode.SEARCH_SPACE_EXHAUSTED: 409,
     ErrorCode.MODEL_FITTING_FAILED: 500,
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: 500,
     ErrorCode.DATABASE_ERROR: 500,

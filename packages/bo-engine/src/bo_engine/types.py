@@ -207,6 +207,12 @@ class OptimizationSpec:
     constraints: list[ConstraintSpec] = field(default_factory=list)
     batch_size: int = 1
     initial_design_size: int | None = None
+    # Campaign-level seed. When set, the Sobol initial-design sequence is
+    # reproducible across calls — consecutive ``generate_initial_design``
+    # invocations ``fast_forward`` the same low-discrepancy sequence instead
+    # of restarting it with a fresh scramble. When ``None`` the Sobol engine
+    # draws an OS-level scramble on every construction (prior behavior).
+    random_seed: int | None = None
     # v1.0.1: Acquisition method selection
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
     # v1.1: Input warping for non-stationary objectives

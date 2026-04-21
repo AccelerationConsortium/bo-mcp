@@ -21,6 +21,7 @@ from uuid import UUID
 from bo_engine.backend import BOBackend
 from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
 from bo_engine.pending_points import filter_pending_points
+from bo_engine.suggestions import SearchSpaceExhaustedError
 from bo_engine.types import OptimizationSpec
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -157,36 +158,6 @@ async def _handle_pending_suggestions(
     return pending_info, valid_pending
 
 
-def _build_initial_design_data(
-    designs: list[dict[str, Any]],
-    iteration: int,
-    batch_size: int,
-    random_seed: int | None = None,
-) -> SuggestionDataList:
-    """Build suggestion data tuples from initial design points."""
-    return [
-        (
-            design,
-            {
-                "iteration": iteration,
-                "batch_index": i,
-                "generation_method": "initial_design",
-                "random_seed": random_seed,
-                "explanation": (
-                    f"Initial design point "
-                    f"{i + 1}/{batch_size}"
-                    " using Sobol sequence. Initial"
-                    " designs explore the parameter"
-                    " space before model-guided"
-                    " optimization."
-                ),
-                "confidence_level": "medium",
-            },
-        )
-        for i, design in enumerate(designs)
-    ]
-
-
 async def _compute_diversity_info(
     backend: BOBackend,
     opt_spec: OptimizationSpec,
@@ -313,6 +284,23 @@ async def generate_suggestions_operation(
         )
         response.update({"suggestions": [], "iteration": None})
         return response
+    except SearchSpaceExhaustedError as err:
+        logger.info(
+            "Search space exhausted for campaign %s: %s",
+            campaign_id,
+            err,
+        )
+        return _make_suggestions_error(
+            ErrorCode.SEARCH_SPACE_EXHAUSTED,
+            message=str(err),
+            details={
+                "campaign_id": campaign_id,
+                "n_requested": err.n_requested,
+                "n_available": err.n_available,
+                "n_total_combinations": err.n_total_combinations,
+                "next_action_recommendation": "terminate_campaign",
+            },
+        )
 
 
 def _init_repositories(session: AsyncSession) -> _Repositories:
@@ -406,7 +394,6 @@ async def _generate_within_session(
         actual_batch_size,
         new_iteration,
         campaign.backend_state,
-        random_seed=spec.random_seed,
     )
 
     # Create and save suggestion entities
@@ -456,13 +443,24 @@ async def _generate_via_backend(
     batch_size: int,
     iteration: int,
     prior_backend_state: dict[str, Any] | None,
-    random_seed: int | None = None,
 ) -> tuple[
     SuggestionDataList,
     dict[str, Any] | None,
     list[str],
 ]:
-    """Dispatch to initial design or BO suggestions.
+    """Generate a batch of suggestions via the backend.
+
+    Previously this function branched on ``len(results) == 0`` to call
+    ``backend.generate_initial_design`` directly.  That dual-gate created
+    the 1.41a duplicate-suggestion bug: each operation-level call reseeded
+    Sobol (via the backend) while the engine-level fallback in
+    :func:`bo_engine.suggestions.generate_next_batch` independently decided
+    when to reseed as well, so the two gates disagreed on which Sobol
+    stream to continue.  Routing every call through
+    ``backend.generate_suggestions`` makes the engine the single source of
+    truth for the initial-design threshold, the Sobol continuation
+    (``n_drawn=len(observations)``), and the exhaustion check for finite
+    categorical spaces.
 
     Both paths are CPU-bound (Sobol sampling, GP fitting, acquisition
     optimization, MCMC) and are offloaded via ``asyncio.to_thread`` so
@@ -470,13 +468,6 @@ async def _generate_via_backend(
 
     Returns (suggestion_data, backend_state, warnings).
     """
-    if len(results) == 0:
-        designs = await asyncio.to_thread(backend.generate_initial_design, opt_spec, batch_size)
-        suggestion_data = _build_initial_design_data(
-            designs, iteration, batch_size, random_seed=random_seed
-        )
-        return suggestion_data, None, []
-
     observations = results_to_observations(results)
     batch = await asyncio.to_thread(
         backend.generate_suggestions,

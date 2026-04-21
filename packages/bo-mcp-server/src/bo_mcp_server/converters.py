@@ -121,6 +121,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         constraints=constraints,
         batch_size=spec.batch_size,
         initial_design_size=spec.initial_design_size,
+        random_seed=spec.random_seed,
         acquisition_method=acquisition_method,
         use_input_warping=spec.use_input_warping,
         turbo_config=turbo_config,

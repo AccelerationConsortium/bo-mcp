@@ -20,7 +20,11 @@ from bo_mcp_server.domain import (
     SuggestionStatus,
 )
 from bo_mcp_server.domain.campaign_spec import InputParameter, ParameterType
-from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.errors import (
+    ErrorCode,
+    make_concurrent_modification_response,
+    make_error_response,
+)
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
     parse_verbosity,
@@ -33,6 +37,7 @@ from bo_mcp_server.response_formatter import (
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
+    ConcurrentModificationError,
     ResultRepository,
     SuggestionRepository,
     get_session,
@@ -574,83 +579,103 @@ async def submit_results_operation(
 
     tracking = _SubmitTracking()
 
-    async with get_session() as session:
-        campaign_repo = CampaignRepository(session)
-        spec_repo = CampaignSpecRepository(session)
-        result_repo = ResultRepository(session)
-        suggestion_repo = SuggestionRepository(session)
+    try:
+        async with get_session() as session:
+            campaign_repo = CampaignRepository(session)
+            spec_repo = CampaignSpecRepository(session)
+            result_repo = ResultRepository(session)
+            suggestion_repo = SuggestionRepository(session)
 
-        fetched = await _fetch_campaign_and_spec(
+            fetched = await _fetch_campaign_and_spec(
+                campaign_id,
+                campaign_uuid,
+                campaign_repo,
+                spec_repo,
+            )
+            if isinstance(fetched, dict):
+                return fetched
+            campaign, spec = fetched
+            backend = get_backend(spec.backend)
+
+            existing_results = await result_repo.list_by_campaign(campaign_uuid)
+            existing_params = [r.parameter_values for r in existing_results]
+
+            result_entities, entity_to_input_index = await _validate_and_create_results(
+                results,
+                spec,
+                campaign_uuid,
+                submitter_uuid,
+                result_source,
+                backend,
+                existing_params,
+                suggestion_repo,
+                force,
+                atomic,
+                continue_on_error,
+                tracking,
+            )
+
+            atomic_error = _check_atomic_failures(atomic, force, campaign_id, tracking)
+            if atomic_error is not None:
+                return atomic_error
+
+            if not result_entities:
+                response_data: dict[str, Any] = {
+                    "success": False,
+                    "result_ids": [],
+                    "errors": (
+                        tracking.errors if tracking.errors else ["No valid results to submit"]
+                    ),
+                    "warnings": tracking.warnings,
+                    "duplicates_detected": tracking.duplicates_detected,
+                }
+                if not atomic and continue_on_error:
+                    response_data["partial_results"] = tracking.partial_results
+                return response_data
+
+            saved_results = await result_repo.save_batch(result_entities)
+            result_ids = [str(r.id) for r in saved_results]
+
+            if not atomic and continue_on_error:
+                for entity_idx, saved in enumerate(saved_results):
+                    tracking.partial_results[entity_to_input_index[entity_idx]] = str(saved.id)
+
+            await _update_campaign_state(
+                campaign,
+                spec,
+                backend,
+                campaign_uuid,
+                campaign_id,
+                result_entities,
+                result_repo,
+                campaign_repo,
+                tracking.warnings,
+            )
+
+            logger.info(
+                "Successfully submitted %d results for campaign %s",
+                len(result_ids),
+                campaign_id,
+            )
+
+            return format_submit_results_response(
+                _build_submit_response(result_ids, tracking, atomic, continue_on_error),
+                verbosity_level,
+            )
+    except ConcurrentModificationError as err:
+        logger.warning(
+            "Concurrent modification while submitting results for campaign %s: %s",
             campaign_id,
-            campaign_uuid,
-            campaign_repo,
-            spec_repo,
+            err,
         )
-        if isinstance(fetched, dict):
-            return fetched
-        campaign, spec = fetched
-        backend = get_backend(spec.backend)
-
-        existing_results = await result_repo.list_by_campaign(campaign_uuid)
-        existing_params = [r.parameter_values for r in existing_results]
-
-        result_entities, entity_to_input_index = await _validate_and_create_results(
-            results,
-            spec,
-            campaign_uuid,
-            submitter_uuid,
-            result_source,
-            backend,
-            existing_params,
-            suggestion_repo,
-            force,
-            atomic,
-            continue_on_error,
-            tracking,
+        response = make_concurrent_modification_response(
+            err, extra_details={"campaign_id": campaign_id}
         )
-
-        atomic_error = _check_atomic_failures(atomic, force, campaign_id, tracking)
-        if atomic_error is not None:
-            return atomic_error
-
-        if not result_entities:
-            response_data: dict[str, Any] = {
-                "success": False,
+        response.update(
+            {
                 "result_ids": [],
-                "errors": tracking.errors if tracking.errors else ["No valid results to submit"],
                 "warnings": tracking.warnings,
                 "duplicates_detected": tracking.duplicates_detected,
             }
-            if not atomic and continue_on_error:
-                response_data["partial_results"] = tracking.partial_results
-            return response_data
-
-        saved_results = await result_repo.save_batch(result_entities)
-        result_ids = [str(r.id) for r in saved_results]
-
-        if not atomic and continue_on_error:
-            for entity_idx, saved in enumerate(saved_results):
-                tracking.partial_results[entity_to_input_index[entity_idx]] = str(saved.id)
-
-        await _update_campaign_state(
-            campaign,
-            spec,
-            backend,
-            campaign_uuid,
-            campaign_id,
-            result_entities,
-            result_repo,
-            campaign_repo,
-            tracking.warnings,
         )
-
-        logger.info(
-            "Successfully submitted %d results for campaign %s",
-            len(result_ids),
-            campaign_id,
-        )
-
-        return format_submit_results_response(
-            _build_submit_response(result_ids, tracking, atomic, continue_on_error),
-            verbosity_level,
-        )
+        return response

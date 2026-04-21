@@ -5,8 +5,16 @@ from typing import Any, Literal
 from uuid import UUID
 
 from bo_mcp_server.domain import CampaignStatus
-from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.storage import CampaignRepository, get_session
+from bo_mcp_server.errors import (
+    ErrorCode,
+    make_concurrent_modification_response,
+    make_error_response,
+)
+from bo_mcp_server.storage import (
+    CampaignRepository,
+    ConcurrentModificationError,
+    get_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +96,26 @@ async def manage_campaign_lifecycle_operation(
             return response
 
         updated = campaign.with_status(target_status)
-        await campaign_repo.save(updated, expected_version=campaign.version)
+        try:
+            await campaign_repo.save(updated, expected_version=campaign.version)
+        except ConcurrentModificationError as err:
+            logger.warning(
+                "Concurrent modification while %sing campaign %s: %s",
+                action,
+                campaign_id,
+                err,
+            )
+            response = make_concurrent_modification_response(
+                err, extra_details={"campaign_id": campaign_id, "action": action}
+            )
+            response.update(
+                {
+                    "campaign_id": campaign_id,
+                    "status": campaign.status.value,
+                    "previous_status": previous_status,
+                }
+            )
+            return response
 
         logger.info(
             "Campaign %s lifecycle action %s: %s -> %s",

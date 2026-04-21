@@ -28,7 +28,11 @@ from bo_mcp_server.domain import (
     SuggestionProvenance,
     SuggestionStatus,
 )
-from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.errors import (
+    ErrorCode,
+    make_concurrent_modification_response,
+    make_error_response,
+)
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
     parse_verbosity,
@@ -41,6 +45,7 @@ from bo_mcp_server.response_formatter import (
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
+    ConcurrentModificationError,
     ResultRepository,
     SuggestionRepository,
     get_session,
@@ -281,15 +286,27 @@ async def generate_suggestions_operation(
     campaign_uuid = campaign_id_result
 
     # --- Database session scope ---
-    async with get_session() as session:
-        repos = _init_repositories(session)
-        return await _generate_within_session(
+    try:
+        async with get_session() as session:
+            repos = _init_repositories(session)
+            return await _generate_within_session(
+                campaign_id,
+                campaign_uuid,
+                batch_size,
+                verbosity_level,
+                repos,
+            )
+    except ConcurrentModificationError as err:
+        logger.warning(
+            "Concurrent modification while generating suggestions for campaign %s: %s",
             campaign_id,
-            campaign_uuid,
-            batch_size,
-            verbosity_level,
-            repos,
+            err,
         )
+        response = make_concurrent_modification_response(
+            err, extra_details={"campaign_id": campaign_id}
+        )
+        response.update({"suggestions": [], "iteration": None})
+        return response
 
 
 def _init_repositories(session: AsyncSession) -> _Repositories:

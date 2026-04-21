@@ -139,7 +139,7 @@ def generate_thompson_samples(
         # read from the process-wide torch state rather than accepting
         # an explicit :class:`torch.Generator`. Callers that need to
         # isolate this mutation should wrap the call in
-        # ``torch.random.fork_rng(devices=[])``. See TODO 1.41b.
+        # ``torch.random.fork_rng(devices=[])``.
         torch.manual_seed(config.seed)
 
     if config.use_max_posterior_sampling:
@@ -229,7 +229,7 @@ def generate_thompson_samples_multi_objective(
 
     if config.seed is not None:
         # Side-effect: mutates the global torch RNG for the same reason
-        # as the single-objective variant above. See TODO 1.41b.
+        # as the single-objective variant above.
         torch.manual_seed(config.seed)
 
     n_objectives = len(model.models)

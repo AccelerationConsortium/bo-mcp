@@ -1,4 +1,4 @@
-"""Integration tests for optimistic-locking error surfacing (TODO 1.2).
+"""Integration tests for optimistic-locking error surfacing.
 
 When two state-mutating operations race on the same campaign, the one that
 loses the ``UPDATE ... WHERE version = expected_version`` race must see a
@@ -6,9 +6,6 @@ structured ``CONCURRENT_MODIFICATION`` envelope with retry guidance, not an
 opaque 500 from a raw exception.
 
 Reference:
-    - TODO.md §1.2 "Unhandled ``ConcurrentModificationError`` in 3
-      state-mutating operations" (packages/bo-mcp-server/src/bo_mcp_server/
-      operations/{submit_results, campaign_lifecycle, generate_suggestions}).
     - MCP structured-error guidance: each tool error must carry a recovery
       action so agents can retry safely
       (https://modelcontextprotocol.io/specification).

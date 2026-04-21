@@ -1,4 +1,4 @@
-"""Tests for output standardization (TODO §1.42).
+"""Tests for output standardization.
 
 These tests guard the convention documented in
 ``bo_engine.models``: every GP we build attaches ``Standardize(m=1)`` as an

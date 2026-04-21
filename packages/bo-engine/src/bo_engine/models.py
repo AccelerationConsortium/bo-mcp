@@ -27,7 +27,7 @@ v1.0.1: Added create_single_task_model for single-objective
 v1.1: Added input warping support
 v2.3: Added GPU auto-detection and acceleration
 v2.4: Documented output-standardization convention and added
-      ``verify_standardization`` (TODO §1.42).
+      ``verify_standardization``.
 """
 
 import logging

@@ -389,8 +389,8 @@ class BayBEBackend:
     ) -> SuggestionBatch:
         # BayBE handles batch diversity internally via its own sequential
         # recommenders; pending_points is accepted for protocol parity but
-        # currently ignored (see TODO 1.41 — future work can thread this
-        # into BayBE's TELL/ASK cycle).
+        # currently ignored (future work can thread this into BayBE's
+        # TELL/ASK cycle).
         del pending_points
         campaign = _restore_or_build_campaign(spec, backend_state)
 

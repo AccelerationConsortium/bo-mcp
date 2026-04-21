@@ -459,7 +459,7 @@ def _resolve_acquisition_seed(
 ) -> int:
     """Derive the acquisition seed for :func:`generate_next_batch`.
 
-    Precedence (see TODO 1.41b):
+    Precedence:
 
     1. ``rng`` wins whenever supplied so external callers keep control
        of their RNG pipeline.
@@ -507,11 +507,10 @@ def generate_next_batch(
             not re-issue a pending combination, and (b) forwarded to the
             acquisition optimizer as ``X_pending`` so parallel / batch BO
             conditions new candidates on the in-flight batch instead of
-            silently clustering around it.  See TODO 1.41.
+            silently clustering around it.
 
     Reproducibility:
-        The acquisition seed is resolved with the following precedence
-        (see TODO 1.41b):
+        The acquisition seed is resolved with the following precedence:
 
         1. ``rng`` is supplied — the seed is drawn from it, taking
            precedence over any other source so callers that already

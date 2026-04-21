@@ -1,4 +1,4 @@
-"""Integration tests for event-loop responsiveness under BO workloads (TODO 1.4).
+"""Integration tests for event-loop responsiveness under BO workloads.
 
 GP fitting, Sobol sampling, acquisition optimization, and SAASBO MCMC are all
 CPU-bound synchronous calls. When invoked directly from an ``async def``
@@ -19,9 +19,6 @@ the call were still on the event loop, the loop would be frozen for the full
 sleep.
 
 Reference:
-    - TODO.md §1.4 "BoTorch blocks the FastAPI / MCP event loop"
-      (packages/bo-mcp-server/src/bo_mcp_server/operations/generate_suggestions.py,
-      packages/bo-engine/src/bo_engine/botorch_backend.py).
     - Python docs on offloading blocking calls:
       https://docs.python.org/3/library/asyncio-task.html#asyncio.to_thread
     - FastAPI concurrency guidance: CPU-bound synchronous work must be moved

@@ -387,8 +387,8 @@ async def _generate_within_session(
         len(valid_pending),
     )
 
-    # Pending suggestions condition the acquisition (TODO 1.41) so the new
-    # batch does not cluster around in-flight experiments.
+    # Pending suggestions condition the acquisition so the new batch does
+    # not cluster around in-flight experiments.
     pending_parameter_values = [p.parameter_values for p in valid_pending]
 
     # Generate suggestions via backend (heavy work offloaded to a thread)
@@ -459,8 +459,8 @@ async def _generate_via_backend(
 
     Previously this function branched on ``len(results) == 0`` to call
     ``backend.generate_initial_design`` directly.  That dual-gate created
-    the 1.41a duplicate-suggestion bug: each operation-level call reseeded
-    Sobol (via the backend) while the engine-level fallback in
+    a duplicate-suggestion bug: each operation-level call reseeded Sobol
+    (via the backend) while the engine-level fallback in
     :func:`bo_engine.suggestions.generate_next_batch` independently decided
     when to reseed as well, so the two gates disagreed on which Sobol
     stream to continue.  Routing every call through
@@ -470,9 +470,9 @@ async def _generate_via_backend(
     categorical spaces.
 
     ``pending_parameter_values`` carries the parameter dicts of suggestions
-    that are PENDING but not yet observed (see TODO 1.41); the backend is
-    expected to forward them to its acquisition optimizer as ``X_pending``
-    so parallel / batch BO does not cluster new candidates around the
+    that are PENDING but not yet observed; the backend is expected to
+    forward them to its acquisition optimizer as ``X_pending`` so
+    parallel / batch BO does not cluster new candidates around the
     in-flight batch.
 
     Both paths are CPU-bound (Sobol sampling, GP fitting, acquisition

@@ -1,4 +1,4 @@
-"""Integration tests for submit_results atomic-mode pre-validation (TODO 1.3).
+"""Integration tests for submit_results atomic-mode pre-validation.
 
 When ``submit_results`` is called with ``atomic=True`` the operation advertises
 all-or-nothing semantics: if any result in the batch fails validation, no
@@ -9,13 +9,10 @@ result ``k`` still committed the ``COMPLETED`` transitions for results
 ``0..k-1`` when the function returned through the ``async with`` block
 (the session commit ran on normal return).
 
-These tests reproduce the leakage scenario described in TODO.md §1.3 and
-assert the post-fix invariants.
+These tests reproduce the leakage scenario and assert the post-fix
+invariants.
 
 References:
-    - TODO.md §1.3 "``atomic=True`` in ``submit_results`` does not guarantee
-      atomicity" (packages/bo-mcp-server/src/bo_mcp_server/operations/
-      submit_results.py).
     - General database-transaction contract: all-or-nothing semantics require
       that every write participating in the logical unit-of-work either all
       commit or all roll back (C. J. Date, *An Introduction to Database
@@ -67,13 +64,13 @@ class TestSubmitResultsAtomicPreValidation:
     ) -> None:
         """A validation failure on a later result keeps earlier suggestions PENDING.
 
-        Reproduces the TODO.md §1.3 scenario: in a batch of three results,
-        the first two are valid and reference pending suggestions; the third
-        references an unknown objective name. Before the fix, the session
-        still committed the COMPLETED transitions for the first two
-        suggestions because those writes were staged inside the per-result
-        validation loop. After the fix, phase 1 runs read-only, so the
-        failure on result 2 short-circuits before any suggestion is written.
+        In a batch of three results, the first two are valid and reference
+        pending suggestions; the third references an unknown objective name.
+        Before the fix, the session still committed the COMPLETED transitions
+        for the first two suggestions because those writes were staged inside
+        the per-result validation loop. After the fix, phase 1 runs
+        read-only, so the failure on result 2 short-circuits before any
+        suggestion is written.
         """
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.list_suggestions import list_suggestions_operation

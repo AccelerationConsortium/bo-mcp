@@ -35,10 +35,10 @@ class TestSuggestionReproducibility:
     async def test_initial_design_deterministic(self, setup_database):
         """Initial design (Sobol sequence) produces same suggestions with same setup.
 
-        Sobol sequences are deterministic when seeded; per TODO 1.41a the
-        campaign's ``random_seed`` (default 42 in intake) is now threaded
-        through ``OptimizationSpec`` into ``SobolEngine`` so two campaigns
-        sharing a spec produce identical initial-design batches.
+        Sobol sequences are deterministic when seeded; the campaign's
+        ``random_seed`` (default 42 in intake) is threaded through
+        ``OptimizationSpec`` into ``SobolEngine`` so two campaigns sharing
+        a spec produce identical initial-design batches.
         """
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -127,15 +127,14 @@ class TestSuggestionReproducibility:
     async def test_bo_phase_deterministic_with_seed(self, setup_database):
         """BO-phase suggestions are reproducible when ``random_seed`` is set.
 
-        Regression test for TODO 1.41b.  Before the fix,
-        ``generate_next_batch`` picked its acquisition seed with
-        ``random.randint`` whenever the caller did not pass an ``rng``,
-        so two replays of the same seeded campaign produced divergent
-        BO candidates even though the ``spec.random_seed`` hint was
-        honored by the Sobol initial design.  The fix derives the
-        acquisition seed from ``spec.random_seed`` + ``iteration``, so
-        the BO path on call 2 of two sibling campaigns with identical
-        specs and identical observed history returns the same
+        Previously ``generate_next_batch`` picked its acquisition seed
+        with ``random.randint`` whenever the caller did not pass an
+        ``rng``, so two replays of the same seeded campaign produced
+        divergent BO candidates even though the ``spec.random_seed``
+        hint was honored by the Sobol initial design.  The fix derives
+        the acquisition seed from ``spec.random_seed`` + ``iteration``,
+        so the BO path on call 2 of two sibling campaigns with
+        identical specs and identical observed history returns the same
         ``parameter_values``.
         """
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -199,7 +198,7 @@ def _params_tuple(params: dict) -> tuple:
 
 
 class TestInitialDesignNoDuplicates:
-    """Regression tests for TODO 1.41a.
+    """Regression tests for initial-design duplicate elimination.
 
     Smoke-test reproduction: a 2x2 categorical campaign with
     ``batch_size=2`` and ``initial_design_size=2`` used to reissue
@@ -323,15 +322,15 @@ class TestInitialDesignNoDuplicates:
 
 
 class TestPendingPointsConditioning:
-    """Regression tests for TODO 1.41.
+    """Regression tests for X_pending conditioning in acquisition.
 
-    Before 1.41, ``optimize_acquisition`` never threaded ``X_pending``
+    Previously ``optimize_acquisition`` never threaded ``X_pending``
     into ``botorch.optim.optimize_acqf``.  Two consecutive
     ``generate_suggestions`` calls on the same campaign state (no new
     results submitted between them) therefore returned essentially the
     same BO candidate — the acquisition maximum is a function of the
-    fitted GP alone, which has not changed.  With 1.41 the in-flight /
-    PENDING suggestions are encoded and passed as ``X_pending``, so the
+    fitted GP alone, which has not changed.  In-flight / PENDING
+    suggestions are now encoded and passed as ``X_pending``, so the
     joint acquisition conditions on them and produces a distinct point.
 
     Reference: BoTorch "batched" / parallel BO tutorial

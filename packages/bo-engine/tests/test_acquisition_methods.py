@@ -339,10 +339,10 @@ class TestAcquisitionInWorkflow:
 class TestSignConventionGuards:
     """Verify that the minimization-form contract is enforced at construction.
 
-    These tests protect the fix for TODO 1.1: every acquisition factory
-    must surface a hard error when the caller passes data that is not in
-    the canonical minimization form, instead of silently pointing EI the
-    wrong way.  The sign convention is documented in ``bo_engine.types``.
+    Every acquisition factory must surface a hard error when the caller
+    passes data that is not in the canonical minimization form, instead of
+    silently pointing EI the wrong way.  The sign convention is documented
+    in ``bo_engine.types``.
 
     Regression context: see the ``create_single_objective_acquisition``
     handling of ``best_f`` discussed in

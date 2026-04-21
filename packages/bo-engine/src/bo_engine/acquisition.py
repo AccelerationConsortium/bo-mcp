@@ -691,7 +691,7 @@ def _apply_pending_to_acqf(
     greedy optimizer inside ``optimize_acqf`` conditions each new candidate
     on both the previously-selected batch members *and* the supplied
     pending in-flight experiments.  Without this call parallel / batch BO
-    silently clusters candidates around pending regions (TODO 1.41).
+    silently clusters candidates around pending regions.
     """
     if X_pending is None or X_pending.numel() == 0:
         return

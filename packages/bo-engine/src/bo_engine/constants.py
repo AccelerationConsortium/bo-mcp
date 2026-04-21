@@ -24,11 +24,11 @@ HIGH_DIMENSION_WARNING_THRESHOLD = 20
 # Minimum observations before training a model (fallback to initial design)
 MIN_OBSERVATIONS_FOR_MODEL = 2
 
-# Tolerances for verifying output standardization (see models.verify_standardization
-# and TODO §1.42). BoTorch's `Standardize(m=1)` uses `nanstd` (ddof=1 / sample
-# stdv) to normalize targets, so the post-transform *unbiased* variance is
-# exactly 1.0 up to float jitter; these tolerances bound numerical noise, not
-# statistical slack.
+# Tolerances for verifying output standardization (see
+# models.verify_standardization). BoTorch's `Standardize(m=1)` uses `nanstd`
+# (ddof=1 / sample stdv) to normalize targets, so the post-transform *unbiased*
+# variance is exactly 1.0 up to float jitter; these tolerances bound numerical
+# noise, not statistical slack.
 STANDARDIZATION_MEAN_TOLERANCE = 1e-5
 STANDARDIZATION_VAR_TOLERANCE = 1e-4
 
@@ -213,7 +213,6 @@ MAX_RANDOM_SEED = 2**31 - 1
 # The value is a large odd prime that is coprime to ``MAX_RANDOM_SEED`` so the
 # modular stride visits every residue before cycling, spreading consecutive
 # iterations across the seed range instead of clustering near adjacent values.
-# See TODO 1.41b.
 SEED_ITERATION_OFFSET = 1_000_003
 
 # =============================================================================

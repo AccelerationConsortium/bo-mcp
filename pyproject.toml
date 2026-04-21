@@ -2,7 +2,7 @@
 name = "bo-mcp-workspace"
 version = "0.1.0"
 description = "Bayesian Optimization MCP - Monorepo workspace"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 readme = "README.md"
 
 # No direct dependencies - all deps are in packages
@@ -18,7 +18,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-timeout>=2.3.1",
     "ruff>=0.15.2",
-    "pyright>=1.1.408",
+    "ty>=0.0.26",
     "pre-commit>=3.7",
     "types-seaborn>=0.13.2.20251221",
 ]
@@ -30,7 +30,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-timeout>=2.3.1",
     "ruff>=0.15.2",
-    "pyright>=1.1.408",
+    "ty>=0.0.26",
     "pre-commit>=3.7",
     "types-seaborn>=0.13.2.20251221",
 ]
@@ -38,12 +38,14 @@ dev = [
 [tool.uv.workspace]
 members = [
     "packages/bo-engine",
+    "packages/bo-engine-baybe",
     "packages/bo-mcp-server",
     "packages/bo-mcp-api",
 ]
 
 [tool.uv.sources]
 bo-engine = { workspace = true }
+bo-engine-baybe = { workspace = true }
 bo-mcp-server = { workspace = true }
 bo-mcp-api = { workspace = true }
 
@@ -54,19 +56,41 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "B", "S", "UP"]
+select = ["E", "F", "I", "N", "W", "B", "S", "UP", "C901", "PLR0912", "PLR0915", "PLR0911"]
 ignore = ["S101", "N806"]  # N806: X, Y are standard ML variable names
 
-[tool.pyright]
-pythonVersion = "3.13"
-typeCheckingMode = "standard"
-include = ["packages/*/src", "packages/*/tests"]
-venvPath = "."
-venv = ".venv"
-# SQLAlchemy/async patterns are challenging to type strictly
-reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownVariableType = false
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**" = ["C901", "PLR0912", "PLR0915", "PLR0911"]  # Demo scripts have long main() functions; complexity rules apply to packages only
+
+[tool.ty.environment]
+python-version = "3.13"
+python = ".venv"
+# uv workspace packages live outside site-packages; ty needs explicit paths
+extra-paths = [
+    "packages/bo-engine/src",
+    "packages/bo-engine-baybe/src",
+    "packages/bo-mcp-server/src",
+    "packages/bo-mcp-api/src",
+]
+
+[tool.ty.rules]
+# All rules promoted to error. Library-typing limitations are handled
+# with targeted `# ty: ignore[rule]` comments on individual lines.
+call-non-callable = "error"
+invalid-argument-type = "error"
+invalid-assignment = "error"
+invalid-return-type = "error"
+invalid-type-form = "error"
+missing-argument = "error"
+no-matching-overload = "error"
+not-subscriptable = "error"
+unknown-argument = "error"
+unresolved-attribute = "error"
+unresolved-import = "error"
+unsupported-operator = "error"
 
 [tool.pytest.ini_options]
 # Note: Run tests per-package to avoid conftest.py collisions
@@ -84,6 +108,7 @@ markers = [
     "nightly: marks tests for nightly CI runs only (statistical/stochastic tests)",
     "tutorial: marks tests that reproduce BoTorch tutorial results",
     "deterministic: marks tests that require deterministic torch operations",
+    "integration: marks integration tests (auto-applied to tests/ integration/ in bo-mcp-server)",
     "xfail_validation: xfail tests for input validation (roadmap item)",
     "xfail_reproducibility: xfail tests for reproducibility features (roadmap item)",
 ]

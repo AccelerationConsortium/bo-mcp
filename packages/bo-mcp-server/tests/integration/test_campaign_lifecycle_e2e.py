@@ -14,9 +14,9 @@ References:
 """
 
 import math
+import random
 from uuid import uuid4
 
-import numpy as np
 import pytest
 import torch
 
@@ -234,6 +234,9 @@ class TestMultiObjectiveLifecycle:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
+
+        random.seed(42)
+        torch.manual_seed(42)
 
         owner_id = str(uuid4())
 
@@ -575,12 +578,12 @@ class TestLongRunningLifecycle:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        # Set fixed seed for reproducibility - BO algorithms are stochastic.
-        # Seed 7 chosen because it demonstrates actual BO improvement:
-        # - Initial design starts at ~2.78 (not lucky)
-        # - BO iteration 2 improves to ~1.86 via GP model learning
-        rng = np.random.default_rng(7)
-        torch.manual_seed(int(rng.integers(0, 2**31)))
+        # Seed all RNG sources for reproducibility. generate_next_batch()
+        # uses random.randint() to derive a torch seed internally, and
+        # SobolEngine(scramble=True) uses torch's RNG for scrambling.
+        # Seed 0 verified across full suite + isolation runs.
+        random.seed(0)
+        torch.manual_seed(0)
 
         owner_id = str(uuid4())
 

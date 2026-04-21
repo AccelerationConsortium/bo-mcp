@@ -203,7 +203,7 @@ def create_mfkg_acquisition(
 
     # Create projection function for target fidelity
     def project(x: Tensor) -> Tensor:
-        return project_to_target_fidelity(X=x, target_fidelities=target_fidelities)
+        return project_to_target_fidelity(X=x, target_fidelities=target_fidelities, d=n_dims)
 
     # Compute current best value at target fidelity
     # Use FixedFeatureAcquisition to optimize over non-fidelity dimensions

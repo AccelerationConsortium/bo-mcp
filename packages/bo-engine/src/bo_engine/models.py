@@ -11,6 +11,8 @@ v1.1: Added input warping support
 v2.3: Added GPU auto-detection and acceleration
 """
 
+import logging
+
 import torch
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
@@ -23,6 +25,19 @@ from gpytorch.priors.torch_priors import LogNormalPrior
 from torch import Tensor
 
 from bo_engine.device import ensure_device, get_device, to_device
+
+logger = logging.getLogger(__name__)
+
+
+class ModelFittingError(RuntimeError):
+    """Raised when GP model fitting fails.
+
+    Contains the original exception and a user-friendly message with recovery guidance.
+    """
+
+    def __init__(self, message: str, original_error: Exception) -> None:
+        super().__init__(message)
+        self.original_error = original_error
 
 
 def create_input_transform(
@@ -156,9 +171,20 @@ def fit_single_task_model(model: SingleTaskGP) -> SingleTaskGP:
 
     Returns:
         Fitted model
+
+    Raises:
+        ModelFittingError: If fitting fails (singular matrix, numerical instability, etc.)
     """
     mll = ExactMarginalLogLikelihood(model.likelihood, model)
-    fit_gpytorch_mll(mll)
+    try:
+        fit_gpytorch_mll(mll)
+    except (RuntimeError, torch.linalg.LinAlgError) as e:
+        msg = (
+            f"GP model fitting failed: {e}. "
+            "Consider adding more observations or reducing parameter count."
+        )
+        logger.error(msg)
+        raise ModelFittingError(msg, original_error=e) from e
     return model
 
 
@@ -170,9 +196,20 @@ def fit_model(model: ModelListGP) -> ModelListGP:
 
     Returns:
         Fitted model
+
+    Raises:
+        ModelFittingError: If fitting fails (singular matrix, numerical instability, etc.)
     """
     mll = SumMarginalLogLikelihood(model.likelihood, model)
-    fit_gpytorch_mll(mll)
+    try:
+        fit_gpytorch_mll(mll)
+    except (RuntimeError, torch.linalg.LinAlgError) as e:
+        msg = (
+            f"Multi-output GP model fitting failed: {e}. "
+            "Consider adding more observations or reducing parameter count."
+        )
+        logger.error(msg)
+        raise ModelFittingError(msg, original_error=e) from e
     return model
 
 
@@ -267,13 +304,13 @@ def extract_lengthscales(model: ModelListGP | SingleTaskGP) -> dict[int, Tensor]
     if isinstance(model, SingleTaskGP):
         # Single model - access through covar_module attribute
         covar = model.covar_module  # type: ignore[attr-defined]
-        ls = covar.base_kernel.lengthscale.detach()
+        ls = covar.base_kernel.lengthscale.detach()  # ty: ignore[call-non-callable, unresolved-attribute]
         lengthscales[0] = ls.squeeze()
     else:
         # ModelListGP
         for i, m in enumerate(model.models):
             covar = m.covar_module  # type: ignore[attr-defined]
-            ls = covar.base_kernel.lengthscale.detach()
+            ls = covar.base_kernel.lengthscale.detach()  # ty: ignore[call-non-callable, unresolved-attribute]
             lengthscales[i] = ls.squeeze()
 
     return lengthscales
@@ -297,8 +334,8 @@ def get_warping_parameters(model: SingleTaskGP) -> dict[str, Tensor] | None:
                 c0 = transform.concentration0  # type: ignore[attr-defined]
                 c1 = transform.concentration1  # type: ignore[attr-defined]
                 return {
-                    "concentration0": c0.detach(),
-                    "concentration1": c1.detach(),
+                    "concentration0": c0.detach(),  # ty: ignore[call-non-callable]
+                    "concentration1": c1.detach(),  # ty: ignore[call-non-callable]
                 }
 
     return None

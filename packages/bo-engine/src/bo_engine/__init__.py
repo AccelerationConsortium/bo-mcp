@@ -4,8 +4,8 @@ This package provides a standalone BO engine that can be used independently
 or integrated with higher-level packages like bo-mcp-server.
 
 Supports:
-- Single-objective optimization (qLogNEI, qLogEI) [v1.0.1]
-- Multi-objective optimization (qLogNEHVI, qLogNParEGO)
+- Single-objective optimization (noisy EI, EI) [v1.0.1]
+- Multi-objective optimization (hypervolume improvement, scalarized)
 - Input warping for non-stationary objectives [v1.1]
 - LOO cross-validation for model quality assessment [v1.1]
 - TuRBO for high-dimensional optimization [v1.2]
@@ -30,8 +30,17 @@ from bo_engine.acquisition import (
     create_multi_objective_acquisition,
     create_single_objective_acquisition,
     get_best_observed_value,
-    get_reference_point,
     optimize_acquisition,
+)
+
+# Backend protocol (Step 8)
+from bo_engine.backend import (
+    BatchDiversityMetrics,
+    BOBackend,
+    DiagnosticSection,
+    DuplicateInfo,
+    Feature,
+    SuggestionBatch,
 )
 
 # New modules for critical missing functionality (v2.5)
@@ -42,6 +51,7 @@ from bo_engine.batch_diversity import (
     enforce_diversity,
     filter_diverse_candidates,
 )
+from bo_engine.botorch_backend import BoTorchBackend
 
 # Model Calibration (v2.7 - Section 3.3)
 from bo_engine.calibration import (
@@ -152,6 +162,7 @@ from bo_engine.model_validation import (
     validate_model_health,
 )
 from bo_engine.models import (
+    ModelFittingError,
     create_and_fit_model,
     create_and_fit_single_task_model,
     create_model,
@@ -178,7 +189,6 @@ from bo_engine.outcome_constraints import (
     ConstraintModelConfig,
     ConstraintModelingMethod,
     ConstraintModelResult,
-    OutcomeConstraintSpec,
     assess_constraint_model_quality,
     build_constraint_model_binary,
     build_constraint_model_continuous,
@@ -242,6 +252,7 @@ from bo_engine.reference_point import (
     ReferencePointState,
     ReferencePointStrategy,
     compute_reference_point_quality,
+    get_reference_point,
     get_reference_point_dynamic,
     recommend_reference_point,
 )
@@ -335,6 +346,7 @@ from bo_engine.turbo import (
     update_turbo_state,
 )
 from bo_engine.types import (
+    LEGACY_ACQUISITION_VALUES,
     AcquisitionMethod,
     ConstraintSpec,
     ConstraintType,
@@ -342,10 +354,12 @@ from bo_engine.types import (
     ObjectiveSpec,
     ObservationData,
     OptimizationSpec,
+    OutcomeConstraintSpec,
     ParameterSpec,
     ParameterType,
     SuggestionResult,
     TransferLearningSpec,
+    TurboConfig,
 )
 
 # What-If Analysis (v2.7 - Section 3.8)
@@ -404,6 +418,7 @@ __all__ = [
     "compute_loo_cv_metrics",
     "compute_pareto_front",
     "compute_single_objective_improvement_rate",
+    "ModelFittingError",
     "create_acquisition",
     "create_and_fit_model",
     "create_and_fit_single_task_model",
@@ -482,6 +497,8 @@ __all__ = [
     "compute_uncertainty_trend",
     "extract_hyperparameters",
     # Types
+    "LEGACY_ACQUISITION_VALUES",
+    "TurboConfig",
     "AcquisitionMethod",
     "ConstraintSpec",
     "ConstraintType",
@@ -537,7 +554,6 @@ __all__ = [
     "ConstraintModelConfig",
     "ConstraintModelingMethod",
     "ConstraintModelResult",
-    "OutcomeConstraintSpec",
     "assess_constraint_model_quality",
     "build_constraint_model_binary",
     "build_constraint_model_continuous",
@@ -640,4 +656,12 @@ __all__ = [
     "get_whatif_summary",
     "simulate_multiple_results",
     "simulate_result",
+    # Backend Protocol (Step 8)
+    "BOBackend",
+    "BatchDiversityMetrics",
+    "BoTorchBackend",
+    "DiagnosticSection",
+    "DuplicateInfo",
+    "Feature",
+    "SuggestionBatch",
 ]

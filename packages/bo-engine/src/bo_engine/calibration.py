@@ -146,7 +146,7 @@ def compute_calibration_score(
     # Get posterior predictions
     with torch.no_grad():
         if isinstance(model, ModelListGP):
-            posterior = model.models[objective_index].posterior(train_x)
+            posterior = model.models[objective_index].posterior(train_x)  # ty: ignore[call-non-callable]
         else:
             posterior = model.posterior(train_x)
 
@@ -207,7 +207,7 @@ def compute_calibration_score(
                 )
 
     # Generate recommendation
-    recommendation = _generate_calibration_recommendation(mean_error, max_error, coverage_results)
+    recommendation = _generate_calibration_recommendation(mean_error, coverage_results)
 
     return CalibrationReport(
         is_well_calibrated=is_well_calibrated,
@@ -396,9 +396,7 @@ def compute_loo_calibration(
                     f"LOO: {level_pct}% intervals contain {obs_pct}% of held-out values"
                 )
 
-    recommendation = _generate_calibration_recommendation(
-        mean_error, max_error, coverage_results, is_loo=True
-    )
+    recommendation = _generate_calibration_recommendation(mean_error, coverage_results, is_loo=True)
 
     return CalibrationReport(
         is_well_calibrated=is_well_calibrated,
@@ -490,7 +488,6 @@ def get_calibration_summary(report: CalibrationReport) -> str:
 
 def _generate_calibration_recommendation(
     mean_error: float,
-    max_error: float,
     coverage_results: list[CoverageResult],
     is_loo: bool = False,
 ) -> str:

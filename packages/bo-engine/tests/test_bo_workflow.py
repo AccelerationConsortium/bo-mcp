@@ -178,11 +178,13 @@ class TestMultiObjectiveWorkflow:
         torch.manual_seed(42)
         spec = create_branin_currin_spec(batch_size=2)
 
-        # Create initial observations
+        # Create initial observations (need 2*2+1=5 for BO mode with 2 params)
         observations = [
             ObservationData({"x0": 0.2, "x1": 0.3}, {"branin": 0.5, "currin": 0.7}),
             ObservationData({"x0": 0.5, "x1": 0.5}, {"branin": 0.6, "currin": 0.5}),
             ObservationData({"x0": 0.8, "x1": 0.7}, {"branin": 0.4, "currin": 0.8}),
+            ObservationData({"x0": 0.3, "x1": 0.8}, {"branin": 0.55, "currin": 0.65}),
+            ObservationData({"x0": 0.6, "x1": 0.2}, {"branin": 0.45, "currin": 0.75}),
         ]
 
         # Generate suggestions
@@ -191,7 +193,7 @@ class TestMultiObjectiveWorkflow:
         assert len(suggestions) == 2
         for s in suggestions:
             assert s.generation_method == "bo"
-            assert s.acquisition_function == "qLogNEHVI"
+            assert s.acquisition_function == "hypervolume_improvement"
             assert s.model_type is not None
             assert 0.0 <= s.parameter_values["x0"] <= 1.0
             assert 0.0 <= s.parameter_values["x1"] <= 1.0
@@ -409,13 +411,15 @@ class TestSuggestionProvenance:
             ObservationData({"x0": 0.2, "x1": 0.3}, {"branin": 0.5, "currin": 0.7}),
             ObservationData({"x0": 0.5, "x1": 0.5}, {"branin": 0.6, "currin": 0.5}),
             ObservationData({"x0": 0.8, "x1": 0.7}, {"branin": 0.4, "currin": 0.8}),
+            ObservationData({"x0": 0.3, "x1": 0.8}, {"branin": 0.55, "currin": 0.65}),
+            ObservationData({"x0": 0.6, "x1": 0.2}, {"branin": 0.45, "currin": 0.75}),
         ]
 
         suggestions, _ = generate_next_batch(spec, observations, batch_size=2, iteration=1)
 
         for s in suggestions:
             assert s.generation_method == "bo"
-            assert s.acquisition_function == "qLogNEHVI"
+            assert s.acquisition_function == "hypervolume_improvement"
             assert s.model_type is not None
             assert "GP" in s.model_type or "Gaussian" in s.model_type
             assert s.confidence_level in ["high", "medium", "low"]
@@ -443,6 +447,8 @@ class TestEdgeCases:
 
         # All same point
         observations = [
+            ObservationData({"x0": 0.5, "x1": 0.5}, {"branin": 0.5, "currin": 0.5}),
+            ObservationData({"x0": 0.5, "x1": 0.5}, {"branin": 0.5, "currin": 0.5}),
             ObservationData({"x0": 0.5, "x1": 0.5}, {"branin": 0.5, "currin": 0.5}),
             ObservationData({"x0": 0.5, "x1": 0.5}, {"branin": 0.5, "currin": 0.5}),
             ObservationData({"x0": 0.5, "x1": 0.5}, {"branin": 0.5, "currin": 0.5}),

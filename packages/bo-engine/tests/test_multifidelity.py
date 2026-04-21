@@ -94,7 +94,7 @@ class TestMultiFidelityConfig:
 class TestMultiFidelityModelCreation:
     """Test multi-fidelity model creation."""
 
-    def test_create_model_basic(self) -> None:
+    def test_create_model_basic(self, torch_rng) -> None:
         """Model can be created with fidelity dimension."""
         # 2 params + 1 fidelity = 3 columns, fidelity is last
         train_x = torch.rand(15, 3, dtype=torch.double)
@@ -104,7 +104,7 @@ class TestMultiFidelityModelCreation:
         model = create_multifidelity_model(train_x, train_y, fidelity_dim)
         assert model is not None
 
-    def test_create_model_with_1d_y(self) -> None:
+    def test_create_model_with_1d_y(self, torch_rng) -> None:
         """Model handles 1D y input."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, dtype=torch.double)
@@ -117,7 +117,7 @@ class TestMultiFidelityModelCreation:
 class TestMultiFidelityModelFitting:
     """Test multi-fidelity model fitting."""
 
-    def test_fit_model(self) -> None:
+    def test_fit_model(self, torch_rng) -> None:
         """Model can be fitted."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -133,7 +133,7 @@ class TestMultiFidelityModelFitting:
             posterior = fitted.posterior(test_x)
             assert posterior.mean.shape == (5, 1)
 
-    def test_create_and_fit_combined(self) -> None:
+    def test_create_and_fit_combined(self, torch_rng) -> None:
         """Combined create and fit function works."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -191,7 +191,7 @@ class TestCostModel:
 class TestMFKGAcquisition:
     """Test qMFKG acquisition function creation."""
 
-    def test_create_acquisition(self) -> None:
+    def test_create_acquisition(self, torch_rng) -> None:
         """qMFKG acquisition can be created."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -215,7 +215,7 @@ class TestMFKGAcquisition:
 
         assert acqf is not None
 
-    def test_create_acquisition_without_cost(self) -> None:
+    def test_create_acquisition_without_cost(self, torch_rng) -> None:
         """qMFKG can be created without explicit cost model."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -242,7 +242,7 @@ class TestMFKGAcquisition:
 class TestMFKGOptimization:
     """Test qMFKG optimization."""
 
-    def test_optimize_mfkg(self) -> None:
+    def test_optimize_mfkg(self, torch_rng) -> None:
         """qMFKG can be optimized to produce candidates."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -447,7 +447,7 @@ class TestMultiFidelityEdgeCases:
         model = create_and_fit_multifidelity_model(train_x, train_y, fidelity_dim)
         assert model is not None
 
-    def test_single_fidelity_level(self) -> None:
+    def test_single_fidelity_level(self, torch_rng) -> None:
         """Works with data at only one fidelity level."""
         train_x = torch.rand(10, 3, dtype=torch.double)
         train_x[:, 2] = 0.5  # All at same fidelity
@@ -457,7 +457,7 @@ class TestMultiFidelityEdgeCases:
         model = create_and_fit_multifidelity_model(train_x, train_y, fidelity_dim)
         assert model is not None
 
-    def test_high_dimensional_params(self) -> None:
+    def test_high_dimensional_params(self, torch_rng) -> None:
         """Works with many parameters + fidelity."""
         n_params = 10
         train_x = torch.rand(20, n_params + 1, dtype=torch.double)  # +1 for fidelity

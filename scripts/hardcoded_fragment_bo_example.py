@@ -285,7 +285,7 @@ async def main() -> None:
         print("\n" + "=" * 72)
         print("Hard-coded optimization runs complete")
         if run_best_gaps:
-            global_best_idx = min(range(len(run_best_gaps)), key=run_best_gaps.__getitem__)
+            global_best_idx = min(range(len(run_best_gaps)), key=lambda i: run_best_gaps[i])
             global_best_gap = run_best_gaps[global_best_idx]
             global_best_combo = run_best_combos[global_best_idx]
             if global_best_combo:

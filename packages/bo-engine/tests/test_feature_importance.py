@@ -12,7 +12,7 @@ from bo_engine.models import create_and_fit_model
 class TestFeatureImportance:
     """Tests for feature importance functions."""
 
-    def test_extract_lengthscales(self):
+    def test_extract_lengthscales(self, torch_rng):
         """extract_lengthscales returns lengthscales from fitted model."""
         # Simple 2D problem with 1 objective
         X = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
@@ -68,7 +68,7 @@ class TestFeatureImportance:
         agg = importance["aggregate"]
         assert abs(agg["x1"] - agg["x2"]) < 0.2
 
-    def test_end_to_end_importance(self):
+    def test_end_to_end_importance(self, torch_rng):
         """Full pipeline: fit model and compute importance."""
         # Create data where x1 clearly matters more than x2
         X = torch.tensor(

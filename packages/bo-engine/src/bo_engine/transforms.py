@@ -7,9 +7,13 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from bo_engine.constants import DISCRETE_ENUMERATION_MAX_POINTS
+from bo_engine.constants import (
+    DISCRETE_ENUMERATION_MAX_POINTS,
+    NUMERICAL_EPSILON,
+    SAFE_DIVISION_EPSILON,
+)
 from bo_engine.device import get_device, get_dtype
-from bo_engine.types import OptimizationSpec, ParameterType
+from bo_engine.types import OptimizationSpec, ParameterSpec, ParameterType
 
 
 class SearchSpaceType(StrEnum):
@@ -108,29 +112,43 @@ def enumerate_discrete_choices(spec: OptimizationSpec) -> Tensor:
                 raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
             cat_ranges.append(range(len(param.categories)))
 
+    # Pre-compute parameter layout: list of (n_dims, is_categorical) tuples
+    param_layout = _get_parameter_layout(spec)
+
     # Build all combinations
     rows = []
     for combo in itertools.product(*cat_ranges):
-        row = []
-        cat_idx = 0
-        for param in spec.parameters:
-            if param.type == ParameterType.CATEGORICAL:
-                if param.categories is None:
-                    raise ValueError(
-                        f"Categorical parameter '{param.name}' has no categories defined"
-                    )
-                n_cats = len(param.categories)
-                one_hot = [0.0] * n_cats
-                one_hot[combo[cat_idx]] = 1.0
-                row.extend(one_hot)
-                cat_idx += 1
-            else:
-                # Non-categorical dims get 0.0 placeholder
-                row.append(0.0)
-
-        rows.append(row)
+        rows.append(_encode_combo(combo, param_layout))
 
     return torch.tensor(rows, dtype=dtype, device=device)
+
+
+def _get_parameter_layout(spec: OptimizationSpec) -> list[tuple[int, bool]]:
+    """Return (n_dims, is_categorical) for each parameter."""
+    layout: list[tuple[int, bool]] = []
+    for param in spec.parameters:
+        if param.type == ParameterType.CATEGORICAL:
+            if param.categories is None:
+                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+            layout.append((len(param.categories), True))
+        else:
+            layout.append((1, False))
+    return layout
+
+
+def _encode_combo(combo: tuple[int, ...], layout: list[tuple[int, bool]]) -> list[float]:
+    """Encode a single categorical combination into a flat row."""
+    row: list[float] = []
+    cat_idx = 0
+    for n_dims, is_cat in layout:
+        if is_cat:
+            one_hot = [0.0] * n_dims
+            one_hot[combo[cat_idx]] = 1.0
+            row.extend(one_hot)
+            cat_idx += 1
+        else:
+            row.append(0.0)
+    return row
 
 
 def build_fixed_features_list(
@@ -149,7 +167,16 @@ def build_fixed_features_list(
     Returns:
         List of dicts, each mapping dimension index to fixed one-hot value
     """
-    # Collect categorical parameter info: (start_dim, n_cats) pairs
+    cat_info = _collect_categorical_dim_info(spec)
+    cat_ranges = [range(n_cats) for _, n_cats in cat_info]
+
+    return [_build_one_hot_features(combo, cat_info) for combo in itertools.product(*cat_ranges)]
+
+
+def _collect_categorical_dim_info(
+    spec: OptimizationSpec,
+) -> list[tuple[int, int]]:
+    """Return (start_dim, n_cats) for each categorical parameter."""
     cat_info: list[tuple[int, int]] = []
     dim_idx = 0
     for param in spec.parameters:
@@ -161,19 +188,51 @@ def build_fixed_features_list(
             dim_idx += n_cats
         else:
             dim_idx += 1
+    return cat_info
 
-    # Build all combinations of category indices
-    cat_ranges = [range(n_cats) for _, n_cats in cat_info]
 
-    fixed_features_list: list[dict[int, float]] = []
-    for combo in itertools.product(*cat_ranges):
-        features: dict[int, float] = {}
-        for (start_dim, n_cats), cat_choice in zip(cat_info, combo, strict=True):
-            for j in range(n_cats):
-                features[start_dim + j] = 1.0 if j == cat_choice else 0.0
-        fixed_features_list.append(features)
+def _build_one_hot_features(
+    combo: tuple[int, ...],
+    cat_info: list[tuple[int, int]],
+) -> dict[int, float]:
+    """Build a single fixed-features dict from a categorical combination."""
+    features: dict[int, float] = {}
+    for (start_dim, n_cats), cat_choice in zip(cat_info, combo, strict=True):
+        for j in range(n_cats):
+            features[start_dim + j] = 1.0 if j == cat_choice else 0.0
+    return features
 
-    return fixed_features_list
+
+def _get_param_bounds(param: ParameterSpec) -> tuple[list[float], list[float]]:
+    """Get lower and upper bounds for a single parameter.
+
+    For continuous parameters, returns the explicit bounds.
+    For discrete parameters, returns bounds or min/max of values.
+    For categorical parameters, returns [0, 1] per category (one-hot encoding).
+
+    Args:
+        param: Parameter specification
+
+    Returns:
+        Tuple of (lower_bounds, upper_bounds) lists for this parameter's dimensions
+    """
+    if param.type == ParameterType.CONTINUOUS:
+        if param.bounds is None:
+            raise ValueError(f"Continuous parameter '{param.name}' has no bounds defined")
+        return [param.bounds[0]], [param.bounds[1]]
+
+    if param.type == ParameterType.DISCRETE:
+        if param.bounds is not None:
+            return [param.bounds[0]], [param.bounds[1]]
+        if param.values is not None:
+            return [float(min(param.values))], [float(max(param.values))]
+        return [], []
+
+    # ParameterType.CATEGORICAL — one-hot encoding: each category is a dimension in [0, 1]
+    if param.categories is None:
+        raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+    n_cats = len(param.categories)
+    return [0.0] * n_cats, [1.0] * n_cats
 
 
 def get_bounds_tensor(spec: OptimizationSpec) -> Tensor:
@@ -182,31 +241,35 @@ def get_bounds_tensor(spec: OptimizationSpec) -> Tensor:
     Returns tensor of shape (2, n_dims) where n_dims includes one-hot encoded
     categorical dimensions.
     """
-    lower = []
-    upper = []
+    lower: list[float] = []
+    upper: list[float] = []
 
     for param in spec.parameters:
-        if param.type == ParameterType.CONTINUOUS:
-            if param.bounds is None:
-                raise ValueError(f"Continuous parameter '{param.name}' has no bounds defined")
-            lower.append(param.bounds[0])
-            upper.append(param.bounds[1])
-        elif param.type == ParameterType.DISCRETE:
-            if param.bounds is not None:
-                lower.append(param.bounds[0])
-                upper.append(param.bounds[1])
-            elif param.values is not None:
-                lower.append(float(min(param.values)))
-                upper.append(float(max(param.values)))
-        elif param.type == ParameterType.CATEGORICAL:
-            # One-hot encoding: each category is a dimension in [0, 1]
-            if param.categories is None:
-                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
-            for _ in param.categories:
-                lower.append(0.0)
-                upper.append(1.0)
+        lo, hi = _get_param_bounds(param)
+        lower.extend(lo)
+        upper.extend(hi)
 
     return torch.tensor([lower, upper], dtype=get_dtype(), device=get_device())
+
+
+def _encode_param_value(param: ParameterSpec, value: int | float | str) -> list[float]:
+    """Encode a single parameter value into its tensor representation.
+
+    Continuous and discrete values become a single float.
+    Categorical values become a one-hot encoded list.
+
+    Args:
+        param: Parameter specification
+        value: The raw parameter value
+
+    Returns:
+        List of floats representing this parameter's encoded dimensions
+    """
+    if param.type == ParameterType.CATEGORICAL:
+        if param.categories is None:
+            raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+        return [1.0 if value == cat else 0.0 for cat in param.categories]
+    return [float(value)]
 
 
 def encode_categorical(values: dict[str, Any], spec: OptimizationSpec) -> Tensor:
@@ -214,23 +277,60 @@ def encode_categorical(values: dict[str, Any], spec: OptimizationSpec) -> Tensor
 
     Returns tensor of shape (n_dims,).
     """
-    encoded = []
-
+    encoded: list[float] = []
     for param in spec.parameters:
-        value = values[param.name]
-
-        if param.type == ParameterType.CONTINUOUS:
-            encoded.append(float(value))
-        elif param.type == ParameterType.DISCRETE:
-            encoded.append(float(value))
-        elif param.type == ParameterType.CATEGORICAL:
-            # One-hot encoding
-            if param.categories is None:
-                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
-            for cat in param.categories:
-                encoded.append(1.0 if value == cat else 0.0)
-
+        encoded.extend(_encode_param_value(param, values[param.name]))
     return torch.tensor(encoded, dtype=get_dtype(), device=get_device())
+
+
+def stack_encoded_values(
+    value_dicts: list[dict[str, Any]],
+    spec: OptimizationSpec,
+) -> Tensor:
+    """Encode multiple parameter-value dicts and stack into a 2-D tensor.
+
+    This is a convenience wrapper around :func:`encode_categorical` +
+    ``torch.stack`` that lets callers avoid importing ``torch`` directly.
+
+    Returns tensor of shape ``(len(value_dicts), n_dims)``.
+    """
+    tensors = [encode_categorical(v, spec) for v in value_dicts]
+    return torch.stack(tensors)
+
+
+def _decode_param_value(
+    param: ParameterSpec, tensor: Tensor, idx: int
+) -> tuple[int | float | str, int]:
+    """Decode a single parameter value from its tensor representation.
+
+    For continuous parameters, extracts a float.
+    For discrete parameters, extracts and rounds to the nearest integer.
+    For categorical parameters, decodes one-hot via softmax and argmax.
+
+    Args:
+        param: Parameter specification
+        tensor: Full encoded tensor
+        idx: Current index into the tensor
+
+    Returns:
+        Tuple of (decoded_value, new_index)
+    """
+    if param.type == ParameterType.CONTINUOUS:
+        return float(tensor[idx].item()), idx + 1
+
+    if param.type == ParameterType.DISCRETE:
+        return round(tensor[idx].item()), idx + 1
+
+    # ParameterType.CATEGORICAL — decode one-hot via softmax then argmax.
+    # Softmax sharpens the encoding so ties from continuous relaxation
+    # are resolved deterministically.
+    if param.categories is None:
+        raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+    n_cats = len(param.categories)
+    cat_values = tensor[idx : idx + n_cats]
+    sharpened = torch.softmax(cat_values, dim=0)
+    best_cat_idx = int(sharpened.argmax().item())
+    return param.categories[best_cat_idx], idx + n_cats
 
 
 def decode_categorical(tensor: Tensor, spec: OptimizationSpec) -> dict[str, Any]:
@@ -242,22 +342,7 @@ def decode_categorical(tensor: Tensor, spec: OptimizationSpec) -> dict[str, Any]
     idx = 0
 
     for param in spec.parameters:
-        if param.type == ParameterType.CONTINUOUS:
-            values[param.name] = float(tensor[idx].item())
-            idx += 1
-        elif param.type == ParameterType.DISCRETE:
-            # Round to nearest integer for discrete
-            values[param.name] = round(tensor[idx].item())
-            idx += 1
-        elif param.type == ParameterType.CATEGORICAL:
-            # Decode one-hot: pick highest value
-            if param.categories is None:
-                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
-            n_cats = len(param.categories)
-            cat_values = tensor[idx : idx + n_cats]
-            best_cat_idx = int(cat_values.argmax().item())
-            values[param.name] = param.categories[best_cat_idx]
-            idx += n_cats
+        values[param.name], idx = _decode_param_value(param, tensor, idx)
 
     return values
 
@@ -274,7 +359,7 @@ def normalize_inputs(x: Tensor, bounds: Tensor) -> Tensor:
     """
     lower = bounds[0]
     upper = bounds[1]
-    return (x - lower) / (upper - lower + 1e-10)
+    return (x - lower) / (upper - lower + NUMERICAL_EPSILON)
 
 
 def unnormalize_inputs(x_normalized: Tensor, bounds: Tensor) -> Tensor:
@@ -303,7 +388,7 @@ def standardize_outputs(y: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     """
     mean = y.mean(dim=0)
     std = y.std(dim=0)
-    std = torch.where(std < 1e-6, torch.ones_like(std), std)
+    std = torch.where(std < SAFE_DIVISION_EPSILON, torch.ones_like(std), std)
     return (y - mean) / std, mean, std
 
 

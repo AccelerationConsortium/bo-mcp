@@ -1,0 +1,82 @@
+"""Validate intake operation - protocol-neutral business logic."""
+
+import logging
+from typing import Any
+
+from pydantic import ValidationError
+
+from bo_mcp_server.domain import (
+    CampaignIntakeInput,
+    CampaignSpec,
+)
+from bo_mcp_server.errors import ErrorCode, make_error_response
+
+logger = logging.getLogger(__name__)
+
+
+def validate_intake_operation(
+    intake_data: CampaignIntakeInput | dict[str, Any],
+) -> dict[str, Any]:
+    """Validate a campaign intake specification without creating a campaign.
+
+    Returns the full canonical response with all fields populated.
+    Transport layers (MCP tool, HTTP route) apply verbosity formatting.
+
+    Args:
+        intake_data: Campaign intake payload. Accepts either a
+            CampaignIntakeInput instance or a raw dict (validated internally).
+
+    Returns:
+        Dictionary with:
+            - valid: Whether validation passed
+            - errors: List of validation error messages
+            - warnings: List of warning messages
+            - spec: Full CampaignSpec as dict (if valid), or None
+    """
+    intake_name = intake_data.name if isinstance(intake_data, CampaignIntakeInput) else "<no name>"
+    logger.debug("Validating intake data: %s", intake_name)
+
+    try:
+        intake = (
+            intake_data
+            if isinstance(intake_data, CampaignIntakeInput)
+            else CampaignIntakeInput.model_validate(intake_data)
+        )
+        spec = CampaignSpec(**intake.model_dump())
+    except ValidationError as e:
+        errors: list[str] = [f"{error['loc']}: {error['msg']}" for error in e.errors()]
+        response = make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message="Intake validation failed",
+            details={"validation_errors": errors},
+        )
+        response["valid"] = False
+        response["errors"] = errors
+        response["warnings"] = []
+        response["spec"] = None
+        return response
+
+    warnings: list[str] = []
+    if spec.n_objectives > 4:
+        warnings.append(
+            f"Many objectives ({spec.n_objectives}) may make Pareto front difficult to visualize"
+        )
+
+    if spec.n_parameters > 20:
+        warnings.append(
+            f"Many parameters ({spec.n_parameters}) may require more initial design points"
+        )
+
+    logger.info(
+        "Intake validated successfully: name=%s, params=%d, objectives=%d",
+        spec.name,
+        spec.n_parameters,
+        spec.n_objectives,
+    )
+
+    return {
+        "valid": True,
+        "errors": [],
+        "warnings": warnings,
+        "spec": spec.to_dict(),
+    }

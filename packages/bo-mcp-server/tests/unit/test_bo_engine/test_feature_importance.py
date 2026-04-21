@@ -13,6 +13,7 @@ class TestFeatureImportance:
 
     def test_extract_lengthscales(self):
         """extract_lengthscales returns lengthscales from fitted model."""
+        torch.manual_seed(42)
         # Simple 2D problem with 1 objective
         X = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
         Y = torch.tensor([[1.0], [2.0], [1.5], [2.5]])  # X1 more important than X2
@@ -69,6 +70,7 @@ class TestFeatureImportance:
 
     def test_end_to_end_importance(self):
         """Full pipeline: fit model and compute importance."""
+        torch.manual_seed(42)
         # Create data where x1 clearly matters more than x2
         X = torch.tensor(
             [

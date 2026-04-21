@@ -1,9 +1,10 @@
 """Acquisition function creation and optimization.
 
-Supports both single-objective (qLogNEI, qLogEI) and multi-objective
-(qLogNEHVI, qLogNParEGO) acquisition functions.
+Supports both single-objective (noisy EI, EI) and multi-objective
+(hypervolume improvement, scalarized multi-objective) acquisition
+functions.
 
-v1.0.1: Added single-objective support via qLogNEI
+v1.0.1: Added single-objective support via qLogNoisyExpectedImprovement
 v1.1: Added qLogNParEGO alternative for multi-objective
 v1.3: Added cost-aware (EIpu) and outcome constraint support
 v2.3: Added GPU auto-detection and acceleration
@@ -11,7 +12,9 @@ v2.3: Added GPU auto-detection and acceleration
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
+from typing import Any, cast
 
 import torch
 from botorch.acquisition import AcquisitionFunction
@@ -27,11 +30,6 @@ from torch import Tensor
 
 from bo_engine.constants import MIXED_CATEGORICAL_COMBO_THRESHOLD
 from bo_engine.device import ensure_device, to_device
-from bo_engine.reference_point import (
-    ReferencePointConfig,
-    ReferencePointStrategy,
-    get_reference_point_dynamic,
-)
 from bo_engine.transforms import (
     SearchSpaceType,
     build_fixed_features_list,
@@ -40,6 +38,8 @@ from bo_engine.transforms import (
     enumerate_discrete_choices,
 )
 from bo_engine.types import AcquisitionConfig, AcquisitionMethod, OptimizationSpec
+
+logger = logging.getLogger(__name__)
 
 
 def create_single_objective_acquisition(
@@ -56,18 +56,18 @@ def create_single_objective_acquisition(
         model: Fitted SingleTaskGP model
         train_x: Training inputs for baseline sampling
         train_y: Training outputs (for best_f computation if needed)
-        best_f: Best observed value (required for qLogEI, computed for qLogNEI)
-        use_noisy: If True, use qLogNEI (handles noise), else qLogEI
+        best_f: Best observed value (required for EI, computed for noisy EI)
+        use_noisy: If True, use noisy EI (handles noise), else EI
         constraints: Optional list of constraint callables
 
     Returns:
-        qLogNEI or qLogEI acquisition function
+        Noisy EI or EI acquisition function
     """
     train_x, train_y = ensure_device(train_x, train_y)
 
     if use_noisy:
-        # qLogNEI handles noisy observations - recommended default
-        acqf_kwargs = {
+        # Noisy EI handles noisy observations - recommended default
+        acqf_kwargs: dict[str, Any] = {
             "model": model,
             "X_baseline": train_x,
             "prune_baseline": True,
@@ -77,15 +77,11 @@ def create_single_objective_acquisition(
             acqf_kwargs["constraints"] = constraints
         return qLogNoisyExpectedImprovement(**acqf_kwargs)
     else:
-        # qLogEI for noiseless observations - requires best_f
+        # EI for noiseless observations - requires best_f
         if best_f is None:
             # Compute best_f from training data (assumes minimization)
             best_f = train_y.min().item()
-        acqf_kwargs = {
-            "model": model,
-            "best_f": best_f,
-        }
-        return qLogExpectedImprovement(**acqf_kwargs)
+        return qLogExpectedImprovement(model=model, best_f=best_f)
 
 
 def create_multi_objective_acquisition(
@@ -93,7 +89,7 @@ def create_multi_objective_acquisition(
     ref_point: Tensor,
     train_x: Tensor,
     train_y: Tensor,
-    method: AcquisitionMethod = AcquisitionMethod.QLOGNEHVI,
+    method: AcquisitionMethod = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT,
     constraints: list | None = None,
 ) -> AcquisitionFunction:
     """Create acquisition function for multi-objective optimization.
@@ -103,7 +99,7 @@ def create_multi_objective_acquisition(
         ref_point: Reference point for hypervolume computation
         train_x: Training inputs for sampling baseline
         train_y: Training outputs (for scalarization in NParEGO)
-        method: Acquisition method (qLogNEHVI or qLogNParEGO)
+        method: Acquisition method (HYPERVOLUME_IMPROVEMENT or SCALARIZED_MULTI_OBJ)
         constraints: Optional list of constraint callables
 
     Returns:
@@ -111,7 +107,7 @@ def create_multi_objective_acquisition(
     """
     train_x, train_y, ref_point = ensure_device(train_x, train_y, ref_point)
 
-    if method == AcquisitionMethod.QLOGPAREGO:
+    if method == AcquisitionMethod.SCALARIZED_MULTI_OBJ:
         # qLogNParEGO: Random scalarization weights for Pareto exploration
         # When weights=None, qLogNParEGO uses random weights internally
         acqf_kwargs: dict = {
@@ -127,7 +123,7 @@ def create_multi_objective_acquisition(
         return qLogNParEGO(**acqf_kwargs)
 
     else:
-        # Default: qLogNEHVI (hypervolume-based)
+        # Default: hypervolume improvement (qLogNEHVI)
         acqf_kwargs = {
             "model": model,
             "ref_point": ref_point.tolist(),
@@ -138,7 +134,7 @@ def create_multi_objective_acquisition(
         if constraints is not None and len(constraints) > 0:
             acqf_kwargs["constraints"] = constraints
 
-        return qLogNoisyExpectedHypervolumeImprovement(**acqf_kwargs)
+        return qLogNoisyExpectedHypervolumeImprovement(**acqf_kwargs)  # ty: ignore[invalid-argument-type]
 
 
 def create_acquisition_from_config(config: AcquisitionConfig) -> AcquisitionFunction:
@@ -203,51 +199,121 @@ def create_acquisition(
     # Determine method if AUTO
     if method == AcquisitionMethod.AUTO:
         if n_objectives == 1:
-            method = AcquisitionMethod.QLOGNEI
+            method = AcquisitionMethod.NOISY_EI
         else:
-            method = AcquisitionMethod.QLOGNEHVI
+            method = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
 
-    # Single-objective acquisition
     if n_objectives == 1:
-        if not isinstance(model, SingleTaskGP):
-            # If ModelListGP with single model, extract it
-            if isinstance(model, ModelListGP) and len(model.models) == 1:
-                model = model.models[0]  # type: ignore[assignment]
-            else:
-                raise ValueError("Single-objective requires SingleTaskGP model")
-
-        # Cost-aware acquisition (EIpu)
-        if method == AcquisitionMethod.EIPU and cost_model is not None:
-            return create_cost_aware_acquisition(
-                model=model,  # type: ignore[arg-type]
-                train_y=train_y,
-                cost_model=cost_model,
-                outcome_constraint_models=outcome_constraint_models,
-            )
-
-        # Build outcome constraint callables if provided
-        all_constraints = list(constraints) if constraints else []
-        if outcome_constraint_models:
-            for constraint_model, threshold in outcome_constraint_models:
-                all_constraints.append(
-                    _make_outcome_constraint_callable(constraint_model, threshold)
-                )
-
-        use_noisy = method != AcquisitionMethod.QLOGEI
-        return create_single_objective_acquisition(
-            model=model,  # type: ignore[arg-type]
+        return _create_single_objective_dispatch(
+            model=model,
             train_x=train_x,
             train_y=train_y,
-            use_noisy=use_noisy,
-            constraints=all_constraints if all_constraints else None,
+            method=method,
+            constraints=constraints,
+            outcome_constraint_models=outcome_constraint_models,
+            cost_model=cost_model,
         )
 
-    # Multi-objective acquisition
+    return _create_multi_objective_dispatch(
+        model=model,
+        ref_point=ref_point,
+        train_x=train_x,
+        train_y=train_y,
+        method=method,
+        constraints=constraints,
+    )
+
+
+def _create_single_objective_dispatch(
+    model: ModelListGP | SingleTaskGP,
+    train_x: Tensor,
+    train_y: Tensor,
+    method: AcquisitionMethod,
+    constraints: list | None,
+    outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None,
+    cost_model: SingleTaskGP | None,
+) -> AcquisitionFunction:
+    """Dispatch single-objective acquisition function creation.
+
+    Handles model extraction from ModelListGP, cost-aware EIpu, and
+    standard EI/noisy-EI with optional outcome constraints.
+
+    Args:
+        model: Fitted GP model (SingleTaskGP or single-model ModelListGP)
+        train_x: Training inputs
+        train_y: Training outputs
+        method: Acquisition method
+        constraints: Optional constraint callables
+        outcome_constraint_models: Optional (model, threshold) pairs
+        cost_model: Optional cost model for EIpu
+
+    Returns:
+        Single-objective acquisition function
+    """
+    if not isinstance(model, SingleTaskGP):
+        if isinstance(model, ModelListGP) and len(model.models) == 1:
+            model = cast(SingleTaskGP, model.models[0])
+        else:
+            raise ValueError("Single-objective requires SingleTaskGP model")
+
+    if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
+        return create_cost_aware_acquisition(
+            model=model,  # type: ignore[arg-type]
+            train_y=train_y,
+            cost_model=cost_model,
+            outcome_constraint_models=outcome_constraint_models,
+        )
+
+    if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is None:
+        logger.warning(
+            "COST_WEIGHTED_EI requested but no cost model available. "
+            "Falling back to standard Noisy Expected Improvement."
+        )
+
+    all_constraints = list(constraints) if constraints else []
+    if outcome_constraint_models:
+        for constraint_model, threshold in outcome_constraint_models:
+            all_constraints.append(_make_outcome_constraint_callable(constraint_model, threshold))
+
+    use_noisy = method != AcquisitionMethod.EXPECTED_IMPROVEMENT
+    return create_single_objective_acquisition(
+        model=model,  # type: ignore[arg-type]
+        train_x=train_x,
+        train_y=train_y,
+        use_noisy=use_noisy,
+        constraints=all_constraints if all_constraints else None,
+    )
+
+
+def _create_multi_objective_dispatch(
+    model: ModelListGP | SingleTaskGP,
+    ref_point: Tensor | None,
+    train_x: Tensor,
+    train_y: Tensor,
+    method: AcquisitionMethod,
+    constraints: list | None,
+) -> AcquisitionFunction:
+    """Dispatch multi-objective acquisition function creation.
+
+    Validates that a reference point is provided, then delegates to
+    create_multi_objective_acquisition.
+
+    Args:
+        model: Fitted ModelListGP
+        ref_point: Reference point for hypervolume computation
+        train_x: Training inputs
+        train_y: Training outputs
+        method: Acquisition method
+        constraints: Optional constraint callables
+
+    Returns:
+        Multi-objective acquisition function
+    """
     if ref_point is None:
         raise ValueError("Reference point required for multi-objective optimization")
 
     return create_multi_objective_acquisition(
-        model=model,  # type: ignore[arg-type]
+        model=model,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         ref_point=ref_point,
         train_x=train_x,
         train_y=train_y,
@@ -257,7 +323,7 @@ def create_acquisition(
 
 
 def _make_outcome_constraint_callable(
-    constraint_model: SingleTaskGP,
+    _constraint_model: SingleTaskGP,
     threshold: float,
 ) -> Callable[[Tensor], Tensor]:
     """Create a constraint callable for outcome constraints.
@@ -383,7 +449,7 @@ class EIpuAcquisition(AcquisitionFunction):
             # Ensure positive cost
             expected_cost = expected_cost.clamp(min=1e-6)
 
-        # EIpu = EI / cost
+        # Compute EI per unit cost (EIpu)
         eipu = ei_val / expected_cost
 
         # Apply outcome constraints if any
@@ -396,7 +462,12 @@ class EIpuAcquisition(AcquisitionFunction):
                     prob_feasible = prob_posterior.mean.squeeze(-1)
                     if prob_feasible.dim() > eipu.dim():
                         prob_feasible = prob_feasible.mean(dim=-1)
-                    # Probability of meeting threshold
+                    # Binary thresholding: zero out infeasible points rather than
+                    # smooth weighting (prob * acq).  This is a deliberate stability
+                    # choice — BoTorch's smooth ConstrainedMCObjective can cause
+                    # gradient vanishing near the threshold, making L-BFGS-B stall.
+                    # The hard cutoff is more robust for the EIpu case where the
+                    # cost denominator already introduces numerical sensitivity.
                     constraint_prob = constraint_prob * (prob_feasible > threshold).float()
             eipu = eipu * constraint_prob
 
@@ -411,6 +482,8 @@ def optimize_acquisition(
     raw_samples: int = 512,
     spec: OptimizationSpec | None = None,
     x_avoid: Tensor | None = None,  # noqa: N803
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Optimize acquisition function to find next candidates.
 
@@ -420,10 +493,6 @@ def optimize_acquisition(
     - MIXED: per-combo continuous optimization via optimize_acqf_mixed
 
     Uses sequential greedy optimization for batch_size > 1.
-
-    Note: For parameter constraints (sum_equals, sum_less_than, etc.), apply them
-    via post-hoc projection rather than constraining the optimizer. See
-    suggestions._apply_constraints_to_samples for the projection logic.
 
     Args:
         acqf: Acquisition function to optimize
@@ -435,6 +504,10 @@ def optimize_acquisition(
             If None, falls back to continuous optimization.
         x_avoid: Points to avoid (e.g., already-evaluated training data).
             Used by optimize_acqf_discrete to exclude known points.
+        inequality_constraints: BoTorch linear inequality constraints (Ax <= b).
+            Each tuple is (indices, coefficients, rhs).
+        equality_constraints: BoTorch linear equality constraints (Ax = b).
+            Each tuple is (indices, coefficients, rhs).
 
     Returns:
         Tuple of (candidates, acquisition_values) where:
@@ -444,7 +517,15 @@ def optimize_acquisition(
     bounds = to_device(bounds)
 
     if spec is None:
-        return _optimize_continuous(acqf, bounds, batch_size, num_restarts, raw_samples)
+        return _optimize_continuous(
+            acqf,
+            bounds,
+            batch_size,
+            num_restarts,
+            raw_samples,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
+        )
 
     space_type = classify_search_space(spec)
 
@@ -462,7 +543,15 @@ def optimize_acquisition(
             )
         return _optimize_mixed(acqf, bounds, spec, batch_size, num_restarts, raw_samples)
     else:
-        return _optimize_continuous(acqf, bounds, batch_size, num_restarts, raw_samples)
+        return _optimize_continuous(
+            acqf,
+            bounds,
+            batch_size,
+            num_restarts,
+            raw_samples,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
+        )
 
 
 def _optimize_continuous(
@@ -471,6 +560,8 @@ def _optimize_continuous(
     batch_size: int,
     num_restarts: int,
     raw_samples: int,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Optimize acquisition over continuous space using L-BFGS-B.
 
@@ -480,22 +571,30 @@ def _optimize_continuous(
         batch_size: Number of candidates to generate
         num_restarts: Number of optimization restarts
         raw_samples: Number of raw samples for initialization
+        inequality_constraints: BoTorch linear inequality constraints (Ax <= b)
+        equality_constraints: BoTorch linear equality constraints (Ax = b)
 
     Returns:
         Tuple of (candidates, acquisition_values)
     """
-    candidates, acq_values = optimize_acqf(
-        acq_function=acqf,
-        bounds=bounds,
-        q=batch_size,
-        num_restarts=num_restarts,
-        raw_samples=raw_samples,
-        sequential=True,
-        options={
+    kwargs: dict = {
+        "acq_function": acqf,
+        "bounds": bounds,
+        "q": batch_size,
+        "num_restarts": num_restarts,
+        "raw_samples": raw_samples,
+        "sequential": True,
+        "options": {
             "batch_limit": 5,
             "maxiter": 200,
         },
-    )
+    }
+    if inequality_constraints:
+        kwargs["inequality_constraints"] = inequality_constraints
+    if equality_constraints:
+        kwargs["equality_constraints"] = equality_constraints
+
+    candidates, acq_values = optimize_acqf(**kwargs)
     return candidates, acq_values
 
 
@@ -574,40 +673,6 @@ def _optimize_mixed(
         },
     )
     return candidates, acq_values
-
-
-def get_reference_point(
-    train_y: Tensor,
-    minimize_mask: Tensor,
-    margin: float = 0.1,
-) -> Tensor:
-    """Compute reference point for hypervolume.
-
-    The reference point should be slightly worse than the worst observed value
-    for each objective. This function provides backward compatibility with the
-    static reference point computation.
-
-    For adaptive reference point computation that improves over time, use
-    `get_reference_point_dynamic` from the `reference_point` module.
-
-    Args:
-        train_y: Training outputs of shape (n_samples, n_objectives)
-        minimize_mask: Boolean tensor indicating which objectives to minimize
-        margin: Margin factor (e.g., 0.1 = 10% worse)
-
-    Returns:
-        Reference point tensor of shape (n_objectives,)
-
-    See Also:
-        reference_point.get_reference_point_dynamic: Adaptive reference point
-        reference_point.ReferencePointStrategy: Available strategies
-    """
-    config = ReferencePointConfig(
-        strategy=ReferencePointStrategy.STATIC,
-        margin=margin,
-    )
-    ref_point, _ = get_reference_point_dynamic(train_y, minimize_mask, config)
-    return ref_point
 
 
 def get_best_observed_value(

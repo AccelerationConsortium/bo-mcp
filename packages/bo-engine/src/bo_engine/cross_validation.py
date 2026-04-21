@@ -26,6 +26,7 @@ References:
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +43,8 @@ from torch import Tensor
 
 from bo_engine.constants import MIN_OBSERVATIONS_FOR_LOO_CV
 from bo_engine.device import ensure_device
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -94,6 +97,77 @@ class CVConfig:
 _cv_cache: dict[str, tuple[CVMetrics, float]] = {}
 
 
+def _parse_cv_arguments(
+    model_or_train_x: SingleTaskGP | Tensor,
+    train_x_or_train_y: Tensor,
+    train_y_or_bounds: Tensor,
+    config_or_none: CVConfig | Tensor | None,
+) -> tuple[Tensor, Tensor, Tensor, CVConfig]:
+    """Parse the polymorphic arguments into (train_x, train_y, bounds, config)."""
+    if isinstance(model_or_train_x, SingleTaskGP):
+        train_x = train_x_or_train_y
+        train_y = train_y_or_bounds
+        config = config_or_none if isinstance(config_or_none, CVConfig) else CVConfig()
+        bounds = torch.stack([train_x.min(dim=0).values, train_x.max(dim=0).values])
+    else:
+        train_x = model_or_train_x
+        train_y = train_x_or_train_y
+        bounds = train_y_or_bounds
+        config = config_or_none if isinstance(config_or_none, CVConfig) else CVConfig()
+
+    train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
+
+    if train_y.dim() == 1:
+        train_y = train_y.unsqueeze(-1)
+
+    return train_x, train_y, bounds, config
+
+
+def _resolve_cv_method(config: CVConfig, n_samples: int) -> str:
+    """Determine which CV method to use based on config and dataset size."""
+    method = config.method
+    if method != "auto":
+        return method
+    if config.k_folds is not None:
+        return "kfold"
+    if config.use_approximate and n_samples >= config.approximate_threshold:
+        return "approximate_loo"
+    return "batch_loo"
+
+
+def _dispatch_cv_method(
+    method: str,
+    train_x: Tensor,
+    train_y: Tensor,
+    bounds: Tensor,
+    config: CVConfig,
+) -> CVMetrics:
+    """Dispatch to the appropriate CV computation function."""
+    if method == "kfold":
+        k = config.k_folds if config.k_folds is not None else 5
+        return _compute_kfold_cv(train_x, train_y, bounds, k)
+    if method == "approximate_loo":
+        return _compute_approximate_loo(train_x, train_y, bounds)
+    return _compute_batch_loo_cv(train_x, train_y)
+
+
+def _check_cv_cache(
+    train_x: Tensor,
+    train_y: Tensor,
+    bounds: Tensor,
+    config: CVConfig,
+) -> tuple[str | None, CVMetrics | None]:
+    """Check cache for existing CV results. Returns (cache_key, cached_result_or_None)."""
+    if not config.cache_results:
+        return None, None
+    cache_key = _compute_cache_key(train_x, train_y, bounds, config)
+    if cache_key in _cv_cache:
+        cached_metrics, timestamp = _cv_cache[cache_key]
+        if time.time() - timestamp < config.cache_ttl:
+            return cache_key, cached_metrics
+    return cache_key, None
+
+
 def compute_loo_cv_optimized(
     model_or_train_x: SingleTaskGP | Tensor,
     train_x_or_train_y: Tensor,
@@ -122,75 +196,22 @@ def compute_loo_cv_optimized(
         >>> metrics = compute_loo_cv_optimized(train_x, train_y, bounds)
         >>> print(f"R² = {metrics.r_squared:.3f}, Method = {metrics.method}")
     """
-    # Detect call signature
-    if isinstance(model_or_train_x, SingleTaskGP):
-        # Called with model: compute_loo_cv_optimized(model, train_x, train_y, config)
-        _model = model_or_train_x
-        train_x = train_x_or_train_y
-        train_y = train_y_or_bounds
-        config = config_or_none if isinstance(config_or_none, CVConfig) else CVConfig()
-        # Infer bounds from training data
-        bounds = torch.stack([train_x.min(dim=0).values, train_x.max(dim=0).values])
-    else:
-        # Called with data: compute_loo_cv_optimized(train_x, train_y, bounds, config)
-        train_x = model_or_train_x
-        train_y = train_x_or_train_y
-        bounds = train_y_or_bounds
-        config = config_or_none if isinstance(config_or_none, CVConfig) else CVConfig()
-
-    train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
-
-    if train_y.dim() == 1:
-        train_y = train_y.unsqueeze(-1)
+    train_x, train_y, bounds, config = _parse_cv_arguments(
+        model_or_train_x, train_x_or_train_y, train_y_or_bounds, config_or_none
+    )
 
     n_samples = train_x.shape[0]
-
-    # Check for minimum data
     if n_samples < MIN_OBSERVATIONS_FOR_LOO_CV:
-        return CVMetrics(
-            rmse=float("nan"),
-            mae=float("nan"),
-            r_squared=float("nan"),
-            mean_standardized_error=float("nan"),
-            coverage_95=float("nan"),
-            per_fold_errors=[],
-            computation_time=0.0,
-            method="insufficient_data",
-        )
+        return _create_nan_metrics("insufficient_data")
 
-    # Check cache
-    cache_key: str | None = None
-    if config.cache_results:
-        cache_key = _compute_cache_key(train_x, train_y, bounds, config)
-        if cache_key in _cv_cache:
-            cached_metrics, timestamp = _cv_cache[cache_key]
-            if time.time() - timestamp < config.cache_ttl:
-                return cached_metrics
+    cache_key, cached = _check_cv_cache(train_x, train_y, bounds, config)
+    if cached is not None:
+        return cached
 
-    # Select method based on config.method or dataset size
     start_time = time.time()
+    method = _resolve_cv_method(config, n_samples)
+    metrics = _dispatch_cv_method(method, train_x, train_y, bounds, config)
 
-    # Determine which method to use
-    method = config.method
-    if method == "auto":
-        # Auto-select based on dataset size
-        if config.k_folds is not None:
-            method = "kfold"
-        elif config.use_approximate and n_samples >= config.approximate_threshold:
-            method = "approximate_loo"
-        else:
-            method = "batch_loo"
-
-    if method == "kfold":
-        k = config.k_folds if config.k_folds is not None else 5
-        metrics = _compute_kfold_cv(train_x, train_y, bounds, k)
-    elif method == "approximate_loo":
-        metrics = _compute_approximate_loo(train_x, train_y, bounds)
-    else:
-        # batch_loo or default
-        metrics = _compute_batch_loo_cv(train_x, train_y, bounds)
-
-    # Update computation time
     metrics = CVMetrics(
         rmse=metrics.rmse,
         mae=metrics.mae,
@@ -202,7 +223,6 @@ def compute_loo_cv_optimized(
         method=metrics.method,
     )
 
-    # Update cache
     if config.cache_results and cache_key is not None:
         _cv_cache[cache_key] = (metrics, time.time())
 
@@ -212,7 +232,6 @@ def compute_loo_cv_optimized(
 def _compute_batch_loo_cv(
     train_x: Tensor,
     train_y: Tensor,
-    bounds: Tensor,
 ) -> CVMetrics:
     """Compute LOO-CV using BoTorch's batch_cross_validation.
 
@@ -273,10 +292,8 @@ def _compute_batch_loo_cv(
             method="batch_loo",
         )
 
-    except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).warning(f"Batch LOO-CV failed: {e}")
+    except (RuntimeError, ValueError, TypeError) as e:
+        logger.warning(f"Batch LOO-CV failed: {e}")
         return _create_nan_metrics("batch_loo_failed")
 
 
@@ -338,7 +355,7 @@ def _compute_approximate_loo(
         # Use leave-one-out approximation
         # LOO prediction error ≈ residual / (1 - leverage)
         # For GP, leverage ≈ 1 - noise_variance / posterior_variance
-        noise_var = model.likelihood.noise.item()
+        noise_var = model.likelihood.noise.item()  # ty: ignore[call-non-callable]
         leverage = 1 - noise_var / (train_var + noise_var + 1e-10)
 
         # Approximate LOO errors (PRESS residuals)
@@ -377,6 +394,43 @@ def _compute_approximate_loo(
     )
 
 
+def _compute_cv_metrics_from_predictions(
+    predictions: Tensor,
+    variances: Tensor,
+    actuals: Tensor,
+    per_fold_errors: list[float],
+    method: str,
+) -> CVMetrics:
+    """Compute CVMetrics from prediction vs actual tensors."""
+    errors = (predictions - actuals).abs()
+    squared_errors = errors**2
+
+    rmse = squared_errors.mean().sqrt().item()
+    mae = errors.mean().item()
+
+    ss_res = ((predictions - actuals) ** 2).sum()
+    ss_tot = ((actuals - actuals.mean()) ** 2).sum()
+    r_squared = 1 - (ss_res / (ss_tot + 1e-10)).item() if ss_tot > 0 else 0.0
+
+    std = variances.sqrt().clamp(min=1e-6)
+    standardized_errors = errors / std
+    mean_std_error = standardized_errors.mean().item()
+
+    within_95ci = standardized_errors < 1.96
+    coverage_95 = within_95ci.float().mean().item()
+
+    return CVMetrics(
+        rmse=rmse,
+        mae=mae,
+        r_squared=r_squared,
+        mean_standardized_error=mean_std_error,
+        coverage_95=coverage_95,
+        per_fold_errors=per_fold_errors,
+        computation_time=0.0,
+        method=method,
+    )
+
+
 def _compute_kfold_cv(
     train_x: Tensor,
     train_y: Tensor,
@@ -403,15 +457,12 @@ def _compute_kfold_cv(
     if k > n_samples:
         k = n_samples  # Fall back to LOO
 
-    # Shuffle indices
     indices = torch.randperm(n_samples)
-
-    # Split into k folds
     fold_sizes = [n_samples // k + (1 if i < n_samples % k else 0) for i in range(k)]
 
     all_predictions = torch.zeros_like(train_y.squeeze())
     all_variances = torch.zeros_like(train_y.squeeze())
-    per_fold_errors = []
+    per_fold_errors: list[float] = []
 
     current_idx = 0
     for fold_idx in range(k):
@@ -420,7 +471,6 @@ def _compute_kfold_cv(
         train_indices = torch.cat([indices[:current_idx], indices[current_idx + fold_size :]])
         current_idx += fold_size
 
-        # Split data
         train_x_fold = train_x[train_indices]
         train_y_fold = train_y[train_indices]
         test_x_fold = train_x[test_indices]
@@ -430,7 +480,6 @@ def _compute_kfold_cv(
             continue
 
         try:
-            # Fit model on training fold
             model = SingleTaskGP(
                 train_X=train_x_fold,
                 train_Y=train_y_fold,
@@ -440,7 +489,6 @@ def _compute_kfold_cv(
             mll = ExactMarginalLogLikelihood(model.likelihood, model)
             fit_gpytorch_mll(mll)
 
-            # Predict on test fold
             model.eval()
             with torch.no_grad():
                 posterior = model.posterior(test_x_fold)
@@ -449,44 +497,18 @@ def _compute_kfold_cv(
 
             all_predictions[test_indices] = pred_mean
             all_variances[test_indices] = pred_var
+            per_fold_errors.append((pred_mean - test_y_fold.squeeze()).abs().mean().item())
 
-            fold_error = (pred_mean - test_y_fold.squeeze()).abs().mean().item()
-            per_fold_errors.append(fold_error)
-
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).warning(f"K-fold CV failed for fold {fold_idx}: {e}")
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.warning(f"K-fold CV failed for fold {fold_idx}: {e}")
             continue
 
-    # Compute metrics
-    actuals = train_y.squeeze()
-    errors = (all_predictions - actuals).abs()
-    squared_errors = errors**2
-
-    rmse = squared_errors.mean().sqrt().item()
-    mae = errors.mean().item()
-
-    ss_res = ((all_predictions - actuals) ** 2).sum()
-    ss_tot = ((actuals - actuals.mean()) ** 2).sum()
-    r_squared = 1 - (ss_res / (ss_tot + 1e-10)).item() if ss_tot > 0 else 0.0
-
-    std = all_variances.sqrt().clamp(min=1e-6)
-    standardized_errors = errors / std
-    mean_std_error = standardized_errors.mean().item()
-
-    within_95ci = standardized_errors < 1.96
-    coverage_95 = within_95ci.float().mean().item()
-
-    return CVMetrics(
-        rmse=rmse,
-        mae=mae,
-        r_squared=r_squared,
-        mean_standardized_error=mean_std_error,
-        coverage_95=coverage_95,
-        per_fold_errors=per_fold_errors,
-        computation_time=0.0,
-        method=f"{k}fold",
+    return _compute_cv_metrics_from_predictions(
+        all_predictions,
+        all_variances,
+        train_y.squeeze(),
+        per_fold_errors,
+        f"{k}fold",
     )
 
 
@@ -569,7 +591,6 @@ def _create_nan_metrics(method: str) -> CVMetrics:
 
 def estimate_cv_time(
     n_samples: int,
-    n_dims: int,
     method: str = "auto",
     k_folds: int | None = None,
 ) -> float:
@@ -580,7 +601,6 @@ def estimate_cv_time(
 
     Args:
         n_samples: Number of training samples
-        n_dims: Number of input dimensions
         method: "batch_loo", "approximate_loo", "kfold", or "auto"
         k_folds: Number of folds for kfold method (default 5)
 
@@ -614,7 +634,6 @@ def estimate_cv_time(
 
 def get_cv_time_estimates(
     n_samples: int,
-    n_dims: int,
 ) -> dict[str, Any]:
     """Get estimated computation times for all CV methods.
 
@@ -623,7 +642,6 @@ def get_cv_time_estimates(
 
     Args:
         n_samples: Number of training samples
-        n_dims: Number of input dimensions
 
     Returns:
         Dictionary with estimated times in seconds for each method

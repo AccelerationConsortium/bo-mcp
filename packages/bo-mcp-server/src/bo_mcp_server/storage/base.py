@@ -60,6 +60,16 @@ class Repository(ABC, Generic[T]):
         ...
 
 
+def str_id(uuid: UUID) -> str:
+    """Convert a UUID to its 36-char string representation.
+
+    Centralises the ``str(uuid)`` conversion used throughout the
+    repository layer so it can later be replaced with a SQLAlchemy
+    TypeDecorator if needed.
+    """
+    return str(uuid)
+
+
 class ConcurrentModificationError(Exception):
     """Raised when optimistic locking detects a conflict."""
 

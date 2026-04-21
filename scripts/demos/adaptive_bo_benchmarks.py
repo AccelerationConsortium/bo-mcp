@@ -442,7 +442,7 @@ def get_benchmark(name: str, n_dims: int | None = None) -> BenchmarkFunction:
     # Scalable benchmarks accept n_dimensions argument
     scalable_benchmarks = {Levy, Ackley, Rosenbrock, ZDT1}
     if benchmark_class in scalable_benchmarks and n_dims is not None:
-        return benchmark_class(n_dimensions=n_dims)  # type: ignore[call-arg]
+        return benchmark_class(n_dimensions=n_dims)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
     return benchmark_class()
 
@@ -457,7 +457,7 @@ def list_benchmarks() -> dict[str, dict[str, Any]]:
     for name, cls in BENCHMARKS.items():
         # Create instance to get properties
         if cls in {Levy, Ackley, Rosenbrock, ZDT1}:
-            instance = cls(n_dimensions=4)  # type: ignore[call-arg]
+            instance = cls(n_dimensions=4)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
             scalable = True
         else:
             instance = cls()

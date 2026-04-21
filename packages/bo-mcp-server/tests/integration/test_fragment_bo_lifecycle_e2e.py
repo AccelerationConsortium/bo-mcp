@@ -32,7 +32,7 @@ class TestFragmentLifecycleE2E:
 
         owner_id = str(uuid4())
         n_cycles = 6
-        batch_size = 2
+        batch_size = 3
 
         donor_categories = [
             "phenyl",
@@ -74,7 +74,7 @@ class TestFragmentLifecycleE2E:
             objectives=[Objective(name="gap_eV", direction="minimize")],
             batch_size=batch_size,
             max_iterations=n_cycles,
-            initial_design_size=2,
+            initial_design_size=3,
             random_seed=1,
         )
 

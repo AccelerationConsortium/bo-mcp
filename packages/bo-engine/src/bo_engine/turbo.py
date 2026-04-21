@@ -8,7 +8,7 @@ Optimization", NeurIPS 2019.
 """
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -22,6 +22,7 @@ from bo_engine.constants import (
     TURBO_INITIAL_LENGTH,
     TURBO_LENGTH_MAX,
     TURBO_LENGTH_MIN,
+    TURBO_MAX_FAILURE_TOLERANCE,
     TURBO_MIN_DIMENSIONS,
     TURBO_SUCCESS_TOLERANCE,
 )
@@ -63,11 +64,13 @@ class TurboState:
     def __post_init__(self) -> None:
         """Compute failure_tolerance if not provided."""
         if self.failure_tolerance is None:
-            # Default: more tolerance for higher dimensions and smaller batches
+            # Default: more tolerance for higher dimensions and smaller batches,
+            # capped at TURBO_MAX_FAILURE_TOLERANCE to ensure restarts happen.
+            raw = math.ceil(max(4.0 / self.batch_size, self.dim / self.batch_size))
             object.__setattr__(
                 self,
                 "failure_tolerance",
-                math.ceil(max(4.0 / self.batch_size, self.dim / self.batch_size)),
+                min(raw, TURBO_MAX_FAILURE_TOLERANCE),
             )
 
 
@@ -86,13 +89,11 @@ def create_turbo_state(
     Returns:
         Initialized TurboState
     """
-    state = TurboState(dim=dim, batch_size=batch_size)
-    if initial_best_value is not None:
-        state = replace(state, best_value=initial_best_value)
-    return state
+    best = initial_best_value if initial_best_value is not None else float("-inf")
+    return TurboState(dim=dim, batch_size=batch_size, best_value=best)
 
 
-def update_turbo_state(state: TurboState, y_next: Tensor) -> TurboState:
+def update_turbo_state(state: TurboState, y_next: Tensor, minimize: bool = True) -> TurboState:
     """Update trust region based on new observations.
 
     The trust region expands after consecutive successes and contracts
@@ -102,13 +103,16 @@ def update_turbo_state(state: TurboState, y_next: Tensor) -> TurboState:
     Args:
         state: Current TuRBO state
         y_next: Objective values from latest batch (shape: [batch_size] or [batch_size, 1])
-                Values should be for maximization (negate if minimizing)
+                Raw objective values — negation for maximization is handled internally.
+        minimize: If True, lower y is better. If False, higher y is better.
 
     Returns:
         Updated TurboState with modified counters and length
     """
-    # Get best value from new batch
-    y_max = y_next.max().item()
+    # Negate if minimizing so that "improvement" always means higher internal value
+    # (TuRBO internally works in maximization convention)
+    y_internal = -y_next if minimize else y_next
+    y_max = y_internal.max().item()
 
     # Check improvement with tolerance for numerical stability
     tolerance = (
@@ -145,11 +149,16 @@ def update_turbo_state(state: TurboState, y_next: Tensor) -> TurboState:
     # Check for restart trigger
     restart_triggered = new_length < state.length_min
 
-    return replace(
-        state,
+    return TurboState(
+        dim=state.dim,
+        batch_size=state.batch_size,
         length=new_length,
-        success_counter=final_success_counter,
+        length_min=state.length_min,
+        length_max=state.length_max,
         failure_counter=final_failure_counter,
+        failure_tolerance=state.failure_tolerance,
+        success_counter=final_success_counter,
+        success_tolerance=state.success_tolerance,
         best_value=new_best_value,
         restart_triggered=restart_triggered,
     )
@@ -186,7 +195,7 @@ def get_turbo_bounds(
     covar = model.covar_module
     if hasattr(covar, "base_kernel"):
         # ScaleKernel case
-        lengthscales = covar.base_kernel.lengthscale.squeeze().detach()
+        lengthscales = covar.base_kernel.lengthscale.squeeze().detach()  # ty: ignore[call-non-callable, unresolved-attribute]
     else:
         # Direct RBF kernel case
         lengthscales = covar.lengthscale.squeeze().detach()

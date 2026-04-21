@@ -16,7 +16,6 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 import torch
 from botorch.models import ModelListGP, SingleTaskGP
@@ -25,12 +24,8 @@ from torch import Tensor
 from bo_engine.constants import (
     SENSITIVITY_HIGH_THRESHOLD,
     SENSITIVITY_MEDIUM_THRESHOLD,
-    SENSITIVITY_PERTURBATION_FRACTION,
 )
 from bo_engine.device import get_device, get_dtype
-
-if TYPE_CHECKING:
-    pass
 
 
 @dataclass
@@ -97,7 +92,6 @@ def compute_sensitivity(
     x_best: Tensor,
     bounds: Tensor,
     parameter_names: list[str] | None = None,
-    perturbation_fraction: float = SENSITIVITY_PERTURBATION_FRACTION,
     objective_index: int = 0,
 ) -> SensitivityReport:
     """Compute sensitivity of objective to parameter perturbations at best point.
@@ -111,7 +105,6 @@ def compute_sensitivity(
         x_best: Best observed parameter configuration (1 x d tensor).
         bounds: Parameter bounds (2 x d tensor, first row lower, second row upper).
         parameter_names: Names for each parameter. Defaults to param_0, param_1, etc.
-        perturbation_fraction: Fraction of range for sensitivity computation.
         objective_index: Which objective to analyze (for multi-objective).
 
     Returns:
@@ -197,9 +190,7 @@ def compute_sensitivity(
             f"Precise control is important."
         )
 
-    recommendation = _generate_sensitivity_recommendation(
-        param_sensitivities, overall_sensitivity, high_sens_params
-    )
+    recommendation = _generate_sensitivity_recommendation(overall_sensitivity, high_sens_params)
 
     return SensitivityReport(
         parameters=param_sensitivities,
@@ -456,7 +447,7 @@ def _compute_local_sensitivity(
 
     # Get posterior mean
     if isinstance(model, ModelListGP):
-        posterior = model.models[objective_index].posterior(x)
+        posterior = model.models[objective_index].posterior(x)  # ty: ignore[call-non-callable]
     else:
         posterior = model.posterior(x)
 
@@ -484,7 +475,6 @@ def _compute_local_sensitivity(
 
 
 def _generate_sensitivity_recommendation(
-    param_sensitivities: list[ParameterSensitivity],
     overall_sensitivity: float,
     high_sens_params: list[ParameterSensitivity],
 ) -> str:

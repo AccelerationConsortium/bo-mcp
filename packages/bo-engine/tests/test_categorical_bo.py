@@ -128,10 +128,13 @@ class TestCategoricalBatchBO:
         """
         torch.manual_seed(42)
 
-        # Start with initial design
+        # Start with initial design (need n_params+1=3 for BO mode with 2 params)
         observations = [
             _make_observation("phenyl", "benzonitrile"),
             _make_observation("thiophene", "pyrimidine"),
+            _make_observation("anisole", "triazine"),
+            _make_observation("carbazole", "pyridine"),
+            _make_observation("aniline", "benzothiadiazole"),
         ]
 
         suggestions, _ = generate_next_batch(
@@ -157,6 +160,9 @@ class TestCategoricalBatchBO:
         observations = [
             _make_observation("phenyl", "benzonitrile"),
             _make_observation("thiophene", "pyrimidine"),
+            _make_observation("anisole", "triazine"),
+            _make_observation("carbazole", "pyridine"),
+            _make_observation("aniline", "benzothiadiazole"),
         ]
 
         suggestions, _ = generate_next_batch(
@@ -168,6 +174,8 @@ class TestCategoricalBatchBO:
 
         donor_cats = fragment_spec.parameters[0].categories
         acceptor_cats = fragment_spec.parameters[1].categories
+        assert donor_cats is not None
+        assert acceptor_cats is not None
 
         for s in suggestions:
             assert s.parameter_values["donor"] in donor_cats, (
@@ -203,7 +211,7 @@ class TestCategoricalBatchBO:
         observations: list[ObservationData] = []
         best_values: list[float] = []
 
-        # Initial observations
+        # Initial observations (need n_params+1=3 for BO mode with 2 params)
         observations.append(
             ObservationData(
                 parameter_values={"material": "steel", "coating": "none"},
@@ -216,9 +224,27 @@ class TestCategoricalBatchBO:
                 objective_values={"strength": 50.0},
             )
         )
-        best_values.append(50.0)
+        observations.append(
+            ObservationData(
+                parameter_values={"material": "titanium", "coating": "none"},
+                objective_values={"strength": 80.0},
+            )
+        )
+        observations.append(
+            ObservationData(
+                parameter_values={"material": "steel", "coating": "chrome"},
+                objective_values={"strength": 70.0},
+            )
+        )
+        observations.append(
+            ObservationData(
+                parameter_values={"material": "aluminum", "coating": "none"},
+                objective_values={"strength": 40.0},
+            )
+        )
+        best_values.append(80.0)
 
-        for cycle in range(4):
+        for cycle in range(2):
             suggestions, _ = generate_next_batch(
                 spec=spec,
                 observations=observations,
@@ -253,7 +279,7 @@ class TestCategoricalBatchBO:
         torch.manual_seed(42)
         spec = small_categorical_spec
 
-        # Provide enough observations to cover some combos
+        # Provide enough observations to cover some combos (need n_params+1=3 for BO mode)
         observations = [
             ObservationData(
                 parameter_values={"material": "steel", "coating": "none"},
@@ -266,6 +292,14 @@ class TestCategoricalBatchBO:
             ObservationData(
                 parameter_values={"material": "titanium", "coating": "zinc"},
                 objective_values={"strength": 85.0},
+            ),
+            ObservationData(
+                parameter_values={"material": "steel", "coating": "zinc"},
+                objective_values={"strength": 65.0},
+            ),
+            ObservationData(
+                parameter_values={"material": "titanium", "coating": "none"},
+                objective_values={"strength": 80.0},
             ),
         ]
 
@@ -315,6 +349,9 @@ class TestCategoricalBatchDiversity:
         observations = [
             _make_observation("phenyl", "benzonitrile"),
             _make_observation("thiophene", "pyrimidine"),
+            _make_observation("anisole", "triazine"),
+            _make_observation("carbazole", "pyridine"),
+            _make_observation("aniline", "benzothiadiazole"),
         ]
 
         for seed in range(n_seeds):

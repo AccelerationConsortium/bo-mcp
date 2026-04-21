@@ -145,7 +145,7 @@ def get_saasbo_lengthscales(
 
     # Access the lengthscales from the covariance module
     # For fully Bayesian models, we have multiple samples
-    lengthscales = model.covar_module.base_kernel.lengthscale
+    lengthscales = model.covar_module.base_kernel.lengthscale  # ty: ignore[unresolved-attribute]
 
     # Return median across samples for robustness
     return lengthscales.median(dim=0).values.squeeze()

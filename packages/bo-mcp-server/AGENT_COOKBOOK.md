@@ -2,11 +2,13 @@
 
 Quick reference for AI agents using the Bayesian Optimization MCP server.
 
-## Quick Start (3 Steps)
+## Quick Start (4 Steps)
 
 ```
-1. bo_create_campaign → Start optimization
-2. Loop: bo_generate_suggestions → bo_submit_results → bo_get_diagnostics(verbosity="minimal")
+1. bo_health_check → Verify connectivity
+2. bo_validate_intake → Dry-run validate spec
+3. bo_create_campaign → Start optimization
+4. Loop: bo_generate_suggestions → bo_submit_results → bo_get_diagnostics(verbosity="minimal")
 ```
 
 ---
@@ -128,20 +130,28 @@ Error Code E101 "Model fitting failed"
 | User Intent | Recommended Tool(s) |
 |-------------|---------------------|
 | Check server is up | `bo_health_check` |
+| Check backend features | `bo_list_capabilities` |
+| Validate spec before creating | `bo_validate_intake` |
 | Start new optimization | `bo_create_campaign` |
-| List all campaigns | `bo_list_campaigns` (v3.3+) |
+| List campaigns | `bo_list_campaigns` |
 | Get next experiments | `bo_generate_suggestions` |
 | Record outcomes | `bo_submit_results` or `bo_upload_results_file` |
 | Check progress | `bo_get_diagnostics` (has `next_action` hint) |
-| Monitor many campaigns | `bo_batch_get_status` (v3.3+) |
+| Review results | `bo_list_results` or `bo_export_campaign` |
+| Review suggestions | `bo_list_suggestions` |
+| Accept/reject suggestions | `bo_update_suggestion_status` |
 | Understand a suggestion | `bo_get_suggestion_explanation` |
-| Pause/resume/terminate | `bo_manage_campaign_lifecycle` (v3.3+ consolidated) |
+| Monitor many campaigns | `bo_batch_get_status` |
+| Pause a campaign | `bo_pause_campaign` |
+| Resume a campaign | `bo_resume_campaign` |
+| Terminate a campaign | `bo_terminate_campaign` |
 | Compare runs | `bo_compare_campaigns` |
 | Find related prior work | `bo_discover_transfer_candidates` |
 
 ## Common Patterns
 
-### Pattern 1: Monitor Multiple Campaigns (v3.3+)
+### Pattern 1: Monitor Multiple Campaigns
+
 ```json
 // Use bo_batch_get_status for efficiency (1 call vs N calls)
 {"campaign_ids": ["id1", "id2", "id3"], "verbosity": "minimal"}
@@ -187,7 +197,7 @@ Error Code E101 "Model fitting failed"
 | bo_generate_suggestions (initial) | 1-3s | Sobol sampling |
 | bo_generate_suggestions (with model) | 3-30s | Depends on data size, dimensions |
 | bo_submit_results | <500ms | Per result |
-| bo_get_diagnostics | 1-5s | Cached for 30s |
+| bo_get_diagnostics | 1-5s | Cached for 120s |
 
 **Note**: High-dimensional problems (>20 params) and large batches increase suggestion generation time.
 
@@ -219,7 +229,7 @@ Process all results, get partial results:
 
 ## Caching Behavior
 
-- `bo_get_diagnostics` is cached for 30 seconds by default
+- `bo_get_diagnostics` is cached for 120 seconds by default
 - Cache is automatically invalidated when:
   - `bo_submit_results` completes successfully
   - `bo_generate_suggestions` completes successfully
@@ -267,18 +277,7 @@ Optimize a chemical reaction for maximum yield and minimum cost:
 // Expected: {"success": true, "campaign_id": "...", "errors": []}
 ```
 
-### Step 2: Create Campaign
-
-```json
-// Tool: bo_create_campaign
-{
-  "intake_data": { /* same as above */ },
-  "owner_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-// Response: {"success": true, "campaign_id": "abc-123-...", "spec_id": "def-456-..."}
-```
-
-### Step 3: Optimization Loop (5 iterations)
+### Step 2: Optimization Loop (5 iterations)
 
 ```python
 import json
@@ -372,7 +371,7 @@ print(f"Pareto front: {json.loads(final_diag.content[0].text)['pareto_front']}")
 Is campaign status RUNNING?
 ├── No → What is the status?
 │   ├── CREATED → First call auto-transitions to RUNNING (should work)
-│   ├── PAUSED → Call: bo_manage_campaign_lifecycle(action="resume")
+│   ├── PAUSED → Call: bo_resume_campaign
 │   ├── COMPLETED → Campaign finished; create new campaign
 │   └── FAILED → Check errors; may need new campaign
 └── Yes → Are there any results?
@@ -416,14 +415,14 @@ Same parameter values submitted twice?
 ```
 Check current campaign status first:
 │
-├── CREATED → Can: start (auto), terminate
-│         → Cannot: pause, resume
+├── CREATED → Can: start (auto), bo_terminate_campaign
+│         → Cannot: bo_pause_campaign, bo_resume_campaign
 │
-├── RUNNING → Can: pause, terminate
-│          → Cannot: resume (already running)
+├── RUNNING → Can: bo_pause_campaign, bo_terminate_campaign
+│          → Cannot: bo_resume_campaign (already running)
 │
-├── PAUSED → Can: resume, terminate
-│         → Cannot: pause (already paused)
+├── PAUSED → Can: bo_resume_campaign, bo_terminate_campaign
+│         → Cannot: bo_pause_campaign (already paused)
 │
 └── COMPLETED → Cannot: any lifecycle changes
             → Action: Create new campaign for further optimization

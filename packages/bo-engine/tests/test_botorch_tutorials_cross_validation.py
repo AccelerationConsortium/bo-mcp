@@ -215,11 +215,10 @@ class TestOptimizedCrossValidation:
         """
         # Larger dataset
         n_points = 50
-        dim = 1
 
         # Estimate times for different methods
-        time_loo = estimate_cv_time(n_points, dim, method="batch_loo")
-        time_kfold = estimate_cv_time(n_points, dim, method="kfold", k_folds=5)
+        time_loo = estimate_cv_time(n_points, method="batch_loo")
+        time_kfold = estimate_cv_time(n_points, method="kfold", k_folds=5)
 
         # K-fold should be faster (fewer model fits)
         assert time_kfold < time_loo, (

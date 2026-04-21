@@ -15,6 +15,7 @@ References:
 
 import argparse
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -54,7 +55,7 @@ class BenchmarkResult:
 def create_spec_from_benchmark(
     benchmark_name: str,
     batch_size: int = 3,
-) -> tuple[OptimizationSpec, callable]:
+) -> tuple[OptimizationSpec, Callable]:
     """Create OptimizationSpec from benchmark specification.
 
     Args:
@@ -98,7 +99,7 @@ def create_spec_from_benchmark(
 def evaluate_batch(
     spec: OptimizationSpec,
     suggestions: list,
-    func: callable,
+    func: Callable,
 ) -> list[ObservationData]:
     """Evaluate a batch of suggestions on the benchmark function.
 
@@ -191,7 +192,7 @@ def run_benchmark(
                 print(f"Generated {len(suggestions)} suggestions")
 
             # Evaluate suggestions
-            new_obs = evaluate_batch(spec, suggestions, func)
+            new_obs = evaluate_batch(spec, suggestions, func)  # ty: ignore[invalid-argument-type]
             all_observations.extend(new_obs)
 
             # Compute diagnostics for multi-objective

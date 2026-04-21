@@ -1,5 +1,6 @@
 """Tests for acquisition function methods (v1.0.1 and v1.1)."""
 
+import numpy as np
 import pytest
 import torch
 
@@ -22,7 +23,7 @@ from bo_engine import (
 
 
 @pytest.fixture
-def train_data() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def train_data(torch_rng) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Create sample training data."""
     train_x = torch.rand(10, 2, dtype=torch.double)
     train_y = torch.rand(10, 2, dtype=torch.double)
@@ -33,7 +34,7 @@ def train_data() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 class TestSingleObjectiveAcquisitionMethods:
     """Test single-objective acquisition methods."""
 
-    def test_qlognei_acquisition(self) -> None:
+    def test_qlognei_acquisition(self, torch_rng) -> None:
         """Test qLogNEI (Noisy Expected Improvement) acquisition."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -52,7 +53,7 @@ class TestSingleObjectiveAcquisitionMethods:
         values = acqf(test_x)
         assert values.shape == (5,)
 
-    def test_qlogei_acquisition(self) -> None:
+    def test_qlogei_acquisition(self, torch_rng) -> None:
         """Test qLogEI (Expected Improvement) acquisition."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -91,7 +92,7 @@ class TestMultiObjectiveAcquisitionMethods:
             ref_point=ref_point,
             train_x=train_x,
             train_y=train_y,
-            method=AcquisitionMethod.QLOGNEHVI,
+            method=AcquisitionMethod.HYPERVOLUME_IMPROVEMENT,
         )
 
         # Should be callable and produce valid outputs
@@ -114,7 +115,7 @@ class TestMultiObjectiveAcquisitionMethods:
             ref_point=ref_point,
             train_x=train_x,
             train_y=train_y,
-            method=AcquisitionMethod.QLOGPAREGO,
+            method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
         )
 
         # Should be callable and produce valid outputs
@@ -126,7 +127,7 @@ class TestMultiObjectiveAcquisitionMethods:
 class TestUnifiedAcquisitionCreation:
     """Test unified acquisition creation function."""
 
-    def test_auto_selects_single_objective(self) -> None:
+    def test_auto_selects_single_objective(self, torch_rng) -> None:
         """Test that AUTO selects qLogNEI for single-objective."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -182,7 +183,7 @@ class TestUnifiedAcquisitionCreation:
             train_x=train_x,
             train_y=train_y,
             n_objectives=2,
-            method=AcquisitionMethod.QLOGPAREGO,
+            method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
         )
 
         assert acqf is not None
@@ -191,7 +192,7 @@ class TestUnifiedAcquisitionCreation:
 class TestAcquisitionOptimization:
     """Test acquisition function optimization."""
 
-    def test_optimize_single_objective_acquisition(self) -> None:
+    def test_optimize_single_objective_acquisition(self, torch_rng) -> None:
         """Test optimization of single-objective acquisition."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -247,7 +248,7 @@ class TestAcquisitionOptimization:
 class TestAcquisitionInWorkflow:
     """Test acquisition methods in full workflow."""
 
-    def test_qlogparego_in_workflow(self) -> None:
+    def test_qlogparego_in_workflow(self, rng: np.random.Generator) -> None:
         """Test qLogNParEGO in a complete optimization workflow."""
         spec = OptimizationSpec(
             parameters=[
@@ -259,7 +260,7 @@ class TestAcquisitionInWorkflow:
                 ObjectiveSpec(name="f2", minimize=True),
             ],
             batch_size=2,
-            acquisition_method=AcquisitionMethod.QLOGPAREGO,
+            acquisition_method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
         )
 
         observations = [
@@ -275,15 +276,23 @@ class TestAcquisitionInWorkflow:
                 parameter_values={"x1": 0.5, "x2": 0.5},
                 objective_values={"f1": 1.5, "f2": 1.5},
             ),
+            ObservationData(
+                parameter_values={"x1": 0.3, "x2": 0.8},
+                objective_values={"f1": 1.2, "f2": 1.8},
+            ),
+            ObservationData(
+                parameter_values={"x1": 0.6, "x2": 0.2},
+                objective_values={"f1": 1.8, "f2": 1.2},
+            ),
         ]
 
-        suggestions, _ = generate_next_batch(spec, observations, iteration=1)
+        suggestions, _ = generate_next_batch(spec, observations, iteration=1, rng=rng)
 
         assert len(suggestions) == 2
         assert all(s.generation_method == "bo" for s in suggestions)
-        assert all(s.acquisition_function == "qLogNParEGO" for s in suggestions)
+        assert all(s.acquisition_function == "scalarized_multi_objective" for s in suggestions)
 
-    def test_qlognehvi_default_in_workflow(self) -> None:
+    def test_qlognehvi_default_in_workflow(self, rng: np.random.Generator) -> None:
         """Test that qLogNEHVI is the default for multi-objective."""
         spec = OptimizationSpec(
             parameters=[
@@ -306,9 +315,13 @@ class TestAcquisitionInWorkflow:
                 parameter_values={"x": 0.8},
                 objective_values={"f1": 2.0, "f2": 1.0},
             ),
+            ObservationData(
+                parameter_values={"x": 0.5},
+                objective_values={"f1": 1.5, "f2": 1.5},
+            ),
         ]
 
-        suggestions, _ = generate_next_batch(spec, observations, iteration=1)
+        suggestions, _ = generate_next_batch(spec, observations, iteration=1, rng=rng)
 
         assert len(suggestions) == 2
-        assert all(s.acquisition_function == "qLogNEHVI" for s in suggestions)
+        assert all(s.acquisition_function == "hypervolume_improvement" for s in suggestions)

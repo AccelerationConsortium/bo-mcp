@@ -20,6 +20,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
+import numpy as np
 import pytest
 import torch
 
@@ -185,6 +186,27 @@ def seeded(seed: int) -> Generator[int]:
 
 
 @pytest.fixture
+def rng() -> np.random.Generator:
+    """Reproducible NumPy random generator for stochastic tests.
+
+    Use this for tests that call generate_next_batch() or other functions
+    accepting an rng parameter.
+    """
+    return np.random.default_rng(42)
+
+
+@pytest.fixture
+def torch_rng() -> Generator[None]:
+    """Fixture that seeds torch for reproducible model fitting and tensor ops.
+
+    Use this for tests that call torch.rand(), create_and_fit_model(), or
+    other torch-level stochastic operations.
+    """
+    torch.manual_seed(42)
+    yield
+
+
+@pytest.fixture
 def deterministic_seed() -> Generator[int]:
     """Fixture for tests requiring full deterministic mode.
 
@@ -276,7 +298,11 @@ def high_dim_spec() -> OptimizationSpec:
 
 @pytest.fixture
 def sample_observations_single() -> list[ObservationData]:
-    """Create sample single-objective observations."""
+    """Create sample single-objective observations.
+
+    Provides 5 observations for 2 parameters, comfortably above the minimum
+    data requirement of n_params+1 = 3 for GP model fitting.
+    """
     return [
         ObservationData(
             parameter_values={"x1": 0.1, "x2": 0.2},
@@ -290,12 +316,24 @@ def sample_observations_single() -> list[ObservationData]:
             parameter_values={"x1": 0.9, "x2": 0.1},
             objective_values={"y": 4.0},
         ),
+        ObservationData(
+            parameter_values={"x1": 0.3, "x2": 0.7},
+            objective_values={"y": 3.5},
+        ),
+        ObservationData(
+            parameter_values={"x1": 0.7, "x2": 0.3},
+            objective_values={"y": 4.5},
+        ),
     ]
 
 
 @pytest.fixture
 def sample_observations_multi() -> list[ObservationData]:
-    """Create sample multi-objective observations."""
+    """Create sample multi-objective observations.
+
+    Provides 5 observations for 2 parameters, comfortably above the minimum
+    data requirement of n_params+1 = 3 for GP model fitting.
+    """
     return [
         ObservationData(
             parameter_values={"x1": 0.1, "x2": 0.2},
@@ -308,6 +346,14 @@ def sample_observations_multi() -> list[ObservationData]:
         ObservationData(
             parameter_values={"x1": 0.9, "x2": 0.1},
             objective_values={"f1": 4.0, "f2": 3.0},
+        ),
+        ObservationData(
+            parameter_values={"x1": 0.3, "x2": 0.8},
+            objective_values={"f1": 3.5, "f2": 3.5},
+        ),
+        ObservationData(
+            parameter_values={"x1": 0.7, "x2": 0.4},
+            objective_values={"f1": 4.5, "f2": 2.5},
         ),
     ]
 

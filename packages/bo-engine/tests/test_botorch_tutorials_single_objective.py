@@ -78,7 +78,7 @@ class TestBraninOptimization:
         - Initial points: 5 (from Sobol)
         - Batch size: 1
         - Iterations: 20-25
-        - Acquisition: qLogEI or qLogNEI
+        - Acquisition: EI or Noisy EI
     """
 
     @pytest.mark.smoke
@@ -310,13 +310,13 @@ class TestAcquisitionComparison:
     Reference:
         - https://botorch.org/docs/tutorials/compare_mc_analytic_acquisition/
 
-    qLogEI and qLogNEI should achieve comparable results, with qLogNEI
+    EI and Noisy EI should achieve comparable results, with Noisy EI
     being numerically more stable for small improvements.
     """
 
     @pytest.mark.smoke
     def test_qlogei_vs_qlognei_comparable_results(self) -> None:
-        """qLogEI and qLogNEI should achieve comparable optimization results.
+        """EI and Noisy EI should achieve comparable optimization results.
 
         Reference: https://botorch.org/docs/tutorials/compare_mc_analytic_acquisition/
         """
@@ -339,7 +339,7 @@ class TestAcquisitionComparison:
         # Fit model
         model = create_and_fit_single_task_model(train_x, train_y, norm_bounds)
 
-        # Create qLogNEI (noisy EI)
+        # Create Noisy EI
         acqf_noisy = create_single_objective_acquisition(
             model=model,
             train_x=train_x,

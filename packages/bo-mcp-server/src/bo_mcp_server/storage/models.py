@@ -1,6 +1,8 @@
 """SQLAlchemy ORM models."""
 
+import functools
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -8,9 +10,30 @@ from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from bo_mcp_server.domain.campaign import CampaignStatus
+from bo_mcp_server.domain.event import EventType
 from bo_mcp_server.domain.result import ResultSource
 from bo_mcp_server.domain.suggestion import SuggestionStatus
 from bo_mcp_server.domain.utils import utcnow
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_json_loads(raw: str, *, default: Any, context: str = "") -> Any:
+    """Parse JSON with error handling for corrupted data.
+
+    Returns *default* if parsing fails, logging the error at ERROR level
+    so corrupted rows are visible in logs without crashing the request.
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.error("Corrupted JSON in %s: %s (raw=%r)", context, exc, raw[:200])
+        return default
+
+
+# Foreign key constants to avoid duplicated literals
+CAMPAIGNS_ID_FK = "campaigns.id"
+SUGGESTIONS_ID_FK = "suggestions.id"
 
 
 class Base(DeclarativeBase):
@@ -51,22 +74,39 @@ class CampaignSpecModel(Base):
     max_iterations: Mapped[int | None] = mapped_column(Integer, nullable=True)
     initial_design_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     random_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    backend: Mapped[str] = mapped_column(String(50), default="botorch", server_default="botorch")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationships
     campaigns: Mapped[list["CampaignModel"]] = relationship(back_populates="spec")
 
+    @functools.cached_property
+    def parsed_parameters(self) -> list[dict[str, Any]]:
+        """Deserialize parameters JSON (cached per instance)."""
+        ctx = f"CampaignSpec({self.id}).parameters"
+        return _safe_json_loads(self.parameters_json, default=[], context=ctx)
+
+    @functools.cached_property
+    def parsed_objectives(self) -> list[dict[str, Any]]:
+        """Deserialize objectives JSON (cached per instance)."""
+        ctx = f"CampaignSpec({self.id}).objectives"
+        return _safe_json_loads(self.objectives_json, default=[], context=ctx)
+
+    @functools.cached_property
+    def parsed_constraints(self) -> list[dict[str, Any]]:
+        """Deserialize constraints JSON (cached per instance)."""
+        ctx = f"CampaignSpec({self.id}).constraints"
+        return _safe_json_loads(self.constraints_json, default=[], context=ctx)
+
+    # Backward-compat aliases for code using the old method names
     def get_parameters(self) -> list[dict[str, Any]]:
-        """Deserialize parameters JSON."""
-        return json.loads(self.parameters_json)
+        return self.parsed_parameters
 
     def get_objectives(self) -> list[dict[str, Any]]:
-        """Deserialize objectives JSON."""
-        return json.loads(self.objectives_json)
+        return self.parsed_objectives
 
     def get_constraints(self) -> list[dict[str, Any]]:
-        """Deserialize constraints JSON."""
-        return json.loads(self.constraints_json)
+        return self.parsed_constraints
 
 
 class CampaignModel(Base):
@@ -76,9 +116,11 @@ class CampaignModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     spec_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("campaign_specs.id"), nullable=False
+        String(36), ForeignKey("campaign_specs.id"), nullable=False, index=True
     )
-    owner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False, index=True
+    )
     status: Mapped[CampaignStatus] = mapped_column(
         Enum(CampaignStatus), default=CampaignStatus.CREATED
     )
@@ -98,17 +140,27 @@ class CampaignModel(Base):
     suggestions: Mapped[list["SuggestionModel"]] = relationship(back_populates="campaign")
     results: Mapped[list["ResultModel"]] = relationship(back_populates="campaign")
 
-    def get_turbo_state(self) -> dict[str, Any] | None:
-        """Deserialize TuRBO state JSON."""
+    @functools.cached_property
+    def parsed_turbo_state(self) -> dict[str, Any] | None:
+        """Deserialize TuRBO state JSON (cached per instance)."""
         if self.turbo_state_json is None:
             return None
-        return json.loads(self.turbo_state_json)
+        ctx = f"Campaign({self.id}).turbo_state"
+        return _safe_json_loads(self.turbo_state_json, default=None, context=ctx)
 
-    def get_hypervolume_history(self) -> list[float]:
-        """Deserialize hypervolume history JSON."""
+    @functools.cached_property
+    def parsed_hypervolume_history(self) -> list[float]:
+        """Deserialize hypervolume history JSON (cached per instance)."""
         if not self.hypervolume_history_json:
             return []
-        return json.loads(self.hypervolume_history_json)
+        ctx = f"Campaign({self.id}).hypervolume_history"
+        return _safe_json_loads(self.hypervolume_history_json, default=[], context=ctx)
+
+    def get_turbo_state(self) -> dict[str, Any] | None:
+        return self.parsed_turbo_state
+
+    def get_hypervolume_history(self) -> list[float]:
+        return self.parsed_hypervolume_history
 
 
 class SuggestionModel(Base):
@@ -117,7 +169,9 @@ class SuggestionModel(Base):
     __tablename__ = "suggestions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id"), nullable=False)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=False, index=True
+    )
     parameter_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     status: Mapped[SuggestionStatus] = mapped_column(
         Enum(SuggestionStatus), default=SuggestionStatus.PENDING
@@ -130,13 +184,21 @@ class SuggestionModel(Base):
     campaign: Mapped["CampaignModel"] = relationship(back_populates="suggestions")
     result: Mapped["ResultModel | None"] = relationship(back_populates="suggestion")
 
+    @functools.cached_property
+    def parsed_parameter_values(self) -> dict[str, Any]:
+        ctx = f"Suggestion({self.id}).parameter_values"
+        return _safe_json_loads(self.parameter_values_json, default={}, context=ctx)
+
+    @functools.cached_property
+    def parsed_provenance(self) -> dict[str, Any]:
+        ctx = f"Suggestion({self.id}).provenance"
+        return _safe_json_loads(self.provenance_json, default={}, context=ctx)
+
     def get_parameter_values(self) -> dict[str, Any]:
-        """Deserialize parameter values JSON."""
-        return json.loads(self.parameter_values_json)
+        return self.parsed_parameter_values
 
     def get_provenance(self) -> dict[str, Any]:
-        """Deserialize provenance JSON."""
-        return json.loads(self.provenance_json)
+        return self.parsed_provenance
 
 
 class ResultModel(Base):
@@ -145,14 +207,17 @@ class ResultModel(Base):
     __tablename__ = "results"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id"), nullable=False)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=False, index=True
+    )
     suggestion_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("suggestions.id"), nullable=True
+        String(36), ForeignKey(SUGGESTIONS_ID_FK), nullable=True, index=True
     )
     parameter_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     objective_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     source: Mapped[ResultSource] = mapped_column(Enum(ResultSource), nullable=False)
     submitted_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    measurement_uncertainty_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")  # JSON
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -160,14 +225,43 @@ class ResultModel(Base):
     campaign: Mapped["CampaignModel"] = relationship(back_populates="results")
     suggestion: Mapped["SuggestionModel | None"] = relationship(back_populates="result")
 
+    @functools.cached_property
+    def parsed_parameter_values(self) -> dict[str, Any]:
+        ctx = f"Result({self.id}).parameter_values"
+        return _safe_json_loads(self.parameter_values_json, default={}, context=ctx)
+
+    @functools.cached_property
+    def parsed_objective_values(self) -> dict[str, float]:
+        ctx = f"Result({self.id}).objective_values"
+        return _safe_json_loads(self.objective_values_json, default={}, context=ctx)
+
+    @functools.cached_property
+    def parsed_metadata(self) -> dict[str, Any]:
+        ctx = f"Result({self.id}).metadata"
+        return _safe_json_loads(self.metadata_json, default={}, context=ctx)
+
     def get_parameter_values(self) -> dict[str, Any]:
-        """Deserialize parameter values JSON."""
-        return json.loads(self.parameter_values_json)
+        return self.parsed_parameter_values
 
     def get_objective_values(self) -> dict[str, float]:
-        """Deserialize objective values JSON."""
-        return json.loads(self.objective_values_json)
+        return self.parsed_objective_values
 
     def get_metadata(self) -> dict[str, Any]:
-        """Deserialize metadata JSON."""
-        return json.loads(self.metadata_json)
+        return self.parsed_metadata
+
+
+class EventModel(Base):
+    """Audit event ORM model for MCP tool call logging."""
+
+    __tablename__ = "events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    campaign_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=True, index=True
+    )
+    event_type: Mapped[EventType] = mapped_column(Enum(EventType), default=EventType.TOOL_CALL)
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    input_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

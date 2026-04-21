@@ -19,8 +19,45 @@ Usage:
     return format_diagnostics_response(full_response, VerbosityLevel(verbosity))
 """
 
+import functools
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
+
+from bo_mcp_server import __version__
+
+
+def get_response_metadata(protocol: str = "mcp") -> dict[str, Any]:
+    """Build metadata dict included in every formatted response.
+
+    Args:
+        protocol: The transport protocol ("mcp" or "rest").
+
+    Returns:
+        Metadata dict with backend, protocol, and server version.
+    """
+    from bo_mcp_server.backend import get_backend
+
+    backend = get_backend()
+    return {
+        "backend": backend.name,
+        "protocol": protocol,
+        "server_version": __version__,
+    }
+
+
+def _with_metadata(
+    fn: Callable[..., dict[str, Any]],
+) -> Callable[..., dict[str, Any]]:
+    """Decorator that injects ``_metadata`` into the response dict."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        result = fn(*args, **kwargs)
+        result["_metadata"] = get_response_metadata()
+        return result
+
+    return wrapper
 
 
 class VerbosityLevel(StrEnum):
@@ -37,6 +74,7 @@ class VerbosityLevel(StrEnum):
     DETAILED = "detailed"
 
 
+@_with_metadata
 def format_diagnostics_response(
     full_response: dict[str, Any],
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD,
@@ -99,6 +137,7 @@ def format_diagnostics_response(
     return full_response
 
 
+@_with_metadata
 def format_suggestions_response(
     full_response: dict[str, Any],
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD,
@@ -117,7 +156,7 @@ def format_suggestions_response(
             "success": true,
             "iteration": 3,
             "suggestion_ids": ["uuid1", "uuid2"],
-            "method": "qLogNEHVI",
+            "method": "hypervolume_improvement",
             "errors": []
         }
     """
@@ -142,6 +181,7 @@ def format_suggestions_response(
     return full_response
 
 
+@_with_metadata
 def format_compare_campaigns_response(
     full_response: dict[str, Any],
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD,
@@ -207,6 +247,7 @@ def format_compare_campaigns_response(
     return full_response
 
 
+@_with_metadata
 def format_transfer_candidates_response(
     full_response: dict[str, Any],
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD,
@@ -269,6 +310,7 @@ def format_transfer_candidates_response(
     return full_response
 
 
+@_with_metadata
 def format_create_campaign_response(
     full_response: dict[str, Any],
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD,
@@ -312,6 +354,7 @@ def format_create_campaign_response(
     return full_response
 
 
+@_with_metadata
 def format_submit_results_response(
     full_response: dict[str, Any],
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD,
@@ -354,6 +397,7 @@ def format_submit_results_response(
     return full_response
 
 
+@_with_metadata
 def format_validate_intake_response(
     full_response: dict[str, Any],
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD,

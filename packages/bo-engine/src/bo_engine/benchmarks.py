@@ -10,6 +10,7 @@ References:
 """
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -94,7 +95,7 @@ def hartmann6_bounds() -> Tensor:
 
 
 def embed_in_high_dim(
-    func: callable,
+    func: Callable,
     x: Tensor,
     relevant_dims: list[int],
     original_bounds: Tensor,

@@ -14,7 +14,6 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import torch
 from botorch.models import ModelListGP, SingleTaskGP
@@ -26,9 +25,6 @@ from bo_engine.constants import (
     PREDICTION_INTERVAL_EPSILON,
 )
 from bo_engine.device import get_device, get_dtype
-
-if TYPE_CHECKING:
-    pass
 
 
 @dataclass
@@ -167,7 +163,7 @@ def compute_prediction_intervals(
             # Get posterior for this objective
             with torch.no_grad():
                 if isinstance(model, ModelListGP):
-                    posterior = model.models[obj_idx].posterior(xi)
+                    posterior = model.models[obj_idx].posterior(xi)  # ty: ignore[call-non-callable]
                 else:
                     posterior = model.posterior(xi)
 
@@ -199,11 +195,43 @@ def compute_prediction_intervals(
     return results
 
 
+def _compute_improvement_metrics(
+    intervals: dict[str, list],
+    best_value: float | None,
+    minimize: bool,
+) -> tuple[float | None, float | None, str]:
+    """Compute EI, PoI, and risk assessment for a single suggestion.
+
+    Returns (expected_improvement, probability_of_improvement, risk_assessment).
+    """
+    if best_value is None or len(intervals) == 0:
+        return None, None, "unknown"
+
+    first_obj = list(intervals.keys())[0]
+    mean = intervals[first_obj][0].mean
+    std = intervals[first_obj][0].std
+
+    if std <= PREDICTION_INTERVAL_EPSILON:
+        return None, None, "unknown"
+
+    z = (best_value - mean) / std if minimize else (mean - best_value) / std
+    poi = float(scipy_stats.norm.cdf(z))
+    ei = _compute_expected_improvement(mean, std, best_value, minimize)
+
+    if poi > 0.7:
+        risk = "low"
+    elif poi > 0.3:
+        risk = "medium"
+    else:
+        risk = "high"
+
+    return ei, poi, risk
+
+
 def compute_suggestion_predictions(
     model: SingleTaskGP | ModelListGP,
     suggestions: list[dict[str, float]],
     parameter_names: list[str],
-    bounds: Tensor,
     best_value: float | None = None,
     minimize: bool = True,
     objective_names: list[str] | None = None,
@@ -218,7 +246,6 @@ def compute_suggestion_predictions(
         model: Fitted GP model.
         suggestions: List of parameter dictionaries.
         parameter_names: Names of parameters (for ordering).
-        bounds: Parameter bounds (2 x d tensor).
         best_value: Current best observed value (for improvement calculation).
         minimize: Whether objective is being minimized.
         objective_names: Names for objectives.
@@ -233,13 +260,11 @@ def compute_suggestion_predictions(
     if confidence_levels is None:
         confidence_levels = PREDICTION_INTERVAL_DEFAULT_LEVELS
 
-    # Convert suggestions to tensor
     x = torch.zeros(len(suggestions), len(parameter_names), device=device, dtype=dtype)
     for i, sugg in enumerate(suggestions):
         for j, pname in enumerate(parameter_names):
             x[i, j] = sugg[pname]
 
-    # Get prediction intervals
     all_intervals = compute_prediction_intervals(
         model=model,
         x=x,
@@ -247,63 +272,26 @@ def compute_suggestion_predictions(
         objective_names=objective_names,
     )
 
-    # Build suggestion predictions
     suggestion_preds: list[SuggestionPrediction] = []
-
     for i, sugg in enumerate(suggestions):
-        intervals = all_intervals[i]
-
-        # Compute expected improvement and probability of improvement
-        ei = None
-        poi = None
-        risk = "unknown"
-
-        if best_value is not None and len(intervals) > 0:
-            # Get first objective's prediction
-            first_obj = list(intervals.keys())[0]
-            mean = intervals[first_obj][0].mean
-            std = intervals[first_obj][0].std
-
-            if std > PREDICTION_INTERVAL_EPSILON:
-                if minimize:
-                    # Improvement is when prediction < best_value
-                    z = (best_value - mean) / std
-                else:
-                    # Improvement is when prediction > best_value
-                    z = (mean - best_value) / std
-
-                poi = float(scipy_stats.norm.cdf(z))
-                ei = _compute_expected_improvement(mean, std, best_value, minimize)
-
-                # Risk assessment based on uncertainty and improvement probability
-                if poi > 0.7:
-                    risk = "low"
-                elif poi > 0.3:
-                    risk = "medium"
-                else:
-                    risk = "high"
-
+        ei, poi, risk = _compute_improvement_metrics(all_intervals[i], best_value, minimize)
         suggestion_preds.append(
             SuggestionPrediction(
                 parameters=sugg,
-                objectives=intervals,
+                objectives=all_intervals[i],
                 expected_improvement=ei,
                 probability_of_improvement=poi,
                 risk_assessment=risk,
             )
         )
 
-    # Overall batch expected improvement
     total_ei = None
     if all(sp.expected_improvement is not None for sp in suggestion_preds):
-        # Sum of individual EIs (not exact for batch, but informative)
-        total_ei = sum(sp.expected_improvement for sp in suggestion_preds)  # type: ignore
-
-    diversity_note = f"Batch contains {len(suggestions)} suggestions."
+        total_ei = sum(sp.expected_improvement for sp in suggestion_preds)
 
     return BatchPredictions(
         suggestions=suggestion_preds,
-        batch_diversity_note=diversity_note,
+        batch_diversity_note=f"Batch contains {len(suggestions)} suggestions.",
         overall_expected_improvement=total_ei,
     )
 
@@ -482,7 +470,7 @@ def _estimate_pareto_probability(
 
     with torch.no_grad():
         for obj_idx in range(n_objectives):
-            posterior = model.models[obj_idx].posterior(x)
+            posterior = model.models[obj_idx].posterior(x)  # ty: ignore[call-non-callable]
             sample = posterior.rsample(torch.Size([n_samples])).squeeze(-1).squeeze(-1)
             samples[:, obj_idx] = sample
 

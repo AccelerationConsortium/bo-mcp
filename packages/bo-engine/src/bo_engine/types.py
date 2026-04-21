@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from botorch.models.model_list_gp_regression import ModelListGP
     from torch import Tensor
 
+    from bo_engine.saasbo import SAASBOConfig
+
     GPModel = SingleTaskGP | ModelListGP
     OutcomeConstraintModel = tuple[SingleTaskGP, float]
 
@@ -67,17 +69,32 @@ class ConstraintSpec:
 
 
 class AcquisitionMethod(StrEnum):
-    """Acquisition function method."""
+    """Acquisition function method.
 
-    AUTO = "auto"  # Automatic selection based on n_objectives
-    QLOGNEI = "qLogNEI"  # Single-objective: Log Noisy Expected Improvement
-    QLOGEI = "qLogEI"  # Single-objective: Log Expected Improvement (noiseless)
-    QLOGNEHVI = "qLogNEHVI"  # Multi-objective: Log Noisy Expected Hypervolume Improvement
-    QLOGPAREGO = "qLogNParEGO"  # Multi-objective: Parallel EGO with Chebyshev scalarization
-    EIPU = "EIpu"  # Cost-aware: Expected Improvement per Unit cost
-    # v2.0: Advanced acquisition methods
-    QMFKG = "qMFKG"  # Multi-fidelity: Knowledge Gradient
-    SAASBO = "SAASBO"  # High-dimensional: Sparse Axis-Aligned Subspace BO
+    Values are backend-agnostic semantic names. The mapping to concrete
+    BoTorch classes lives inside ``bo_engine.acquisition``.
+    """
+
+    AUTO = "auto"
+    NOISY_EI = "noisy_expected_improvement"
+    EXPECTED_IMPROVEMENT = "expected_improvement"
+    HYPERVOLUME_IMPROVEMENT = "hypervolume_improvement"
+    SCALARIZED_MULTI_OBJ = "scalarized_multi_objective"
+    COST_WEIGHTED_EI = "cost_weighted_ei"
+    MULTI_FIDELITY_KG = "multi_fidelity_kg"
+
+
+# Maps legacy BoTorch class-name values to current semantic names.
+# Used for backward compatibility with stored campaign specs.
+LEGACY_ACQUISITION_VALUES: dict[str, AcquisitionMethod] = {
+    "qLogNEI": AcquisitionMethod.NOISY_EI,
+    "qLogEI": AcquisitionMethod.EXPECTED_IMPROVEMENT,
+    "qLogNEHVI": AcquisitionMethod.HYPERVOLUME_IMPROVEMENT,
+    "qLogNParEGO": AcquisitionMethod.SCALARIZED_MULTI_OBJ,
+    "EIpu": AcquisitionMethod.COST_WEIGHTED_EI,
+    "qMFKG": AcquisitionMethod.MULTI_FIDELITY_KG,
+    "SAASBO": AcquisitionMethod.NOISY_EI,  # SAASBO is a model strategy, not acq
+}
 
 
 @dataclass(frozen=True)
@@ -91,6 +108,7 @@ class OutcomeConstraintSpec:
     objective_name: str  # Which objective to constrain
     threshold: float  # Constraint value
     greater_than: bool = True  # True: obj >= threshold, False: obj <= threshold
+    feasibility_threshold: float = 0.5  # P(feasible) cutoff (0-1)
 
 
 @dataclass(frozen=True)
@@ -105,7 +123,7 @@ class FidelityParameterSpec:
     bounds: tuple[float, float]  # (min_fidelity, max_fidelity)
     target: float  # Target fidelity for final optimization (usually max)
     cost_weight: float = 1.0  # Cost scaling factor for fidelity
-    fixed_cost: float = 5.0  # Fixed base cost
+    fixed_cost: float = 0.0  # Fixed base cost (set > 0 if evaluations have overhead)
 
 
 @dataclass(frozen=True)
@@ -118,6 +136,20 @@ class TransferLearningSpec:
 
     prior_campaign_ids: list[str]  # IDs of prior campaigns to transfer from
     num_ranking_samples: int = 512  # Samples for rank computation
+    temperature: float = 0.5  # RGPE softmax temperature for weight distribution
+
+
+@dataclass(frozen=True)
+class TurboConfig:
+    """Configuration for TuRBO trust-region optimization.
+
+    Present = use TuRBO, absent (None) = standard acquisition optimization.
+    """
+
+    initial_length: float = 0.8
+    length_min: float = 0.5**7
+    length_max: float = 1.6
+    success_tolerance: int = 10
 
 
 @dataclass(frozen=True)
@@ -125,6 +157,13 @@ class OptimizationSpec:
     """Full specification for an optimization problem.
 
     This is the main input type for bo-engine functions.
+
+    **Backend-specific fields:** Several optional fields (``turbo_config``,
+    ``saasbo_config``, ``fidelity_parameter``, ``transfer_learning``,
+    ``use_cost_aware``, ``use_input_warping``) are primarily consumed by
+    the BoTorch backend.  Other backends **should silently ignore** fields
+    they do not support and surface warnings via
+    :meth:`BOBackend.validate_spec` rather than raising.
     """
 
     parameters: list[ParameterSpec]
@@ -136,8 +175,8 @@ class OptimizationSpec:
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
     # v1.1: Input warping for non-stationary objectives
     use_input_warping: bool = False
-    # v1.2: TuRBO for high-dimensional optimization
-    use_turbo: bool = False
+    # v1.2: TuRBO for high-dimensional optimization (None = disabled)
+    turbo_config: TurboConfig | None = None
     # v1.3: Outcome constraints learned from data
     outcome_constraints: list[OutcomeConstraintSpec] = field(default_factory=list)
     # v1.3: Cost-aware optimization (EIpu)
@@ -146,8 +185,18 @@ class OptimizationSpec:
     fidelity_parameter: FidelityParameterSpec | None = None
     # v2.0: Transfer learning from prior campaigns
     transfer_learning: TransferLearningSpec | None = None
-    # v2.0: SAASBO for high-dimensional optimization (50+ params)
-    use_saasbo: bool = False
+    # v2.0: SAASBO for high-dimensional optimization (None = disabled)
+    saasbo_config: SAASBOConfig | None = None
+
+    @property
+    def use_turbo(self) -> bool:
+        """Backward-compatible check for TuRBO enabled."""
+        return self.turbo_config is not None
+
+    @property
+    def use_saasbo(self) -> bool:
+        """Backward-compatible check for SAASBO enabled."""
+        return self.saasbo_config is not None
 
     @property
     def n_parameters(self) -> int:
@@ -186,6 +235,8 @@ class SuggestionResult:
     model_version: int | None = None
     confidence_level: str | None = None
     explanation: str | None = None
+    predicted_objectives: dict[str, float] | None = None  # Posterior mean per objective
+    predicted_std: dict[str, float] | None = None  # Posterior std per objective
 
 
 @dataclass

@@ -21,12 +21,6 @@ class TestValidateIntake:
     """Tests for the internal validate_intake helper."""
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=(
-            "Response structure differs: standard verbosity returns 'spec_summary' "
-            "not 'spec' - see IMPLEMENTATION_PLAN.md"
-        )
-    )
     async def test_validate_intake_success(self):
         """Valid intake data passes validation."""
         from bo_mcp_server.tools.validate_intake import validate_intake
@@ -54,7 +48,8 @@ class TestValidateIntake:
             "batch_size": 2,
         }
 
-        result = await validate_intake(intake_data)
+        # Use detailed verbosity to get the full spec in the response
+        result = await validate_intake(intake_data, verbosity="detailed")
 
         assert result["valid"] is True
         assert len(result["errors"]) == 0
@@ -654,9 +649,6 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="partial_results feature not yet implemented - see IMPLEMENTATION_PLAN.md"
-    )
     async def test_continue_on_error_partial_success(self, setup_database):
         """Continue on error mode allows partial success."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -676,7 +668,10 @@ class TestSubmitResultsBatchOperations:
         campaign_id = create_result["campaign_id"]
         await generate_suggestions(campaign_id)
 
-        # Mix of valid and invalid results
+        # Mix of valid and invalid results.
+        # The invalid result (idx 1) has objective_values present but missing
+        # the required "y" key — this passes Pydantic validation but fails
+        # at the operation level.
         result = await submit_results(
             campaign_id=campaign_id,
             results=_to_result_inputs(
@@ -685,7 +680,10 @@ class TestSubmitResultsBatchOperations:
                         "parameter_values": {"x": 0.3},
                         "objective_values": {"y": 1.5},
                     },  # Valid (idx 0)
-                    {"parameter_values": {"x": 0.5}},  # Missing objective_values (idx 1)
+                    {
+                        "parameter_values": {"x": 0.5},
+                        "objective_values": {"wrong_name": 1.0},
+                    },  # Missing "y" objective (idx 1)
                     {
                         "parameter_values": {"x": 0.7},
                         "objective_values": {"y": 0.8},
@@ -695,6 +693,7 @@ class TestSubmitResultsBatchOperations:
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
+            verbosity="detailed",
         )
 
         # Should succeed with partial results
@@ -738,12 +737,6 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=(
-            "partial_results key with UUIDs feature not yet implemented "
-            "- see IMPLEMENTATION_PLAN.md"
-        )
-    )
     async def test_partial_results_contains_result_ids(self, setup_database):
         """Partial results contain actual result IDs for successful saves."""
         from uuid import UUID
@@ -776,6 +769,7 @@ class TestSubmitResultsBatchOperations:
             submitted_by=owner_id,
             atomic=False,
             continue_on_error=True,
+            verbosity="detailed",
         )
 
         assert result["success"] is True
@@ -1433,11 +1427,6 @@ class TestAgentUsabilityDiagnostics:
         assert "exploration_exploitation" in diag
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=(
-            "hyperparameters key with sub-fields not yet implemented - see IMPLEMENTATION_PLAN.md"
-        )
-    )
     async def test_diagnostics_includes_hyperparameters(self, setup_database):
         """Diagnostics include GP hyperparameters when model is fitted."""
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -1469,7 +1458,8 @@ class TestAgentUsabilityDiagnostics:
         ]
         await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
-        diag = await get_diagnostics(campaign_id)
+        # Use detailed verbosity to include hyperparameters in the response
+        diag = await get_diagnostics(campaign_id, verbosity="detailed")
 
         assert diag["success"] is True
         assert "hyperparameters" in diag
@@ -1921,17 +1911,17 @@ class TestListCampaigns:
         assert "spec_summary" in detailed_result["campaigns"][0]
 
 
-class TestManageCampaignLifecycle:
-    """Tests for manage_campaign_lifecycle consolidated tool.
+class TestCampaignLifecycleTools:
+    """Tests for individual campaign lifecycle tools.
 
-    Reference: MCP Best Practices - Avoid mapping every API endpoint to a tool.
+    Reference: MCP Best Practices - Individual tools are more discoverable.
     https://modelcontextprotocol.io/docs/best-practices
     """
 
     @pytest.mark.asyncio
-    async def test_pause_action(self, setup_database):
-        """Pause action transitions running campaign to paused."""
-        from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+    async def test_pause_campaign(self, setup_database):
+        """bo_pause_campaign transitions running campaign to paused."""
+        from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -1947,16 +1937,16 @@ class TestManageCampaignLifecycle:
         # Move to RUNNING
         await generate_suggestions(campaign_id)
 
-        result = await manage_campaign_lifecycle(campaign_id, "pause")
+        result = await pause_campaign(campaign_id)
 
         assert result["success"] is True
         assert result["status"] == "paused"
         assert result["previous_status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_resume_action(self, setup_database):
-        """Resume action transitions paused campaign to running."""
-        from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+    async def test_resume_campaign(self, setup_database):
+        """bo_resume_campaign transitions paused campaign to running."""
+        from bo_mcp_server.tools.campaign_lifecycle import pause_campaign, resume_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -1971,18 +1961,18 @@ class TestManageCampaignLifecycle:
 
         # Move to RUNNING then PAUSED
         await generate_suggestions(campaign_id)
-        await manage_campaign_lifecycle(campaign_id, "pause")
+        await pause_campaign(campaign_id)
 
-        result = await manage_campaign_lifecycle(campaign_id, "resume")
+        result = await resume_campaign(campaign_id)
 
         assert result["success"] is True
         assert result["status"] == "running"
         assert result["previous_status"] == "paused"
 
     @pytest.mark.asyncio
-    async def test_terminate_action(self, setup_database):
-        """Terminate action completes the campaign."""
-        from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+    async def test_terminate_campaign(self, setup_database):
+        """bo_terminate_campaign completes the campaign."""
+        from bo_mcp_server.tools.campaign_lifecycle import terminate_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
 
         owner_id = str(uuid4())
@@ -1994,30 +1984,36 @@ class TestManageCampaignLifecycle:
         create_result = await create_campaign(intake, owner_id)
         campaign_id = create_result["campaign_id"]
 
-        result = await manage_campaign_lifecycle(campaign_id, "terminate")
+        result = await terminate_campaign(campaign_id)
 
         assert result["success"] is True
         assert result["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_invalid_action(self, setup_database):
-        """Invalid action returns error."""
-        from bo_mcp_server.tools.campaign_lifecycle import manage_campaign_lifecycle
+    async def test_invalid_state_transition(self, setup_database):
+        """Pausing an already paused campaign returns error."""
+        from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
         owner_id = str(uuid4())
         intake = {
-            "name": "Invalid Action Test",
+            "name": "Invalid Transition Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
             "objectives": [{"name": "y", "direction": "minimize"}],
         }
         create_result = await create_campaign(intake, owner_id)
         campaign_id = create_result["campaign_id"]
 
-        result = await manage_campaign_lifecycle(campaign_id, "invalid_action")  # type: ignore
+        await generate_suggestions(campaign_id)
+        await pause_campaign(campaign_id)
+
+        # Try to pause again - should fail
+        result = await pause_campaign(campaign_id)
 
         assert result["success"] is False
-        assert "invalid" in str(result["errors"]).lower()
+        errors_str = str(result["errors"]).lower()
+        assert "cannot pause" in errors_str or "paused" in errors_str
 
 
 class TestBatchGetStatus:

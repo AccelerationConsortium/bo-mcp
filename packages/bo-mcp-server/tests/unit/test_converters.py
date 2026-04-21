@@ -28,7 +28,9 @@ from bo_mcp_server.domain import (
     Objective,
     OutcomeConstraint,
     ParameterType,
+    SaasboConfig,
     TransferLearningConfig,
+    TurboConfig,
 )
 
 
@@ -40,8 +42,8 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(-5.0, 5.0)),
+                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
+                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(-5.0, 5.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
         )
@@ -99,7 +101,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[
                 Objective(name="loss", direction="minimize"),
@@ -120,8 +122,8 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
+                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             constraints=[
@@ -145,7 +147,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             outcome_constraints=[
@@ -165,27 +167,27 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
-            acquisition_method=AcquisitionMethod.QLOGNEI,
+            acquisition_method=AcquisitionMethod.NOISY_EI,
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
 
-        assert opt_spec.acquisition_method == BOAcquisitionMethod.QLOGNEI
+        assert opt_spec.acquisition_method == BOAcquisitionMethod.NOISY_EI
 
     def test_fidelity_parameter_conversion(self) -> None:
         """Test conversion of fidelity parameter for multi-fidelity optimization."""
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             fidelity_parameter=FidelityParameter(
                 name="fidelity",
-                bounds=(0.1, 1.0),
+                bounds=(0.1, 1.0),  # ty: ignore[invalid-argument-type]
                 target=1.0,
                 cost_weight=2.0,
                 fixed_cost=10.0,
@@ -206,7 +208,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             transfer_learning=TransferLearningConfig(
@@ -226,13 +228,13 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             use_input_warping=True,
-            use_turbo=True,
+            turbo_config=TurboConfig(),
             use_cost_aware=True,
-            use_saasbo=True,
+            saasbo_config=SaasboConfig(),
             batch_size=5,
             initial_design_size=20,
         )
@@ -251,7 +253,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
         )
@@ -265,7 +267,7 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
         )
@@ -279,8 +281,8 @@ class TestCampaignSpecToOptimizationSpec:
         spec = CampaignSpec(
             name="test",
             parameters=[
-                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
+                InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
             ],
             objectives=[Objective(name="y", direction="minimize")],
             constraints=[

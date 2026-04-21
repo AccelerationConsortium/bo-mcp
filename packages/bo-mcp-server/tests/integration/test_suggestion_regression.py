@@ -11,6 +11,7 @@ References:
 - Section 3.7: Full Reproducibility Guarantees
 """
 
+import random
 from uuid import uuid4
 
 import pytest
@@ -75,9 +76,6 @@ class TestSuggestionReproducibility:
                 assert abs(s1["parameter_values"][param] - s2["parameter_values"][param]) < 1e-10
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="random_seed not populated in provenance - Section 3.7 not implemented"
-    )
     async def test_suggestion_provenance_includes_seed(self, setup_database):
         """Suggestion provenance includes random_seed for reproducibility.
 
@@ -148,6 +146,7 @@ class TestSuggestionQualityRegression:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
+        random.seed(42)
         torch.manual_seed(42)
         owner_id = str(uuid4())
 
@@ -208,6 +207,7 @@ class TestSuggestionQualityRegression:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
+        random.seed(42)
         torch.manual_seed(42)
         owner_id = str(uuid4())
 
@@ -304,8 +304,8 @@ class TestMethodSelectionStability:
 
         # Method selection should indicate single-objective acquisition
         method = gen2["method_selection"]["acquisition_function"]
-        # Should be qLogEI, qEI, or similar single-objective acquisition
-        assert "EI" in method.upper() or "NEI" in method.upper() or method is not None
+        # Should be a single-objective acquisition method
+        assert "expected_improvement" in method or "ei" in method.lower()
 
     @pytest.mark.asyncio
     async def test_multi_objective_uses_qlognehvi(self, setup_database):
@@ -351,8 +351,8 @@ class TestMethodSelectionStability:
 
         # Method selection should indicate multi-objective acquisition
         method = gen2["method_selection"]["acquisition_function"]
-        # Should be qLogNEHVI, qNEHVI, or similar multi-objective acquisition
-        assert "NEHVI" in method.upper() or "HVI" in method.upper() or "PARETO" in method.upper()
+        # Should be a multi-objective acquisition method
+        assert "hypervolume" in method or "multi_objective" in method
 
     @pytest.mark.asyncio
     async def test_method_selection_explanation_present(self, setup_database):

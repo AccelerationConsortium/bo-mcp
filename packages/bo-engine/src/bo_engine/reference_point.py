@@ -15,6 +15,7 @@ References:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -149,7 +150,7 @@ def get_reference_point_dynamic(
 
 def _compute_static_reference_point(
     train_y: Tensor,
-    minimize_mask: Tensor,
+    _minimize_mask: Tensor,
     config: ReferencePointConfig,
 ) -> Tensor:
     """Compute static reference point (current behavior).
@@ -170,7 +171,11 @@ def _compute_static_reference_point(
     # So "worst" is always max
     worst = train_y.max(dim=0).values
     ranges = train_y.max(dim=0).values - train_y.min(dim=0).values
-    ranges = torch.where(ranges < MIN_OBJECTIVE_RANGE, torch.ones_like(ranges), ranges)
+
+    # For near-constant objectives, use absolute scale instead of unit range
+    # to avoid distorting hypervolume across objectives with different units.
+    abs_scale = worst.abs().clamp(min=MIN_OBJECTIVE_RANGE)
+    ranges = torch.where(ranges < MIN_OBJECTIVE_RANGE, abs_scale, ranges)
 
     ref_point = worst + config.margin * ranges
     return ref_point
@@ -306,7 +311,7 @@ def compute_reference_point_quality(
     # (it should, since ref_point should be worse than worst)
     dominated = (train_y <= ref_point).all(dim=-1)
     dominated_fraction = dominated.float().mean().item()
-    is_valid = dominated_fraction == 1.0
+    is_valid = math.isclose(dominated_fraction, 1.0)
 
     # Compute margin ratios
     worst = train_y.max(dim=0).values
@@ -343,6 +348,78 @@ def compute_reference_point_quality(
         "is_valid": is_valid,
         "recommendations": recommendations,
     }
+
+
+def _select_best_strategy(
+    ref_dynamic: Tensor,
+    ref_nadir: Tensor,
+    ref_static: Tensor,
+    quality_dynamic: dict[str, Any],
+    quality_nadir: dict[str, Any],
+) -> tuple[ReferencePointStrategy, Tensor, list[str]]:
+    """Select the best reference point strategy based on quality metrics.
+
+    Prefers dynamic if valid, falls back to nadir then static.
+    When both dynamic and nadir are valid, picks the tighter one.
+
+    Args:
+        ref_dynamic: Dynamic reference point
+        ref_nadir: Nadir-based reference point
+        ref_static: Static reference point
+        quality_dynamic: Quality metrics for dynamic ref point
+        quality_nadir: Quality metrics for nadir ref point
+
+    Returns:
+        Tuple of (best_strategy, best_ref_point, explanation_parts)
+    """
+    explanation_parts: list[str] = []
+
+    if not quality_dynamic["is_valid"]:
+        if quality_nadir["is_valid"]:
+            explanation_parts.append("Using nadir-based reference point for tighter bounds.")
+            return ReferencePointStrategy.NADIR, ref_nadir, explanation_parts
+        explanation_parts.append("Using static reference point for stability.")
+        return ReferencePointStrategy.STATIC, ref_static, explanation_parts
+
+    # Dynamic is valid — check if nadir is also valid and tighter
+    if quality_nadir["is_valid"]:
+        nadir_tighter = all(
+            nr < dr for nr, dr in zip(ref_nadir.tolist(), ref_dynamic.tolist(), strict=True)
+        )
+        if nadir_tighter:
+            explanation_parts.append("Nadir-based reference is tighter and valid.")
+            return ReferencePointStrategy.NADIR, ref_nadir, explanation_parts
+        explanation_parts.append("Dynamic reference point adapts to Pareto progress.")
+    else:
+        explanation_parts.append("Dynamic reference point provides good balance.")
+
+    return ReferencePointStrategy.DYNAMIC, ref_dynamic, explanation_parts
+
+
+def _append_current_ref_point_advice(
+    current_ref_point: Tensor,
+    train_y: Tensor,
+    explanation_parts: list[str],
+) -> None:
+    """Append advice about the current reference point to explanation_parts.
+
+    Checks validity and margin ratios of the current reference point and
+    adds actionable advice if improvements are possible.
+
+    Args:
+        current_ref_point: The user's current reference point
+        train_y: Training outputs for quality evaluation
+        explanation_parts: List to append explanation strings to (mutated in-place)
+    """
+    current_quality = compute_reference_point_quality(current_ref_point, train_y)
+    if not current_quality["is_valid"]:
+        explanation_parts.append(
+            "Current reference point does not dominate all points - update recommended."
+        )
+    elif current_quality["margin_ratios"] and max(current_quality["margin_ratios"]) > 0.5:
+        explanation_parts.append(
+            "Current reference point has large margins - tightening may improve resolution."
+        )
 
 
 def recommend_reference_point(
@@ -386,47 +463,13 @@ def recommend_reference_point(
     quality_nadir = compute_reference_point_quality(ref_nadir, train_y)
 
     # Choose based on validity and margin balance
-    best_strategy = ReferencePointStrategy.DYNAMIC
-    best_ref = ref_dynamic
-    explanation_parts = []
-
-    if not quality_dynamic["is_valid"]:
-        # Dynamic failed, try nadir
-        if quality_nadir["is_valid"]:
-            best_strategy = ReferencePointStrategy.NADIR
-            best_ref = ref_nadir
-            explanation_parts.append("Using nadir-based reference point for tighter bounds.")
-        else:
-            # Fall back to static
-            best_strategy = ReferencePointStrategy.STATIC
-            best_ref = ref_static
-            explanation_parts.append("Using static reference point for stability.")
-    else:
-        # Dynamic is valid, check if nadir is also valid and tighter
-        if quality_nadir["is_valid"]:
-            nadir_tighter = all(
-                nr < dr for nr, dr in zip(ref_nadir.tolist(), ref_dynamic.tolist(), strict=False)
-            )
-            if nadir_tighter:
-                best_strategy = ReferencePointStrategy.NADIR
-                best_ref = ref_nadir
-                explanation_parts.append("Nadir-based reference is tighter and valid.")
-            else:
-                explanation_parts.append("Dynamic reference point adapts to Pareto progress.")
-        else:
-            explanation_parts.append("Dynamic reference point provides good balance.")
+    best_strategy, best_ref, explanation_parts = _select_best_strategy(
+        ref_dynamic, ref_nadir, ref_static, quality_dynamic, quality_nadir
+    )
 
     # Check current reference point if provided
     if current_ref_point is not None:
-        current_quality = compute_reference_point_quality(current_ref_point, train_y)
-        if not current_quality["is_valid"]:
-            explanation_parts.append(
-                "Current reference point does not dominate all points - update recommended."
-            )
-        elif current_quality["margin_ratios"] and max(current_quality["margin_ratios"]) > 0.5:
-            explanation_parts.append(
-                "Current reference point has large margins - tightening may improve resolution."
-            )
+        _append_current_ref_point_advice(current_ref_point, train_y, explanation_parts)
 
     return {
         "recommended_ref_point": best_ref.tolist(),

@@ -4,17 +4,21 @@ import logging
 from typing import Any
 from uuid import UUID
 
-import torch
 from bo_engine.diagnostics import (
     compute_best_value,
-    compute_hypervolume,
     compute_improvement_history,
-    compute_pareto_front,
     compute_single_objective_improvement_rate,
 )
 
+from bo_mcp_server.backend import get_backend
+from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.operations.helpers import (
+    parse_campaign_id,
+    parse_verbosity,
+    results_to_observations,
+)
 from bo_mcp_server.response_formatter import VerbosityLevel, format_compare_campaigns_response
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -75,35 +79,18 @@ def _compute_campaign_metrics(
         )
         return metrics
 
-    objective_names = [objective.name for objective in spec.objectives]
-    minimize_mask = torch.tensor([objective.is_minimize for objective in spec.objectives])
-    y_tensor = torch.stack(
-        [
-            torch.tensor(
-                [result.objective_values[name] for name in objective_names],
-                dtype=torch.double,
-            )
-            for result in results
-        ]
-    )
-
-    y_bo = y_tensor.clone()
-    y_bo[:, ~minimize_mask] = -y_bo[:, ~minimize_mask]
-
-    pareto_y, _ = compute_pareto_front(y_bo)
-    worst = y_bo.max(dim=0).values
-    ranges = y_bo.max(dim=0).values - y_bo.min(dim=0).values
-    ranges = torch.where(ranges < 1e-6, torch.ones_like(ranges), ranges)
-    ref_point = worst + 0.1 * ranges
-    hypervolume = compute_hypervolume(pareto_y, ref_point)
+    backend = get_backend(spec.backend)
+    opt_spec = campaign_spec_to_optimization_spec(spec)
+    observations = results_to_observations(results)
+    hypervolume = backend.compute_hypervolume(opt_spec, observations)
 
     metrics.update(
         {
             "best_value": None,
             "improvement_rate": None,
-            "sample_efficiency": round(hypervolume / len(results), 6),
-            "hypervolume": round(hypervolume, 6),
-            "n_pareto_points": pareto_y.shape[0],
+            "sample_efficiency": (round(hypervolume / len(results), 6) if hypervolume else 0.0),
+            "hypervolume": round(hypervolume, 6) if hypervolume else None,
+            "n_pareto_points": None,  # Computed internally by backend
         }
     )
     return metrics
@@ -150,43 +137,34 @@ def _compare_metrics(
         key=lambda index: metrics_list[index].get("sample_efficiency", 0) or 0,
     )
 
-    single_objective_campaigns = [
-        (index, metrics)
-        for index, metrics in enumerate(metrics_list)
-        if not metrics["is_multi_objective"]
-    ]
+    # Determine best single-objective performer (lowest best_value).
+    # Guard: the generator may be empty if no campaign has results yet.
     best_single_objective = None
-    if single_objective_campaigns:
-        best_single_objective_idx = min(
-            (
-                index
-                for index, metrics in single_objective_campaigns
-                if metrics.get("best_value") is not None
-            ),
-            key=lambda index: metrics_list[index]["best_value"],
-            default=None,
-        )
-        if best_single_objective_idx is not None:
-            best_single_objective = campaign_names[best_single_objective_idx]
-
-    multi_objective_campaigns = [
+    single_with_values = [
         (index, metrics)
         for index, metrics in enumerate(metrics_list)
-        if metrics["is_multi_objective"]
+        if not metrics["is_multi_objective"] and metrics.get("best_value") is not None
     ]
-    best_multi_objective = None
-    if multi_objective_campaigns:
-        best_multi_objective_idx = max(
-            (
-                index
-                for index, metrics in multi_objective_campaigns
-                if metrics.get("hypervolume") is not None
-            ),
-            key=lambda index: metrics_list[index]["hypervolume"],
-            default=None,
+    if single_with_values:
+        best_single_objective_idx = min(
+            (index for index, _ in single_with_values),
+            key=lambda index: metrics_list[index]["best_value"],
         )
-        if best_multi_objective_idx is not None:
-            best_multi_objective = campaign_names[best_multi_objective_idx]
+        best_single_objective = campaign_names[best_single_objective_idx]
+
+    # Determine best multi-objective performer (highest hypervolume).
+    best_multi_objective = None
+    multi_with_hv = [
+        (index, metrics)
+        for index, metrics in enumerate(metrics_list)
+        if metrics["is_multi_objective"] and metrics.get("hypervolume") is not None
+    ]
+    if multi_with_hv:
+        best_multi_objective_idx = max(
+            (index for index, _ in multi_with_hv),
+            key=lambda index: metrics_list[index]["hypervolume"],
+        )
+        best_multi_objective = campaign_names[best_multi_objective_idx]
 
     return {
         "best_sample_efficiency": campaign_names[best_sample_efficiency_idx],
@@ -197,6 +175,48 @@ def _compare_metrics(
     }
 
 
+def _make_compare_error(code: ErrorCode, message: str, **kwargs: Any) -> dict[str, Any]:
+    """Build a compare-specific error response."""
+    response = make_error_response(code, message=message, **kwargs)
+    response.update({"campaigns": [], "comparison": None})
+    return response
+
+
+def _validate_compare_inputs(
+    campaign_ids: list[str],
+    verbosity: str,
+) -> tuple[VerbosityLevel, list[UUID]] | dict[str, Any]:
+    """Validate compare_campaigns inputs. Returns (level, uuids) or error dict."""
+    verbosity_result = parse_verbosity(verbosity)
+    if isinstance(verbosity_result, dict):
+        verbosity_result.update({"campaigns": [], "comparison": None})
+        return verbosity_result
+
+    if len(campaign_ids) < 2:
+        return _make_compare_error(
+            ErrorCode.VALIDATION_FAILED,
+            message="Need at least 2 campaigns to compare",
+            details={"provided_count": len(campaign_ids)},
+        )
+
+    if len(campaign_ids) > 10:
+        return _make_compare_error(
+            ErrorCode.VALIDATION_FAILED,
+            message="Cannot compare more than 10 campaigns at once",
+            details={"provided_count": len(campaign_ids)},
+        )
+
+    campaign_uuids: list[UUID] = []
+    for campaign_id in campaign_ids:
+        parsed_id = parse_campaign_id(campaign_id)
+        if isinstance(parsed_id, dict):
+            parsed_id.update({"campaigns": [], "comparison": None})
+            return parsed_id
+        campaign_uuids.append(parsed_id)
+
+    return verbosity_result, campaign_uuids
+
+
 async def compare_campaigns_operation(
     campaign_ids: list[str],
     verbosity: str = "standard",
@@ -204,46 +224,10 @@ async def compare_campaigns_operation(
     """Compare multiple campaigns."""
     logger.info("Comparing %d campaigns, verbosity=%s", len(campaign_ids), verbosity)
 
-    try:
-        verbosity_level = VerbosityLevel(verbosity)
-    except ValueError:
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
-        )
-        response.update({"campaigns": [], "comparison": None})
-        return response
-
-    if len(campaign_ids) < 2:
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message="Need at least 2 campaigns to compare",
-            details={"provided_count": len(campaign_ids)},
-        )
-        response.update({"campaigns": [], "comparison": None})
-        return response
-
-    if len(campaign_ids) > 10:
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message="Cannot compare more than 10 campaigns at once",
-            details={"provided_count": len(campaign_ids)},
-        )
-        response.update({"campaigns": [], "comparison": None})
-        return response
-
-    campaign_uuids: list[UUID] = []
-    for campaign_id in campaign_ids:
-        try:
-            campaign_uuids.append(UUID(campaign_id))
-        except ValueError:
-            response = make_error_response(
-                ErrorCode.INVALID_CAMPAIGN_ID,
-                message=f"Invalid campaign_id format: {campaign_id}",
-                details={"campaign_id": campaign_id},
-            )
-            response.update({"campaigns": [], "comparison": None})
-            return response
+    validated = _validate_compare_inputs(campaign_ids, verbosity)
+    if isinstance(validated, dict):
+        return validated
+    verbosity_level, campaign_uuids = validated
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
@@ -254,18 +238,26 @@ async def compare_campaigns_operation(
         campaign_names: list[str] = []
         errors: list[str] = []
 
+        # Batch-fetch all campaigns, specs, and results to avoid N+1 queries
+        campaigns_by_id = await campaign_repo.get_by_ids(campaign_uuids)
+        found_campaigns = {}
         for campaign_uuid in campaign_uuids:
-            campaign = await campaign_repo.get(campaign_uuid)
-            if campaign is None:
+            if campaign_uuid not in campaigns_by_id:
                 errors.append(f"Campaign {campaign_uuid} not found")
-                continue
+            else:
+                found_campaigns[campaign_uuid] = campaigns_by_id[campaign_uuid]
 
-            spec = await spec_repo.get(campaign.spec_id)
+        spec_ids = list({c.spec_id for c in found_campaigns.values()})
+        specs_by_id = await spec_repo.get_by_ids(spec_ids)
+        results_by_campaign = await result_repo.list_by_campaigns(list(found_campaigns.keys()))
+
+        for campaign_uuid, campaign in found_campaigns.items():
+            spec = specs_by_id.get(campaign.spec_id)
             if spec is None:
                 errors.append(f"Campaign spec for {campaign_uuid} not found")
                 continue
 
-            results = await result_repo.list_by_campaign(campaign_uuid)
+            results = results_by_campaign.get(campaign_uuid, [])
             metrics = _compute_campaign_metrics(spec, results, campaign.iteration)
             metrics["campaign_id"] = str(campaign_uuid)
             metrics["campaign_name"] = spec.name

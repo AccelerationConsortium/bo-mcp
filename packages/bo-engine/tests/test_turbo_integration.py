@@ -1,5 +1,6 @@
 """Tests for TuRBO integration with suggestions.py."""
 
+import numpy as np
 import torch
 
 from bo_engine import (
@@ -13,6 +14,7 @@ from bo_engine import (
     generate_next_batch,
     update_turbo_after_evaluation,
 )
+from bo_engine.types import TurboConfig
 
 
 def make_high_dim_spec(n_params: int = 25) -> OptimizationSpec:
@@ -28,7 +30,7 @@ def make_high_dim_spec(n_params: int = 25) -> OptimizationSpec:
         ],
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=4,
-        use_turbo=True,
+        turbo_config=TurboConfig(),
     )
 
 
@@ -63,10 +65,10 @@ def generate_observations(
 class TestTurboIntegration:
     """Test TuRBO integration with generate_next_batch."""
 
-    def test_turbo_returns_state(self) -> None:
+    def test_turbo_returns_state(self, rng: np.random.Generator) -> None:
         """generate_next_batch returns TurboState for high-dim problems."""
         spec = make_high_dim_spec(n_params=25)
-        # Need enough observations to pass min_data check (max(2, n_params))
+        # Need enough observations to pass min_data check (n_params+1 = 26)
         observations = generate_observations(spec, n_obs=30)
 
         suggestions, turbo_state = generate_next_batch(
@@ -74,6 +76,7 @@ class TestTurboIntegration:
             observations=observations,
             batch_size=4,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 4
@@ -81,10 +84,10 @@ class TestTurboIntegration:
         assert turbo_state.dim == 25
         assert turbo_state.batch_size == 4
 
-    def test_turbo_state_passed_through(self) -> None:
+    def test_turbo_state_passed_through(self, rng: np.random.Generator) -> None:
         """TuRBO state is passed through multiple iterations."""
         spec = make_high_dim_spec(n_params=25)
-        # Need enough observations to pass min_data check
+        # Need enough observations to pass min_data check (n_params+1 = 26)
         observations = generate_observations(spec, n_obs=30)
 
         # First batch
@@ -93,6 +96,7 @@ class TestTurboIntegration:
             observations=observations,
             batch_size=4,
             iteration=1,
+            rng=rng,
         )
         assert turbo_state1 is not None
 
@@ -103,12 +107,13 @@ class TestTurboIntegration:
             batch_size=4,
             iteration=2,
             turbo_state=turbo_state1,
+            rng=rng,
         )
         assert turbo_state2 is not None
         # State should be preserved (or modified based on progress)
         assert turbo_state2.dim == turbo_state1.dim
 
-    def test_turbo_not_used_for_low_dim(self) -> None:
+    def test_turbo_not_used_for_low_dim(self, rng: np.random.Generator) -> None:
         """TuRBO is not automatically used for low-dimensional problems."""
         spec = OptimizationSpec(
             parameters=[
@@ -117,7 +122,6 @@ class TestTurboIntegration:
             ],
             objectives=[ObjectiveSpec(name="f", minimize=True)],
             batch_size=2,
-            use_turbo=False,
         )
         observations = [
             ObservationData(
@@ -135,13 +139,14 @@ class TestTurboIntegration:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
         # No TuRBO for low-dim
         assert turbo_state is None
 
-    def test_turbo_not_used_for_multi_objective(self) -> None:
+    def test_turbo_not_used_for_multi_objective(self, rng: np.random.Generator) -> None:
         """TuRBO is not used for multi-objective optimization."""
         spec = OptimizationSpec(
             parameters=[
@@ -153,7 +158,7 @@ class TestTurboIntegration:
                 ObjectiveSpec(name="f2", minimize=True),
             ],
             batch_size=4,
-            use_turbo=True,
+            turbo_config=TurboConfig(),
         )
         observations = [
             ObservationData(
@@ -175,16 +180,17 @@ class TestTurboIntegration:
             observations=observations,
             batch_size=4,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 4
         # TuRBO not supported for multi-objective
         assert turbo_state is None
 
-    def test_generation_method_is_turbo(self) -> None:
+    def test_generation_method_is_turbo(self, rng: np.random.Generator) -> None:
         """Suggestions indicate turbo generation method when using TuRBO."""
         spec = make_high_dim_spec(n_params=25)
-        # Need enough observations to pass min_data check
+        # Need enough observations to pass min_data check (n_params+1 = 26)
         observations = generate_observations(spec, n_obs=30)
 
         suggestions, _ = generate_next_batch(
@@ -192,10 +198,12 @@ class TestTurboIntegration:
             observations=observations,
             batch_size=4,
             iteration=1,
+            rng=rng,
         )
 
         for sugg in suggestions:
             assert sugg.generation_method == "turbo"
+            assert sugg.explanation is not None
             assert "TuRBO" in sugg.explanation
 
 

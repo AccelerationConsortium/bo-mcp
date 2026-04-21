@@ -30,7 +30,7 @@ from bo_mcp_server.domain import (
     ParameterType,
     User,
 )
-from bo_mcp_server.storage import init_database
+from bo_mcp_server.storage import close_database, init_database
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def sample_continuous_param() -> InputParameter:
     return InputParameter(
         name="temperature",
         type=ParameterType.CONTINUOUS,
-        bounds=(20.0, 100.0),
+        bounds=(20.0, 100.0),  # ty: ignore[invalid-argument-type]
         description="Temperature in Celsius",
     )
 
@@ -50,7 +50,7 @@ def sample_discrete_param() -> InputParameter:
     return InputParameter(
         name="pressure",
         type=ParameterType.DISCRETE,
-        bounds=(1.0, 10.0),
+        bounds=(1.0, 10.0),  # ty: ignore[invalid-argument-type]
         description="Pressure in bar",
     )
 
@@ -132,14 +132,13 @@ async def setup_database():
     from bo_mcp_server.storage import database
 
     # Dispose existing engine if present to release connections
-    if database.engine is not None:
-        await database.engine.dispose()
+    await close_database()
 
-    # Reset module-level singletons to force fresh database creation
+    # Reset lazy singletons to force fresh database creation
     # This ensures each test gets a completely fresh in-memory database
-    database.engine = database._create_engine_with_options()
-    database.async_session_factory = async_sessionmaker(
-        database.engine,
+    database._engine = database._create_engine_with_options()
+    database._session_factory = async_sessionmaker(
+        database._engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
@@ -149,5 +148,23 @@ async def setup_database():
     yield
 
     # Cleanup: dispose engine to release connections
-    if database.engine is not None:
-        await database.engine.dispose()
+    await close_database()
+
+
+# ---------------------------------------------------------------------------
+# Automatic test markers based on directory
+# ---------------------------------------------------------------------------
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Apply markers to tests based on their location.
+
+    - ``unit/``        → ``@pytest.mark.smoke``  (fast, run on every PR)
+    - ``integration/`` → ``@pytest.mark.integration``
+    """
+    for item in items:
+        rel = str(item.path)
+        if "/unit/" in rel:
+            item.add_marker(pytest.mark.smoke)
+        elif "/integration/" in rel:
+            item.add_marker(pytest.mark.integration)

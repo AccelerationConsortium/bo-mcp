@@ -177,6 +177,7 @@ class TestWarpedGP:
         params = get_warping_parameters(model)
 
         # Should have concentration parameters for each input dimension
+        assert params is not None
         assert "concentration0" in params or "c0" in str(params).lower()
         assert "concentration1" in params or "c1" in str(params).lower()
 

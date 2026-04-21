@@ -10,7 +10,7 @@ from botorch.models import ModelListGP, SingleTaskGP
 
 # Optional dependency - imported at module level for clarity
 try:
-    import shap
+    import shap  # ty: ignore[unresolved-import]
 
     SHAP_AVAILABLE = True
 except ImportError:
@@ -41,7 +41,7 @@ def extract_lengthscales(model: GPModel) -> dict[str, torch.Tensor]:
         # SingleTaskGP
         covar = model.covar_module
         kernel = getattr(covar, "base_kernel", covar)
-        lengthscales["objective_0"] = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]
+        lengthscales["objective_0"] = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
 
     return lengthscales
 
@@ -102,7 +102,7 @@ def compute_shap_importance(
 
     # Use subset as background data
     background = train_x[: min(20, len(train_x))].numpy()
-    explainer = shap.KernelExplainer(predict_fn, background)
+    explainer = shap.KernelExplainer(predict_fn, background)  # ty: ignore[unresolved-attribute]
 
     # Compute SHAP values
     shap_values = explainer.shap_values(train_x.numpy(), nsamples=n_samples, silent=True)

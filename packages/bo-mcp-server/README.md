@@ -1,125 +1,144 @@
 # bo-mcp-server
 
-MCP (Model Context Protocol) server for Bayesian Optimization. Use with Claude or any MCP-compatible client.
+MCP (Model Context Protocol) server for Bayesian Optimization. Exposes a full BO workflow as MCP tools for use with Claude, other AI agents, or any MCP-compatible client.
+
+## Scope
+
+- 20 MCP tools covering the complete optimization lifecycle (create, suggest, submit, diagnose, compare)
+- 5 MCP resources for campaign, suggestion, and audit event inspection
+- SQLAlchemy ORM with PostgreSQL and SQLite support
+- Protocol-neutral operations layer reusable by REST, CLI, or direct Python import
+- Pluggable backend via `BOBackend` protocol (defaults to BoTorch)
 
 ## Installation
 
 ```bash
+# Basic (SQLite, stdio transport)
 pip install bo-mcp-server
+
+# With PostgreSQL support
+pip install "bo-mcp-server[postgres]"
 ```
+
+Requires Python >= 3.13.
 
 ## Quick Start
 
-### With Claude Desktop
+### With Claude Code
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+The `.mcp.json` at the repo root auto-configures Claude Code:
 
-```json
-{
-  "mcpServers": {
-    "bayesian-optimization": {
-      "command": "bo-mcp-server",
-      "args": ["--transport", "stdio"]
-    }
-  }
-}
+```bash
+cd bo-mcp-ui && claude
 ```
 
 ### Standalone
 
 ```bash
-# Run with stdio transport (for Claude integration)
-bo-mcp-server --transport stdio
+# stdio transport (for Claude Desktop / agent integration)
+bo-mcp-server
 
-# Run with SSE transport (for network access)
+# SSE transport (for network access)
 bo-mcp-server --transport sse --host 0.0.0.0 --port 8001
-
-# Show help
-bo-mcp-server --help
 ```
 
-### CLI Reference
+### Docker
 
-| Argument | Values | Default | Description |
-|----------|--------|---------|-------------|
-| `--transport` | `stdio`, `sse` | `stdio` | Transport protocol |
-| `--host` | IP address | `0.0.0.0` | SSE server host |
-| `--port` | Integer | `8001` | SSE server port |
+```bash
+docker compose up mcp db
+```
 
-## MCP Tools
+### Environment Variables
 
-### Core Tools
-- `bo_create_campaign` - Create new optimization campaign
-- `bo_list_campaigns` - List campaigns with optional filtering
-- `bo_generate_suggestions` - Generate next experiment batch
-- `bo_submit_results` - Submit experimental results
-- `bo_get_diagnostics` - Get model health and progress metrics
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./data/bo_mcp.db` | Database connection string |
+| `BO_MCP_LOG_LEVEL` | `INFO` | Logging verbosity |
+| `MCP_ALLOWED_HOSTS` | `127.0.0.1:*,localhost:*,[::1]:*,mcp:*` | DNS rebinding protection (comma-separated) |
+| `MCP_ALLOWED_ORIGINS` | `http://127.0.0.1:*,http://localhost:*,http://[::1]:*,http://mcp:*` | CORS origins (comma-separated) |
 
-### Data Upload
-- `bo_upload_results_file` - Upload results from CSV file
+## MCP Tools (20)
 
-### Explainability
-- `bo_get_suggestion_explanation` - Get detailed explanation of why a suggestion was made
+### Campaign Management
 
-### Campaign Lifecycle
-- `bo_manage_campaign_lifecycle` - Pause, resume, or terminate a campaign
+- `bo_create_campaign` -- Create a new optimization campaign
+- `bo_list_campaigns` -- List campaigns with filtering and pagination
+- `bo_validate_intake` -- Dry-run validation of campaign spec (no side effects)
+- `bo_pause_campaign` -- Pause a running campaign
+- `bo_resume_campaign` -- Resume a paused campaign
+- `bo_terminate_campaign` -- Terminate a campaign
 
-### Analysis & Strategy
-- `bo_compare_campaigns` - Compare 2-10 campaigns for relative performance
-- `bo_discover_transfer_candidates` - Auto-discover campaigns for transfer learning
-- `bo_batch_get_status` - Get status for multiple campaigns in one call
+### Suggestion & Results
 
-For detailed input/output schemas with all fields documented, see [TOOL_SCHEMAS.md](TOOL_SCHEMAS.md).
+- `bo_generate_suggestions` -- Generate next experiment batch
+- `bo_submit_results` -- Submit experimental results
+- `bo_list_suggestions` -- List suggestions with status filtering
+- `bo_update_suggestion_status` -- Accept, reject, or expire a suggestion
+- `bo_list_results` -- List results with pagination
+- `bo_export_campaign` -- Export campaign data as CSV
+- `bo_upload_results_file` -- Upload results from CSV file
 
-## MCP Resources
+### Diagnostics & Analysis
 
-- `campaign://{id}` - Campaign state and metadata
-- `campaigns://list` - List all campaigns
-- `suggestions://{campaign_id}` - Pending suggestions for a campaign
-- `suggestion://{id}` - Suggestion with provenance
+- `bo_get_diagnostics` -- Model health, convergence, LOO-CV metrics
+- `bo_get_suggestion_explanation` -- Why was this suggestion made?
+- `bo_compare_campaigns` -- Side-by-side campaign comparison
+- `bo_discover_transfer_candidates` -- Find campaigns for transfer learning
+- `bo_batch_get_status` -- Batch status for multiple campaigns
+- `bo_list_capabilities` -- List backend features and server version
+- `bo_health_check` -- Server health and connectivity check
+
+## MCP Resources (5)
+
+- `campaign://{campaign_id}` -- Campaign details (markdown)
+- `campaigns://list` -- All campaigns
+- `suggestions://{campaign_id}` -- Suggestions for a campaign
+- `suggestion://{suggestion_id}` -- Individual suggestion details
+- `events://{campaign_id}` -- Audit trail of tool calls
+
+## Architecture
+
+```text
+MCP tool (thin wrapper, ~30 lines)
+  |
+  v
+Operation (business logic, protocol-neutral)
+  |
+  v
+BOBackend protocol  -->  BoTorchBackend (default)
+  |                      BayBEBackend (optional)
+  v
+Database (SQLAlchemy async, PostgreSQL or SQLite)
+```
 
 ## Package Structure
 
-```
+```text
 bo_mcp_server/
-├── __init__.py           # Package entry point
-├── server.py             # FastMCP server setup
-├── cli.py                # CLI entry point
-├── domain/               # Domain models (Pydantic)
-│   ├── campaign.py
-│   ├── campaign_spec.py
-│   ├── result.py
-│   ├── suggestion.py
-│   └── user.py
-├── storage/              # Database layer (SQLAlchemy)
-│   ├── base.py
-│   ├── database.py
-│   ├── models.py
-│   └── repositories.py
-├── tools/                # MCP tool implementations
-│   ├── create_campaign.py
-│   ├── list_campaigns.py
-│   ├── generate_suggestions.py
-│   ├── submit_results.py
-│   ├── get_diagnostics.py
-│   ├── upload_results_file.py
-│   ├── get_suggestion_explanation.py
-│   ├── batch_operations.py
-│   └── campaign_lifecycle.py
-└── resources/            # MCP resource implementations
-    ├── campaign_resource.py
-    └── suggestion_resource.py
+    server.py             # FastMCP server setup
+    cli.py                # CLI entry point
+    audit.py              # Audit logging
+    cache.py              # Diagnostics cache
+    converters.py         # Domain <-> engine type converters
+    errors.py             # Structured error codes with recovery actions
+    response_formatter.py # Verbosity-based response filtering
+    backend.py            # Backend provider (get_backend())
+    domain/               # Pydantic domain models
+    storage/              # SQLAlchemy ORM + repositories
+    operations/           # Protocol-neutral business logic
+    tools/                # MCP tool handlers (thin wrappers)
+    resources/            # MCP resource handlers
+    migrations/           # Alembic database migrations
 ```
 
 ## Development
 
 ```bash
-# Install in development mode
-pip install -e .
+# Run tests (excluding slow/postgres/docker)
+cd packages/bo-mcp-server
+uv run pytest -m "not slow and not postgres and not docker"
 
-# Run tests
-pytest
-
-# Type checking
-pyright src/bo_mcp_server
+# Run with PostgreSQL (via Docker)
+docker compose up db
+DATABASE_URL=postgresql+asyncpg://bo_user:bo_password@localhost:5432/bo_mcp bo-mcp-server
 ```

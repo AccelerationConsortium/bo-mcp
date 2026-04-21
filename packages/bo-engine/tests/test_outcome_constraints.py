@@ -1,5 +1,7 @@
 """Tests for outcome constraint modeling."""
 
+import numpy as np
+
 from bo_engine import (
     ObjectiveSpec,
     ObservationData,
@@ -16,19 +18,26 @@ def make_spec_with_constraint(
     greater_than: bool = True,
 ) -> OptimizationSpec:
     """Create optimization spec with an outcome constraint."""
-    constraint_type = ">=" if greater_than else "<="
     return OptimizationSpec(
         parameters=[
-            ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-            ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ParameterSpec(
+                name="x1",
+                type=ParameterType.CONTINUOUS,
+                bounds=(0.0, 1.0),
+            ),
+            ParameterSpec(
+                name="x2",
+                type=ParameterType.CONTINUOUS,
+                bounds=(0.0, 1.0),
+            ),
         ],
         objectives=[ObjectiveSpec(name="yield", minimize=False)],
         batch_size=2,
         outcome_constraints=[
             OutcomeConstraintSpec(
-                name="yield",
-                bound=threshold,
-                constraint_type=constraint_type,
+                objective_name="yield",
+                threshold=threshold,
+                greater_than=greater_than,
             )
         ],
     )
@@ -70,31 +79,23 @@ class TestOutcomeConstraintSpec:
     """Test OutcomeConstraintSpec dataclass."""
 
     def test_greater_than_constraint(self) -> None:
-        """OutcomeConstraintSpec works with constraint_type='>='."""
+        """OutcomeConstraintSpec with greater_than=True."""
         oc = OutcomeConstraintSpec(
-            name="yield",
-            bound=0.8,
-            constraint_type=">=",
+            objective_name="yield",
+            threshold=0.8,
+            greater_than=True,
         )
-        assert oc.name == "yield"
-        assert oc.bound == 0.8
-        assert oc.constraint_type == ">="
-        # Backward compatible properties
         assert oc.objective_name == "yield"
         assert oc.threshold == 0.8
         assert oc.greater_than is True
 
     def test_less_than_constraint(self) -> None:
-        """OutcomeConstraintSpec works with constraint_type='<='."""
+        """OutcomeConstraintSpec with greater_than=False."""
         oc = OutcomeConstraintSpec(
-            name="cost",
-            bound=100.0,
-            constraint_type="<=",
+            objective_name="cost",
+            threshold=100.0,
+            greater_than=False,
         )
-        assert oc.name == "cost"
-        assert oc.bound == 100.0
-        assert oc.constraint_type == "<="
-        # Backward compatible properties
         assert oc.objective_name == "cost"
         assert oc.threshold == 100.0
         assert oc.greater_than is False
@@ -103,7 +104,7 @@ class TestOutcomeConstraintSpec:
 class TestOutcomeConstraintIntegration:
     """Test outcome constraint integration with suggestions."""
 
-    def test_generates_suggestions_with_constraint(self) -> None:
+    def test_generates_suggestions_with_constraint(self, rng: np.random.Generator) -> None:
         """generate_next_batch works with outcome constraints."""
         spec = make_spec_with_constraint(threshold=0.8)
         observations = generate_observations_with_feasibility()
@@ -113,6 +114,7 @@ class TestOutcomeConstraintIntegration:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -123,7 +125,7 @@ class TestOutcomeConstraintIntegration:
             assert 0.0 <= sugg.parameter_values["x1"] <= 1.0
             assert 0.0 <= sugg.parameter_values["x2"] <= 1.0
 
-    def test_multiple_outcome_constraints(self) -> None:
+    def test_multiple_outcome_constraints(self, rng: np.random.Generator) -> None:
         """Works with multiple outcome constraints."""
         spec = OptimizationSpec(
             parameters=[
@@ -136,9 +138,9 @@ class TestOutcomeConstraintIntegration:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.7,
-                    constraint_type=">=",
+                    objective_name="yield",
+                    threshold=0.7,
+                    greater_than=True,
                 ),
             ],
         )
@@ -163,11 +165,12 @@ class TestOutcomeConstraintIntegration:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_less_than_constraint(self) -> None:
+    def test_less_than_constraint(self, rng: np.random.Generator) -> None:
         """Works with less-than constraints (e.g., cost <= 100)."""
         spec = OptimizationSpec(
             parameters=[
@@ -177,9 +180,9 @@ class TestOutcomeConstraintIntegration:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="value",
-                    bound=50.0,
-                    constraint_type="<=",  # value <= 50
+                    objective_name="value",
+                    threshold=50.0,
+                    greater_than=False,  # value <= 50
                 )
             ],
         )
@@ -204,11 +207,12 @@ class TestOutcomeConstraintIntegration:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_no_outcome_constraints_works(self) -> None:
+    def test_no_outcome_constraints_works(self, rng: np.random.Generator) -> None:
         """generate_next_batch works when outcome_constraints is empty."""
         spec = OptimizationSpec(
             parameters=[
@@ -229,6 +233,7 @@ class TestOutcomeConstraintIntegration:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -237,7 +242,7 @@ class TestOutcomeConstraintIntegration:
 class TestOutcomeConstraintEdgeCases:
     """Test edge cases for outcome constraints."""
 
-    def test_all_infeasible_observations(self) -> None:
+    def test_all_infeasible_observations(self, rng: np.random.Generator) -> None:
         """Handles case when all observations are infeasible."""
         spec = make_spec_with_constraint(threshold=0.99)  # Very high threshold
 
@@ -258,12 +263,13 @@ class TestOutcomeConstraintEdgeCases:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         # Should still generate suggestions (exploring to find feasible region)
         assert len(suggestions) == 2
 
-    def test_all_feasible_observations(self) -> None:
+    def test_all_feasible_observations(self, rng: np.random.Generator) -> None:
         """Handles case when all observations are feasible."""
         spec = make_spec_with_constraint(threshold=0.1)  # Very low threshold
 
@@ -284,6 +290,7 @@ class TestOutcomeConstraintEdgeCases:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -296,7 +303,7 @@ class TestMultipleOutcomeConstraints:
     demonstrates that multiple constraints can be handled via probability of feasibility.
     """
 
-    def test_two_constraints_same_objective(self) -> None:
+    def test_two_constraints_same_objective(self, rng: np.random.Generator) -> None:
         """Test two constraints on the same objective (e.g., 0.3 <= yield <= 0.8).
 
         This creates a feasible band where both constraints must be satisfied.
@@ -310,14 +317,14 @@ class TestMultipleOutcomeConstraints:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.3,
-                    constraint_type=">=",  # yield >= 0.3
+                    objective_name="yield",
+                    threshold=0.3,
+                    greater_than=True,  # yield >= 0.3
                 ),
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.8,
-                    constraint_type="<=",  # yield <= 0.8
+                    objective_name="yield",
+                    threshold=0.8,
+                    greater_than=False,  # yield <= 0.8
                 ),
             ],
         )
@@ -349,11 +356,12 @@ class TestMultipleOutcomeConstraints:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_constraints_on_different_objectives(self) -> None:
+    def test_constraints_on_different_objectives(self, rng: np.random.Generator) -> None:
         """Test constraints on different objectives in multi-objective optimization.
 
         This is the common case: optimize objectives while respecting constraints on each.
@@ -369,14 +377,14 @@ class TestMultipleOutcomeConstraints:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.5,
-                    constraint_type=">=",  # yield >= 0.5
+                    objective_name="yield",
+                    threshold=0.5,
+                    greater_than=True,  # yield >= 0.5
                 ),
                 OutcomeConstraintSpec(
-                    name="purity",
-                    bound=0.6,
-                    constraint_type=">=",  # purity >= 0.6
+                    objective_name="purity",
+                    threshold=0.6,
+                    greater_than=True,  # purity >= 0.6
                 ),
             ],
         )
@@ -404,11 +412,12 @@ class TestMultipleOutcomeConstraints:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_three_constraints(self) -> None:
+    def test_three_constraints(self, rng: np.random.Generator) -> None:
         """Test with three outcome constraints."""
         spec = OptimizationSpec(
             parameters=[
@@ -417,9 +426,21 @@ class TestMultipleOutcomeConstraints:
             objectives=[ObjectiveSpec(name="value", minimize=True)],
             batch_size=2,
             outcome_constraints=[
-                OutcomeConstraintSpec(name="value", bound=10.0, constraint_type=">="),
-                OutcomeConstraintSpec(name="value", bound=100.0, constraint_type="<="),
-                OutcomeConstraintSpec(name="value", bound=50.0, constraint_type="<="),
+                OutcomeConstraintSpec(
+                    objective_name="value",
+                    threshold=10.0,
+                    greater_than=True,
+                ),
+                OutcomeConstraintSpec(
+                    objective_name="value",
+                    threshold=100.0,
+                    greater_than=False,
+                ),
+                OutcomeConstraintSpec(
+                    objective_name="value",
+                    threshold=50.0,
+                    greater_than=False,
+                ),
             ],
         )
 
@@ -434,6 +455,7 @@ class TestMultipleOutcomeConstraints:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -446,7 +468,7 @@ class TestFeasibilityConversion:
     objective values to binary feasibility (1 if feasible, 0 if not).
     """
 
-    def test_greater_than_feasibility(self) -> None:
+    def test_greater_than_feasibility(self, rng: np.random.Generator) -> None:
         """Verify greater_than=True correctly marks feasible points.
 
         For yield >= 0.5: values 0.6, 0.7, 0.5 are feasible; 0.3, 0.4 are not.
@@ -477,11 +499,12 @@ class TestFeasibilityConversion:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_less_than_feasibility(self) -> None:
+    def test_less_than_feasibility(self, rng: np.random.Generator) -> None:
         """Verify greater_than=False correctly marks feasible points.
 
         For cost <= 50: values 30, 40, 50 are feasible; 60, 70 are not.
@@ -494,9 +517,9 @@ class TestFeasibilityConversion:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="cost",
-                    bound=50.0,
-                    constraint_type="<=",  # cost <= 50
+                    objective_name="cost",
+                    threshold=50.0,
+                    greater_than=False,  # cost <= 50
                 )
             ],
         )
@@ -524,11 +547,12 @@ class TestFeasibilityConversion:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_threshold_boundary(self) -> None:
+    def test_threshold_boundary(self, rng: np.random.Generator) -> None:
         """Test behavior exactly at the threshold boundary."""
         spec = make_spec_with_constraint(threshold=0.5, greater_than=True)
 
@@ -550,6 +574,7 @@ class TestFeasibilityConversion:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -562,7 +587,7 @@ class TestOutcomeConstraintWithMinimization:
     objective is being minimized or maximized.
     """
 
-    def test_minimize_with_greater_than_constraint(self) -> None:
+    def test_minimize_with_greater_than_constraint(self, rng: np.random.Generator) -> None:
         """Minimize cost while ensuring yield >= threshold."""
         spec = OptimizationSpec(
             parameters=[
@@ -572,9 +597,9 @@ class TestOutcomeConstraintWithMinimization:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="cost",
-                    bound=20.0,
-                    constraint_type=">=",  # cost >= 20 (e.g., minimum quality threshold)
+                    objective_name="cost",
+                    threshold=20.0,
+                    greater_than=True,  # cost >= 20 (minimum quality)
                 )
             ],
         )
@@ -590,11 +615,12 @@ class TestOutcomeConstraintWithMinimization:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_minimize_with_less_than_constraint(self) -> None:
+    def test_minimize_with_less_than_constraint(self, rng: np.random.Generator) -> None:
         """Minimize cost while ensuring cost <= threshold (budget constraint)."""
         spec = OptimizationSpec(
             parameters=[
@@ -604,9 +630,9 @@ class TestOutcomeConstraintWithMinimization:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="cost",
-                    bound=50.0,
-                    constraint_type="<=",  # cost <= 50 (budget)
+                    objective_name="cost",
+                    threshold=50.0,
+                    greater_than=False,  # cost <= 50 (budget)
                 )
             ],
         )
@@ -622,6 +648,7 @@ class TestOutcomeConstraintWithMinimization:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -630,7 +657,7 @@ class TestOutcomeConstraintWithMinimization:
 class TestOutcomeConstraintDataDistribution:
     """Test outcome constraints with various data distributions."""
 
-    def test_imbalanced_feasibility(self) -> None:
+    def test_imbalanced_feasibility(self, rng: np.random.Generator) -> None:
         """Test with highly imbalanced feasibility (95% feasible).
 
         This tests the GP's ability to model rare infeasibility.
@@ -659,11 +686,12 @@ class TestOutcomeConstraintDataDistribution:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_extreme_threshold_values(self) -> None:
+    def test_extreme_threshold_values(self, rng: np.random.Generator) -> None:
         """Test with extreme threshold values."""
         # Very high threshold (almost impossible to satisfy)
         spec_high = make_spec_with_constraint(threshold=0.999, greater_than=True)
@@ -685,11 +713,12 @@ class TestOutcomeConstraintDataDistribution:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_negative_threshold(self) -> None:
+    def test_negative_threshold(self, rng: np.random.Generator) -> None:
         """Test with negative threshold value."""
         spec = OptimizationSpec(
             parameters=[
@@ -699,9 +728,9 @@ class TestOutcomeConstraintDataDistribution:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="delta",
-                    bound=-0.5,
-                    constraint_type=">=",  # delta >= -0.5
+                    objective_name="delta",
+                    threshold=-0.5,
+                    greater_than=True,  # delta >= -0.5
                 )
             ],
         )
@@ -717,6 +746,7 @@ class TestOutcomeConstraintDataDistribution:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
@@ -725,7 +755,7 @@ class TestOutcomeConstraintDataDistribution:
 class TestOutcomeConstraintMultiObjective:
     """Test outcome constraints in multi-objective optimization scenarios."""
 
-    def test_multi_objective_with_constraint(self) -> None:
+    def test_multi_objective_with_constraint(self, rng: np.random.Generator) -> None:
         """Test outcome constraint with two objectives."""
         spec = OptimizationSpec(
             parameters=[
@@ -739,9 +769,9 @@ class TestOutcomeConstraintMultiObjective:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="yield",
-                    bound=0.5,
-                    constraint_type=">=",
+                    objective_name="yield",
+                    threshold=0.5,
+                    greater_than=True,
                 )
             ],
         )
@@ -766,11 +796,12 @@ class TestOutcomeConstraintMultiObjective:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2
 
-    def test_pareto_optimization_with_constraints(self) -> None:
+    def test_pareto_optimization_with_constraints(self, rng: np.random.Generator) -> None:
         """Test that constraints work correctly in Pareto optimization.
 
         The constraint should filter feasible points while Pareto
@@ -787,9 +818,9 @@ class TestOutcomeConstraintMultiObjective:
             batch_size=2,
             outcome_constraints=[
                 OutcomeConstraintSpec(
-                    name="f1",
-                    bound=5.0,
-                    constraint_type="<=",  # f1 <= 5.0
+                    objective_name="f1",
+                    threshold=5.0,
+                    greater_than=False,  # f1 <= 5.0
                 )
             ],
         )
@@ -807,6 +838,7 @@ class TestOutcomeConstraintMultiObjective:
             observations=observations,
             batch_size=2,
             iteration=1,
+            rng=rng,
         )
 
         assert len(suggestions) == 2

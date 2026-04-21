@@ -78,13 +78,13 @@ def demo_single_objective_optimization():
         suggestions = generate_next_batch(spec, observations, iteration=iteration)
 
         print(f"\nIteration {iteration + 1}:")
-        acq_func = suggestions[0].acquisition_function
+        acq_func = suggestions[0].acquisition_function  # ty: ignore[unresolved-attribute]
         print(f"  Generated {len(suggestions)} suggestions using {acq_func}")
 
         for sugg in suggestions:
-            x = sugg.parameter_values["x"]
+            x = sugg.parameter_values["x"]  # ty: ignore[unresolved-attribute]
             f = objective(x)
-            print(f"    x = {x:.4f}, f(x) = {f:.4f}, acq_value = {sugg.acquisition_value}")
+            print(f"    x = {x:.4f}, f(x) = {f:.4f}, acq_value = {sugg.acquisition_value}")  # ty: ignore[unresolved-attribute]
             observations.append(
                 ObservationData(
                     parameter_values={"x": x},
@@ -130,7 +130,7 @@ def demo_multi_objective_with_qlogparego():
             ObjectiveSpec(name="f2", minimize=True),
         ],
         batch_size=2,
-        acquisition_method=AcquisitionMethod.QLOGPAREGO,  # Use qLogNParEGO
+        acquisition_method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
     )
 
     print("Problem: Minimize f1 and f2 (conflicting objectives)")
@@ -171,11 +171,11 @@ def demo_multi_objective_with_qlogparego():
     for i, sugg in enumerate(suggestions):
         print(f"  Suggestion {i + 1}:")
         print(
-            f"    Parameters: x1={sugg.parameter_values['x1']:.4f}, "
-            f"x2={sugg.parameter_values['x2']:.4f}"
+            f"    Parameters: x1={sugg.parameter_values['x1']:.4f}, "  # ty: ignore[unresolved-attribute]
+            f"x2={sugg.parameter_values['x2']:.4f}"  # ty: ignore[unresolved-attribute]
         )
-        print(f"    Acquisition: {sugg.acquisition_function}")
-        print(f"    Model: {sugg.model_type}")
+        print(f"    Acquisition: {sugg.acquisition_function}")  # ty: ignore[unresolved-attribute]
+        print(f"    Model: {sugg.model_type}")  # ty: ignore[unresolved-attribute]
     print()
 
 
@@ -229,9 +229,19 @@ def demo_input_warping():
     print("Suggestions (with input warping):")
     for i, sugg in enumerate(suggestions):
         print(
-            f"  {i + 1}. x1={sugg.parameter_values['x1']:.4f}, x2={sugg.parameter_values['x2']:.4f}"
+            f"  {i + 1}. x1={sugg.parameter_values['x1']:.4f}, x2={sugg.parameter_values['x2']:.4f}"  # ty: ignore[unresolved-attribute]
         )
     print()
+
+
+def _loo_quality(r_squared: float) -> str:
+    if r_squared > 0.9:
+        return "Excellent"
+    if r_squared > 0.7:
+        return "Good"
+    if r_squared > 0.5:
+        return "Moderate"
+    return "Poor"
 
 
 def demo_loo_cv_diagnostics():
@@ -292,24 +302,22 @@ def demo_loo_cv_diagnostics():
 
     print("LOO Cross-Validation Metrics (from get_diagnostics):")
     print("-" * 50)
-    for idx, obj in enumerate(spec.objectives):
-        if idx in loo_metrics:
-            metrics = loo_metrics[idx]
-            print(f"  Objective '{obj.name}':")
-            print(f"    RMSE: {metrics.rmse:.4f}")
-            print(f"    MAE: {metrics.mae:.4f}")
-            print(f"    R²: {metrics.r_squared:.4f}")
-
-            # Quality level interpretation
-            if metrics.r_squared > 0.9:
-                quality = "Excellent"
-            elif metrics.r_squared > 0.7:
-                quality = "Good"
-            elif metrics.r_squared > 0.5:
-                quality = "Moderate"
-            else:
-                quality = "Poor"
-            print(f"    Quality: {quality}")
+    if isinstance(loo_metrics, dict):
+        for idx, obj in enumerate(spec.objectives):
+            if idx in loo_metrics:
+                m = loo_metrics[idx]  # ty: ignore[invalid-argument-type]
+                print(f"  Objective '{obj.name}':")
+                print(f"    RMSE: {m.rmse:.4f}")  # ty: ignore[unresolved-attribute]
+                print(f"    MAE: {m.mae:.4f}")  # ty: ignore[unresolved-attribute]
+                print(f"    R²: {m.r_squared:.4f}")  # ty: ignore[unresolved-attribute]
+                print(f"    Quality: {_loo_quality(m.r_squared)}")  # ty: ignore[unresolved-attribute]
+    else:
+        obj = spec.objectives[0]
+        print(f"  Objective '{obj.name}':")
+        print(f"    RMSE: {loo_metrics.rmse:.4f}")
+        print(f"    MAE: {loo_metrics.mae:.4f}")
+        print(f"    R²: {loo_metrics.r_squared:.4f}")
+        print(f"    Quality: {_loo_quality(loo_metrics.r_squared)}")
     print()
 
 

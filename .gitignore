@@ -1,7 +1,3 @@
-# =============================================================================
-# BO-MCP-UI .gitignore
-# =============================================================================
-
 # Exclude binary files for testing like PNGs
 **/*.png
 
@@ -227,6 +223,10 @@ $RECYCLE.BIN/
 
 # Local data directory (SQLite databases, etc.)
 data/
+*.db
+
+# Backup files
+*.bu
 
 # Logs
 logs/
@@ -272,3 +272,9 @@ temp/
 # Keep package lock files
 !package-lock.json
 !uv.lock
+
+# Archived planning documents
+docs/archive/
+
+CLAUDE.md
+TODO.md

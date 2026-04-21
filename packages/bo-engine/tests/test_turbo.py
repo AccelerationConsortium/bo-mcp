@@ -50,7 +50,7 @@ class TestUpdateTurboState:
         """Success increments success counter and resets failure counter."""
         state = create_turbo_state(dim=10, batch_size=2, initial_best_value=0.0)
         # Provide improvement
-        state = update_turbo_state(state, torch.tensor([1.0]))
+        state = update_turbo_state(state, torch.tensor([1.0]), minimize=False)
 
         assert state.success_counter == 1
         assert state.failure_counter == 0
@@ -58,7 +58,7 @@ class TestUpdateTurboState:
     def test_failure_increments_counter(self) -> None:
         """Failure increments failure counter and resets success counter."""
         state = create_turbo_state(dim=10, batch_size=2, initial_best_value=10.0)
-        state = update_turbo_state(state, torch.tensor([5.0]))  # Not improving
+        state = update_turbo_state(state, torch.tensor([5.0]), minimize=False)  # Not improving
 
         assert state.failure_counter == 1
         assert state.success_counter == 0
@@ -78,7 +78,9 @@ class TestUpdateTurboState:
         initial_length = state.length
 
         # Trigger expansion with improvement
-        state = update_turbo_state(state, torch.tensor([1.0]))  # Better than best_value=0
+        state = update_turbo_state(
+            state, torch.tensor([1.0]), minimize=False
+        )  # Better than best_value=0
 
         assert state.length == min(2.0 * initial_length, state.length_max)
         assert state.success_counter == 0  # Reset after expansion
@@ -96,7 +98,7 @@ class TestUpdateTurboState:
         initial_length = state.length
 
         # Trigger contraction
-        state = update_turbo_state(state, torch.tensor([5.0]))  # Not improving
+        state = update_turbo_state(state, torch.tensor([5.0]), minimize=False)  # Not improving
 
         assert state.length == initial_length / 2.0
         assert state.failure_counter == 0  # Reset after contraction
@@ -104,14 +106,14 @@ class TestUpdateTurboState:
     def test_best_value_updated(self) -> None:
         """Best value is updated when improvement found."""
         state = create_turbo_state(dim=10, batch_size=2, initial_best_value=5.0)
-        state = update_turbo_state(state, torch.tensor([10.0]))
+        state = update_turbo_state(state, torch.tensor([10.0]), minimize=False)
 
         assert state.best_value == 10.0
 
     def test_best_value_not_decreased(self) -> None:
         """Best value is not decreased on failure."""
         state = create_turbo_state(dim=10, batch_size=2, initial_best_value=10.0)
-        state = update_turbo_state(state, torch.tensor([5.0]))
+        state = update_turbo_state(state, torch.tensor([5.0]), minimize=False)
 
         assert state.best_value == 10.0
 
@@ -129,7 +131,7 @@ class TestUpdateTurboState:
         )
 
         # Trigger contraction with non-improving value
-        state = update_turbo_state(state, torch.tensor([5.0]))
+        state = update_turbo_state(state, torch.tensor([5.0]), minimize=False)
 
         # Length should now be 0.005, which is less than 0.0078
         assert state.restart_triggered
@@ -139,7 +141,7 @@ class TestUpdateTurboState:
         state = create_turbo_state(dim=10, batch_size=4, initial_best_value=0.0)
         batch_values = torch.tensor([1.0, 2.0, 3.0, 5.0])  # Best is 5.0
 
-        state = update_turbo_state(state, batch_values)
+        state = update_turbo_state(state, batch_values, minimize=False)
 
         assert state.best_value == 5.0
 
@@ -148,7 +150,7 @@ class TestUpdateTurboState:
         state = create_turbo_state(dim=10, batch_size=4, initial_best_value=0.0)
         batch_values = torch.tensor([[1.0], [2.0], [3.0], [5.0]])
 
-        state = update_turbo_state(state, batch_values)
+        state = update_turbo_state(state, batch_values, minimize=False)
 
         assert state.best_value == 5.0
 
@@ -180,7 +182,7 @@ class TestTurboStateImmutability:
     def test_update_returns_new_instance(self) -> None:
         """update_turbo_state returns a new state instance."""
         state1 = create_turbo_state(dim=10, batch_size=2, initial_best_value=0.0)
-        state2 = update_turbo_state(state1, torch.tensor([5.0]))
+        state2 = update_turbo_state(state1, torch.tensor([5.0]), minimize=False)
 
         # Should be different objects
         assert state1 is not state2

@@ -107,7 +107,7 @@ class TestSAASBORuntimeEstimate:
 class TestSAASBOModelCreation:
     """Test SAASBO model creation."""
 
-    def test_create_model_basic(self) -> None:
+    def test_create_model_basic(self, torch_rng) -> None:
         """Model can be created with basic inputs."""
         train_x = torch.rand(10, 5, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -117,7 +117,7 @@ class TestSAASBOModelCreation:
         # Model should not be fitted yet
         assert hasattr(model, "covar_module")
 
-    def test_create_model_with_1d_y(self) -> None:
+    def test_create_model_with_1d_y(self, torch_rng) -> None:
         """Model handles 1D y input."""
         train_x = torch.rand(10, 5, dtype=torch.double)
         train_y = torch.rand(10, dtype=torch.double)
@@ -125,7 +125,7 @@ class TestSAASBOModelCreation:
         model = create_saasbo_model(train_x, train_y)
         assert model is not None
 
-    def test_create_model_with_yvar(self) -> None:
+    def test_create_model_with_yvar(self, torch_rng) -> None:
         """Model can be created with known noise variance."""
         train_x = torch.rand(10, 5, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -139,7 +139,7 @@ class TestSAASBOModelFitting:
     """Test SAASBO model fitting with NUTS."""
 
     @pytest.mark.slow
-    def test_fit_model_completes(self) -> None:
+    def test_fit_model_completes(self, torch_rng) -> None:
         """Model fitting completes without error."""
         # Use small config for fast testing
         config = SAASBOConfig(warmup_steps=8, num_samples=4, thinning=1)
@@ -153,7 +153,7 @@ class TestSAASBOModelFitting:
         assert fitted_model is not None
 
     @pytest.mark.slow
-    def test_create_and_fit_combined(self) -> None:
+    def test_create_and_fit_combined(self, torch_rng) -> None:
         """Combined create and fit function works."""
         config = SAASBOConfig(warmup_steps=8, num_samples=4, thinning=1)
 
@@ -168,7 +168,7 @@ class TestSAASBOLengthscales:
     """Test lengthscale extraction and importance computation."""
 
     @pytest.mark.slow
-    def test_get_lengthscales_shape(self) -> None:
+    def test_get_lengthscales_shape(self, torch_rng) -> None:
         """Lengthscales have correct shape."""
         config = SAASBOConfig(warmup_steps=8, num_samples=4, thinning=1)
         n_dims = 5
@@ -183,7 +183,7 @@ class TestSAASBOLengthscales:
         assert lengthscales.shape[-1] == n_dims
 
     @pytest.mark.slow
-    def test_importance_sums_to_one(self) -> None:
+    def test_importance_sums_to_one(self, torch_rng) -> None:
         """Parameter importance values sum to 1."""
         config = SAASBOConfig(warmup_steps=8, num_samples=4, thinning=1)
 
@@ -197,7 +197,7 @@ class TestSAASBOLengthscales:
         assert abs(total_importance - 1.0) < 1e-5
 
     @pytest.mark.slow
-    def test_importance_with_custom_names(self) -> None:
+    def test_importance_with_custom_names(self, torch_rng) -> None:
         """Importance uses custom parameter names."""
         config = SAASBOConfig(warmup_steps=8, num_samples=4, thinning=1)
 
@@ -250,7 +250,7 @@ class TestSAASBOSuggestionGeneration:
     """Test suggestion generation with SAASBO."""
 
     @pytest.mark.slow
-    def test_generate_suggestions_returns_valid_candidates(self) -> None:
+    def test_generate_suggestions_returns_valid_candidates(self, torch_rng) -> None:
         """Suggestions are within bounds."""
         config = SAASBOConfig(warmup_steps=8, num_samples=4, thinning=1)
 
@@ -271,7 +271,7 @@ class TestSAASBOSuggestionGeneration:
         assert (candidates <= bounds[1]).all()
 
     @pytest.mark.slow
-    def test_generate_suggestions_metadata(self) -> None:
+    def test_generate_suggestions_metadata(self, torch_rng) -> None:
         """Suggestions include proper metadata."""
         config = SAASBOConfig(warmup_steps=8, num_samples=4, thinning=1)
 
@@ -295,7 +295,7 @@ class TestSAASBOSuggestionGeneration:
 class TestSAASBOEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_too_few_samples(self) -> None:
+    def test_too_few_samples(self, torch_rng) -> None:
         """Model creation fails gracefully with too few samples."""
         train_x = torch.rand(2, 5, dtype=torch.double)
         train_y = torch.rand(2, 1, dtype=torch.double)
@@ -304,7 +304,7 @@ class TestSAASBOEdgeCases:
         model = create_saasbo_model(train_x, train_y)
         assert model is not None
 
-    def test_single_dimension(self) -> None:
+    def test_single_dimension(self, torch_rng) -> None:
         """Works with single parameter (edge case)."""
         train_x = torch.rand(15, 1, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)

@@ -11,8 +11,16 @@ v2.3: Added GPU auto-detection and acceleration
 
 from __future__ import annotations
 
+import logging
 import random
-from typing import Any
+import warnings
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from botorch.models import SingleTaskGP
+    from botorch.models.model_list_gp_regression import ModelListGP
+
+    GPModel = SingleTaskGP | ModelListGP
 
 import numpy as np
 import torch
@@ -21,7 +29,6 @@ from torch.quasirandom import SobolEngine
 
 from bo_engine.acquisition import (
     create_acquisition,
-    get_reference_point,
     optimize_acquisition,
 )
 from bo_engine.constants import (
@@ -34,11 +41,17 @@ from bo_engine.constants import (
 from bo_engine.constraints import (
     _get_parameter_indices,
     apply_sum_constraint,
+    build_botorch_linear_constraints,
 )
 from bo_engine.device import get_device, get_dtype
 from bo_engine.models import (
     create_and_fit_model,
     create_and_fit_single_task_model,
+)
+from bo_engine.reference_point import (
+    ReferencePointConfig,
+    ReferencePointStrategy,
+    get_reference_point_dynamic,
 )
 from bo_engine.transforms import (
     decode_categorical,
@@ -61,6 +74,8 @@ from bo_engine.types import (
     OptimizationSpec,
     SuggestionResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def generate_initial_design(
@@ -210,12 +225,17 @@ def generate_next_batch(
         random_seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
     torch.manual_seed(random_seed)
 
-    # If not enough data, fall back to initial design
-    # Use initial_design_size if specified to control when BO starts
+    # If not enough data, fall back to initial design.
+    # Require at least n_params+1 observations so the GP kernel has more data points
+    # than lengthscale hyperparameters to estimate (slightly overdetermined).
+    # Note: initial_design_size (default 2*n_params+1) is a separate, stricter
+    # recommendation for how many Sobol points to generate — but a user who provides
+    # n_params+1 observations from prior data should not be forced to wait longer.
+    min_model_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters + 1)
     if spec.initial_design_size is not None:
-        min_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters, spec.initial_design_size)
+        min_data = max(min_model_data, spec.initial_design_size)
     else:
-        min_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters)
+        min_data = min_model_data
     if len(observations) < min_data:
         designs = generate_initial_design(spec, batch_size)
         suggestions = [
@@ -242,7 +262,7 @@ def generate_next_batch(
     # Prepare cost data if cost-aware optimization is enabled
     train_costs = None
     if spec.use_cost_aware:
-        train_costs = _prepare_cost_data(observations)
+        train_costs = _prepare_cost_data(observations, use_cost_aware=True)
 
     # Create generation context to bundle parameters
     ctx = GenerationContext(
@@ -263,8 +283,6 @@ def generate_next_batch(
     else:
         # TuRBO not supported for multi-objective
         if turbo_state is not None or spec.use_turbo:
-            import warnings
-
             warnings.warn(
                 "TuRBO is designed for single-objective optimization. "
                 "It will be ignored for multi-objective problems. "
@@ -308,7 +326,7 @@ def _compute_turbo_bounds(
     turbo_state: TurboState | None,
     train_x: Tensor,
     train_y_bo: Tensor,
-    model: Any,
+    model: SingleTaskGP,
     bounds: Tensor,
 ) -> tuple[Tensor, str]:
     """Compute trust region bounds for TuRBO.
@@ -317,7 +335,7 @@ def _compute_turbo_bounds(
         turbo_state: Current TuRBO state
         train_x: Training inputs
         train_y_bo: Training outputs (BoTorch convention)
-        model: Fitted GP model
+        model: Fitted single-objective GP model
         bounds: Original parameter bounds
 
     Returns:
@@ -337,29 +355,99 @@ def _compute_turbo_bounds(
     return opt_bounds, turbo_info
 
 
-def _get_model_uncertainties(model: Any, candidates: Tensor) -> Tensor:
-    """Get model uncertainties at candidate points.
+def _get_model_predictions(model: GPModel, candidates: Tensor) -> tuple[Tensor, Tensor]:
+    """Get model predictions (mean and std) at candidate points.
 
     Args:
         model: Fitted GP model
         candidates: Candidate points to evaluate
 
     Returns:
-        Tensor of uncertainties (variances)
+        Tuple of (means, stds) where each has shape matching the model output
     """
     model.eval()
     with torch.no_grad():
         posterior = model.posterior(candidates)
-        uncertainties = posterior.variance.squeeze(-1)
-        if uncertainties.dim() == 0:
-            uncertainties = uncertainties.unsqueeze(0)
-    return uncertainties
+        means = posterior.mean.squeeze(-1)
+        variances = posterior.variance.squeeze(-1)
+        if means.dim() == 0:
+            means = means.unsqueeze(0)
+        if variances.dim() == 0:
+            variances = variances.unsqueeze(0)
+        stds = variances.sqrt()
+    return means, stds
+
+
+def _extract_scalar_prediction(
+    tensor: Tensor,
+    index: int,
+) -> float | None:
+    """Safely extract a scalar from a 0-d or 1-d tensor at the given index.
+
+    Returns None if the index is out of bounds.
+
+    Args:
+        tensor: Tensor of acquisition values, means, or stds
+        index: Batch index
+
+    Returns:
+        Float value or None
+    """
+    if tensor.dim() == 0:
+        return tensor.item() if index == 0 else None
+    return tensor[index].item() if index < tensor.numel() else None
+
+
+def _build_single_objective_provenance(
+    means: Tensor,
+    stds: Tensor,
+    acq_values: Tensor,
+    index: int,
+    obj_name: str,
+    minimize: bool,
+) -> tuple[
+    float | None,
+    float | None,
+    float | None,
+    dict[str, float] | None,
+    dict[str, float] | None,
+]:
+    """Build provenance data for a single-objective candidate.
+
+    Extracts acquisition value, uncertainty, and predicted objectives for one
+    candidate in the batch.
+
+    Args:
+        means: Posterior mean predictions
+        stds: Posterior std predictions
+        acq_values: Acquisition function values
+        index: Candidate index in the batch
+        obj_name: Objective name
+        minimize: Whether the objective is minimized
+
+    Returns:
+        Tuple of (acq_val, std_val, confidence_level_unused,
+                  predicted_objectives, predicted_std)
+    """
+    std_val = _extract_scalar_prediction(stds, index)
+    acq_val = _extract_scalar_prediction(acq_values, index)
+
+    # For minimization, means are negated (BoTorch convention) — un-negate for storage.
+    pred_mean = _extract_scalar_prediction(means, index)
+    if pred_mean is not None and not minimize:
+        pred_mean = -pred_mean  # undo BoTorch negation
+
+    predicted_objectives = {obj_name: pred_mean} if pred_mean is not None else None
+    predicted_std_dict = {obj_name: std_val} if std_val is not None else None
+
+    return acq_val, std_val, None, predicted_objectives, predicted_std_dict
 
 
 def _create_single_objective_suggestions(
     candidates: Tensor,
     acq_values: Tensor,
-    uncertainties: Tensor,
+    means: Tensor,
+    stds: Tensor,
     spec: OptimizationSpec,
     train_y: Tensor,
     iteration: int,
@@ -373,7 +461,8 @@ def _create_single_objective_suggestions(
     Args:
         candidates: Optimized candidate points
         acq_values: Acquisition function values
-        uncertainties: Model uncertainties at candidates
+        means: Posterior mean predictions at candidates
+        stds: Posterior std predictions at candidates
         spec: Optimization specification
         train_y: Original training outputs (not negated)
         iteration: Current iteration number
@@ -396,19 +485,19 @@ def _create_single_objective_suggestions(
         best_observed = train_y.max().item()
         best_str = "highest"
 
+    obj_name = spec.objectives[0].name
+    acq_name = method.value
+    gen_method = "bo" if turbo_state is None else "turbo"
+
     suggestions = []
     for i in range(batch_size):
         values = decode_categorical(candidates[i], spec)
 
-        uncertainty = uncertainties[i].item() if i < uncertainties.numel() else None
-        confidence_level = _get_confidence_level(uncertainty)
+        acq_val, std_val, _, predicted_objectives, predicted_std_dict = (
+            _build_single_objective_provenance(means, stds, acq_values, i, obj_name, minimize)
+        )
+        confidence_level = _get_confidence_level(std_val)
 
-        if acq_values.dim() == 0:
-            acq_val = acq_values.item() if i == 0 else None
-        else:
-            acq_val = acq_values[i].item() if i < acq_values.numel() else None
-
-        acq_name = method.value
         explanation = (
             f"Suggested by {acq_name} acquisition function. "
             f"Current {best_str} observed value: {best_observed:.4f}. "
@@ -419,15 +508,17 @@ def _create_single_objective_suggestions(
             parameter_values=values,
             iteration=iteration,
             batch_index=i,
-            generation_method="bo" if turbo_state is None else "turbo",
+            generation_method=gen_method,
             random_seed=random_seed,
             acquisition_value=acq_val,
-            model_uncertainty=uncertainty,
+            model_uncertainty=std_val,
             acquisition_function=acq_name,
             model_type="SingleTaskGP (Gaussian Process)",
             model_version=iteration,
             confidence_level=confidence_level,
             explanation=explanation,
+            predicted_objectives=predicted_objectives,
+            predicted_std=predicted_std_dict,
         )
         suggestions.append(suggestion)
 
@@ -439,7 +530,7 @@ def _generate_single_objective_batch(
 ) -> tuple[list[SuggestionResult], TurboState | None]:
     """Generate suggestions for single-objective optimization.
 
-    Uses qLogNEI (or qLogEI) acquisition function. Supports TuRBO for
+    Uses noisy EI (or EI) acquisition function. Supports TuRBO for
     high-dimensional problems, outcome constraints, and cost-aware optimization.
 
     Args:
@@ -467,10 +558,6 @@ def _generate_single_objective_batch(
         train_x, train_y_bo, bounds, use_input_warping=spec.use_input_warping
     )
 
-    # Note: Parameter constraints (sum_equals, etc.) are applied via post-hoc projection
-    # rather than constraining the optimizer, as equality constraints are difficult for
-    # gradient-based optimization. See _apply_constraints_to_samples for projection logic.
-
     # Outcome constraint models (constraints on OUTPUT space)
     outcome_constraints = None
     if spec.outcome_constraints and observations:
@@ -490,9 +577,22 @@ def _generate_single_objective_batch(
     # Acquisition method selection
     method = spec.acquisition_method
     if method == AcquisitionMethod.AUTO:
-        method = AcquisitionMethod.EIPU if spec.use_cost_aware else AcquisitionMethod.QLOGNEI
+        method = (
+            AcquisitionMethod.COST_WEIGHTED_EI
+            if spec.use_cost_aware
+            else AcquisitionMethod.NOISY_EI
+        )
 
-    # Create acquisition function (no parameter constraints - use projection instead)
+    # Build native linear constraints for the optimizer
+    ineq_constraints = None
+    eq_constraints = None
+    projection_constraints: list = []
+    if spec.constraints:
+        ineq_constraints, eq_constraints, projection_constraints = build_botorch_linear_constraints(
+            spec
+        )
+
+    # Create acquisition function
     acqf = create_acquisition(
         model=model,
         ref_point=None,
@@ -504,21 +604,28 @@ def _generate_single_objective_batch(
         outcome_constraint_models=outcome_constraints,
         cost_model=cost_model,
     )
-    # Optimize without constraints, then project onto constraint surface
+    # Optimize with native constraints where possible
     candidates, acq_values = optimize_acquisition(
-        acqf, opt_bounds, batch_size, spec=spec, x_avoid=train_x
+        acqf,
+        opt_bounds,
+        batch_size,
+        spec=spec,
+        x_avoid=train_x,
+        inequality_constraints=ineq_constraints or None,
+        equality_constraints=eq_constraints or None,
     )
 
-    # Apply parameter constraints by projecting candidates onto constraint surface
-    if spec.constraints:
+    # Post-hoc projection only for constraints that couldn't be handled natively
+    if projection_constraints:
         candidates = _apply_constraints_to_samples(candidates, spec, bounds)
 
-    # Get uncertainties and create suggestions
-    uncertainties = _get_model_uncertainties(model, candidates)
+    # Get model predictions and create suggestions
+    means, stds = _get_model_predictions(model, candidates)
     suggestions = _create_single_objective_suggestions(
         candidates,
         acq_values,
-        uncertainties,
+        means,
+        stds,
         spec,
         train_y,
         ctx.iteration,
@@ -531,10 +638,80 @@ def _generate_single_objective_batch(
     return suggestions, turbo_state
 
 
+def _build_multi_objective_provenance(
+    means: Tensor,
+    stds: Tensor,
+    acq_values: Tensor,
+    index: int,
+    spec: OptimizationSpec,
+) -> tuple[float | None, float | None, dict[str, float], dict[str, float]]:
+    """Build provenance data for a multi-objective candidate.
+
+    Extracts acquisition value, average uncertainty, and per-objective
+    predictions for one candidate in the batch.
+
+    Args:
+        means: Posterior mean predictions (batch x n_objectives)
+        stds: Posterior std predictions (batch x n_objectives)
+        acq_values: Acquisition function values
+        index: Candidate index in the batch
+        spec: Optimization specification
+
+    Returns:
+        Tuple of (acq_val, avg_std, predicted_objectives, predicted_std)
+    """
+    acq_val = _extract_scalar_prediction(acq_values, index)
+
+    # Average std across objectives for confidence level
+    if stds.dim() > 1 and index < stds.shape[0]:
+        avg_std: float | None = stds[index].mean().item()
+    elif index < stds.numel():
+        avg_std = stds[index].item()
+    else:
+        avg_std = None
+
+    # Per-objective predictions; un-negate maximization objectives.
+    predicted_objectives: dict[str, float] = {}
+    predicted_std_dict: dict[str, float] = {}
+    for j, obj in enumerate(spec.objectives):
+        if means.dim() > 1 and index < means.shape[0] and j < means.shape[1]:
+            pred = means[index, j].item()
+            predicted_objectives[obj.name] = pred if obj.minimize else -pred
+        if stds.dim() > 1 and index < stds.shape[0] and j < stds.shape[1]:
+            predicted_std_dict[obj.name] = stds[index, j].item()
+
+    return acq_val, avg_std, predicted_objectives, predicted_std_dict
+
+
+def _build_multi_objective_explanation(
+    acq_name: str,
+    acq_val: float | None,
+) -> str:
+    """Build a human-readable explanation for a multi-objective suggestion.
+
+    Args:
+        acq_name: Name of the acquisition function
+        acq_val: Acquisition function value (may be None)
+
+    Returns:
+        Explanation string
+    """
+    if acq_val is not None and acq_val > 0:
+        return (
+            f"Suggested by {acq_name} acquisition function with expected improvement "
+            f"of {acq_val:.4f}. This point is predicted to expand the Pareto front."
+        )
+    return (
+        f"Suggested by {acq_name} acquisition function to explore promising regions "
+        "and expand the Pareto front of non-dominated solutions."
+    )
+
+
 def _create_multi_objective_suggestions(
     candidates: Tensor,
     acq_values: Tensor,
-    uncertainties: Tensor,
+    means: Tensor,
+    stds: Tensor,
     spec: OptimizationSpec,
     iteration: int,
     random_seed: int,
@@ -545,7 +722,8 @@ def _create_multi_objective_suggestions(
     Args:
         candidates: Optimized candidate points
         acq_values: Acquisition function values
-        uncertainties: Model uncertainties at candidates
+        means: Posterior mean predictions at candidates (shape: batch x n_objectives)
+        stds: Posterior std predictions at candidates (shape: batch x n_objectives)
         spec: Optimization specification
         iteration: Current iteration number
         random_seed: Random seed for reproducibility
@@ -555,33 +733,17 @@ def _create_multi_objective_suggestions(
         List of SuggestionResult objects
     """
     batch_size = candidates.shape[0]
+    acq_name = method.value
     suggestions = []
 
     for i in range(batch_size):
         values = decode_categorical(candidates[i], spec)
 
-        # Determine confidence level
-        uncertainty = uncertainties[i].item() if i < uncertainties.numel() else None
-        confidence_level = _get_confidence_level(uncertainty)
-
-        # Get acquisition value
-        if acq_values.dim() == 0:
-            acq_val = acq_values.item() if i == 0 else None
-        else:
-            acq_val = acq_values[i].item() if i < acq_values.numel() else None
-
-        # Generate explanation
-        acq_name = method.value
-        if acq_val is not None and acq_val > 0:
-            explanation = (
-                f"Suggested by {acq_name} acquisition function with expected improvement "
-                f"of {acq_val:.4f}. This point is predicted to expand the Pareto front."
-            )
-        else:
-            explanation = (
-                f"Suggested by {acq_name} acquisition function to explore promising regions "
-                "and expand the Pareto front of non-dominated solutions."
-            )
+        acq_val, avg_std, predicted_objectives, predicted_std_dict = (
+            _build_multi_objective_provenance(means, stds, acq_values, i, spec)
+        )
+        confidence_level = _get_confidence_level(avg_std)
+        explanation = _build_multi_objective_explanation(acq_name, acq_val)
 
         suggestion = SuggestionResult(
             parameter_values=values,
@@ -590,12 +752,14 @@ def _create_multi_objective_suggestions(
             generation_method="bo",
             random_seed=random_seed,
             acquisition_value=acq_val,
-            model_uncertainty=uncertainty,
+            model_uncertainty=avg_std,
             acquisition_function=acq_name,
             model_type="ModelListGP (Gaussian Process)",
             model_version=iteration,
             confidence_level=confidence_level,
             explanation=explanation,
+            predicted_objectives=predicted_objectives or None,
+            predicted_std=predicted_std_dict or None,
         )
         suggestions.append(suggestion)
 
@@ -607,7 +771,7 @@ def _generate_multi_objective_batch(
 ) -> list[SuggestionResult]:
     """Generate suggestions for multi-objective optimization.
 
-    Uses qLogNEHVI or qLogNParEGO acquisition function.
+    Uses hypervolume improvement or scalarized multi-objective acquisition.
 
     Args:
         ctx: Generation context containing all parameters
@@ -633,19 +797,26 @@ def _generate_multi_objective_batch(
         train_x, train_y_bo, bounds, use_input_warping=spec.use_input_warping
     )
 
-    # Get reference point
-    ref_point = get_reference_point(train_y_bo, minimize_mask)
-
-    # Note: Parameter constraints (sum_equals, etc.) are applied via post-hoc projection
-    # rather than constraining the optimizer, as equality constraints are difficult for
-    # gradient-based optimization.
+    # Get reference point (using STATIC strategy for backward compatibility;
+    # DYNAMIC can be enabled via ReferencePointConfig when exposed in OptimizationSpec)
+    ref_point_config = ReferencePointConfig(strategy=ReferencePointStrategy.STATIC)
+    ref_point, _info = get_reference_point_dynamic(train_y_bo, minimize_mask, ref_point_config)
 
     # Determine acquisition method
     method = spec.acquisition_method
     if method == AcquisitionMethod.AUTO:
-        method = AcquisitionMethod.QLOGNEHVI
+        method = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
 
-    # Create acquisition function (no parameter constraints - use projection instead)
+    # Build native linear constraints for the optimizer
+    ineq_constraints = None
+    eq_constraints = None
+    projection_constraints: list = []
+    if spec.constraints:
+        ineq_constraints, eq_constraints, projection_constraints = build_botorch_linear_constraints(
+            spec
+        )
+
+    # Create acquisition function
     acqf = create_acquisition(
         model=model,
         ref_point=ref_point,
@@ -655,22 +826,33 @@ def _generate_multi_objective_batch(
         method=method,
         constraints=None,
     )
-    # Optimize without constraints, then project onto constraint surface
+    # Optimize with native constraints where possible
     candidates, acq_values = optimize_acquisition(
-        acqf, bounds, batch_size, spec=spec, x_avoid=train_x
+        acqf,
+        bounds,
+        batch_size,
+        spec=spec,
+        x_avoid=train_x,
+        inequality_constraints=ineq_constraints or None,
+        equality_constraints=eq_constraints or None,
     )
 
-    # Apply parameter constraints by projecting candidates onto constraint surface
-    if spec.constraints:
+    # Post-hoc projection only for constraints that couldn't be handled natively
+    if projection_constraints:
         candidates = _apply_constraints_to_samples(candidates, spec, bounds)
 
-    # Get uncertainties for provenance
-    uncertainties = _get_model_uncertainties(model, candidates)
-    if uncertainties.dim() > 1:
-        uncertainties = uncertainties.mean(dim=-1)
+    # Get model predictions for provenance
+    means, stds = _get_model_predictions(model, candidates)
 
     return _create_multi_objective_suggestions(
-        candidates, acq_values, uncertainties, spec, ctx.iteration, ctx.random_seed, method
+        candidates,
+        acq_values,
+        means,
+        stds,
+        spec,
+        ctx.iteration,
+        ctx.random_seed,
+        method,
     )
 
 
@@ -686,19 +868,31 @@ def _get_confidence_level(uncertainty: float | None) -> str:
         return "low"
 
 
-def _prepare_cost_data(observations: list[ObservationData]) -> Tensor | None:
+def _prepare_cost_data(
+    observations: list[ObservationData], use_cost_aware: bool = False
+) -> Tensor | None:
     """Extract cost data from observations.
 
     Args:
         observations: List of observations with optional cost field
+        use_cost_aware: Whether cost-aware mode was requested (for warning)
 
     Returns:
         Tensor of costs if all observations have costs, else None
     """
     costs = []
+    has_some_costs = False
     for obs in observations:
         if obs.cost is None:
+            if has_some_costs and use_cost_aware:
+                logger.warning(
+                    "Cost-aware mode requested but %d/%d observations lack cost data. "
+                    "Falling back to non-cost-aware optimization.",
+                    sum(1 for o in observations if o.cost is None),
+                    len(observations),
+                )
             return None
+        has_some_costs = True
         costs.append(obs.cost)
     return torch.tensor(costs, dtype=get_dtype(), device=get_device())
 
@@ -732,7 +926,12 @@ def _build_outcome_constraint_models(
         obj_values = []
         for obs in observations:
             if oc.objective_name not in obs.objective_values:
-                return None  # Missing objective
+                logger.warning(
+                    "Outcome constraint on '%s' disabled: observation missing this objective. "
+                    "All observations must include the constrained objective.",
+                    oc.objective_name,
+                )
+                return None
             obj_values.append(obs.objective_values[oc.objective_name])
 
         obj_tensor = torch.tensor(obj_values, dtype=get_dtype(), device=get_device()).unsqueeze(-1)
@@ -747,8 +946,8 @@ def _build_outcome_constraint_models(
         constraint_model = create_and_fit_single_task_model(
             train_x, feasible, bounds, use_input_warping=False
         )
-        # Threshold for constraint: we want P(feasible) > 0.5
-        constraint_models.append((constraint_model, 0.5))
+        # Use per-constraint feasibility threshold from the spec (default 0.5)
+        constraint_models.append((constraint_model, oc.feasibility_threshold))
 
     return constraint_models if constraint_models else None
 
@@ -774,19 +973,13 @@ def update_turbo_after_evaluation(
     if not new_observations:
         return turbo_state
 
-    # Extract objective values
+    # Extract raw objective values — update_turbo_state handles negation internally
     minimize = spec.objectives[0].minimize
-    y_values = []
-    for obs in new_observations:
-        obj_name = spec.objectives[0].name
-        y_val = obs.objective_values[obj_name]
-        # Convert to maximization convention for TuRBO
-        if minimize:
-            y_val = -y_val
-        y_values.append(y_val)
+    obj_name = spec.objectives[0].name
+    y_values = [obs.objective_values[obj_name] for obs in new_observations]
 
     y_tensor = torch.tensor(y_values, dtype=get_dtype(), device=get_device())
-    return update_turbo_state(turbo_state, y_tensor)
+    return update_turbo_state(turbo_state, y_tensor, minimize=minimize)
 
 
 def _prepare_training_data(

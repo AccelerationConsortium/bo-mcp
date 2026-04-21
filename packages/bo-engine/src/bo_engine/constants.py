@@ -56,6 +56,11 @@ TURBO_LENGTH_MIN = 0.5**7  # ~0.0078
 # Maximum trust region length after expansion
 TURBO_LENGTH_MAX = 1.6
 
+# Maximum failure tolerance to prevent TuRBO from never restarting
+# in very high-dimensional problems. Without this cap,
+# dim=1000 / batch_size=1 → failure_tolerance=1000.
+TURBO_MAX_FAILURE_TOLERANCE = 20
+
 # Number of consecutive successes before expanding trust region
 TURBO_SUCCESS_TOLERANCE = 10
 
@@ -110,6 +115,15 @@ MIN_OBJECTIVE_RANGE = 1e-6
 # =============================================================================
 # Numerical Stability
 # =============================================================================
+
+# General-purpose epsilon for division guards and near-zero checks.
+# Use for denominators, range checks, and absolute-value comparisons.
+NUMERICAL_EPSILON = 1e-10
+
+# Epsilon for clamping standard deviations and values before log().
+# Slightly larger than NUMERICAL_EPSILON to avoid log-space underflow
+# while remaining negligible relative to any realistic objective scale.
+SAFE_DIVISION_EPSILON = 1e-6
 
 # Tolerance for improvement detection (relative)
 IMPROVEMENT_TOLERANCE_RELATIVE = 1e-3
@@ -275,6 +289,17 @@ RGPE_NUM_SAMPLES = 512
 RGPE_HELPFUL_WEIGHT_THRESHOLD = 0.1
 
 # =============================================================================
+# Transfer Learning Similarity Weights
+# =============================================================================
+
+# Weights for computing overall similarity between campaigns for transfer learning.
+# Higher weights = more influence on the overall score.
+TRANSFER_WEIGHT_PARAMETER = 0.4
+TRANSFER_WEIGHT_OBJECTIVE = 0.3
+TRANSFER_WEIGHT_BOUNDS = 0.2
+TRANSFER_WEIGHT_DATA_RICHNESS = 0.1
+
+# =============================================================================
 # Outcome Constraint Modeling (Section 2.3)
 # =============================================================================
 
@@ -360,8 +385,9 @@ POSTERIOR_CHECK_KURTOSIS_THRESHOLD = 2.0
 # Thompson Sampling (Section 3.5)
 # =============================================================================
 
-# Number of posterior samples for Thompson Sampling
-THOMPSON_NUM_POSTERIOR_SAMPLES = 1
+# Number of posterior samples for Thompson Sampling (5+ recommended
+# for better exploration-exploitation tradeoff)
+THOMPSON_NUM_POSTERIOR_SAMPLES = 5
 
 # Number of candidates to consider
 THOMPSON_NUM_CANDIDATES = 1000
@@ -375,3 +401,42 @@ THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE = 0.05
 
 # Default number of suggestions to compute in what-if analysis
 WHATIF_DEFAULT_NUM_SUGGESTIONS = 4
+
+# =============================================================================
+# Exploration / Exploitation Metrics (diagnostics)
+# =============================================================================
+
+# Regularisation offset to prevent division by zero in exploration ratio
+EXPLORATION_EXPLOITATION_OFFSET = 0.1
+
+# Divisor for estimating expected pairwise distance in a unit hypercube
+# (based on the average distance between random points in [0,1]^d)
+EXPECTED_DISTANCE_HYPERCUBE_DIVISOR = 6
+
+# Exploration ratio multiplier (maps average uncertainty to [0, 1])
+EXPLORATION_RATIO_MULTIPLIER = 2
+
+# Thresholds for classifying the exploration/exploitation balance
+EXPLORATION_HEAVY_THRESHOLD = 0.65
+EXPLOITATION_HEAVY_THRESHOLD = 0.35
+
+# =============================================================================
+# Uncertainty Trend Detection (diagnostics)
+# =============================================================================
+
+# Absolute relative-slope threshold for "increasing" / "decreasing" trend
+UNCERTAINTY_TREND_SLOPE_THRESHOLD = 0.05
+
+# =============================================================================
+# Constraint Satisfaction Trend (diagnostics)
+# =============================================================================
+
+# Change in satisfaction rate beyond which a trend is detected
+SATISFACTION_TREND_THRESHOLD = 0.1
+
+# =============================================================================
+# Z-Scores for Confidence Intervals
+# =============================================================================
+
+# Z-score for 95 % confidence interval (normal distribution)
+CI_95_Z_SCORE = 1.96

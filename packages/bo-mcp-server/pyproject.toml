@@ -3,16 +3,15 @@ name = "bo-mcp-server"
 version = "0.1.0"
 description = "MCP server for Bayesian Optimization - use with Claude or any MCP client"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 license = { text = "MIT" }
-authors = [{ name = "Your Name", email = "your@email.com" }]
+authors = [{ name = "Willi Gottstein", email = "willi.gottstein@gmail.com" }]
 keywords = ["mcp", "bayesian-optimization", "claude", "llm", "ai-agents"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
@@ -55,9 +54,8 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "B", "S", "UP"]
+select = ["E", "F", "I", "N", "W", "B", "S", "UP", "C901", "PLR0912", "PLR0915", "PLR0911"]
 ignore = ["S101", "N806", "UP046"]
 
-[tool.pyright]
-pythonVersion = "3.13"
-typeCheckingMode = "strict"
+[tool.ruff.lint.mccabe]
+max-complexity = 10

@@ -26,6 +26,7 @@ from bo_engine import (
     OutcomeConstraintSpec,
     ParameterSpec,
     ParameterType,
+    TurboConfig,
     generate_next_batch,
     select_methods,
     should_use_turbo,
@@ -68,7 +69,7 @@ def demo_turbo_summary() -> None:
         ],
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=4,
-        use_turbo=True,
+        turbo_config=TurboConfig(),
     )
 
     print(f"\nProblem: {n_params}-dimensional single-objective optimization")
@@ -173,7 +174,7 @@ def demo_cost_aware_summary() -> None:
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=2,
         use_cost_aware=True,
-        acquisition_method=AcquisitionMethod.EIPU,
+        acquisition_method=AcquisitionMethod.COST_WEIGHTED_EI,
     )
 
     print("\nProblem: Minimize f(x) while considering evaluation cost")

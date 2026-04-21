@@ -136,12 +136,12 @@ class TestErrorRecoveryMapping:
 
     def test_recovery_actions_reference_resources_where_appropriate(self) -> None:
         """Verify recovery actions reference MCP resources where applicable."""
-        # These error codes should reference specific MCP resources
+        # These error codes should reference specific MCP resources or tools
         should_reference_resources = {
             ErrorCode.INVALID_CAMPAIGN_ID: "campaigns://list",
             ErrorCode.CAMPAIGN_NOT_FOUND: "campaigns://list",
             ErrorCode.INVALID_STATE_TRANSITION: "campaign://",
-            ErrorCode.SUGGESTION_NOT_FOUND: "suggestions://",
+            ErrorCode.SUGGESTION_NOT_FOUND: "bo_list_suggestions",
         }
 
         for code, expected_resource in should_reference_resources.items():

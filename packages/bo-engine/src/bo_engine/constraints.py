@@ -153,3 +153,77 @@ def create_constraints_list(
         List of constraint callables for BoTorch
     """
     return [create_constraint_callable(c, spec) for c in spec.constraints]
+
+
+def build_botorch_linear_constraints(
+    spec: OptimizationSpec,
+) -> tuple[
+    list[tuple[Tensor, Tensor, float]],
+    list[tuple[Tensor, Tensor, float]],
+    list[ConstraintSpec],
+]:
+    """Convert ConstraintSpecs to BoTorch's native linear constraint format.
+
+    BoTorch's optimize_acqf accepts:
+    - inequality_constraints: list of (indices, coefficients, rhs) where Ax <= b
+    - equality_constraints: list of (indices, coefficients, rhs) where Ax = b
+
+    Constraints involving categorical (one-hot) parameters cannot be expressed
+    as simple linear constraints and are returned separately for post-hoc projection.
+
+    Args:
+        spec: Optimization specification with constraints
+
+    Returns:
+        Tuple of (inequality_constraints, equality_constraints, projection_constraints)
+        where projection_constraints need post-hoc handling.
+
+    Reference:
+        https://botorch.org/api/optim.html#botorch.optim.optimize.optimize_acqf
+    """
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] = []
+    equality_constraints: list[tuple[Tensor, Tensor, float]] = []
+    projection_constraints: list[ConstraintSpec] = []
+
+    for constraint in spec.constraints:
+        indices = _get_parameter_indices(constraint.parameters, spec)
+
+        # Constraints on categorical (one-hot) params can't be native linear constraints
+        has_categorical = any(
+            p.type == ParameterType.CATEGORICAL
+            for p in spec.parameters
+            if p.name in constraint.parameters
+        )
+        if has_categorical:
+            projection_constraints.append(constraint)
+            continue
+
+        idx_tensor = torch.tensor(indices, dtype=torch.long)
+
+        if constraint.type == ConstraintType.SUM_LESS_THAN:
+            # sum(x[indices]) <= value  →  Ax <= b with A=1, b=value
+            coeffs = torch.ones(len(indices), dtype=torch.double)
+            inequality_constraints.append((idx_tensor, coeffs, constraint.value))
+
+        elif constraint.type == ConstraintType.SUM_GREATER_THAN:
+            # sum(x[indices]) >= value  →  -sum(x[indices]) <= -value
+            coeffs = -torch.ones(len(indices), dtype=torch.double)
+            inequality_constraints.append((idx_tensor, coeffs, -constraint.value))
+
+        elif constraint.type == ConstraintType.SUM_EQUALS:
+            # Equality: sum of selected params must equal the target value
+            coeffs = torch.ones(len(indices), dtype=torch.double)
+            equality_constraints.append((idx_tensor, coeffs, constraint.value))
+
+        elif constraint.type == ConstraintType.LINEAR:
+            if constraint.coefficients is None:
+                projection_constraints.append(constraint)
+                continue
+            # coefficients @ x[indices] <= value
+            coeffs = torch.tensor(constraint.coefficients, dtype=torch.double)
+            inequality_constraints.append((idx_tensor, coeffs, constraint.value))
+
+        else:
+            projection_constraints.append(constraint)
+
+    return inequality_constraints, equality_constraints, projection_constraints

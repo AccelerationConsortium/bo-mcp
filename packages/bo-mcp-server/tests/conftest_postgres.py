@@ -44,7 +44,9 @@ def postgres_container():
         PostgresContainer: Running PostgreSQL container with connection details.
     """
     try:
-        from testcontainers.postgres import PostgresContainer  # type: ignore[import-not-found]
+        from testcontainers.postgres import (  # ty: ignore[unresolved-import]
+            PostgresContainer,  # type: ignore[import-not-found]
+        )
     except ImportError:
         pytest.skip(
             "testcontainers[postgres] not installed. Run: uv pip install testcontainers[postgres]"

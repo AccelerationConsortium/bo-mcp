@@ -30,7 +30,7 @@ from bo_engine.transfer_learning import (
 class TestPriorTaskData:
     """Test PriorTaskData dataclass."""
 
-    def test_basic_creation(self) -> None:
+    def test_basic_creation(self, torch_rng) -> None:
         """PriorTaskData can be created with required fields."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -46,7 +46,7 @@ class TestPriorTaskData:
         assert prior.train_y.shape == (10, 1)
         assert prior.metadata == {}
 
-    def test_with_metadata(self) -> None:
+    def test_with_metadata(self, torch_rng) -> None:
         """PriorTaskData accepts optional metadata."""
         train_x = torch.rand(5, 3, dtype=torch.double)
         train_y = torch.rand(5, 1, dtype=torch.double)
@@ -81,7 +81,7 @@ class TestRGPEConfig:
 class TestBaseModelCreation:
     """Test base model creation for transfer learning."""
 
-    def test_create_base_model_basic(self) -> None:
+    def test_create_base_model_basic(self, torch_rng) -> None:
         """Base model can be created and fitted."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -96,7 +96,7 @@ class TestBaseModelCreation:
             posterior = model.posterior(test_x)
             assert posterior.mean.shape == (5, 1)
 
-    def test_create_base_model_with_1d_y(self) -> None:
+    def test_create_base_model_with_1d_y(self, torch_rng) -> None:
         """Base model handles 1D y input."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, dtype=torch.double)  # 1D
@@ -110,7 +110,9 @@ class TestRGPEClass:
     """Test the RGPE ensemble class."""
 
     @pytest.fixture
-    def simple_rgpe(self) -> tuple[RGPE, list[PriorTaskData], torch.Tensor, torch.Tensor]:
+    def simple_rgpe(
+        self, torch_rng
+    ) -> tuple[RGPE, list[PriorTaskData], torch.Tensor, torch.Tensor]:
         """Create a simple RGPE ensemble for testing."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -165,7 +167,7 @@ class TestRGPEClass:
 class TestRGPEWeightComputation:
     """Test RGPE weight computation behavior."""
 
-    def test_weights_without_compute_raises(self) -> None:
+    def test_weights_without_compute_raises(self, torch_rng) -> None:
         """Accessing weights before computation raises error."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -228,7 +230,7 @@ class TestRGPEWeightComputation:
 class TestRGPEWeightsExplanation:
     """Test human-readable weight explanation."""
 
-    def test_explanation_format(self) -> None:
+    def test_explanation_format(self, torch_rng) -> None:
         """Explanation maps task IDs to weights."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -367,7 +369,7 @@ class TestRGPETransferBenefit:
 class TestRGPEEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_single_prior_task(self) -> None:
+    def test_single_prior_task(self, torch_rng) -> None:
         """Works with a single prior task."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -385,7 +387,7 @@ class TestRGPEEdgeCases:
         rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
         assert rgpe.num_models == 2
 
-    def test_many_prior_tasks(self) -> None:
+    def test_many_prior_tasks(self, torch_rng) -> None:
         """Works with multiple prior tasks."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -404,7 +406,7 @@ class TestRGPEEdgeCases:
         rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
         assert rgpe.num_models == 6  # 5 priors + 1 target
 
-    def test_minimal_target_data(self) -> None:
+    def test_minimal_target_data(self, torch_rng) -> None:
         """Works with minimal target data."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 

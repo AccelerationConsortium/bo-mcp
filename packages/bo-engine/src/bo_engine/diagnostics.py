@@ -10,13 +10,17 @@ v1.1: Added LOO cross-validation for model quality assessment
 v2.3: Added GPU auto-detection and acceleration
 """
 
+import logging
 from dataclasses import dataclass
-from typing import overload
+from typing import Any, overload
 
 import torch
 from botorch.cross_validation import batch_cross_validation, gen_loo_cv_folds
+from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
+from botorch.models.transforms.input import Normalize
+from botorch.models.transforms.outcome import Standardize
 from botorch.utils.multi_objective.hypervolume import Hypervolume
 from botorch.utils.multi_objective.pareto import is_non_dominated
 from gpytorch.mlls import ExactMarginalLogLikelihood
@@ -24,6 +28,7 @@ from scipy import stats as scipy_stats
 from torch import Tensor
 
 from bo_engine.constants import (
+    CI_95_Z_SCORE,
     DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS,
     DIAGNOSTICS_HYPERVOLUME_DECREASE_WARNING,
     DIAGNOSTICS_MIN_RESULTS,
@@ -32,13 +37,20 @@ from bo_engine.constants import (
     DIAGNOSTICS_MODEL_CORRELATION_WARNING,
     DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS,
     DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS,
+    EXPECTED_DISTANCE_HYPERCUBE_DIVISOR,
+    EXPLOITATION_HEAVY_THRESHOLD,
+    EXPLORATION_EXPLOITATION_OFFSET,
+    EXPLORATION_HEAVY_THRESHOLD,
+    EXPLORATION_RATIO_MULTIPLIER,
     IMPROVEMENT_TOLERANCE_ABSOLUTE,
-    PROGRESS_IMPROVING_MULTIPLIER,
     PROGRESS_IMPROVING_THRESHOLD,
-    PROGRESS_REGRESSING_MULTIPLIER,
     PROGRESS_REGRESSING_THRESHOLD,
+    SATISFACTION_TREND_THRESHOLD,
+    UNCERTAINTY_TREND_SLOPE_THRESHOLD,
 )
 from bo_engine.device import ensure_device, to_device
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -106,7 +118,7 @@ def compute_hypervolume(
     result = hv.compute(-pareto_y)
     # Handle both Tensor and float return types
     if hasattr(result, "item"):
-        return float(result.item())  # type: ignore[union-attr]
+        return float(result.item())  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
     return float(result)
 
 
@@ -253,13 +265,9 @@ def compute_rank_correlation(
     try:
         result = scipy_stats.spearmanr(pred_np, actual_np)
         corr = float(result.statistic)  # type: ignore[union-attr]
-        return corr if not (corr != corr) else 0.0  # Handle NaN
-    except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).debug(
-            f"Rank correlation calculation failed with {len(pred_np)} samples: {e!r}"
-        )
+        return corr if corr == corr else 0.0  # Handle NaN
+    except (RuntimeError, ValueError, TypeError) as e:
+        logger.debug(f"Rank correlation calculation failed with {len(pred_np)} samples: {e!r}")
         return 0.0
 
 
@@ -323,6 +331,15 @@ def determine_health_status(
         return "healthy", warnings
 
 
+def _classify_improvement(rate: float) -> str:
+    """Classify an improvement rate as improving, stagnant, or regressing."""
+    if rate > PROGRESS_IMPROVING_THRESHOLD:
+        return "improving"
+    if rate < PROGRESS_REGRESSING_THRESHOLD:
+        return "regressing"
+    return "stagnant"
+
+
 def determine_progress_status(
     hypervolume_history: list[float],
     window: int = 3,
@@ -337,18 +354,13 @@ def determine_progress_status(
         Progress status: 'improving', 'stagnant', or 'regressing'
     """
     if len(hypervolume_history) < 2:
-        return "improving"  # Assume improving at start
+        return "improving"
 
     if len(hypervolume_history) < window * 2:
-        # Compare just last two values
-        if hypervolume_history[-1] > hypervolume_history[-2] * PROGRESS_IMPROVING_MULTIPLIER:
-            return "improving"
-        elif hypervolume_history[-1] < hypervolume_history[-2] * PROGRESS_REGRESSING_MULTIPLIER:
-            return "regressing"
-        else:
-            return "stagnant"
+        last, prev = hypervolume_history[-1], hypervolume_history[-2]
+        rate = (last - prev) / abs(prev) if prev != 0 else 1.0
+        return _classify_improvement(rate)
 
-    # Compare recent window to previous window
     recent_avg = sum(hypervolume_history[-window:]) / window
     previous_avg = sum(hypervolume_history[-2 * window : -window]) / window
 
@@ -356,13 +368,7 @@ def determine_progress_status(
         return "improving"
 
     improvement_rate = (recent_avg - previous_avg) / previous_avg
-
-    if improvement_rate > PROGRESS_IMPROVING_THRESHOLD:
-        return "improving"
-    elif improvement_rate < PROGRESS_REGRESSING_THRESHOLD:
-        return "regressing"
-    else:
-        return "stagnant"
+    return _classify_improvement(improvement_rate)
 
 
 def compute_exploration_exploitation_ratio(
@@ -390,7 +396,7 @@ def compute_exploration_exploitation_ratio(
     # Normalize: high distance + high uncertainty = exploration
     # Simple heuristic: if uncertainty is high relative to distance, it's exploration
     if avg_distance > 0:
-        ratio = min(1.0, avg_uncertainty / (avg_distance + 0.1))
+        ratio = min(1.0, avg_uncertainty / (avg_distance + EXPLORATION_EXPLOITATION_OFFSET))
     else:
         ratio = 0.5
 
@@ -418,7 +424,7 @@ def compute_suggestion_diversity(
 
     for i in range(n):
         for j in range(i + 1, n):
-            dist = torch.norm(suggestions[i] - suggestions[j]).item()
+            dist = torch.linalg.vector_norm(suggestions[i] - suggestions[j]).item()
             total_distance += dist
             count += 1
 
@@ -429,9 +435,9 @@ def compute_suggestion_diversity(
 
     # Normalize by expected distance in unit hypercube
     n_dims = suggestions.shape[1]
-    expected_distance = (n_dims / 6) ** 0.5  # Rough expected distance in unit cube
+    expected_distance = (n_dims / EXPECTED_DISTANCE_HYPERCUBE_DIVISOR) ** 0.5
 
-    diversity = min(1.0, avg_distance / (expected_distance + 0.1))
+    diversity = min(1.0, avg_distance / (expected_distance + EXPLORATION_EXPLOITATION_OFFSET))
     return diversity
 
 
@@ -487,9 +493,9 @@ def compute_loo_cv_metrics(
 
     for fold_idx in range(n_samples):
         train_fold = cv_folds.train_X[fold_idx]
-        train_Y_fold = cv_folds.train_Y[fold_idx]
+        train_y_fold = cv_folds.train_Y[fold_idx]
         test_fold = cv_folds.test_X[fold_idx]
-        test_Y_fold = cv_folds.test_Y[fold_idx]
+        test_y_fold = cv_folds.test_Y[fold_idx]
 
         # Skip if not enough training data
         if train_fold.shape[0] < 2:
@@ -497,13 +503,9 @@ def compute_loo_cv_metrics(
 
         try:
             # Create and fit model on training fold
-            from botorch.fit import fit_gpytorch_mll
-            from botorch.models.transforms.input import Normalize
-            from botorch.models.transforms.outcome import Standardize
-
             model = SingleTaskGP(
                 train_X=train_fold,
-                train_Y=train_Y_fold,
+                train_Y=train_y_fold,
                 input_transform=Normalize(d=train_x.shape[-1], bounds=bounds),
                 outcome_transform=Standardize(m=1),
             )
@@ -518,22 +520,18 @@ def compute_loo_cv_metrics(
                 pred_var = posterior.variance
 
             # Compute error
-            error = (pred_mean - test_Y_fold).abs().item()
+            error = (pred_mean - test_y_fold).abs().item()
             per_fold_errors.append(error)
             predictions.append(pred_mean.squeeze().item())
-            actuals.append(test_Y_fold.squeeze().item())
+            actuals.append(test_y_fold.squeeze().item())
 
             # Standardized error (for calibration check)
-            std_err = (pred_mean - test_Y_fold).abs() / (pred_var.sqrt() + 1e-10)
+            std_err = (pred_mean - test_y_fold).abs() / (pred_var.sqrt() + 1e-10)
             standardized_errors.append(std_err.item())
 
-        except Exception as e:  # noqa: S112 - intentionally skip failed folds
+        except (RuntimeError, ValueError, TypeError) as e:  # noqa: S112 - intentionally skip failed folds
             # Skip folds that fail to fit, but log for debugging
-            import logging
-
-            logging.getLogger(__name__).debug(
-                f"LOO-CV fold {fold_idx} failed to fit: {type(e).__name__}: {e}"
-            )
+            logger.debug(f"LOO-CV fold {fold_idx} failed to fit: {type(e).__name__}: {e}")
             continue
 
     if len(predictions) < 2:
@@ -631,7 +629,7 @@ def compute_loo_cv_for_model(
             mean_std_error = standardized_errors.mean().item()
 
             # Coverage: fraction within 1.96 std (95% CI)
-            within_95ci = standardized_errors < 1.96
+            within_95ci = standardized_errors < CI_95_Z_SCORE
             coverage_95 = within_95ci.float().mean().item()
 
             return LOOCVMetrics(
@@ -642,10 +640,8 @@ def compute_loo_cv_for_model(
                 per_fold_errors=errors.tolist(),
                 coverage_95=coverage_95,
             )
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).debug(
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug(
                 f"Cross-validation for single-objective model failed: {type(e).__name__}: {e}"
             )
             return LOOCVMetrics(
@@ -685,7 +681,7 @@ def compute_loo_cv_for_model(
                 standardized_errors = errors / std
                 mean_std_error = standardized_errors.mean().item()
 
-                within_95ci = standardized_errors < 1.96
+                within_95ci = standardized_errors < CI_95_Z_SCORE
                 coverage_95 = within_95ci.float().mean().item()
 
                 results[i] = LOOCVMetrics(
@@ -696,12 +692,8 @@ def compute_loo_cv_for_model(
                     per_fold_errors=errors.tolist(),
                     coverage_95=coverage_95,
                 )
-            except Exception as e:
-                import logging
-
-                logging.getLogger(__name__).debug(
-                    f"Cross-validation for objective {i} failed: {type(e).__name__}: {e}"
-                )
+            except (RuntimeError, ValueError, TypeError) as e:
+                logger.debug(f"Cross-validation for objective {i} failed: {type(e).__name__}: {e}")
                 results[i] = LOOCVMetrics(
                     rmse=float("nan"),
                     mae=float("nan"),
@@ -818,44 +810,35 @@ def compute_single_objective_improvement_rate(
     return abs(final - initial) / abs(initial)
 
 
-def determine_single_objective_health_status(
+def _count_stagnant_iterations(
     improvement_history: list[float],
-    model_correlation: float,
-    stagnation_threshold: int = DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS,
-) -> tuple[str, list[str]]:
-    """Determine health status for single-objective optimization.
-
-    Args:
-        improvement_history: Running best values over iterations
-        model_correlation: Rank correlation between predictions and actuals
-        stagnation_threshold: Iterations without improvement before warning
-
-    Returns:
-        Tuple of (status, warnings)
-    """
-    warnings = []
-    n_results = len(improvement_history)
-
-    if n_results < DIAGNOSTICS_MIN_RESULTS:
-        return "healthy", ["Collecting initial data - diagnostics will improve with more results"]
-
-    # Check for stagnation
-    iterations_without_improvement = 0
-    for i in range(1, min(stagnation_threshold + 1, n_results)):
-        if (
-            abs(improvement_history[-1] - improvement_history[-i - 1])
-            < IMPROVEMENT_TOLERANCE_ABSOLUTE
-        ):
-            iterations_without_improvement += 1
+    max_lookback: int,
+) -> int:
+    """Count consecutive iterations without improvement from the end of history."""
+    count = 0
+    n = len(improvement_history)
+    for i in range(1, min(max_lookback + 1, n)):
+        diff = abs(improvement_history[-1] - improvement_history[-i - 1])
+        if diff < IMPROVEMENT_TOLERANCE_ABSOLUTE:
+            count += 1
         else:
             break
+    return count
 
-    if iterations_without_improvement >= stagnation_threshold:
+
+def _collect_health_warnings(
+    stagnant: int,
+    stagnation_threshold: int,
+    model_correlation: float,
+    n_results: int,
+) -> list[str]:
+    """Build the warnings list for single-objective health."""
+    warnings: list[str] = []
+    if stagnant >= stagnation_threshold:
         warnings.append(
-            f"Optimization has not improved in {iterations_without_improvement} iterations. "
+            f"Optimization has not improved in {stagnant} iterations. "
             "Consider: reviewing constraints, expanding search space, or stopping."
         )
-
     if (
         model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CORRELATION_WARNING
@@ -864,20 +847,39 @@ def determine_single_objective_health_status(
             "Model predictions are not matching experimental results (low correlation). "
             "The model may need more data or the problem may not suit BO."
         )
+    return warnings
 
-    # Determine status
-    if iterations_without_improvement >= stagnation_threshold or (
+
+def determine_single_objective_health_status(
+    improvement_history: list[float],
+    model_correlation: float,
+    stagnation_threshold: int = DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS,
+) -> tuple[str, list[str]]:
+    """Determine health status for single-objective optimization.
+
+    Returns:
+        Tuple of (status, warnings)
+    """
+    n_results = len(improvement_history)
+    if n_results < DIAGNOSTICS_MIN_RESULTS:
+        return "healthy", ["Collecting initial data - diagnostics will improve with more results"]
+
+    stagnant = _count_stagnant_iterations(improvement_history, stagnation_threshold)
+    warnings = _collect_health_warnings(
+        stagnant, stagnation_threshold, model_correlation, n_results
+    )
+
+    if stagnant >= stagnation_threshold or (
         model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CRITICAL
     ):
         return "critical", warnings
-    elif (
-        iterations_without_improvement >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
+    if (
+        stagnant >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
         or model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
     ):
         return "warning", warnings
-    else:
-        return "healthy", warnings
+    return "healthy", warnings
 
 
 # =============================================================================
@@ -956,7 +958,7 @@ def compute_uncertainty_trend(
 
     Args:
         uncertainty_history: List of mean uncertainties per iteration
-        window: Window size for trend analysis
+        window: Window size for trend analysis (uses last ``window`` points for slope)
 
     Returns:
         UncertaintyTrend with trend assessment
@@ -974,21 +976,22 @@ def compute_uncertainty_trend(
     variance = sum((u - mean_unc) ** 2 for u in uncertainty_history) / len(uncertainty_history)
     std_unc = variance**0.5
 
-    # Compute slope using simple linear regression
-    n = len(uncertainty_history)
+    # Use the last `window` points for trend computation
+    recent = uncertainty_history[-window:]
+    n = len(recent)
     x_mean = (n - 1) / 2
-    y_mean = mean_unc
+    y_mean = sum(recent) / n
 
-    numerator = sum((i - x_mean) * (y - y_mean) for i, y in enumerate(uncertainty_history))
+    numerator = sum((i - x_mean) * (y - y_mean) for i, y in enumerate(recent))
     denominator = sum((i - x_mean) ** 2 for i in range(n))
 
     slope = numerator / denominator if denominator > 0 else 0.0
 
     # Determine trend based on slope relative to mean
     relative_slope = slope / (mean_unc + 1e-10)
-    if relative_slope < -0.05:
+    if relative_slope < -UNCERTAINTY_TREND_SLOPE_THRESHOLD:
         trend = "decreasing"
-    elif relative_slope > 0.05:
+    elif relative_slope > UNCERTAINTY_TREND_SLOPE_THRESHOLD:
         trend = "increasing"
     else:
         trend = "stable"
@@ -1043,28 +1046,11 @@ def compute_exploration_exploitation_metrics(
         # Higher uncertainty at suggestion points = more exploration
         avg_uncertainty = sum(uncertainties) / len(uncertainties)
         # Normalize to 0-1 (assume uncertainty > 0.5 is high)
-        exploration_ratio = min(1.0, avg_uncertainty * 2)
+        exploration_ratio = min(1.0, avg_uncertainty * EXPLORATION_RATIO_MULTIPLIER)
     else:
         exploration_ratio = 0.5
 
-    # Combine metrics for balance assessment
-    combined_score = (exploration_ratio + diversity) / 2
-
-    if combined_score > 0.65:
-        balance = "exploration_heavy"
-        recommendation = (
-            "Suggestions are primarily exploring new regions. "
-            "If optimization is mature, consider reducing exploration."
-        )
-    elif combined_score < 0.35:
-        balance = "exploitation_heavy"
-        recommendation = (
-            "Suggestions are focused near known good points. "
-            "If stuck in local optima, consider increasing exploration."
-        )
-    else:
-        balance = "balanced"
-        recommendation = "Good balance between exploration and exploitation."
+    balance, recommendation = _classify_exploration_balance(exploration_ratio, diversity)
 
     return ExplorationExploitationMetrics(
         exploration_ratio=exploration_ratio,
@@ -1073,6 +1059,60 @@ def compute_exploration_exploitation_metrics(
         balance_assessment=balance,
         recommendation=recommendation,
     )
+
+
+def _classify_exploration_balance(
+    exploration_ratio: float,
+    diversity: float,
+) -> tuple[str, str]:
+    """Classify the exploration/exploitation balance and return (label, recommendation)."""
+    combined_score = (exploration_ratio + diversity) / 2
+
+    if combined_score > EXPLORATION_HEAVY_THRESHOLD:
+        return (
+            "exploration_heavy",
+            "Suggestions are primarily exploring new regions. "
+            "If optimization is mature, consider reducing exploration.",
+        )
+    if combined_score < EXPLOITATION_HEAVY_THRESHOLD:
+        return (
+            "exploitation_heavy",
+            "Suggestions are focused near known good points. "
+            "If stuck in local optima, consider increasing exploration.",
+        )
+    return ("balanced", "Good balance between exploration and exploitation.")
+
+
+def _extract_gp_kernel_info(
+    gp: Any,
+) -> tuple[str, Tensor, float, float]:
+    """Extract kernel type, lengthscales, noise variance, and output scale from a single GP."""
+    covar = gp.covar_module
+    kernel = getattr(covar, "base_kernel", covar)
+    kernel_type = type(kernel).__name__
+
+    ls = kernel.lengthscale.detach().squeeze()
+
+    noise_variance = 0.0
+    if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
+        noise_variance = float(gp.likelihood.noise.item())
+
+    output_scale = 1.0
+    if hasattr(covar, "outputscale"):
+        output_scale = float(covar.outputscale.item())
+
+    return kernel_type, ls, noise_variance, output_scale
+
+
+def _lengthscales_to_dict(ls: Tensor, param_names: list[str]) -> dict[str, float]:
+    """Convert a lengthscale tensor to a named dict."""
+    result: dict[str, float] = {}
+    for i, name in enumerate(param_names):
+        if ls.numel() == 1:
+            result[name] = round(float(ls.item()), 4)
+        elif i < ls.numel():
+            result[name] = round(float(ls[i].item()), 4)
+    return result
 
 
 def extract_hyperparameters(
@@ -1091,65 +1131,21 @@ def extract_hyperparameters(
     Returns:
         HyperparameterInfo with extracted hyperparameters
     """
-    lengthscales_dict: dict[str, float] = {}
-    noise_variance = 0.0
-    output_scale = 1.0
-    kernel_type = "Unknown"
     model_type = type(model).__name__
 
     if isinstance(model, ModelListGP):
-        # Average across objectives for multi-objective
-        all_lengthscales = []
-        all_noise = []
-        all_output_scale = []
-
-        for gp in model.models:
-            covar = gp.covar_module
-            kernel = getattr(covar, "base_kernel", covar)
-            kernel_type = type(kernel).__name__
-
-            ls = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]
-            all_lengthscales.append(ls)
-
-            # Get noise variance from likelihood
-            if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
-                all_noise.append(gp.likelihood.noise.item())  # type: ignore[union-attr]
-
-            # Get output scale if present
-            if hasattr(covar, "outputscale"):
-                all_output_scale.append(covar.outputscale.item())  # type: ignore[union-attr]
-
-        # Average lengthscales
-        if all_lengthscales:
-            avg_ls = torch.stack(all_lengthscales).mean(dim=0)
-            for i, name in enumerate(param_names):
-                if i < avg_ls.numel():
-                    lengthscales_dict[name] = round(float(avg_ls[i].item()), 4)
-
-        if all_noise:
-            noise_variance = sum(all_noise) / len(all_noise)
-        if all_output_scale:
-            output_scale = sum(all_output_scale) / len(all_output_scale)
+        all_info = [_extract_gp_kernel_info(gp) for gp in model.models]
+        kernel_type = all_info[-1][0] if all_info else "Unknown"
+        all_ls = [info[1] for info in all_info]
+        avg_ls = torch.stack(all_ls).mean(dim=0) if all_ls else torch.tensor([])
+        lengthscales_dict = _lengthscales_to_dict(avg_ls, param_names)
+        noise_values = [info[2] for info in all_info]
+        noise_variance = sum(noise_values) / len(noise_values) if noise_values else 0.0
+        scale_values = [info[3] for info in all_info]
+        output_scale = sum(scale_values) / len(scale_values) if scale_values else 1.0
     else:
-        # SingleTaskGP
-        covar = model.covar_module
-        kernel = getattr(covar, "base_kernel", covar)
-        kernel_type = type(kernel).__name__
-
-        ls = kernel.lengthscale.detach().squeeze()  # type: ignore[union-attr]
-        for i, name in enumerate(param_names):
-            if ls.numel() == 1:
-                lengthscales_dict[name] = round(float(ls.item()), 4)
-            elif i < ls.numel():
-                lengthscales_dict[name] = round(float(ls[i].item()), 4)
-
-        # Get noise variance from likelihood
-        if hasattr(model, "likelihood") and hasattr(model.likelihood, "noise"):
-            noise_variance = float(model.likelihood.noise.item())  # type: ignore[union-attr]
-
-        # Get output scale if present
-        if hasattr(covar, "outputscale"):
-            output_scale = float(covar.outputscale.item())  # type: ignore[union-attr]
+        kernel_type, ls, noise_variance, output_scale = _extract_gp_kernel_info(model)
+        lengthscales_dict = _lengthscales_to_dict(ls, param_names)
 
     return HyperparameterInfo(
         lengthscales=lengthscales_dict,
@@ -1158,6 +1154,44 @@ def extract_hyperparameters(
         kernel_type=kernel_type,
         model_type=model_type,
     )
+
+
+def _check_constraint_feasibility(result: dict[str, float], constraint: dict) -> bool:
+    """Check if a single result satisfies a single constraint."""
+    ctype = constraint.get("type", "")
+    params = constraint.get("parameters", [])
+    value = constraint.get("value", 0.0)
+    coefficients = constraint.get("coefficients")
+
+    param_values = [result.get(p, 0.0) for p in params]
+
+    if ctype == "sum_equals":
+        return abs(sum(param_values) - value) < 1e-6
+    if ctype == "sum_less_than":
+        return sum(param_values) <= value
+    if ctype == "sum_greater_than":
+        return sum(param_values) >= value
+    if ctype == "linear" and coefficients:
+        weighted_sum = sum(c * v for c, v in zip(coefficients, param_values, strict=True))
+        return weighted_sum <= value
+    return True
+
+
+def _compute_satisfaction_trend(
+    feasibility_history: list[bool],
+    recent_rate: float,
+    window: int,
+) -> str:
+    """Determine the satisfaction trend from history."""
+    if len(feasibility_history) < 2 * window:
+        return "stable"
+    previous = feasibility_history[-2 * window : -window]
+    previous_rate = sum(previous) / len(previous)
+    if recent_rate > previous_rate + SATISFACTION_TREND_THRESHOLD:
+        return "improving"
+    if recent_rate < previous_rate - SATISFACTION_TREND_THRESHOLD:
+        return "worsening"
+    return "stable"
 
 
 def compute_constraint_satisfaction(
@@ -1186,56 +1220,18 @@ def compute_constraint_satisfaction(
             trend="stable",
         )
 
-    def check_feasibility(result: dict[str, float], constraint: dict) -> bool:
-        """Check if result satisfies a constraint."""
-        ctype = constraint.get("type", "")
-        params = constraint.get("parameters", [])
-        value = constraint.get("value", 0.0)
-        coefficients = constraint.get("coefficients")
-
-        param_values = [result.get(p, 0.0) for p in params]
-
-        if ctype == "sum_equals":
-            return abs(sum(param_values) - value) < 1e-6
-        elif ctype == "sum_less_than":
-            return sum(param_values) <= value
-        elif ctype == "sum_greater_than":
-            return sum(param_values) >= value
-        elif ctype == "linear" and coefficients:
-            weighted_sum = sum(c * v for c, v in zip(coefficients, param_values, strict=False))
-            return weighted_sum <= value
-        return True
-
-    feasibility_history = []
-    for result in results:
-        is_feasible = all(check_feasibility(result, c) for c in constraints)
-        feasibility_history.append(is_feasible)
+    feasibility_history = [
+        all(_check_constraint_feasibility(result, c) for c in constraints) for result in results
+    ]
 
     feasible_count = sum(feasibility_history)
     infeasible_count = len(feasibility_history) - feasible_count
+    satisfaction_rate = feasible_count / len(feasibility_history)
 
-    satisfaction_rate = feasible_count / len(feasibility_history) if feasibility_history else 1.0
-
-    # Recent satisfaction rate
-    if len(feasibility_history) >= window:
-        recent = feasibility_history[-window:]
-    else:
-        recent = feasibility_history
+    recent = feasibility_history[-window:]
     recent_satisfaction_rate = sum(recent) / len(recent) if recent else 1.0
 
-    # Determine trend
-    if len(feasibility_history) >= 2 * window:
-        previous = feasibility_history[-2 * window : -window]
-        previous_rate = sum(previous) / len(previous)
-
-        if recent_satisfaction_rate > previous_rate + 0.1:
-            trend = "improving"
-        elif recent_satisfaction_rate < previous_rate - 0.1:
-            trend = "worsening"
-        else:
-            trend = "stable"
-    else:
-        trend = "stable"
+    trend = _compute_satisfaction_trend(feasibility_history, recent_satisfaction_rate, window)
 
     return ConstraintSatisfactionMetrics(
         satisfaction_rate=round(satisfaction_rate, 4),

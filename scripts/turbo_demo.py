@@ -27,6 +27,7 @@ from bo_engine import (
     OptimizationSpec,
     ParameterSpec,
     ParameterType,
+    TurboConfig,
     TurboState,
     create_turbo_state,
     generate_next_batch,
@@ -130,6 +131,7 @@ def demo_turbo_dynamics() -> None:
 
     # Simulate failures
     print("Simulating failures (no improvement):")
+    assert state.failure_tolerance is not None
     for i in range(state.failure_tolerance + 1):
         # No improvement
         new_y = torch.tensor([state.best_value - 1.0])  # Worse than best
@@ -179,7 +181,7 @@ def demo_turbo_optimization() -> None:
         ],
         objectives=[ObjectiveSpec(name="f", minimize=True)],
         batch_size=4,
-        use_turbo=True,
+        turbo_config=TurboConfig(),
     )
 
     observations: list[ObservationData] = []

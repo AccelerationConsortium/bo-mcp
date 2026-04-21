@@ -47,6 +47,49 @@ class CampaignListResponse(BaseModel):
     total: int
 
 
+class ValidateIntakeRequest(BaseModel):
+    """Intake validation request (dry-run, no campaign created)."""
+
+    intake: IntakeData
+
+
+class ValidateIntakeResponse(BaseModel):
+    """Intake validation response."""
+
+    valid: bool
+    errors: list[str]
+    warnings: list[str] = []
+    spec_summary: dict[str, Any] | None = None
+
+
+class CapabilitiesResponse(BaseModel):
+    """Backend capabilities response."""
+
+    backend: str
+    supported_features: list[str]
+    server_version: str
+
+
+class CampaignQueryRequest(BaseModel):
+    """Campaign query request with filtering and pagination."""
+
+    status: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+    verbosity: str = "standard"
+
+
+class CampaignQueryResponse(BaseModel):
+    """Campaign query response with pagination envelope."""
+
+    success: bool
+    campaigns: list[dict[str, Any]] = Field(default_factory=list)
+    total_count: int = 0
+    limit: int = 20
+    offset: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class CampaignLifecycleRequest(BaseModel):
     """Lifecycle action request."""
 

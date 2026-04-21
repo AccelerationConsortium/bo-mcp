@@ -6,9 +6,28 @@ Supports:
 - Optional input warping with Kumaraswamy CDF for non-stationary objectives
 - Automatic GPU acceleration when available
 
+Output standardization convention
+---------------------------------
+All GPs in this module attach ``outcome_transform=Standardize(m=1)``. BoTorch
+applies the transform during ``SingleTaskGP.__init__`` (the transform is set to
+``train()`` mode and invoked on ``train_Y``), so ``model.train_targets`` holds
+the standardized targets. ``fit_gpytorch_mll`` therefore calibrates the output
+scale, kernel outputscale and noise against unit-scale targets, and
+``model.posterior(X)`` automatically untransforms back to the user's original
+scale. Use :func:`verify_standardization` to confirm the convention holds on a
+fitted model -- e.g. in tests that rely on scale-invariant behavior.
+
+For multi-objective problems ``create_model`` wraps independent ``SingleTaskGP``
+instances in a ``ModelListGP`` so each objective is standardized separately.
+This is the mechanism that keeps well-behaved acquisition geometry when
+objectives span wildly different magnitudes (e.g. yield ~0.5 vs throughput
+~500).
+
 v1.0.1: Added create_single_task_model for single-objective
 v1.1: Added input warping support
 v2.3: Added GPU auto-detection and acceleration
+v2.4: Documented output-standardization convention and added
+      ``verify_standardization`` (TODO §1.42).
 """
 
 import logging
@@ -24,6 +43,10 @@ from gpytorch.mlls.sum_marginal_log_likelihood import SumMarginalLogLikelihood
 from gpytorch.priors.torch_priors import LogNormalPrior
 from torch import Tensor
 
+from bo_engine.constants import (
+    STANDARDIZATION_MEAN_TOLERANCE,
+    STANDARDIZATION_VAR_TOLERANCE,
+)
 from bo_engine.device import ensure_device, get_device, to_device
 
 logger = logging.getLogger(__name__)
@@ -89,9 +112,15 @@ def create_single_task_model(
 ) -> SingleTaskGP:
     """Create a SingleTaskGP for single-objective optimization.
 
+    The returned model owns a ``Standardize(m=1)`` outcome transform. BoTorch
+    standardizes ``train_Y`` during ``__init__`` so ``fit_gpytorch_mll`` sees
+    unit-scale targets, and untransforms the posterior on inference. See the
+    module docstring for the full convention.
+
     Args:
         train_x: Training inputs of shape (n_samples, n_dims)
-        train_y: Training outputs of shape (n_samples, 1) or (n_samples,)
+        train_y: Training outputs of shape (n_samples, 1) or (n_samples,).
+            Raw, unstandardized targets -- do not pre-standardize.
         bounds: Parameter bounds of shape (2, n_dims)
         use_input_warping: If True, use Kumaraswamy input warping
 
@@ -126,11 +155,15 @@ def create_model(
 ) -> ModelListGP:
     """Create a ModelListGP for multi-objective optimization.
 
-    Uses independent GP models for each objective.
+    Uses independent GP models for each objective. Each per-objective model
+    owns its own ``Standardize(m=1)`` outcome transform, so objectives with
+    very different magnitudes (e.g. yield ~0.5 vs throughput ~500) are still
+    fit against unit-scale targets.
 
     Args:
         train_x: Training inputs of shape (n_samples, n_dims)
-        train_y: Training outputs of shape (n_samples, n_objectives)
+        train_y: Training outputs of shape (n_samples, n_objectives).
+            Raw, unstandardized targets -- do not pre-standardize.
         bounds: Parameter bounds of shape (2, n_dims)
         use_input_warping: If True, use Kumaraswamy input warping
 
@@ -339,3 +372,76 @@ def get_warping_parameters(model: SingleTaskGP) -> dict[str, Tensor] | None:
                 }
 
     return None
+
+
+def verify_standardization(
+    model: ModelListGP | SingleTaskGP,
+    *,
+    mean_atol: float = STANDARDIZATION_MEAN_TOLERANCE,
+    var_atol: float = STANDARDIZATION_VAR_TOLERANCE,
+) -> list[dict[str, float]]:
+    """Verify that BoTorch internalized ``Standardize`` on each sub-model.
+
+    Checks that every GP's stored ``train_targets`` (what MLL is computed
+    against) has ~zero mean and ~unit variance -- the invariant that
+    downstream acquisition geometry, noise-prior calibration and TuRBO
+    tolerances depend on. Logs a warning if the invariant does not hold
+    within the given tolerances.
+
+    Args:
+        model: Fitted ``SingleTaskGP`` or ``ModelListGP``.
+        mean_atol: Absolute tolerance on the standardized-target mean.
+        var_atol: Absolute tolerance on ``|var(train_targets) - 1|``. Only
+            asserted when the sub-model has at least two observations
+            (variance is ill-defined for a single point).
+
+    Returns:
+        One diagnostic dict per sub-model with keys ``mean``, ``var``,
+        ``n`` and ``standardized`` (bool).
+
+    Raises:
+        ValueError: If ``model`` has no ``train_targets`` (not an ExactGP).
+    """
+    if isinstance(model, ModelListGP):
+        sub_models: list[SingleTaskGP] = list(model.models)  # ty: ignore[invalid-argument-type]
+    else:
+        sub_models = [model]
+
+    reports: list[dict[str, float]] = []
+    for idx, gp in enumerate(sub_models):
+        targets = getattr(gp, "train_targets", None)
+        if targets is None:
+            msg = f"Model {idx} has no train_targets -- cannot verify standardization."
+            raise ValueError(msg)
+
+        flat = targets.detach().reshape(-1).to(dtype=torch.float64)
+        n = int(flat.numel())
+        mean = float(flat.mean().item())
+        # Sample (unbiased) variance to match BoTorch's `nanstd` normalization
+        # -- it divides by n-1, so the post-standardization unbiased variance
+        # is exactly 1.0 up to float jitter.
+        var = float(flat.var(unbiased=True).item()) if n > 1 else float("nan")
+
+        mean_ok = abs(mean) <= mean_atol
+        var_ok = n <= 1 or abs(var - 1.0) <= var_atol
+        standardized = mean_ok and var_ok
+        if not standardized:
+            logger.warning(
+                "Model %d targets not unit-scale (mean=%.4g, var=%.4g, n=%d); "
+                "outcome_transform may not be attached.",
+                idx,
+                mean,
+                var,
+                n,
+            )
+
+        reports.append(
+            {
+                "mean": mean,
+                "var": var,
+                "n": float(n),
+                "standardized": float(standardized),
+            }
+        )
+
+    return reports

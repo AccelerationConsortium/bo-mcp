@@ -171,6 +171,7 @@ from bo_engine.models import (
     fit_model,
     fit_single_task_model,
     get_warping_parameters,
+    verify_standardization,
 )
 from bo_engine.multifidelity import (
     FidelitySpec,
@@ -645,6 +646,7 @@ __all__ = [
     "create_reproducible_sobol",
     "get_reproducibility_summary",
     "verify_reproducibility",
+    "verify_standardization",
     # What-If Analysis (v2.7 - Section 3.8)
     "HypotheticalResult",
     "ModelImpact",

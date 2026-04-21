@@ -371,7 +371,7 @@ async def _generate_within_session(
 
     # Handle pending suggestions
     pending = await suggestion_repo.list_by_campaign(campaign_uuid, status=SuggestionStatus.PENDING)
-    pending_info, _ = await _handle_pending_suggestions(pending, suggestion_repo)
+    pending_info, valid_pending = await _handle_pending_suggestions(pending, suggestion_repo)
 
     # Prepare generation inputs
     actual_batch_size = batch_size or spec.batch_size
@@ -380,11 +380,16 @@ async def _generate_within_session(
     backend = get_backend(spec.backend)
 
     logger.debug(
-        "Generation context: n_results=%d, batch_size=%d, iteration=%d",
+        "Generation context: n_results=%d, batch_size=%d, iteration=%d, n_pending=%d",
         len(results),
         actual_batch_size,
         new_iteration,
+        len(valid_pending),
     )
+
+    # Pending suggestions condition the acquisition (TODO 1.41) so the new
+    # batch does not cluster around in-flight experiments.
+    pending_parameter_values = [p.parameter_values for p in valid_pending]
 
     # Generate suggestions via backend (heavy work offloaded to a thread)
     suggestion_data, new_backend_state, warnings = await _generate_via_backend(
@@ -394,6 +399,7 @@ async def _generate_within_session(
         actual_batch_size,
         new_iteration,
         campaign.backend_state,
+        pending_parameter_values,
     )
 
     # Create and save suggestion entities
@@ -443,6 +449,7 @@ async def _generate_via_backend(
     batch_size: int,
     iteration: int,
     prior_backend_state: dict[str, Any] | None,
+    pending_parameter_values: list[dict[str, Any]] | None = None,
 ) -> tuple[
     SuggestionDataList,
     dict[str, Any] | None,
@@ -462,6 +469,12 @@ async def _generate_via_backend(
     (``n_drawn=len(observations)``), and the exhaustion check for finite
     categorical spaces.
 
+    ``pending_parameter_values`` carries the parameter dicts of suggestions
+    that are PENDING but not yet observed (see TODO 1.41); the backend is
+    expected to forward them to its acquisition optimizer as ``X_pending``
+    so parallel / batch BO does not cluster new candidates around the
+    in-flight batch.
+
     Both paths are CPU-bound (Sobol sampling, GP fitting, acquisition
     optimization, MCMC) and are offloaded via ``asyncio.to_thread`` so
     concurrent requests do not stall the event loop.
@@ -476,6 +489,7 @@ async def _generate_via_backend(
         batch_size=batch_size,
         iteration=iteration,
         backend_state=prior_backend_state,
+        pending_points=pending_parameter_values,
     )
     suggestion_data = [(item["parameter_values"], item["provenance"]) for item in batch.suggestions]
     return (

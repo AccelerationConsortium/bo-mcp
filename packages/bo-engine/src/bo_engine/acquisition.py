@@ -596,6 +596,7 @@ def optimize_acquisition(
     x_avoid: Tensor | None = None,  # noqa: N803
     inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
+    X_pending: Tensor | None = None,  # noqa: N803
 ) -> tuple[Tensor, Tensor]:
     """Optimize acquisition function to find next candidates.
 
@@ -620,6 +621,13 @@ def optimize_acquisition(
             Each tuple is (indices, coefficients, rhs).
         equality_constraints: BoTorch linear equality constraints (Ax = b).
             Each tuple is (indices, coefficients, rhs).
+        X_pending: In-flight candidates (shape ``(n_pending, n_dims)``) that
+            should condition the acquisition so new suggestions are diverse
+            from pending experiments.  For continuous and mixed spaces this
+            is forwarded to the acquisition via ``set_X_pending`` (consumed
+            by the MC acquisition's joint optimization).  For purely
+            categorical spaces the pending rows are concatenated into
+            ``x_avoid`` so the discrete optimizer excludes them.
 
     Returns:
         Tuple of (candidates, acquisition_values) where:
@@ -628,7 +636,11 @@ def optimize_acquisition(
     """
     bounds = to_device(bounds)
 
+    if X_pending is not None:
+        X_pending = to_device(X_pending)
+
     if spec is None:
+        _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_continuous(
             acqf,
             bounds,
@@ -642,7 +654,8 @@ def optimize_acquisition(
     space_type = classify_search_space(spec)
 
     if space_type == SearchSpaceType.PURELY_CATEGORICAL:
-        return _optimize_discrete(acqf, spec, batch_size, x_avoid)
+        merged_avoid = _merge_avoid_tensors(x_avoid, X_pending)
+        return _optimize_discrete(acqf, spec, batch_size, merged_avoid)
     elif space_type == SearchSpaceType.MIXED:
         n_combos = count_categorical_combinations(spec)
         if n_combos > MIXED_CATEGORICAL_COMBO_THRESHOLD:
@@ -653,8 +666,10 @@ def optimize_acquisition(
                 "A future version will support optimize_acqf_mixed_alternating "
                 "with integer encoding for larger mixed spaces."
             )
+        _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_mixed(acqf, bounds, spec, batch_size, num_restarts, raw_samples)
     else:
+        _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_continuous(
             acqf,
             bounds,
@@ -664,6 +679,48 @@ def optimize_acquisition(
             inequality_constraints=inequality_constraints,
             equality_constraints=equality_constraints,
         )
+
+
+def _apply_pending_to_acqf(
+    acqf: AcquisitionFunction,
+    X_pending: Tensor | None,  # noqa: N803
+) -> None:
+    """Route pending points into the acquisition's batch-conditioning slot.
+
+    MC acquisitions (``qLog*``) expose ``set_X_pending`` so the sequential
+    greedy optimizer inside ``optimize_acqf`` conditions each new candidate
+    on both the previously-selected batch members *and* the supplied
+    pending in-flight experiments.  Without this call parallel / batch BO
+    silently clusters candidates around pending regions (TODO 1.41).
+    """
+    if X_pending is None or X_pending.numel() == 0:
+        return
+    set_pending = getattr(acqf, "set_X_pending", None)
+    if callable(set_pending):
+        set_pending(X_pending)
+    else:
+        # Fall back to the attribute for custom acquisitions (e.g. EIpu)
+        # that expose a property setter but no ``set_X_pending`` method.
+        acqf.X_pending = X_pending
+
+
+def _merge_avoid_tensors(
+    x_avoid: Tensor | None,  # noqa: N803
+    X_pending: Tensor | None,  # noqa: N803
+) -> Tensor | None:
+    """Concatenate pending rows into an ``x_avoid`` tensor.
+
+    Purely-categorical spaces use ``optimize_acqf_discrete``, which doesn't
+    read ``X_pending`` from the acquisition — pending points must be
+    excluded from the choice set instead.  Both tensors share shape
+    ``(n_points, n_dims)`` and live on the same device after
+    ``to_device``.
+    """
+    if X_pending is None or X_pending.numel() == 0:
+        return x_avoid
+    if x_avoid is None or x_avoid.numel() == 0:
+        return X_pending
+    return torch.cat([x_avoid, X_pending], dim=0)
 
 
 def _optimize_continuous(

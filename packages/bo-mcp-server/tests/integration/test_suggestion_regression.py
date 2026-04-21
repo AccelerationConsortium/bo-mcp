@@ -253,6 +253,104 @@ class TestInitialDesignNoDuplicates:
         assert details["n_available"] == 0
 
 
+class TestPendingPointsConditioning:
+    """Regression tests for TODO 1.41.
+
+    Before 1.41, ``optimize_acquisition`` never threaded ``X_pending``
+    into ``botorch.optim.optimize_acqf``.  Two consecutive
+    ``generate_suggestions`` calls on the same campaign state (no new
+    results submitted between them) therefore returned essentially the
+    same BO candidate — the acquisition maximum is a function of the
+    fitted GP alone, which has not changed.  With 1.41 the in-flight /
+    PENDING suggestions are encoded and passed as ``X_pending``, so the
+    joint acquisition conditions on them and produces a distinct point.
+
+    Reference: BoTorch "batched" / parallel BO tutorial
+    https://botorch.org/docs/batched_bayesian_optimization/
+    """
+
+    @pytest.mark.asyncio
+    async def test_consecutive_bo_calls_return_distinct_points(self, setup_database):
+        """Two sequential BO calls (no results between) return distinct points.
+
+        Without X_pending wiring, call 2 re-selects the same acquisition
+        argmax as call 1, so the normalized L2 distance between the two
+        returned candidates collapses to ~0.  The pinned tolerance below
+        is well above machine epsilon but far below any plausible
+        random-search spread; a ~0 distance is a direct regression
+        signal.
+        """
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        owner_id = str(uuid4())
+
+        intake_data = {
+            "name": "1.41 X_pending conditioning",
+            "parameters": [
+                {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+                {"name": "y", "type": "continuous", "bounds": [0.0, 1.0]},
+            ],
+            "objectives": [{"name": "f", "direction": "minimize"}],
+            "batch_size": 1,
+            "random_seed": 7,
+        }
+
+        create_result = await create_campaign(intake_data, owner_id)
+        assert create_result["success"], create_result
+        campaign_id = create_result["campaign_id"]
+
+        # Seed the GP with enough observations so call 2 hits the BO
+        # path, not the initial-design fallback.  Six points on a simple
+        # bowl give a well-conditioned model.
+        seed_points = [
+            (0.1, 0.1),
+            (0.9, 0.1),
+            (0.1, 0.9),
+            (0.9, 0.9),
+            (0.5, 0.5),
+            (0.3, 0.7),
+        ]
+        seed_results = [
+            {
+                "parameter_values": {"x": px, "y": py},
+                "objective_values": {"f": (px - 0.2) ** 2 + (py - 0.2) ** 2},
+            }
+            for px, py in seed_points
+        ]
+        submit = await submit_results(campaign_id, _to_result_inputs(seed_results), owner_id)
+        assert submit["success"], submit
+
+        # Call 1 — produces a PENDING suggestion.
+        gen1 = await generate_suggestions(campaign_id)
+        assert gen1["success"], gen1
+        assert len(gen1["suggestions"]) == 1
+        first = gen1["suggestions"][0]["parameter_values"]
+        assert gen1["suggestions"][0]["provenance"]["generation_method"] == "bo"
+
+        # Call 2 — no new results submitted.  Without X_pending this
+        # returns the same acquisition argmax as call 1.
+        gen2 = await generate_suggestions(campaign_id)
+        assert gen2["success"], gen2
+        assert len(gen2["suggestions"]) == 1
+        second = gen2["suggestions"][0]["parameter_values"]
+
+        # Normalized L2 distance on the unit square.  Tolerance picked
+        # to be ~100x machine epsilon and ~1/20th of the bounds span so
+        # the assertion discriminates "same point" from "different
+        # point" without being sensitive to restart noise.
+        dx = first["x"] - second["x"]
+        dy = first["y"] - second["y"]
+        distance = (dx * dx + dy * dy) ** 0.5
+        min_distance = 0.01
+        assert distance > min_distance, (
+            f"Consecutive BO suggestions collapsed to same point without "
+            f"X_pending conditioning: first={first}, second={second}, "
+            f"distance={distance:.6f}"
+        )
+
+
 class TestSuggestionQualityRegression:
     """Tests ensuring suggestion quality remains stable.
 

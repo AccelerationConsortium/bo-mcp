@@ -319,6 +319,7 @@ class GenerationContext:
     turbo_state: Any | None = None  # TurboState
     observations: list[ObservationData] | None = None
     train_costs: Any | None = None  # Tensor
+    pending_x: Any | None = None  # Tensor of encoded pending / in-flight points
 
 
 @dataclass

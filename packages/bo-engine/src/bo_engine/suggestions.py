@@ -62,6 +62,7 @@ from bo_engine.transforms import (
     encode_categorical,
     get_bounds_tensor,
     get_n_dims,
+    stack_encoded_values,
 )
 from bo_engine.turbo import (
     TurboState,
@@ -457,6 +458,7 @@ def generate_next_batch(
     iteration: int = 0,
     turbo_state: TurboState | None = None,
     rng: np.random.Generator | None = None,
+    pending_points: list[dict[str, Any]] | None = None,
 ) -> tuple[list[SuggestionResult], TurboState | None]:
     """Generate next batch of suggestions using Bayesian Optimization.
 
@@ -472,6 +474,13 @@ def generate_next_batch(
         turbo_state: Optional TuRBO state for trust region optimization
         rng: Optional NumPy random generator for deterministic behavior.
             Create with np.random.default_rng(seed) for reproducibility.
+        pending_points: In-flight suggestions (parameter-value dicts) that
+            have not yet been observed.  When supplied they are
+            (a) excluded from the initial-design fallback so Sobol does
+            not re-issue a pending combination, and (b) forwarded to the
+            acquisition optimizer as ``X_pending`` so parallel / batch BO
+            conditions new candidates on the in-flight batch instead of
+            silently clustering around it.  See TODO 1.41.
 
     Returns:
         Tuple of (List of SuggestionResult objects, Updated TurboState or None)
@@ -505,7 +514,8 @@ def generate_next_batch(
     else:
         min_data = min_model_data
     if len(observations) < min_data:
-        excluded = [obs.parameter_values for obs in observations]
+        pending = pending_points or []
+        excluded = [obs.parameter_values for obs in observations] + list(pending)
         designs = generate_initial_design(
             spec,
             batch_size,
@@ -538,6 +548,11 @@ def generate_next_batch(
     if spec.use_cost_aware:
         train_costs = _prepare_cost_data(observations, use_cost_aware=True)
 
+    # Encode pending points to the same coordinate system as train_x so the
+    # acquisition optimizer sees them as X_pending.  ``None`` skips the
+    # X_pending branch entirely; ``numel()==0`` means "no valid pending".
+    pending_tensor = _encode_pending_points(pending_points, spec) if pending_points else None
+
     # Create generation context to bundle parameters
     ctx = GenerationContext(
         spec=spec,
@@ -550,6 +565,7 @@ def generate_next_batch(
         turbo_state=turbo_state,
         observations=observations,
         train_costs=train_costs,
+        pending_x=pending_tensor,
     )
 
     if is_single_objective:
@@ -566,6 +582,31 @@ def generate_next_batch(
             )
         suggestions = _generate_multi_objective_batch(ctx)
         return suggestions, None
+
+
+def _encode_pending_points(
+    pending_points: list[dict[str, Any]] | None,
+    spec: OptimizationSpec,
+) -> Tensor | None:
+    """Encode pending parameter dicts into the tensor form consumed by BoTorch.
+
+    Returns ``None`` when no pending points are supplied or when every
+    candidate is missing at least one spec parameter (encoding would raise
+    ``KeyError``).  Malformed entries are skipped with a debug log rather
+    than crashing the suggestion path — the acquisition still benefits
+    from the subset that encodes cleanly.
+    """
+    if not pending_points:
+        return None
+    valid: list[dict[str, Any]] = []
+    for params in pending_points:
+        if all(p.name in params for p in spec.parameters):
+            valid.append(params)
+        else:
+            logger.debug("Skipping pending point missing required parameter(s): %s", params)
+    if not valid:
+        return None
+    return stack_encoded_values(valid, spec)
 
 
 def _initialize_turbo_state(
@@ -891,6 +932,7 @@ def _generate_single_objective_batch(
         x_avoid=train_x,
         inequality_constraints=ineq_constraints or None,
         equality_constraints=eq_constraints or None,
+        X_pending=ctx.pending_x,
     )
 
     # Post-hoc projection only for constraints that couldn't be handled natively
@@ -1117,6 +1159,7 @@ def _generate_multi_objective_batch(
         x_avoid=train_x,
         inequality_constraints=ineq_constraints or None,
         equality_constraints=eq_constraints or None,
+        X_pending=ctx.pending_x,
     )
 
     # Post-hoc projection only for constraints that couldn't be handled natively

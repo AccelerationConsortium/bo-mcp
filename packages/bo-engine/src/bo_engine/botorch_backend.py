@@ -115,6 +115,7 @@ class BoTorchBackend:
         batch_size: int,
         iteration: int,
         backend_state: dict[str, Any] | None = None,
+        pending_points: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
         turbo_state = None
         use_turbo = spec.use_turbo or should_use_turbo(spec.n_parameters)
@@ -127,6 +128,7 @@ class BoTorchBackend:
             batch_size=batch_size,
             iteration=iteration,
             turbo_state=turbo_state,
+            pending_points=pending_points,
         )
 
         suggestions = [

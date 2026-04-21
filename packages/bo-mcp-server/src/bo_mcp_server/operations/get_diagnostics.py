@@ -5,8 +5,12 @@ Orchestrates diagnostic sections by delegating to focused submodules in
 feature importance, outlier detection, Pareto/hypervolume) is delegated to the
 BOBackend protocol. Server-side concerns (campaign state, suggestion provenance,
 caching, formatting) are handled here and in the submodules.
+
+The backend diagnostics call is offloaded via ``asyncio.to_thread`` so it
+cannot stall the event loop while other requests are served.
 """
 
+import asyncio
 import logging
 from typing import Any
 from uuid import UUID
@@ -111,7 +115,7 @@ def _map_backend_sections(requested: frozenset[str]) -> frozenset[str]:
 # =============================================================================
 
 
-def _compute_sections(
+async def _compute_sections(
     requested: frozenset[str],
     spec: CampaignSpec,
     results: list[Result],
@@ -132,12 +136,20 @@ def _compute_sections(
         "errors": [],
     }
 
-    # Delegate model-based computation to the backend
+    # Delegate model-based computation to the backend — offloaded to a
+    # worker thread so GP fitting / LOO-CV do not block the event loop.
     backend_sections = _map_backend_sections(requested)
     if backend_sections:
         backend = get_backend(spec.backend)
         observations = results_to_observations(results)
-        diagnostics.update(backend.compute_diagnostics(opt_spec, observations, backend_sections))
+        diagnostics.update(
+            await asyncio.to_thread(
+                backend.compute_diagnostics,
+                opt_spec,
+                observations,
+                backend_sections,
+            )
+        )
 
     # Enrich with server-side model info
     if "objectives" in requested or "health" in requested:
@@ -262,7 +274,7 @@ async def get_diagnostics_operation(
         all_suggestions = await suggestion_repo.list_by_campaign(campaign_uuid)
         pending_suggestions = [s for s in all_suggestions if s.status == SuggestionStatus.PENDING]
 
-        diagnostics = _compute_sections(
+        diagnostics = await _compute_sections(
             requested,
             spec,
             results,

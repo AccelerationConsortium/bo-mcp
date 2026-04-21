@@ -1,5 +1,10 @@
-"""Shared campaign comparison operations."""
+"""Shared campaign comparison operations.
 
+The backend's ``compute_hypervolume`` call runs on a worker thread so it
+never blocks the event loop while other requests are served.
+"""
+
+import asyncio
 import logging
 from typing import Any
 from uuid import UUID
@@ -30,7 +35,7 @@ from bo_mcp_server.storage import (
 logger = logging.getLogger(__name__)
 
 
-def _compute_campaign_metrics(
+async def _compute_campaign_metrics(
     spec: CampaignSpec,
     results: list[Result],
     iteration: int,
@@ -82,7 +87,7 @@ def _compute_campaign_metrics(
     backend = get_backend(spec.backend)
     opt_spec = campaign_spec_to_optimization_spec(spec)
     observations = results_to_observations(results)
-    hypervolume = backend.compute_hypervolume(opt_spec, observations)
+    hypervolume = await asyncio.to_thread(backend.compute_hypervolume, opt_spec, observations)
 
     metrics.update(
         {
@@ -258,7 +263,7 @@ async def compare_campaigns_operation(
                 continue
 
             results = results_by_campaign.get(campaign_uuid, [])
-            metrics = _compute_campaign_metrics(spec, results, campaign.iteration)
+            metrics = await _compute_campaign_metrics(spec, results, campaign.iteration)
             metrics["campaign_id"] = str(campaign_uuid)
             metrics["campaign_name"] = spec.name
             metrics["status"] = campaign.status.value

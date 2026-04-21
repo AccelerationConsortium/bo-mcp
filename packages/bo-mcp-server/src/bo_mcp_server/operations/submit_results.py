@@ -1,5 +1,11 @@
-"""Submit results operation — protocol-neutral business logic."""
+"""Submit results operation — protocol-neutral business logic.
 
+Backend calls that touch the BO engine (hypervolume, TuRBO state updates)
+are offloaded via ``asyncio.to_thread`` so they cannot block the FastAPI /
+MCP event loop during concurrent result submissions.
+"""
+
+import asyncio
 import logging
 import math
 from dataclasses import dataclass, field
@@ -446,7 +452,7 @@ async def _update_campaign_state(
         try:
             all_results = await result_repo.list_by_campaign(campaign_uuid)
             all_observations = results_to_observations(all_results)
-            hv = backend.compute_hypervolume(opt_spec, all_observations)
+            hv = await asyncio.to_thread(backend.compute_hypervolume, opt_spec, all_observations)
             if hv is not None:
                 updated_campaign = updated_campaign.with_hypervolume(hv)
                 logger.debug(
@@ -461,8 +467,11 @@ async def _update_campaign_state(
     if campaign.backend_state is not None:
         try:
             new_obs = results_to_observations(result_entities)
-            new_state = backend.update_state_after_results(
-                opt_spec, new_obs, campaign.backend_state
+            new_state = await asyncio.to_thread(
+                backend.update_state_after_results,
+                opt_spec,
+                new_obs,
+                campaign.backend_state,
             )
             if new_state is not None:
                 updated_campaign = updated_campaign.with_backend_state(new_state)

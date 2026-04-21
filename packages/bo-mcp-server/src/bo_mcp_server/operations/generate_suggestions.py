@@ -5,8 +5,13 @@ Extracted from the MCP tool so it can be reused by any transport
 
 Uses the BOBackend protocol for all BO-engine interactions,
 keeping the server decoupled from specific backend implementations.
+
+Heavy BO-engine work (GP fitting, acquisition optimization, Sobol sampling)
+is offloaded via ``asyncio.to_thread`` so it does not block the FastAPI /
+MCP event loop while other requests are served concurrently.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -182,7 +187,7 @@ def _build_initial_design_data(
     ]
 
 
-def _compute_diversity_info(
+async def _compute_diversity_info(
     backend: BOBackend,
     opt_spec: OptimizationSpec,
     suggestions: list[Suggestion],
@@ -190,14 +195,15 @@ def _compute_diversity_info(
     """Compute batch diversity metrics via the backend.
 
     Returns diversity info dict, or None if fewer than 2
-    suggestions or on failure.
+    suggestions or on failure. The backend call is offloaded to a thread
+    so it cannot block the event loop.
     """
     if len(suggestions) <= 1:
         return None
 
     try:
         candidates = [s.parameter_values for s in suggestions]
-        metrics = backend.compute_batch_diversity(opt_spec, candidates)
+        metrics = await asyncio.to_thread(backend.compute_batch_diversity, opt_spec, candidates)
         if metrics is None:
             return None
         return {
@@ -392,8 +398,8 @@ async def _generate_within_session(
         new_iteration,
     )
 
-    # Generate suggestions via backend
-    suggestion_data, new_backend_state, warnings = _generate_via_backend(
+    # Generate suggestions via backend (heavy work offloaded to a thread)
+    suggestion_data, new_backend_state, warnings = await _generate_via_backend(
         backend,
         opt_spec,
         results,
@@ -409,7 +415,7 @@ async def _generate_within_session(
     )
 
     # Compute batch diversity
-    diversity_info = _compute_diversity_info(backend, opt_spec, suggestions)
+    diversity_info = await _compute_diversity_info(backend, opt_spec, suggestions)
 
     # Update campaign state
     updated_campaign = campaign.advance_iteration()
@@ -443,7 +449,7 @@ async def _generate_within_session(
     return format_suggestions_response(full_response, verbosity_level)
 
 
-def _generate_via_backend(
+async def _generate_via_backend(
     backend: BOBackend,
     opt_spec: OptimizationSpec,
     results: list[Result],
@@ -458,17 +464,22 @@ def _generate_via_backend(
 ]:
     """Dispatch to initial design or BO suggestions.
 
+    Both paths are CPU-bound (Sobol sampling, GP fitting, acquisition
+    optimization, MCMC) and are offloaded via ``asyncio.to_thread`` so
+    concurrent requests do not stall the event loop.
+
     Returns (suggestion_data, backend_state, warnings).
     """
     if len(results) == 0:
-        designs = backend.generate_initial_design(opt_spec, batch_size)
+        designs = await asyncio.to_thread(backend.generate_initial_design, opt_spec, batch_size)
         suggestion_data = _build_initial_design_data(
             designs, iteration, batch_size, random_seed=random_seed
         )
         return suggestion_data, None, []
 
     observations = results_to_observations(results)
-    batch = backend.generate_suggestions(
+    batch = await asyncio.to_thread(
+        backend.generate_suggestions,
         spec=opt_spec,
         observations=observations,
         batch_size=batch_size,

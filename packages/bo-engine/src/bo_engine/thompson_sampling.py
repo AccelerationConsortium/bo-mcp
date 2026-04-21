@@ -133,64 +133,64 @@ def generate_thompson_samples(
     if config is None:
         config = ThompsonConfig()
 
-    if config.seed is not None:
-        # Side-effect: mutates the global torch RNG. Required because
-        # BoTorch's ``MaxPosteriorSampling`` / manual posterior draws
-        # read from the process-wide torch state rather than accepting
-        # an explicit :class:`torch.Generator`. Callers that need to
-        # isolate this mutation should wrap the call in
-        # ``torch.random.fork_rng(devices=[])``.
-        torch.manual_seed(config.seed)
+    # fork_rng isolates the global torch RNG for the duration of this
+    # call — BoTorch's MaxPosteriorSampling / manual posterior draws
+    # read from the process-wide torch state, so without isolation two
+    # concurrent calls (e.g. under asyncio.to_thread) would race on the
+    # seed and clobber each other's reproducibility.
+    with torch.random.fork_rng(devices=[]):
+        if config.seed is not None:
+            torch.manual_seed(config.seed)
 
-    if config.use_max_posterior_sampling:
-        # Use BoTorch's efficient MaxPosteriorSampling
-        samples = _thompson_via_max_posterior_sampling(
-            model=model,
-            bounds=bounds,
-            n_samples=n_samples,
-            num_candidates=config.num_candidates,
-            minimize=minimize,
-        )
-    else:
-        # Manual implementation for educational purposes
-        samples = _thompson_manual(
-            model=model,
-            bounds=bounds,
-            n_samples=n_samples,
-            num_candidates=config.num_candidates,
-            minimize=minimize,
-        )
-
-    # Build ThompsonSample objects with posterior info
-    thompson_samples: list[ThompsonSample] = []
-
-    for i in range(n_samples):
-        x = samples[i : i + 1]
-        with torch.no_grad():
-            posterior = model.posterior(x)
-            mean = posterior.mean.item()
-            std = posterior.variance.sqrt().item()
-            # Get a sampled value for this point
-            sampled = posterior.rsample().item()
-
-        thompson_samples.append(
-            ThompsonSample(
-                parameters=x.squeeze(0),
-                sampled_value=sampled,
-                posterior_mean=mean,
-                posterior_std=std,
+        if config.use_max_posterior_sampling:
+            # Use BoTorch's efficient MaxPosteriorSampling
+            samples = _thompson_via_max_posterior_sampling(
+                model=model,
+                bounds=bounds,
+                n_samples=n_samples,
+                num_candidates=config.num_candidates,
+                minimize=minimize,
             )
+        else:
+            # Manual implementation for educational purposes
+            samples = _thompson_manual(
+                model=model,
+                bounds=bounds,
+                n_samples=n_samples,
+                num_candidates=config.num_candidates,
+                minimize=minimize,
+            )
+
+        # Build ThompsonSample objects with posterior info
+        thompson_samples: list[ThompsonSample] = []
+
+        for i in range(n_samples):
+            x = samples[i : i + 1]
+            with torch.no_grad():
+                posterior = model.posterior(x)
+                mean = posterior.mean.item()
+                std = posterior.variance.sqrt().item()
+                # Get a sampled value for this point
+                sampled = posterior.rsample().item()
+
+            thompson_samples.append(
+                ThompsonSample(
+                    parameters=x.squeeze(0),
+                    sampled_value=sampled,
+                    posterior_mean=mean,
+                    posterior_std=std,
+                )
+            )
+
+        # Compute batch diversity
+        diversity_score = _compute_batch_diversity(samples, bounds)
+
+        return ThompsonBatch(
+            samples=thompson_samples,
+            parameters_tensor=samples,
+            diversity_score=diversity_score,
+            method_info=f"Thompson Sampling (n_candidates={config.num_candidates})",
         )
-
-    # Compute batch diversity
-    diversity_score = _compute_batch_diversity(samples, bounds)
-
-    return ThompsonBatch(
-        samples=thompson_samples,
-        parameters_tensor=samples,
-        diversity_score=diversity_score,
-        method_info=f"Thompson Sampling (n_candidates={config.num_candidates})",
-    )
 
 
 def generate_thompson_samples_multi_objective(
@@ -227,74 +227,75 @@ def generate_thompson_samples_multi_objective(
     if config is None:
         config = ThompsonConfig()
 
-    if config.seed is not None:
-        # Side-effect: mutates the global torch RNG for the same reason
-        # as the single-objective variant above.
-        torch.manual_seed(config.seed)
+    # Isolate the global torch RNG for the same reason as the
+    # single-objective variant above — see its fork_rng comment.
+    with torch.random.fork_rng(devices=[]):
+        if config.seed is not None:
+            torch.manual_seed(config.seed)
 
-    n_objectives = len(model.models)
+        n_objectives = len(model.models)
 
-    all_samples: list[Tensor] = []
+        all_samples: list[Tensor] = []
 
-    for _ in range(n_samples):
-        # Random weights if not specified
-        if weights is None:
-            w = torch.rand(n_objectives, device=device, dtype=dtype)
-            w = w / w.sum()  # Normalize to sum to 1
-        else:
-            w = torch.tensor(weights, device=device, dtype=dtype)
+        for _ in range(n_samples):
+            # Random weights if not specified
+            if weights is None:
+                w = torch.rand(n_objectives, device=device, dtype=dtype)
+                w = w / w.sum()  # Normalize to sum to 1
+            else:
+                w = torch.tensor(weights, device=device, dtype=dtype)
 
-        # Generate candidates
-        candidates = _generate_sobol_candidates(
-            bounds=bounds,
-            n_candidates=config.num_candidates,
-        )
-
-        # Draw posterior samples and scalarize
-        with torch.no_grad():
-            scalarized_samples = torch.zeros(config.num_candidates, device=device, dtype=dtype)
-
-            for obj_idx in range(n_objectives):
-                posterior = model.models[obj_idx].posterior(candidates)  # ty: ignore[call-non-callable]
-                sample = posterior.rsample()  # 1 x n_candidates x 1
-                sample = sample.squeeze()
-                scalarized_samples += w[obj_idx] * sample
-
-        # Find best (assuming minimization of scalarized objective)
-        best_idx = scalarized_samples.argmin()
-        all_samples.append(candidates[best_idx : best_idx + 1])
-
-    samples = torch.cat(all_samples, dim=0)
-
-    # Build ThompsonSample objects
-    thompson_samples: list[ThompsonSample] = []
-
-    for i in range(n_samples):
-        x = samples[i : i + 1]
-        # Use first objective for mean/std (or could aggregate)
-        with torch.no_grad():
-            posterior = model.models[0].posterior(x)  # ty: ignore[call-non-callable]
-            mean = posterior.mean.item()
-            std = posterior.variance.sqrt().item()
-            sampled = posterior.rsample().item()
-
-        thompson_samples.append(
-            ThompsonSample(
-                parameters=x.squeeze(0),
-                sampled_value=sampled,
-                posterior_mean=mean,
-                posterior_std=std,
+            # Generate candidates
+            candidates = _generate_sobol_candidates(
+                bounds=bounds,
+                n_candidates=config.num_candidates,
             )
+
+            # Draw posterior samples and scalarize
+            with torch.no_grad():
+                scalarized_samples = torch.zeros(config.num_candidates, device=device, dtype=dtype)
+
+                for obj_idx in range(n_objectives):
+                    posterior = model.models[obj_idx].posterior(candidates)  # ty: ignore[call-non-callable]
+                    sample = posterior.rsample()  # 1 x n_candidates x 1
+                    sample = sample.squeeze()
+                    scalarized_samples += w[obj_idx] * sample
+
+            # Find best (assuming minimization of scalarized objective)
+            best_idx = scalarized_samples.argmin()
+            all_samples.append(candidates[best_idx : best_idx + 1])
+
+        samples = torch.cat(all_samples, dim=0)
+
+        # Build ThompsonSample objects
+        thompson_samples: list[ThompsonSample] = []
+
+        for i in range(n_samples):
+            x = samples[i : i + 1]
+            # Use first objective for mean/std (or could aggregate)
+            with torch.no_grad():
+                posterior = model.models[0].posterior(x)  # ty: ignore[call-non-callable]
+                mean = posterior.mean.item()
+                std = posterior.variance.sqrt().item()
+                sampled = posterior.rsample().item()
+
+            thompson_samples.append(
+                ThompsonSample(
+                    parameters=x.squeeze(0),
+                    sampled_value=sampled,
+                    posterior_mean=mean,
+                    posterior_std=std,
+                )
+            )
+
+        diversity_score = _compute_batch_diversity(samples, bounds)
+
+        return ThompsonBatch(
+            samples=thompson_samples,
+            parameters_tensor=samples,
+            diversity_score=diversity_score,
+            method_info="Thompson Sampling (multi-objective with random scalarization)",
         )
-
-    diversity_score = _compute_batch_diversity(samples, bounds)
-
-    return ThompsonBatch(
-        samples=thompson_samples,
-        parameters_tensor=samples,
-        diversity_score=diversity_score,
-        method_info="Thompson Sampling (multi-objective with random scalarization)",
-    )
 
 
 def generate_diverse_thompson_batch(

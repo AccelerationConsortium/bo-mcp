@@ -525,12 +525,14 @@ def generate_next_batch(
            stdlib ``random`` module, which is explicitly
            non-reproducible across process runs.
 
-        Side-effect: the resolved seed is installed on the global
-        ``torch`` RNG via ``torch.manual_seed``.  This is required for
-        BoTorch's ``optimize_acqf`` sampler path which consults the
-        global state rather than accepting an explicit generator.
-        Callers that need to isolate the mutation should wrap their
-        invocation in ``torch.random.fork_rng(devices=[])``.
+        The resolved seed is installed on the global ``torch`` RNG
+        via ``torch.manual_seed`` because BoTorch's ``optimize_acqf``
+        sampler path consults the global state rather than accepting
+        an explicit generator.  The mutation is scoped inside a
+        ``torch.random.fork_rng(devices=[])`` block so concurrent
+        callers (e.g. under ``asyncio.to_thread``) cannot race on
+        the process-wide seed: the prior RNG state is saved on entry
+        and restored on every return path.
 
     Returns:
         Tuple of (List of SuggestionResult objects, Updated TurboState or None)
@@ -539,87 +541,92 @@ def generate_next_batch(
         batch_size = spec.batch_size
 
     random_seed = _resolve_acquisition_seed(spec, iteration, rng)
-    # Side-effect: installs the seed on the global torch RNG so BoTorch's
-    # optimize_acqf sampler path (which reads global state, not an explicit
-    # generator) is reproducible.  See the Reproducibility block above.
-    torch.manual_seed(random_seed)
 
-    # Short-circuit for finite (purely-categorical) spaces whose unique
-    # combinations are already exhausted — neither the initial-design
-    # fallback nor the discrete acquisition optimizer can invent new
-    # points, and BoTorch's optimize_acqf_discrete will otherwise raise
-    # an opaque error when X_avoid covers the entire choice set.
-    _guard_categorical_space_exhaustion(spec, observations, batch_size)
+    # fork_rng isolates the torch global RNG mutation below so concurrent
+    # callers (e.g. under asyncio.to_thread) cannot race on the seed —
+    # prior state is saved on entry and restored on every return path.
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(random_seed)
 
-    # If not enough data, fall back to initial design.
-    # Require at least n_params+1 observations so the GP kernel has more data points
-    # than lengthscale hyperparameters to estimate (slightly overdetermined).
-    # Note: initial_design_size (default 2*n_params+1) is a separate, stricter
-    # recommendation for how many Sobol points to generate — but a user who provides
-    # n_params+1 observations from prior data should not be forced to wait longer.
-    min_model_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters + 1)
-    if spec.initial_design_size is not None:
-        min_data = max(min_model_data, spec.initial_design_size)
-    else:
-        min_data = min_model_data
-    if len(observations) < min_data:
-        pending = pending_points or []
-        excluded = [obs.parameter_values for obs in observations] + list(pending)
-        designs = generate_initial_design(
-            spec,
-            batch_size,
-            n_drawn=len(observations),
-            excluded_points=excluded,
-        )
-        suggestions = [
-            SuggestionResult(
-                parameter_values=design,
-                iteration=iteration,
-                batch_index=i,
-                generation_method="initial_design",
-                random_seed=random_seed,
-                explanation=f"Initial design point {i + 1}/{len(designs)} using Sobol sequence. "
-                "Initial designs explore the parameter space before model-guided suggestions.",
+        # Short-circuit for finite (purely-categorical) spaces whose unique
+        # combinations are already exhausted — neither the initial-design
+        # fallback nor the discrete acquisition optimizer can invent new
+        # points, and BoTorch's optimize_acqf_discrete will otherwise raise
+        # an opaque error when X_avoid covers the entire choice set.
+        _guard_categorical_space_exhaustion(spec, observations, batch_size)
+
+        # If not enough data, fall back to initial design.
+        # Require at least n_params+1 observations so the GP kernel has more data points
+        # than lengthscale hyperparameters to estimate (slightly overdetermined).
+        # Note: initial_design_size (default 2*n_params+1) is a separate, stricter
+        # recommendation for how many Sobol points to generate — but a user who provides
+        # n_params+1 observations from prior data should not be forced to wait longer.
+        min_model_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters + 1)
+        if spec.initial_design_size is not None:
+            min_data = max(min_model_data, spec.initial_design_size)
+        else:
+            min_data = min_model_data
+        if len(observations) < min_data:
+            pending = pending_points or []
+            excluded = [obs.parameter_values for obs in observations] + list(pending)
+            designs = generate_initial_design(
+                spec,
+                batch_size,
+                n_drawn=len(observations),
+                excluded_points=excluded,
             )
-            for i, design in enumerate(designs)
-        ]
-        return suggestions, turbo_state
+            suggestions = [
+                SuggestionResult(
+                    parameter_values=design,
+                    iteration=iteration,
+                    batch_index=i,
+                    generation_method="initial_design",
+                    random_seed=random_seed,
+                    explanation=(
+                        f"Initial design point {i + 1}/{len(designs)} using Sobol sequence. "
+                        "Initial designs explore the parameter space before "
+                        "model-guided suggestions."
+                    ),
+                )
+                for i, design in enumerate(designs)
+            ]
+            return suggestions, turbo_state
 
-    # Determine if single or multi-objective
-    is_single_objective = spec.n_objectives == 1
+        # Determine if single or multi-objective
+        is_single_objective = spec.n_objectives == 1
 
-    # Prepare training data
-    train_x, train_y = _prepare_training_data(observations, spec)
-    bounds = get_bounds_tensor(spec)
+        # Prepare training data
+        train_x, train_y = _prepare_training_data(observations, spec)
+        bounds = get_bounds_tensor(spec)
 
-    # Prepare cost data if cost-aware optimization is enabled
-    train_costs = None
-    if spec.use_cost_aware:
-        train_costs = _prepare_cost_data(observations, use_cost_aware=True)
+        # Prepare cost data if cost-aware optimization is enabled
+        train_costs = None
+        if spec.use_cost_aware:
+            train_costs = _prepare_cost_data(observations, use_cost_aware=True)
 
-    # Encode pending points to the same coordinate system as train_x so the
-    # acquisition optimizer sees them as X_pending.  ``None`` skips the
-    # X_pending branch entirely; ``numel()==0`` means "no valid pending".
-    pending_tensor = _encode_pending_points(pending_points, spec) if pending_points else None
+        # Encode pending points to the same coordinate system as train_x so the
+        # acquisition optimizer sees them as X_pending.  ``None`` skips the
+        # X_pending branch entirely; ``numel()==0`` means "no valid pending".
+        pending_tensor = _encode_pending_points(pending_points, spec) if pending_points else None
 
-    # Create generation context to bundle parameters
-    ctx = GenerationContext(
-        spec=spec,
-        train_x=train_x,
-        train_y=train_y,
-        bounds=bounds,
-        batch_size=batch_size,
-        iteration=iteration,
-        random_seed=random_seed,
-        turbo_state=turbo_state,
-        observations=observations,
-        train_costs=train_costs,
-        pending_x=pending_tensor,
-    )
+        # Create generation context to bundle parameters
+        ctx = GenerationContext(
+            spec=spec,
+            train_x=train_x,
+            train_y=train_y,
+            bounds=bounds,
+            batch_size=batch_size,
+            iteration=iteration,
+            random_seed=random_seed,
+            turbo_state=turbo_state,
+            observations=observations,
+            train_costs=train_costs,
+            pending_x=pending_tensor,
+        )
 
-    if is_single_objective:
-        return _generate_single_objective_batch(ctx)
-    else:
+        if is_single_objective:
+            return _generate_single_objective_batch(ctx)
+
         # TuRBO not supported for multi-objective
         if turbo_state is not None or spec.use_turbo:
             warnings.warn(

@@ -592,13 +592,17 @@ def _generate_single_objective_batch(
             spec
         )
 
-    # Create acquisition function
+    # Create acquisition function.  ``train_y_bo`` is already in the
+    # canonical minimization form (see bo_engine.types) because we
+    # negated above when ``not minimize``; the factory therefore always
+    # receives ``minimize=True``.
     acqf = create_acquisition(
         model=model,
         ref_point=None,
         train_x=train_x,
         train_y=train_y_bo,
         n_objectives=1,
+        minimize=True,
         method=method,
         constraints=None,
         outcome_constraint_models=outcome_constraints,
@@ -816,13 +820,17 @@ def _generate_multi_objective_batch(
             spec
         )
 
-    # Create acquisition function
+    # Create acquisition function.  ``train_y_bo`` has maximization
+    # columns pre-negated so every objective is in minimization form
+    # (see bo_engine.types); the factory therefore receives an
+    # all-True ``minimize_mask``.
     acqf = create_acquisition(
         model=model,
         ref_point=ref_point,
         train_x=train_x,
         train_y=train_y_bo,
         n_objectives=spec.n_objectives,
+        minimize_mask=torch.ones(spec.n_objectives, dtype=torch.bool),
         method=method,
         constraints=None,
     )

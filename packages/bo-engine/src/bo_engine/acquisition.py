@@ -4,6 +4,12 @@ Supports both single-objective (noisy EI, EI) and multi-objective
 (hypervolume improvement, scalarized multi-objective) acquisition
 functions.
 
+All public factories in this module require an explicit ``minimize`` (or
+``minimize_mask``) argument and expect ``train_y`` / ``best_f`` /
+``ref_point`` to be in *minimization form* (lower = better).  See the
+canonical sign-convention documentation in :mod:`bo_engine.types` for
+details and for caller responsibilities.
+
 v1.0.1: Added single-objective support via qLogNoisyExpectedImprovement
 v1.1: Added qLogNParEGO alternative for multi-objective
 v1.3: Added cost-aware (EIpu) and outcome constraint support
@@ -42,27 +48,68 @@ from bo_engine.types import AcquisitionConfig, AcquisitionMethod, OptimizationSp
 logger = logging.getLogger(__name__)
 
 
+def _assert_minimization_form(minimize: bool) -> None:
+    """Guard against silently passing maximization-form data into a factory.
+
+    The canonical internal convention is minimization form (lower is better);
+    callers must negate any maximization objectives before invoking a
+    factory.  See :mod:`bo_engine.types` for the convention.
+    """
+    if not minimize:
+        raise ValueError(
+            "bo_engine acquisition factories operate in minimization form "
+            "(lower = better).  Negate maximization objectives at the call "
+            "site and pass ``minimize=True``.  See the sign-convention note "
+            "in bo_engine.types for details."
+        )
+
+
+def _assert_minimization_mask(minimize_mask: Tensor) -> None:
+    """Multi-objective counterpart of :func:`_assert_minimization_form`."""
+    if not bool(minimize_mask.all()):
+        raise ValueError(
+            "bo_engine multi-objective factories operate in minimization "
+            "form (every objective treated as lower = better).  Negate any "
+            "maximization columns at the call site before building the "
+            "acquisition function.  See bo_engine.types for details."
+        )
+
+
 def create_single_objective_acquisition(
     model: SingleTaskGP,
     train_x: Tensor,
     train_y: Tensor,
+    *,
+    minimize: bool,
     best_f: float | None = None,
     use_noisy: bool = True,
     constraints: list | None = None,
 ) -> AcquisitionFunction:
     """Create acquisition function for single-objective optimization.
 
+    ``train_y`` and ``best_f`` must be supplied in the canonical
+    minimization form (lower = better).  See :mod:`bo_engine.types` for the
+    sign convention and caller responsibilities.
+
     Args:
-        model: Fitted SingleTaskGP model
+        model: Fitted SingleTaskGP model (trained on minimization-form y)
         train_x: Training inputs for baseline sampling
-        train_y: Training outputs (for best_f computation if needed)
-        best_f: Best observed value (required for EI, computed for noisy EI)
+        train_y: Training outputs in minimization form
+        minimize: Direction of the user-facing objective.  Required keyword
+            so the caller cannot silently pass the wrong sign convention.
+            Currently only ``True`` is supported at the construction
+            boundary because the internal engine convention is
+            minimization form — pass ``minimize=True`` after negating any
+            maximization objectives at the call site.
+        best_f: Best observed minimization-form value.  If ``None`` and
+            ``use_noisy=False``, computed as ``train_y.min()``.
         use_noisy: If True, use noisy EI (handles noise), else EI
         constraints: Optional list of constraint callables
 
     Returns:
         Noisy EI or EI acquisition function
     """
+    _assert_minimization_form(minimize)
     train_x, train_y = ensure_device(train_x, train_y)
 
     if use_noisy:
@@ -79,7 +126,7 @@ def create_single_objective_acquisition(
     else:
         # EI for noiseless observations - requires best_f
         if best_f is None:
-            # Compute best_f from training data (assumes minimization)
+            # train_y is in minimization form (lower = better); min() is best.
             best_f = train_y.min().item()
         return qLogExpectedImprovement(model=model, best_f=best_f)
 
@@ -89,22 +136,34 @@ def create_multi_objective_acquisition(
     ref_point: Tensor,
     train_x: Tensor,
     train_y: Tensor,
+    *,
+    minimize_mask: Tensor,
     method: AcquisitionMethod = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT,
     constraints: list | None = None,
 ) -> AcquisitionFunction:
     """Create acquisition function for multi-objective optimization.
 
+    ``train_y`` and ``ref_point`` must be supplied in the canonical
+    minimization form — every objective treated as lower = better — with
+    maximization columns pre-negated at the call site.  See
+    :mod:`bo_engine.types` for the convention.
+
     Args:
-        model: Fitted ModelListGP
-        ref_point: Reference point for hypervolume computation
+        model: Fitted ModelListGP (trained on minimization-form y)
+        ref_point: Reference point in minimization form
         train_x: Training inputs for sampling baseline
-        train_y: Training outputs (for scalarization in NParEGO)
+        train_y: Training outputs in minimization form
+        minimize_mask: Boolean tensor of shape ``(n_objectives,)`` recording
+            the user-facing direction of each objective.  Required keyword
+            so the call site cannot silently pass mismatched signs; must be
+            all-True because the engine operates in minimization form.
         method: Acquisition method (HYPERVOLUME_IMPROVEMENT or SCALARIZED_MULTI_OBJ)
         constraints: Optional list of constraint callables
 
     Returns:
         Multi-objective acquisition function
     """
+    _assert_minimization_mask(minimize_mask)
     train_x, train_y, ref_point = ensure_device(train_x, train_y, ref_point)
 
     if method == AcquisitionMethod.SCALARIZED_MULTI_OBJ:
@@ -144,7 +203,10 @@ def create_acquisition_from_config(config: AcquisitionConfig) -> AcquisitionFunc
     parameter count and improves code clarity.
 
     Args:
-        config: Acquisition configuration containing all parameters
+        config: Acquisition configuration containing all parameters.  The
+            caller must populate ``config.minimize`` /
+            ``config.minimize_mask`` consistent with the canonical
+            minimization-form convention (see :mod:`bo_engine.types`).
 
     Returns:
         Acquisition function appropriate for the problem
@@ -155,6 +217,8 @@ def create_acquisition_from_config(config: AcquisitionConfig) -> AcquisitionFunc
         train_x=config.train_x,
         train_y=config.train_y,
         n_objectives=config.n_objectives,
+        minimize=config.minimize,
+        minimize_mask=config.minimize_mask,
         method=config.method,
         constraints=config.constraints,
         outcome_constraint_models=config.outcome_constraint_models,
@@ -168,6 +232,9 @@ def create_acquisition(
     train_x: Tensor,
     train_y: Tensor,
     n_objectives: int = 2,
+    *,
+    minimize: bool | None = None,
+    minimize_mask: Tensor | None = None,
     method: AcquisitionMethod = AcquisitionMethod.AUTO,
     constraints: list | None = None,
     outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None = None,
@@ -178,6 +245,12 @@ def create_acquisition(
     Automatically selects between single-objective and multi-objective
     acquisition functions based on n_objectives.
 
+    ``train_y`` (and ``ref_point`` for the multi-objective path) must be in
+    the canonical minimization form — see :mod:`bo_engine.types`.  Callers
+    **must** supply ``minimize`` for single-objective problems and
+    ``minimize_mask`` for multi-objective problems so the direction is
+    explicit at the construction boundary.
+
     Note: Consider using create_acquisition_from_config() with an
     AcquisitionConfig object for cleaner code with fewer parameters.
 
@@ -185,8 +258,12 @@ def create_acquisition(
         model: Fitted GP model (SingleTaskGP or ModelListGP)
         ref_point: Reference point for hypervolume (multi-objective only)
         train_x: Training inputs for sampling baseline
-        train_y: Training outputs
+        train_y: Training outputs in minimization form
         n_objectives: Number of objectives (1 = single, 2+ = multi)
+        minimize: User-facing objective direction for single-objective
+            problems.  Required when ``n_objectives == 1``.
+        minimize_mask: Boolean tensor recording user-facing direction per
+            objective.  Required when ``n_objectives >= 2``.
         method: Acquisition method (AUTO selects automatically)
         constraints: Optional list of constraint callables
         outcome_constraint_models: Optional list of (model, threshold) tuples
@@ -204,21 +281,35 @@ def create_acquisition(
             method = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
 
     if n_objectives == 1:
+        if minimize is None:
+            raise ValueError(
+                "create_acquisition requires ``minimize`` for "
+                "single-objective problems; see bo_engine.types for the "
+                "sign convention."
+            )
         return _create_single_objective_dispatch(
             model=model,
             train_x=train_x,
             train_y=train_y,
+            minimize=minimize,
             method=method,
             constraints=constraints,
             outcome_constraint_models=outcome_constraint_models,
             cost_model=cost_model,
         )
 
+    if minimize_mask is None:
+        raise ValueError(
+            "create_acquisition requires ``minimize_mask`` for "
+            "multi-objective problems; see bo_engine.types for the sign "
+            "convention."
+        )
     return _create_multi_objective_dispatch(
         model=model,
         ref_point=ref_point,
         train_x=train_x,
         train_y=train_y,
+        minimize_mask=minimize_mask,
         method=method,
         constraints=constraints,
     )
@@ -228,6 +319,8 @@ def _create_single_objective_dispatch(
     model: ModelListGP | SingleTaskGP,
     train_x: Tensor,
     train_y: Tensor,
+    *,
+    minimize: bool,
     method: AcquisitionMethod,
     constraints: list | None,
     outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None,
@@ -241,7 +334,8 @@ def _create_single_objective_dispatch(
     Args:
         model: Fitted GP model (SingleTaskGP or single-model ModelListGP)
         train_x: Training inputs
-        train_y: Training outputs
+        train_y: Training outputs in minimization form
+        minimize: User-facing objective direction (see :mod:`bo_engine.types`)
         method: Acquisition method
         constraints: Optional constraint callables
         outcome_constraint_models: Optional (model, threshold) pairs
@@ -260,6 +354,7 @@ def _create_single_objective_dispatch(
         return create_cost_aware_acquisition(
             model=model,  # type: ignore[arg-type]
             train_y=train_y,
+            minimize=minimize,
             cost_model=cost_model,
             outcome_constraint_models=outcome_constraint_models,
         )
@@ -280,6 +375,7 @@ def _create_single_objective_dispatch(
         model=model,  # type: ignore[arg-type]
         train_x=train_x,
         train_y=train_y,
+        minimize=minimize,
         use_noisy=use_noisy,
         constraints=all_constraints if all_constraints else None,
     )
@@ -290,6 +386,8 @@ def _create_multi_objective_dispatch(
     ref_point: Tensor | None,
     train_x: Tensor,
     train_y: Tensor,
+    *,
+    minimize_mask: Tensor,
     method: AcquisitionMethod,
     constraints: list | None,
 ) -> AcquisitionFunction:
@@ -300,9 +398,13 @@ def _create_multi_objective_dispatch(
 
     Args:
         model: Fitted ModelListGP
-        ref_point: Reference point for hypervolume computation
+        ref_point: Reference point for hypervolume computation, in
+            minimization form
         train_x: Training inputs
-        train_y: Training outputs
+        train_y: Training outputs in minimization form
+        minimize_mask: Boolean tensor of shape ``(n_objectives,)`` recording
+            the user-facing direction of each objective (see
+            :mod:`bo_engine.types`).
         method: Acquisition method
         constraints: Optional constraint callables
 
@@ -317,6 +419,7 @@ def _create_multi_objective_dispatch(
         ref_point=ref_point,
         train_x=train_x,
         train_y=train_y,
+        minimize_mask=minimize_mask,
         method=method,
         constraints=constraints,
     )
@@ -351,22 +454,31 @@ def create_cost_aware_acquisition(
     model: SingleTaskGP,
     train_y: Tensor,
     cost_model: SingleTaskGP,
+    *,
+    minimize: bool,
     outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None = None,
 ) -> AcquisitionFunction:
     """Create EIpu (Expected Improvement per Unit cost) acquisition.
 
     EIpu = EI(x) / E[cost(x)]
 
+    ``train_y`` must be in the canonical minimization form; see
+    :mod:`bo_engine.types`.
+
     Args:
         model: Fitted objective model
-        train_y: Training outputs for best_f computation
+        train_y: Training outputs in minimization form
         cost_model: Fitted cost model
+        minimize: User-facing objective direction (required keyword so the
+            caller cannot silently mismatch the sign convention)
         outcome_constraint_models: Optional outcome constraint models
 
     Returns:
         EIpuAcquisition function
     """
-    best_f = train_y.min().item()  # Assumes minimization
+    _assert_minimization_form(minimize)
+    # train_y is in minimization form (lower = better); min() is best.
+    best_f = train_y.min().item()
 
     return EIpuAcquisition(
         model=model,

@@ -125,7 +125,9 @@ class TestOptimizeDiscrete:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, acq_values = optimize_acquisition(
             acqf=acqf,
@@ -148,7 +150,9 @@ class TestOptimizeDiscrete:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, _ = optimize_acquisition(
             acqf=acqf,
@@ -177,7 +181,9 @@ class TestOptimizeDiscrete:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, _ = optimize_acquisition(
             acqf=acqf,
@@ -198,7 +204,9 @@ class TestOptimizeDiscrete:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, _ = optimize_acquisition(
             acqf=acqf,
@@ -237,7 +245,9 @@ class TestOptimizeMixed:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, _ = optimize_acquisition(
             acqf=acqf,
@@ -261,7 +271,9 @@ class TestOptimizeMixed:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, _ = optimize_acquisition(
             acqf=acqf,
@@ -288,7 +300,9 @@ class TestOptimizeMixed:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, _ = optimize_acquisition(
             acqf=acqf,
@@ -359,7 +373,9 @@ class TestOptimizeMixedThreshold:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         with pytest.raises(NotImplementedError, match="not yet supported"):
             optimize_acquisition(
@@ -389,7 +405,9 @@ class TestContinuousFallback:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, _ = optimize_acquisition(
             acqf=acqf,
@@ -421,7 +439,9 @@ class TestContinuousFallback:
 
         from bo_engine.acquisition import create_single_objective_acquisition
 
-        acqf = create_single_objective_acquisition(model=model, train_x=train_x, train_y=train_y)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
 
         candidates, _ = optimize_acquisition(
             acqf=acqf,

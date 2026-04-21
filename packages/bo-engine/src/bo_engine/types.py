@@ -3,6 +3,42 @@
 These types define the interface between bo-engine and higher-level packages.
 They are simple dataclasses/TypedDicts to keep bo-engine independent of
 external Pydantic models or other frameworks.
+
+---------------------------------------------------------------------------
+Canonical sign convention (internal = minimization)
+---------------------------------------------------------------------------
+
+Every public factory and diagnostic helper in :mod:`bo_engine` operates on
+objective data that has been pre-transformed to **minimization form**, i.e.
+*lower is always better*.  Concretely:
+
+* For an objective declared ``ObjectiveSpec(minimize=True)`` the caller
+  passes ``train_y`` unchanged.
+* For an objective declared ``ObjectiveSpec(minimize=False)`` (maximization)
+  the caller must pre-negate the data: ``train_y_internal = -train_y_raw``.
+* For multi-objective problems the same rule is applied column-wise using
+  the ``minimize_mask`` built from the spec.
+
+The convention applies to every tensor that carries objective values into
+or out of the engine's internals, including:
+
+* ``train_y`` / ``best_f`` arguments to acquisition factories.
+* ``pareto_y`` and ``ref_point`` passed to
+  :func:`bo_engine.diagnostics.compute_hypervolume`.
+* ``train_y`` passed to :func:`bo_engine.reference_point.get_reference_point`.
+
+Every factory that straddles this boundary accepts an explicit
+``minimize: bool`` (or ``minimize_mask: Tensor``) keyword so the intended
+direction is part of the call site instead of an implicit contract.  Helper
+functions whose outputs are reported back to users (e.g.
+``predicted_objectives`` in :class:`SuggestionResult`) undo the negation for
+maximization objectives before returning, so the user never sees internal
+form.
+
+If you add a new helper that consumes or produces objective values,
+document the convention you follow **and** require an explicit direction
+argument rather than inferring it from the spec.  Silent sign flips are the
+single highest-risk correctness hazard in BO code.
 """
 
 from __future__ import annotations
@@ -284,6 +320,12 @@ class AcquisitionConfig:
     """Configuration for acquisition function creation.
 
     Bundles parameters for create_acquisition to reduce function parameter count.
+
+    ``train_y``, ``ref_point`` and ``best_f``-derived quantities are
+    consumed in minimization form.  Populate ``minimize`` for
+    single-objective campaigns and ``minimize_mask`` for multi-objective
+    campaigns so the call site records the user-facing direction
+    explicitly (see :mod:`bo_engine.types` for the sign convention).
     """
 
     # Required parameters
@@ -294,6 +336,9 @@ class AcquisitionConfig:
 
     # Optional parameters
     ref_point: Tensor | Any | None = None  # Tensor
+    # Sign-convention bookkeeping — populate the one matching n_objectives.
+    minimize: bool | None = None  # single-objective campaigns
+    minimize_mask: Tensor | Any | None = None  # multi-objective campaigns
     method: AcquisitionMethod = AcquisitionMethod.AUTO
     constraints: list[Any] | None = None
     outcome_constraint_models: list[OutcomeConstraintModel] | list[tuple[Any, float]] | None = None

@@ -101,9 +101,17 @@ def compute_hypervolume(
 ) -> float:
     """Compute hypervolume indicator for Pareto front.
 
+    Both ``pareto_y`` and ``ref_point`` are expected in the canonical
+    minimization form (lower = better, with maximization columns
+    pre-negated by the caller) documented in :mod:`bo_engine.types`.  The
+    function negates both internally before passing them to BoTorch's
+    maximization-oriented ``Hypervolume`` implementation.
+
     Args:
-        pareto_y: Pareto front points of shape (n_pareto, n_objectives)
-        ref_point: Reference point of shape (n_objectives,)
+        pareto_y: Pareto front points of shape (n_pareto, n_objectives),
+            in minimization form
+        ref_point: Reference point of shape (n_objectives,), in
+            minimization form
 
     Returns:
         Hypervolume value

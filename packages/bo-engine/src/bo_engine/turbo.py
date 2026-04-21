@@ -3,6 +3,14 @@
 TuRBO manages a trust region that expands on success and contracts on failure,
 enabling efficient optimization in high-dimensional spaces.
 
+Sign convention: ``update_turbo_state`` accepts **raw** objective values and
+takes an explicit ``minimize`` flag; it then converts to TuRBO's internal
+maximization convention (``best_value`` tracks the largest "better-is-higher"
+value).  Every helper that consumes model-space data (``train_y``,
+``best_value``) operates in that internal form.  See the canonical
+minimization-form convention in :mod:`bo_engine.types` and note that this
+module's internal form differs by a sign.
+
 Reference: Eriksson et al., "Scalable Global Optimization via Local Bayesian
 Optimization", NeurIPS 2019.
 """
@@ -35,6 +43,16 @@ if TYPE_CHECKING:
 class TurboState:
     """Trust region state for TuRBO optimization.
 
+    Sign convention: ``best_value`` is tracked in TuRBO's internal
+    maximization convention — larger is better, regardless of the
+    user-facing ``minimize`` direction.  ``update_turbo_state`` performs
+    the conversion from raw objective values using its ``minimize``
+    argument, and ``get_turbo_bounds`` centres the trust region on
+    ``train_y.argmax()`` in the same convention.  Callers that build a
+    ``TurboState`` by hand (e.g. tests, state deserialization) must
+    therefore seed ``best_value`` with an already-negated value when the
+    user-facing objective is minimized.
+
     Attributes:
         dim: Problem dimensionality
         batch_size: Number of suggestions per iteration
@@ -45,7 +63,8 @@ class TurboState:
         failure_tolerance: Failures before shrinking
         success_counter: Consecutive improving iterations
         success_tolerance: Successes before expansion (default: 10)
-        best_value: Best objective value seen (for maximization)
+        best_value: Best observed value in TuRBO's internal maximization
+            convention (always "larger is better")
         restart_triggered: True when length < length_min
     """
 
@@ -84,7 +103,9 @@ def create_turbo_state(
     Args:
         dim: Number of parameters
         batch_size: Batch size for suggestions
-        initial_best_value: Best objective value seen so far (for maximization)
+        initial_best_value: Best objective value seen so far in TuRBO's
+            internal maximization convention (larger is better, regardless
+            of user-facing direction; see :class:`TurboState`).
 
     Returns:
         Initialized TurboState
@@ -93,7 +114,12 @@ def create_turbo_state(
     return TurboState(dim=dim, batch_size=batch_size, best_value=best)
 
 
-def update_turbo_state(state: TurboState, y_next: Tensor, minimize: bool = True) -> TurboState:
+def update_turbo_state(
+    state: TurboState,
+    y_next: Tensor,
+    *,
+    minimize: bool,
+) -> TurboState:
     """Update trust region based on new observations.
 
     The trust region expands after consecutive successes and contracts
@@ -104,7 +130,10 @@ def update_turbo_state(state: TurboState, y_next: Tensor, minimize: bool = True)
         state: Current TuRBO state
         y_next: Objective values from latest batch (shape: [batch_size] or [batch_size, 1])
                 Raw objective values — negation for maximization is handled internally.
-        minimize: If True, lower y is better. If False, higher y is better.
+        minimize: User-facing objective direction.  Required keyword so the
+            caller cannot silently pass the wrong sign convention; see
+            :mod:`bo_engine.types` for the canonical rule.  If True, lower
+            raw y is better; if False, higher raw y is better.
 
     Returns:
         Updated TurboState with modified counters and length

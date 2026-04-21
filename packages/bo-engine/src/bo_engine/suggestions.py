@@ -38,6 +38,7 @@ from bo_engine.constants import (
     INITIAL_DESIGN_MULTIPLIER,
     MAX_RANDOM_SEED,
     MIN_OBSERVATIONS_FOR_MODEL,
+    SEED_ITERATION_OFFSET,
 )
 from bo_engine.constraints import (
     _get_parameter_indices,
@@ -451,6 +452,32 @@ def _apply_constraints_to_samples(
     return result
 
 
+def _resolve_acquisition_seed(
+    spec: OptimizationSpec,
+    iteration: int,
+    rng: np.random.Generator | None,
+) -> int:
+    """Derive the acquisition seed for :func:`generate_next_batch`.
+
+    Precedence (see TODO 1.41b):
+
+    1. ``rng`` wins whenever supplied so external callers keep control
+       of their RNG pipeline.
+    2. ``spec.random_seed`` seeds a deterministic per-iteration stride
+       so two independent replays of the same campaign state produce
+       identical acquisition candidates.
+    3. Falls back to :func:`random.randint` only when neither is
+       supplied; this path is documented as non-reproducible.
+    """
+    if rng is not None:
+        return int(rng.integers(0, MAX_RANDOM_SEED))
+    if spec.random_seed is not None:
+        return (spec.random_seed + iteration * SEED_ITERATION_OFFSET) % MAX_RANDOM_SEED
+    # Deliberately non-reproducible — no seed was supplied. Used in tests
+    # and ad-hoc campaigns where reproducibility is not required.
+    return random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
+
+
 def generate_next_batch(
     spec: OptimizationSpec,
     observations: list[ObservationData],
@@ -482,17 +509,40 @@ def generate_next_batch(
             conditions new candidates on the in-flight batch instead of
             silently clustering around it.  See TODO 1.41.
 
+    Reproducibility:
+        The acquisition seed is resolved with the following precedence
+        (see TODO 1.41b):
+
+        1. ``rng`` is supplied — the seed is drawn from it, taking
+           precedence over any other source so callers that already
+           manage a :class:`numpy.random.Generator` stay in control.
+        2. ``spec.random_seed`` is set — the seed is derived
+           deterministically as
+           ``(spec.random_seed + iteration * SEED_ITERATION_OFFSET)
+           % MAX_RANDOM_SEED``.  Two independent calls on the same
+           campaign state at the same iteration therefore produce
+           identical acquisition candidates.
+        3. Neither is provided — the seed is drawn from the Python
+           stdlib ``random`` module, which is explicitly
+           non-reproducible across process runs.
+
+        Side-effect: the resolved seed is installed on the global
+        ``torch`` RNG via ``torch.manual_seed``.  This is required for
+        BoTorch's ``optimize_acqf`` sampler path which consults the
+        global state rather than accepting an explicit generator.
+        Callers that need to isolate the mutation should wrap their
+        invocation in ``torch.random.fork_rng(devices=[])``.
+
     Returns:
         Tuple of (List of SuggestionResult objects, Updated TurboState or None)
     """
     if batch_size is None:
         batch_size = spec.batch_size
 
-    # Generate random seed for reproducibility (not for crypto)
-    if rng is not None:
-        random_seed = int(rng.integers(0, MAX_RANDOM_SEED))
-    else:
-        random_seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
+    random_seed = _resolve_acquisition_seed(spec, iteration, rng)
+    # Side-effect: installs the seed on the global torch RNG so BoTorch's
+    # optimize_acqf sampler path (which reads global state, not an explicit
+    # generator) is reproducible.  See the Reproducibility block above.
     torch.manual_seed(random_seed)
 
     # Short-circuit for finite (purely-categorical) spaces whose unique

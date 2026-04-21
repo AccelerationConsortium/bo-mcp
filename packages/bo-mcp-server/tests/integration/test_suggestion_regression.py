@@ -123,6 +123,75 @@ class TestSuggestionReproducibility:
             assert "random_seed" in s["provenance"]
             assert s["provenance"]["random_seed"] is not None
 
+    @pytest.mark.asyncio
+    async def test_bo_phase_deterministic_with_seed(self, setup_database):
+        """BO-phase suggestions are reproducible when ``random_seed`` is set.
+
+        Regression test for TODO 1.41b.  Before the fix,
+        ``generate_next_batch`` picked its acquisition seed with
+        ``random.randint`` whenever the caller did not pass an ``rng``,
+        so two replays of the same seeded campaign produced divergent
+        BO candidates even though the ``spec.random_seed`` hint was
+        honored by the Sobol initial design.  The fix derives the
+        acquisition seed from ``spec.random_seed`` + ``iteration``, so
+        the BO path on call 2 of two sibling campaigns with identical
+        specs and identical observed history returns the same
+        ``parameter_values``.
+        """
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        owner_id = str(uuid4())
+
+        intake_data = {
+            "name": "1.41b seeded BO reproducibility",
+            "parameters": [
+                {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+                {"name": "y", "type": "continuous", "bounds": [0.0, 1.0]},
+            ],
+            "objectives": [{"name": "f", "direction": "minimize"}],
+            "batch_size": 1,
+            "random_seed": 4242,
+        }
+
+        seed_points = [
+            (0.1, 0.1),
+            (0.9, 0.1),
+            (0.1, 0.9),
+            (0.9, 0.9),
+            (0.5, 0.5),
+            (0.3, 0.7),
+        ]
+        seed_results = [
+            {
+                "parameter_values": {"x": px, "y": py},
+                "objective_values": {"f": (px - 0.2) ** 2 + (py - 0.2) ** 2},
+            }
+            for px, py in seed_points
+        ]
+
+        async def _campaign_bo_candidate() -> dict:
+            create = await create_campaign(intake_data, owner_id)
+            assert create["success"], create
+            campaign_id = create["campaign_id"]
+            submit = await submit_results(campaign_id, _to_result_inputs(seed_results), owner_id)
+            assert submit["success"], submit
+            gen = await generate_suggestions(campaign_id)
+            assert gen["success"], gen
+            assert len(gen["suggestions"]) == 1
+            assert gen["suggestions"][0]["provenance"]["generation_method"] == "bo"
+            return gen["suggestions"][0]["parameter_values"]
+
+        first = await _campaign_bo_candidate()
+        second = await _campaign_bo_candidate()
+
+        for param in ("x", "y"):
+            assert abs(first[param] - second[param]) < 1e-10, (
+                f"Seeded BO-phase candidate diverged across replays for '{param}': "
+                f"first={first}, second={second}"
+            )
+
 
 def _params_tuple(params: dict) -> tuple:
     """Hashable representation of a parameter-values dict."""

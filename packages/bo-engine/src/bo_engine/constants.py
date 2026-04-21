@@ -198,6 +198,16 @@ PROGRESS_REGRESSING_MULTIPLIER = 0.99
 # Maximum random seed value (2^31 - 1 for compatibility)
 MAX_RANDOM_SEED = 2**31 - 1
 
+# Per-iteration offset for deriving reproducible acquisition seeds from
+# ``spec.random_seed``. Each call to ``generate_next_batch`` at a different
+# iteration gets a distinct but deterministic seed via
+# ``(spec.random_seed + iteration * SEED_ITERATION_OFFSET) % MAX_RANDOM_SEED``.
+# The value is a large odd prime that is coprime to ``MAX_RANDOM_SEED`` so the
+# modular stride visits every residue before cycling, spreading consecutive
+# iterations across the seed range instead of clustering near adjacent values.
+# See TODO 1.41b.
+SEED_ITERATION_OFFSET = 1_000_003
+
 # =============================================================================
 # Data Quality Warnings
 # =============================================================================

@@ -2,7 +2,7 @@
 """Backend benchmarking harness.
 
 Compares BoTorch and BayBE backends on standard optimization problems
-to justify BackendSelector heuristics (TODO item 4.P5 / 10.6).
+to justify BackendSelector heuristics.
 
 Usage:
     # Smoke test (5 seeds, 10 iterations — ~5 min)

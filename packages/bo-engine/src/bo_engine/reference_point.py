@@ -494,13 +494,22 @@ def get_reference_point(
     This function maintains backward compatibility with the existing API
     while using the new dynamic reference point computation.
 
+    ``train_y`` is expected in the canonical minimization form (lower =
+    better, with maximization columns pre-negated by the caller) as
+    documented in :mod:`bo_engine.types`.  ``minimize_mask`` records the
+    user-facing direction; under the current convention every entry must
+    be ``True`` (otherwise the data would not be in minimization form).
+
     Args:
-        train_y: Training outputs of shape (n_samples, n_objectives)
-        minimize_mask: Boolean tensor indicating which objectives to minimize
+        train_y: Training outputs of shape (n_samples, n_objectives), in
+            minimization form
+        minimize_mask: Boolean tensor indicating which objectives were
+            minimized in the user-facing spec (expected to be all-True
+            under the canonical convention)
         margin: Margin factor (e.g., 0.1 = 10% worse)
 
     Returns:
-        Reference point tensor of shape (n_objectives,)
+        Reference point tensor of shape (n_objectives,) in minimization form
     """
     config = ReferencePointConfig(
         strategy=ReferencePointStrategy.STATIC,  # Use static for backward compat

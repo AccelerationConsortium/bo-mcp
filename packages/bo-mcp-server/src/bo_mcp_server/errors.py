@@ -20,7 +20,12 @@ Usage:
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from bo_mcp_server.constants import CONCURRENT_MODIFICATION_RETRY_AFTER_SECONDS
+
+if TYPE_CHECKING:
+    from bo_mcp_server.storage.base import ConcurrentModificationError
 
 # ---------------------------------------------------------------------------
 # Domain exceptions
@@ -88,6 +93,8 @@ class ErrorCode(StrEnum):
     MISSING_OBJECTIVES = "E007"
     CONSTRAINT_VIOLATION = "E008"
     SUGGESTION_NOT_FOUND = "E009"
+    CONCURRENT_MODIFICATION = "E010"
+    SEARCH_SPACE_EXHAUSTED = "E011"
 
     # Processing errors (E1xx)
     MODEL_FITTING_FAILED = "E101"
@@ -162,6 +169,17 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "Verify suggestion_id is correct. "
         "Use bo_list_suggestions to list suggestions for the campaign."
     ),
+    ErrorCode.CONCURRENT_MODIFICATION: (
+        "Fetch the current campaign state via campaign://{id} or "
+        "bo_list_campaigns to get the latest version, then retry the operation. "
+        "Wait retry_after_seconds before retrying to avoid re-hitting the race."
+    ),
+    ErrorCode.SEARCH_SPACE_EXHAUSTED: (
+        "Use bo_terminate_campaign: the finite (typically purely-categorical) "
+        "search space has no unseen combinations left, so further experiments "
+        "cannot provide new information. Verify via campaign://{id} before "
+        "closing out."
+    ),
     ErrorCode.MODEL_FITTING_FAILED: (
         "Check data quality with bo_get_diagnostics. May need more observations (minimum 2)."
     ),
@@ -189,6 +207,10 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.MISSING_OBJECTIVES: "At least one objective is required",
     ErrorCode.CONSTRAINT_VIOLATION: "Constraint validation failed",
     ErrorCode.SUGGESTION_NOT_FOUND: "Suggestion not found",
+    ErrorCode.CONCURRENT_MODIFICATION: (
+        "Entity was modified by another request; your update lost the version race"
+    ),
+    ErrorCode.SEARCH_SPACE_EXHAUSTED: "Search space has no remaining unique combinations",
     ErrorCode.MODEL_FITTING_FAILED: "Model fitting failed",
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: "Acquisition optimization failed",
     ErrorCode.DATABASE_ERROR: "Database operation failed",
@@ -270,11 +292,55 @@ ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.MISSING_OBJECTIVES: 400,
     ErrorCode.CONSTRAINT_VIOLATION: 400,
     ErrorCode.SUGGESTION_NOT_FOUND: 404,
+    ErrorCode.CONCURRENT_MODIFICATION: 409,
+    ErrorCode.SEARCH_SPACE_EXHAUSTED: 409,
     ErrorCode.MODEL_FITTING_FAILED: 500,
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: 500,
     ErrorCode.DATABASE_ERROR: 500,
     ErrorCode.INSUFFICIENT_DATA: 422,
 }
+
+
+def make_concurrent_modification_response(
+    err: "ConcurrentModificationError",
+    extra_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the structured response for a lost optimistic-locking race.
+
+    Converts the storage-layer ``ConcurrentModificationError`` into a
+    ``CONCURRENT_MODIFICATION`` envelope that identifies the entity that
+    was racing, the version the caller tried to overwrite, and a
+    ``retry_after_seconds`` backoff hint so agents can retry safely.
+
+    Args:
+        err: The raised ``ConcurrentModificationError``.
+        extra_details: Operation-specific details to merge into ``error.details``
+            (e.g. ``{"campaign_id": ...}``) so callers do not have to repeat
+            the entity-id fields that are already on ``err``.
+
+    Returns:
+        A ``make_error_response`` dict for ``ErrorCode.CONCURRENT_MODIFICATION``
+        with ``details`` including the offending entity and a retry hint.
+    """
+    details: dict[str, Any] = {
+        "entity_type": err.entity_type,
+        "entity_id": str(err.entity_id),
+        "expected_version": err.expected_version,
+        "retry_after_seconds": CONCURRENT_MODIFICATION_RETRY_AFTER_SECONDS,
+    }
+    if extra_details:
+        details.update(extra_details)
+
+    message = (
+        f"{err.entity_type} {err.entity_id} was modified by another request "
+        f"while your update was in flight (expected version {err.expected_version}). "
+        "Fetch the current version and retry."
+    )
+    return make_error_response(
+        ErrorCode.CONCURRENT_MODIFICATION,
+        message=message,
+        details=details,
+    )
 
 
 def http_status_for_error(error_response: dict[str, Any]) -> int:

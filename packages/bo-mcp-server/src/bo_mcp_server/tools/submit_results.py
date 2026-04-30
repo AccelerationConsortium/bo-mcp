@@ -30,7 +30,10 @@ async def submit_results(
         submitted_by: UUID of the user submitting results.
         source: Result source (gui, file_upload, or api).
         force: If True, skip duplicate detection.
-        atomic: If True, rollback all results if any fail.
+        atomic: If True (default), the batch is pre-validated and rejected
+            on the first error — no result row or suggestion-status update
+            is persisted. If False, invalid rows are skipped and valid rows
+            are saved individually.
         continue_on_error: If True, continue after errors (non-atomic).
         verbosity: Response verbosity level (minimal, standard, detailed).
 

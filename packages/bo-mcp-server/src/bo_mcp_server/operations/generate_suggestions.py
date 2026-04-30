@@ -5,8 +5,13 @@ Extracted from the MCP tool so it can be reused by any transport
 
 Uses the BOBackend protocol for all BO-engine interactions,
 keeping the server decoupled from specific backend implementations.
+
+Heavy BO-engine work (GP fitting, acquisition optimization, Sobol sampling)
+is offloaded via ``asyncio.to_thread`` so it does not block the FastAPI /
+MCP event loop while other requests are served concurrently.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +21,7 @@ from uuid import UUID
 from bo_engine.backend import BOBackend
 from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
 from bo_engine.pending_points import filter_pending_points
+from bo_engine.suggestions import SearchSpaceExhaustedError
 from bo_engine.types import OptimizationSpec
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +34,11 @@ from bo_mcp_server.domain import (
     SuggestionProvenance,
     SuggestionStatus,
 )
-from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.errors import (
+    ErrorCode,
+    make_concurrent_modification_response,
+    make_error_response,
+)
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
     parse_verbosity,
@@ -41,6 +51,7 @@ from bo_mcp_server.response_formatter import (
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
+    ConcurrentModificationError,
     ResultRepository,
     SuggestionRepository,
     get_session,
@@ -147,37 +158,7 @@ async def _handle_pending_suggestions(
     return pending_info, valid_pending
 
 
-def _build_initial_design_data(
-    designs: list[dict[str, Any]],
-    iteration: int,
-    batch_size: int,
-    random_seed: int | None = None,
-) -> SuggestionDataList:
-    """Build suggestion data tuples from initial design points."""
-    return [
-        (
-            design,
-            {
-                "iteration": iteration,
-                "batch_index": i,
-                "generation_method": "initial_design",
-                "random_seed": random_seed,
-                "explanation": (
-                    f"Initial design point "
-                    f"{i + 1}/{batch_size}"
-                    " using Sobol sequence. Initial"
-                    " designs explore the parameter"
-                    " space before model-guided"
-                    " optimization."
-                ),
-                "confidence_level": "medium",
-            },
-        )
-        for i, design in enumerate(designs)
-    ]
-
-
-def _compute_diversity_info(
+async def _compute_diversity_info(
     backend: BOBackend,
     opt_spec: OptimizationSpec,
     suggestions: list[Suggestion],
@@ -185,14 +166,15 @@ def _compute_diversity_info(
     """Compute batch diversity metrics via the backend.
 
     Returns diversity info dict, or None if fewer than 2
-    suggestions or on failure.
+    suggestions or on failure. The backend call is offloaded to a thread
+    so it cannot block the event loop.
     """
     if len(suggestions) <= 1:
         return None
 
     try:
         candidates = [s.parameter_values for s in suggestions]
-        metrics = backend.compute_batch_diversity(opt_spec, candidates)
+        metrics = await asyncio.to_thread(backend.compute_batch_diversity, opt_spec, candidates)
         if metrics is None:
             return None
         return {
@@ -281,14 +263,43 @@ async def generate_suggestions_operation(
     campaign_uuid = campaign_id_result
 
     # --- Database session scope ---
-    async with get_session() as session:
-        repos = _init_repositories(session)
-        return await _generate_within_session(
+    try:
+        async with get_session() as session:
+            repos = _init_repositories(session)
+            return await _generate_within_session(
+                campaign_id,
+                campaign_uuid,
+                batch_size,
+                verbosity_level,
+                repos,
+            )
+    except ConcurrentModificationError as err:
+        logger.warning(
+            "Concurrent modification while generating suggestions for campaign %s: %s",
             campaign_id,
-            campaign_uuid,
-            batch_size,
-            verbosity_level,
-            repos,
+            err,
+        )
+        response = make_concurrent_modification_response(
+            err, extra_details={"campaign_id": campaign_id}
+        )
+        response.update({"suggestions": [], "iteration": None})
+        return response
+    except SearchSpaceExhaustedError as err:
+        logger.info(
+            "Search space exhausted for campaign %s: %s",
+            campaign_id,
+            err,
+        )
+        return _make_suggestions_error(
+            ErrorCode.SEARCH_SPACE_EXHAUSTED,
+            message=str(err),
+            details={
+                "campaign_id": campaign_id,
+                "n_requested": err.n_requested,
+                "n_available": err.n_available,
+                "n_total_combinations": err.n_total_combinations,
+                "next_action_recommendation": "terminate_campaign",
+            },
         )
 
 
@@ -360,7 +371,7 @@ async def _generate_within_session(
 
     # Handle pending suggestions
     pending = await suggestion_repo.list_by_campaign(campaign_uuid, status=SuggestionStatus.PENDING)
-    pending_info, _ = await _handle_pending_suggestions(pending, suggestion_repo)
+    pending_info, valid_pending = await _handle_pending_suggestions(pending, suggestion_repo)
 
     # Prepare generation inputs
     actual_batch_size = batch_size or spec.batch_size
@@ -369,21 +380,26 @@ async def _generate_within_session(
     backend = get_backend(spec.backend)
 
     logger.debug(
-        "Generation context: n_results=%d, batch_size=%d, iteration=%d",
+        "Generation context: n_results=%d, batch_size=%d, iteration=%d, n_pending=%d",
         len(results),
         actual_batch_size,
         new_iteration,
+        len(valid_pending),
     )
 
-    # Generate suggestions via backend
-    suggestion_data, new_backend_state, warnings = _generate_via_backend(
+    # Pending suggestions condition the acquisition so the new batch does
+    # not cluster around in-flight experiments.
+    pending_parameter_values = [p.parameter_values for p in valid_pending]
+
+    # Generate suggestions via backend (heavy work offloaded to a thread)
+    suggestion_data, new_backend_state, warnings = await _generate_via_backend(
         backend,
         opt_spec,
         results,
         actual_batch_size,
         new_iteration,
         campaign.backend_state,
-        random_seed=spec.random_seed,
+        pending_parameter_values,
     )
 
     # Create and save suggestion entities
@@ -392,7 +408,7 @@ async def _generate_within_session(
     )
 
     # Compute batch diversity
-    diversity_info = _compute_diversity_info(backend, opt_spec, suggestions)
+    diversity_info = await _compute_diversity_info(backend, opt_spec, suggestions)
 
     # Update campaign state
     updated_campaign = campaign.advance_iteration()
@@ -426,37 +442,54 @@ async def _generate_within_session(
     return format_suggestions_response(full_response, verbosity_level)
 
 
-def _generate_via_backend(
+async def _generate_via_backend(
     backend: BOBackend,
     opt_spec: OptimizationSpec,
     results: list[Result],
     batch_size: int,
     iteration: int,
     prior_backend_state: dict[str, Any] | None,
-    random_seed: int | None = None,
+    pending_parameter_values: list[dict[str, Any]] | None = None,
 ) -> tuple[
     SuggestionDataList,
     dict[str, Any] | None,
     list[str],
 ]:
-    """Dispatch to initial design or BO suggestions.
+    """Generate a batch of suggestions via the backend.
+
+    Previously this function branched on ``len(results) == 0`` to call
+    ``backend.generate_initial_design`` directly.  That dual-gate created
+    a duplicate-suggestion bug: each operation-level call reseeded Sobol
+    (via the backend) while the engine-level fallback in
+    :func:`bo_engine.suggestions.generate_next_batch` independently decided
+    when to reseed as well, so the two gates disagreed on which Sobol
+    stream to continue.  Routing every call through
+    ``backend.generate_suggestions`` makes the engine the single source of
+    truth for the initial-design threshold, the Sobol continuation
+    (``n_drawn=len(observations)``), and the exhaustion check for finite
+    categorical spaces.
+
+    ``pending_parameter_values`` carries the parameter dicts of suggestions
+    that are PENDING but not yet observed; the backend is expected to
+    forward them to its acquisition optimizer as ``X_pending`` so
+    parallel / batch BO does not cluster new candidates around the
+    in-flight batch.
+
+    Both paths are CPU-bound (Sobol sampling, GP fitting, acquisition
+    optimization, MCMC) and are offloaded via ``asyncio.to_thread`` so
+    concurrent requests do not stall the event loop.
 
     Returns (suggestion_data, backend_state, warnings).
     """
-    if len(results) == 0:
-        designs = backend.generate_initial_design(opt_spec, batch_size)
-        suggestion_data = _build_initial_design_data(
-            designs, iteration, batch_size, random_seed=random_seed
-        )
-        return suggestion_data, None, []
-
     observations = results_to_observations(results)
-    batch = backend.generate_suggestions(
+    batch = await asyncio.to_thread(
+        backend.generate_suggestions,
         spec=opt_spec,
         observations=observations,
         batch_size=batch_size,
         iteration=iteration,
         backend_state=prior_backend_state,
+        pending_points=pending_parameter_values,
     )
     suggestion_data = [(item["parameter_values"], item["provenance"]) for item in batch.suggestions]
     return (

@@ -385,7 +385,13 @@ class BayBEBackend:
         batch_size: int,
         iteration: int,
         backend_state: dict[str, Any] | None = None,
+        pending_points: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
+        # BayBE handles batch diversity internally via its own sequential
+        # recommenders; pending_points is accepted for protocol parity but
+        # currently ignored (future work can thread this into BayBE's
+        # TELL/ASK cycle).
+        del pending_points
         campaign = _restore_or_build_campaign(spec, backend_state)
 
         # Add only delta observations to avoid duplicate accumulation (E1)

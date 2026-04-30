@@ -43,3 +43,13 @@ TRANSFER_SIMILARITY_MODERATE = 0.4
 
 # Assumed HV improvement when only 2 results exist and HV > 0
 FALLBACK_HYPERVOLUME_IMPROVEMENT = 0.1
+
+# =============================================================================
+# Concurrency / Optimistic Locking (submit_results, campaign_lifecycle,
+# generate_suggestions)
+# =============================================================================
+
+# Suggested backoff before retrying an operation that lost an optimistic-locking
+# race. Surfaced to clients in the CONCURRENT_MODIFICATION error envelope so
+# retries back off before re-hitting the same race.
+CONCURRENT_MODIFICATION_RETRY_AFTER_SECONDS = 1.0

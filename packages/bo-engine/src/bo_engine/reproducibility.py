@@ -289,10 +289,9 @@ def create_reproducible_sobol(
     device = bounds.device
     dtype = bounds.dtype
 
-    # Set seed for scrambling
-    torch.manual_seed(seed)
-
-    # Create Sobol engine with scrambling
+    # SobolEngine accepts ``seed`` directly, so no global ``torch.manual_seed``
+    # call is needed here. Keeping the scramble seed local avoids leaking
+    # into the process-wide torch RNG.
     sobol = torch.quasirandom.SobolEngine(dimension=d, scramble=True, seed=seed)
 
     # Draw samples in [0, 1]^d

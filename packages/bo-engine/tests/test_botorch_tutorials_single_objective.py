@@ -344,6 +344,7 @@ class TestAcquisitionComparison:
             model=model,
             train_x=train_x,
             train_y=train_y,
+            minimize=True,
             use_noisy=True,
         )
 

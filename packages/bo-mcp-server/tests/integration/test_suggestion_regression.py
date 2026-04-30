@@ -32,13 +32,13 @@ class TestSuggestionReproducibility:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Different campaign IDs produce different Sobol seeds - Section 3.7 not implemented"
-    )
     async def test_initial_design_deterministic(self, setup_database):
         """Initial design (Sobol sequence) produces same suggestions with same setup.
 
-        Sobol sequences are deterministic by construction.
+        Sobol sequences are deterministic when seeded; the campaign's
+        ``random_seed`` (default 42 in intake) is threaded through
+        ``OptimizationSpec`` into ``SobolEngine`` so two campaigns sharing
+        a spec produce identical initial-design batches.
         """
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -122,6 +122,301 @@ class TestSuggestionReproducibility:
         for s in gen2["suggestions"]:
             assert "random_seed" in s["provenance"]
             assert s["provenance"]["random_seed"] is not None
+
+    @pytest.mark.asyncio
+    async def test_bo_phase_deterministic_with_seed(self, setup_database):
+        """BO-phase suggestions are reproducible when ``random_seed`` is set.
+
+        Previously ``generate_next_batch`` picked its acquisition seed
+        with ``random.randint`` whenever the caller did not pass an
+        ``rng``, so two replays of the same seeded campaign produced
+        divergent BO candidates even though the ``spec.random_seed``
+        hint was honored by the Sobol initial design.  The fix derives
+        the acquisition seed from ``spec.random_seed`` + ``iteration``,
+        so the BO path on call 2 of two sibling campaigns with
+        identical specs and identical observed history returns the same
+        ``parameter_values``.
+        """
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        owner_id = str(uuid4())
+
+        intake_data = {
+            "name": "1.41b seeded BO reproducibility",
+            "parameters": [
+                {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+                {"name": "y", "type": "continuous", "bounds": [0.0, 1.0]},
+            ],
+            "objectives": [{"name": "f", "direction": "minimize"}],
+            "batch_size": 1,
+            "random_seed": 4242,
+        }
+
+        seed_points = [
+            (0.1, 0.1),
+            (0.9, 0.1),
+            (0.1, 0.9),
+            (0.9, 0.9),
+            (0.5, 0.5),
+            (0.3, 0.7),
+        ]
+        seed_results = [
+            {
+                "parameter_values": {"x": px, "y": py},
+                "objective_values": {"f": (px - 0.2) ** 2 + (py - 0.2) ** 2},
+            }
+            for px, py in seed_points
+        ]
+
+        async def _campaign_bo_candidate() -> dict:
+            create = await create_campaign(intake_data, owner_id)
+            assert create["success"], create
+            campaign_id = create["campaign_id"]
+            submit = await submit_results(campaign_id, _to_result_inputs(seed_results), owner_id)
+            assert submit["success"], submit
+            gen = await generate_suggestions(campaign_id)
+            assert gen["success"], gen
+            assert len(gen["suggestions"]) == 1
+            assert gen["suggestions"][0]["provenance"]["generation_method"] == "bo"
+            return gen["suggestions"][0]["parameter_values"]
+
+        first = await _campaign_bo_candidate()
+        second = await _campaign_bo_candidate()
+
+        for param in ("x", "y"):
+            assert abs(first[param] - second[param]) < 1e-10, (
+                f"Seeded BO-phase candidate diverged across replays for '{param}': "
+                f"first={first}, second={second}"
+            )
+
+
+def _params_tuple(params: dict) -> tuple:
+    """Hashable representation of a parameter-values dict."""
+    return tuple(sorted(params.items()))
+
+
+class TestInitialDesignNoDuplicates:
+    """Regression tests for initial-design duplicate elimination.
+
+    Smoke-test reproduction: a 2x2 categorical campaign with
+    ``batch_size=2`` and ``initial_design_size=2`` used to reissue
+    already-suggested points on the second ``generate_suggestions`` call
+    because Sobol was reseeded on every call and no duplicate filter
+    existed.  These tests pin the new contract:
+
+    1. Consecutive initial-design batches (with results submitted
+       between) return disjoint parameter sets.
+    2. When the finite categorical search space has been fully
+       observed, a further call returns a structured
+       ``SEARCH_SPACE_EXHAUSTED`` error instead of a duplicate or a
+       500.
+    """
+
+    @pytest.mark.asyncio
+    async def test_consecutive_initial_design_batches_are_disjoint(self, setup_database):
+        """Two consecutive batches never reissue an observed point."""
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        owner_id = str(uuid4())
+
+        intake_data = {
+            "name": "1.41a disjoint batches",
+            "parameters": [
+                {"name": "molecule", "type": "categorical", "categories": ["a", "b"]},
+                {"name": "solvent", "type": "categorical", "categories": ["x", "y"]},
+            ],
+            "objectives": [{"name": "score", "direction": "maximize"}],
+            "batch_size": 2,
+            "initial_design_size": 2,
+            "random_seed": 123,
+        }
+
+        create_result = await create_campaign(intake_data, owner_id)
+        assert create_result["success"], create_result
+        campaign_id = create_result["campaign_id"]
+
+        gen1 = await generate_suggestions(campaign_id)
+        assert gen1["success"], gen1
+        assert len(gen1["suggestions"]) == 2
+        first_keys = {_params_tuple(s["parameter_values"]) for s in gen1["suggestions"]}
+        assert len(first_keys) == 2, "Within-batch duplicates already violate 1.41a"
+
+        # Feed the results back so call 2 enters the partial-data fallback.
+        results = [
+            {
+                "suggestion_id": s["id"],
+                "parameter_values": s["parameter_values"],
+                "objective_values": {"score": float(idx + 1)},
+            }
+            for idx, s in enumerate(gen1["suggestions"])
+        ]
+        submit = await submit_results(campaign_id, _to_result_inputs(results), owner_id)
+        assert submit["success"], submit
+
+        gen2 = await generate_suggestions(campaign_id)
+        assert gen2["success"], gen2
+        assert len(gen2["suggestions"]) == 2
+        second_keys = {_params_tuple(s["parameter_values"]) for s in gen2["suggestions"]}
+        assert len(second_keys) == 2, "Within-batch duplicates on second call"
+        assert first_keys.isdisjoint(second_keys), (
+            f"Second batch reissued observed points: overlap={first_keys & second_keys}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_exhausted_categorical_space_returns_structured_error(self, setup_database):
+        """After all 4 combinations are observed, a further call errors cleanly."""
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        owner_id = str(uuid4())
+
+        intake_data = {
+            "name": "1.41a exhaustion",
+            "parameters": [
+                {"name": "molecule", "type": "categorical", "categories": ["a", "b"]},
+                {"name": "solvent", "type": "categorical", "categories": ["x", "y"]},
+            ],
+            "objectives": [{"name": "score", "direction": "maximize"}],
+            "batch_size": 2,
+            "initial_design_size": 2,
+            "random_seed": 123,
+        }
+
+        create_result = await create_campaign(intake_data, owner_id)
+        assert create_result["success"], create_result
+        campaign_id = create_result["campaign_id"]
+
+        # Exhaust the 4 combinations over two initial-design batches.
+        observed_keys: set[tuple] = set()
+        for iteration_idx in range(2):
+            gen = await generate_suggestions(campaign_id)
+            assert gen["success"], gen
+            results = [
+                {
+                    "suggestion_id": s["id"],
+                    "parameter_values": s["parameter_values"],
+                    "objective_values": {"score": float(iteration_idx + 1)},
+                }
+                for s in gen["suggestions"]
+            ]
+            observed_keys.update(_params_tuple(s["parameter_values"]) for s in gen["suggestions"])
+            submit = await submit_results(campaign_id, _to_result_inputs(results), owner_id)
+            assert submit["success"], submit
+
+        assert len(observed_keys) == 4, f"Expected all 4 combinations observed, got {observed_keys}"
+
+        # The next call has no fresh combination to return.
+        gen3 = await generate_suggestions(campaign_id)
+        assert gen3["success"] is False
+        assert gen3["suggestions"] == []
+        assert gen3["error"]["code"] == "E011"
+        details = gen3["error"]["details"]
+        assert details["next_action_recommendation"] == "terminate_campaign"
+        assert details["n_total_combinations"] == 4
+        assert details["n_available"] == 0
+
+
+class TestPendingPointsConditioning:
+    """Regression tests for X_pending conditioning in acquisition.
+
+    Previously ``optimize_acquisition`` never threaded ``X_pending``
+    into ``botorch.optim.optimize_acqf``.  Two consecutive
+    ``generate_suggestions`` calls on the same campaign state (no new
+    results submitted between them) therefore returned essentially the
+    same BO candidate — the acquisition maximum is a function of the
+    fitted GP alone, which has not changed.  In-flight / PENDING
+    suggestions are now encoded and passed as ``X_pending``, so the
+    joint acquisition conditions on them and produces a distinct point.
+
+    Reference: BoTorch "batched" / parallel BO tutorial
+    https://botorch.org/docs/batched_bayesian_optimization/
+    """
+
+    @pytest.mark.asyncio
+    async def test_consecutive_bo_calls_return_distinct_points(self, setup_database):
+        """Two sequential BO calls (no results between) return distinct points.
+
+        Without X_pending wiring, call 2 re-selects the same acquisition
+        argmax as call 1, so the normalized L2 distance between the two
+        returned candidates collapses to ~0.  The pinned tolerance below
+        is well above machine epsilon but far below any plausible
+        random-search spread; a ~0 distance is a direct regression
+        signal.
+        """
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        owner_id = str(uuid4())
+
+        intake_data = {
+            "name": "1.41 X_pending conditioning",
+            "parameters": [
+                {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+                {"name": "y", "type": "continuous", "bounds": [0.0, 1.0]},
+            ],
+            "objectives": [{"name": "f", "direction": "minimize"}],
+            "batch_size": 1,
+            "random_seed": 7,
+        }
+
+        create_result = await create_campaign(intake_data, owner_id)
+        assert create_result["success"], create_result
+        campaign_id = create_result["campaign_id"]
+
+        # Seed the GP with enough observations so call 2 hits the BO
+        # path, not the initial-design fallback.  Six points on a simple
+        # bowl give a well-conditioned model.
+        seed_points = [
+            (0.1, 0.1),
+            (0.9, 0.1),
+            (0.1, 0.9),
+            (0.9, 0.9),
+            (0.5, 0.5),
+            (0.3, 0.7),
+        ]
+        seed_results = [
+            {
+                "parameter_values": {"x": px, "y": py},
+                "objective_values": {"f": (px - 0.2) ** 2 + (py - 0.2) ** 2},
+            }
+            for px, py in seed_points
+        ]
+        submit = await submit_results(campaign_id, _to_result_inputs(seed_results), owner_id)
+        assert submit["success"], submit
+
+        # Call 1 — produces a PENDING suggestion.
+        gen1 = await generate_suggestions(campaign_id)
+        assert gen1["success"], gen1
+        assert len(gen1["suggestions"]) == 1
+        first = gen1["suggestions"][0]["parameter_values"]
+        assert gen1["suggestions"][0]["provenance"]["generation_method"] == "bo"
+
+        # Call 2 — no new results submitted.  Without X_pending this
+        # returns the same acquisition argmax as call 1.
+        gen2 = await generate_suggestions(campaign_id)
+        assert gen2["success"], gen2
+        assert len(gen2["suggestions"]) == 1
+        second = gen2["suggestions"][0]["parameter_values"]
+
+        # Normalized L2 distance on the unit square.  Tolerance picked
+        # to be ~100x machine epsilon and ~1/20th of the bounds span so
+        # the assertion discriminates "same point" from "different
+        # point" without being sensitive to restart noise.
+        dx = first["x"] - second["x"]
+        dy = first["y"] - second["y"]
+        distance = (dx * dx + dy * dy) ** 0.5
+        min_distance = 0.01
+        assert distance > min_distance, (
+            f"Consecutive BO suggestions collapsed to same point without "
+            f"X_pending conditioning: first={first}, second={second}, "
+            f"distance={distance:.6f}"
+        )
 
 
 class TestSuggestionQualityRegression:

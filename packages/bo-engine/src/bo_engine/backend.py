@@ -154,6 +154,7 @@ class BOBackend(Protocol):
         batch_size: int,
         iteration: int,
         backend_state: dict[str, Any] | None = None,
+        pending_points: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
         """Generate model-guided suggestions.
 
@@ -163,6 +164,11 @@ class BOBackend(Protocol):
             batch_size: How many suggestions to generate.
             iteration: Current iteration number.
             backend_state: Opaque state from a prior call (e.g. TuRBO).
+            pending_points: Parameter-value dicts for in-flight suggestions
+                that have not yet produced a result.  Backends that support
+                batch / parallel acquisition (e.g. BoTorch) should forward
+                these to the acquisition optimizer as ``X_pending`` so new
+                candidates do not cluster around the pending batch.
 
         Returns:
             SuggestionBatch with suggestions and updated state.

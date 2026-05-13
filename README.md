@@ -99,12 +99,33 @@ uv sync          # installs all workspace packages in editable mode
 ### Docker
 
 ```bash
-docker-compose up --build
+docker network inspect bo-mcp-network >/dev/null 2>&1 || docker network create bo-mcp-network
+docker compose up --build
 ```
 
-Services: API on `:8000`, MCP SSE on `:8001`. Source is bind-mounted so Python
-code changes are picked up without rebuilding. Rebuild only when dependencies
-or Dockerfiles change.
+Services: frontend on `127.0.0.1:3001`, API on `127.0.0.1:8000`, MCP SSE on
+`127.0.0.1:8001`. Source is bind-mounted so Python code changes are picked up
+without rebuilding. Rebuild only when dependencies or Dockerfiles change.
+
+To run alongside gpu4pyscf, use the slot-aware launcher instead of calling
+Compose directly:
+
+```bash
+./dev-up-bo-mcp 3 up --build
+```
+
+The launcher exports `COMPOSE_PROJECT_NAME=bo-mcp-s3`, shifts host ports by
+`slot * 100`, and creates/joins `BO_MCP_NETWORK_NAME=akg4pyscf-gpu-s3-net`.
+With slot `3`, host access is:
+
+```text
+Frontend: http://127.0.0.1:3301
+API:      http://127.0.0.1:8300
+MCP SSE:  http://127.0.0.1:8301/sse
+```
+
+Containers on the shared network can reach BO-MCP by Docker service name:
+`api:8000`, `mcp:8001`, `frontend:80`, and `db:5432`.
 
 ## MCP Tools
 
@@ -220,6 +241,10 @@ pre-commit run --all   # manual run
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/bo_mcp.db` | Database connection string |
 | `SQL_ECHO` | `false` | Log SQL queries |
 | `BO_MCP_LOG_LEVEL` | `INFO` | Logging verbosity |
+| `BO_MCP_NETWORK_NAME` | `bo-mcp-network` | External Docker network used by Compose |
+| `BO_MCP_FRONTEND_PORT` | `3001` | Host port for the frontend container |
+| `BO_MCP_API_PORT` | `8000` | Host port for the API container |
+| `BO_MCP_SSE_PORT` | `8001` | Host port for MCP SSE |
 | `MCP_ALLOWED_HOSTS` | *(see below)* | Allowed Host headers for SSE |
 | `MCP_ALLOWED_ORIGINS` | *(see below)* | CORS origins for SSE |
 | `BO_ENGINE_DEVICE` | *(auto)* | Force compute device: `cuda`, `mps`, `cpu` |

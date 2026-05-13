@@ -7,16 +7,10 @@ from uuid import UUID, uuid4
 from bo_mcp_server.backend import get_backend, resolve_backend_name
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
-    AcquisitionOptimizationConfig,
     Campaign,
     CampaignIntakeInput,
     CampaignSpec,
     CampaignStatus,
-    Constraint,
-    ConstraintType,
-    InputParameter,
-    Objective,
-    ParameterType,
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_verbosity
@@ -35,64 +29,16 @@ logger = logging.getLogger(__name__)
 
 
 def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
-    """Reconstruct CampaignSpec from dictionary."""
-    parameters = [
-        InputParameter(
-            name=p["name"],
-            type=ParameterType(p["type"]),
-            bounds=p.get("bounds"),
-            values=p.get("values"),
-            categories=p.get("categories"),
-            description=p.get("description", ""),
-        )
-        for p in data["parameters"]
-    ]
+    """Canonically reconstruct CampaignSpec from a validated dict.
 
-    objectives = [
-        Objective(
-            name=o["name"],
-            direction=o["direction"],
-            unit=o.get("unit", ""),
-            target=o.get("target"),
-        )
-        for o in data["objectives"]
-    ]
-
-    constraints = [
-        Constraint(
-            type=ConstraintType(c["type"]),
-            parameters=c["parameters"],
-            value=c["value"],
-            coefficients=c.get("coefficients"),
-        )
-        for c in data.get("constraints", [])
-    ]
-
-    acquisition_optimization_raw = data.get("acquisition_optimization")
-    if acquisition_optimization_raw is None:
-        acquisition_optimization = None
-    elif isinstance(acquisition_optimization_raw, AcquisitionOptimizationConfig):
-        acquisition_optimization = acquisition_optimization_raw
-    else:
-        acquisition_optimization = AcquisitionOptimizationConfig.model_validate(
-            acquisition_optimization_raw
-        )
-
-    return CampaignSpec(
-        name=data["name"],
-        description=data.get("description", ""),
-        parameters=parameters,
-        objectives=objectives,
-        constraints=constraints,
-        batch_size=data.get("batch_size", 1),
-        max_iterations=data.get("max_iterations"),
-        max_observations=data.get("max_observations"),
-        convergence_tolerance=data.get("convergence_tolerance"),
-        initial_design_size=data.get("initial_design_size"),
-        random_seed=data.get("random_seed"),
-        acquisition_optimization=acquisition_optimization,
-        backend=data.get("backend", "botorch"),
-    )
+    The previous implementation manually unpacked a hand-picked subset of
+    fields, dropping any advanced spec attributes (turbo_config,
+    saasbo_config, outcome_constraints, etc.) silently. Routing through
+    :meth:`CampaignSpec.model_validate` reuses the single source of truth
+    for the schema so every field present in the dict round-trips into
+    the persisted spec.
+    """
+    return CampaignSpec.model_validate(data)
 
 
 async def create_campaign_operation(

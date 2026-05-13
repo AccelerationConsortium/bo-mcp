@@ -15,6 +15,7 @@ from bo_mcp_server.response_formatter import VerbosityLevel, format_validate_int
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
 from api.deps import (
     CurrentUser,
@@ -44,13 +45,44 @@ from api.schemas.campaign import (
 router = APIRouter()
 
 
+def _coerce_intake(request: CampaignCreate) -> CampaignIntakeInput:
+    """Re-validate the loose REST intake into the strict domain model.
+
+    REST keeps the advanced spec knobs (``turbo_config``,
+    ``saasbo_config``, ``fidelity_parameter``, …) as untyped dicts so the
+    REST schema stays decoupled from the bo-engine/bo-mcp-server Pydantic
+    models. Strict validation happens once we pass the payload to the
+    domain ``CampaignIntakeInput``. Any inner-shape error must surface as
+    a 422 (unprocessable entity) — same status FastAPI uses for body
+    validation failures — instead of bubbling up as an unhandled
+    ``ValidationError`` 500.
+    """
+    try:
+        return CampaignIntakeInput.model_validate(request.intake.model_dump())
+    except ValidationError as exc:
+        # Prefix locations with ("body", "intake") so the error shape
+        # matches FastAPI's stock request-validation envelope.
+        detail = [
+            {
+                "type": err.get("type"),
+                "loc": ("body", "intake", *err.get("loc", ())),
+                "msg": err.get("msg"),
+                "input": err.get("input"),
+            }
+            for err in exc.errors()
+        ]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail
+        ) from exc
+
+
 @router.post("", response_model=CampaignCreateResponse)
 async def create_new_campaign(
     request: CampaignCreate,
     current_user: CurrentUser,
 ) -> CampaignCreateResponse:
     """Create a new optimization campaign."""
-    intake = CampaignIntakeInput.model_validate(request.intake.model_dump())
+    intake = _coerce_intake(request)
     result = await create_campaign_operation(
         intake_data=intake,
         owner_id=str(current_user.id),

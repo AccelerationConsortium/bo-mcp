@@ -1,6 +1,7 @@
 """Repository implementations."""
 
 import json
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -32,6 +33,48 @@ from bo_mcp_server.storage.models import (
     SuggestionModel,
     UserModel,
 )
+
+# CampaignSpec attributes persisted via the ``advanced_options_json`` blob.
+# They're consumed in-process (not queried in SQL), so a single JSON column
+# is preferred over per-field columns — adding a new advanced field does
+# not require another migration.
+_ADVANCED_SPEC_FIELDS: tuple[str, ...] = (
+    "acquisition_method",
+    "use_input_warping",
+    "use_cost_aware",
+    "turbo_config",
+    "saasbo_config",
+    "fidelity_parameter",
+    "transfer_learning",
+    "outcome_constraints",
+)
+
+
+def _serialize_advanced_options(spec: CampaignSpec) -> str | None:
+    """Return a JSON blob with the advanced spec fields, or ``None`` when all default.
+
+    Compared against the matching ``CampaignSpec()`` defaults so unchanged
+    rows stay NULL — keeps the DB tidy and short-circuits the load path
+    for the common case.
+    """
+    payload = spec.model_dump(mode="json", include=set(_ADVANCED_SPEC_FIELDS))
+    defaults = CampaignSpec.model_construct().model_dump(
+        mode="json", include=set(_ADVANCED_SPEC_FIELDS)
+    )
+    # ``model_construct`` skips validators; for our defaulted fields the values
+    # match the field defaults, which is exactly what we want here.
+    if payload == defaults:
+        return None
+    return json.dumps(payload)
+
+
+def _advanced_options_kwargs(data: dict[str, Any]) -> dict[str, Any]:
+    """Pick only known advanced fields from a deserialized JSON blob.
+
+    Filters unknown keys (forward-compat with future advanced fields)
+    and skips ``None``/missing entries so ``CampaignSpec`` defaults apply.
+    """
+    return {k: data[k] for k in _ADVANCED_SPEC_FIELDS if k in data and data[k] is not None}
 
 
 class UserRepository:
@@ -126,6 +169,8 @@ class CampaignSpecRepository:
     async def save(self, spec: CampaignSpec, spec_id: UUID) -> CampaignSpec:
         """Save campaign spec with explicit ID (specs are immutable)."""
         acq_opt = spec.acquisition_optimization
+        backend_options_json = json.dumps(spec.backend_options) if spec.backend_options else None
+        advanced_options_json = _serialize_advanced_options(spec)
         model = CampaignSpecModel(
             id=str(spec_id),
             name=spec.name,
@@ -142,6 +187,8 @@ class CampaignSpecRepository:
             initial_design_size=spec.initial_design_size,
             random_seed=spec.random_seed,
             backend=spec.backend,
+            backend_options_json=backend_options_json,
+            advanced_options_json=advanced_options_json,
         )
         merged = await self.session.merge(model)
         return self._to_entity(merged)
@@ -190,6 +237,7 @@ class CampaignSpecRepository:
                 values=p.get("values"),
                 categories=p.get("categories"),
                 description=p.get("description", ""),
+                parameter_options=p.get("parameter_options"),
             )
             for p in model.get_parameters()
         ]
@@ -225,6 +273,12 @@ class CampaignSpecRepository:
                 raw_samples=acq_samples,
             )
 
+        backend_options_raw = getattr(model, "backend_options_json", None)
+        backend_options = json.loads(backend_options_raw) if backend_options_raw else None
+
+        advanced_raw = getattr(model, "advanced_options_json", None)
+        advanced = json.loads(advanced_raw) if advanced_raw else {}
+
         return CampaignSpec(
             name=model.name,
             description=model.description,
@@ -239,6 +293,8 @@ class CampaignSpecRepository:
             initial_design_size=model.initial_design_size,
             random_seed=model.random_seed,
             backend=getattr(model, "backend", "botorch"),
+            backend_options=backend_options,
+            **_advanced_options_kwargs(advanced),
         )
 
 

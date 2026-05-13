@@ -48,6 +48,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
             bounds=(p.bounds.lower, p.bounds.upper) if p.bounds is not None else None,
             values=p.values,
             categories=p.categories,
+            parameter_options=dict(p.parameter_options) if p.parameter_options else None,
         )
         for p in spec.parameters
     ]
@@ -130,6 +131,10 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
     else:
         acquisition_optimization = BOAcquisitionOptimizationConfig()
 
+    backend_options: dict[str, dict[str, object]] | None = None
+    if spec.backend_options:
+        backend_options = {k: dict(v) for k, v in spec.backend_options.items()}
+
     return OptimizationSpec(
         parameters=parameters,
         objectives=objectives,
@@ -149,4 +154,5 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         max_iterations=spec.max_iterations,
         max_observations=spec.max_observations,
         convergence_tolerance=spec.convergence_tolerance,
+        backend_options=backend_options,
     )

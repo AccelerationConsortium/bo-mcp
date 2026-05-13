@@ -42,6 +42,22 @@ from bo_engine.backend import (
     Feature,
     SuggestionBatch,
 )
+from bo_engine.backend_base import (
+    CURRENT_STATE_ENVELOPE_VERSION,
+    BackendStateEnvelope,
+    BackendValidationResult,
+    BaseBackend,
+    CapabilityReport,
+    CapabilityStatus,
+    NormalizedObjective,
+    NormalizedParameter,
+    NormalizedProblem,
+    build_normalized_problem,
+    is_state_envelope,
+    required_features,
+    unwrap_state,
+    wrap_state,
+)
 
 # New modules for critical missing functionality (v2.5)
 from bo_engine.batch_diversity import (
@@ -678,4 +694,19 @@ __all__ = [
     "DuplicateInfo",
     "Feature",
     "SuggestionBatch",
+    # Backend extensibility (TODO 1.69)
+    "BackendStateEnvelope",
+    "BackendValidationResult",
+    "BaseBackend",
+    "CapabilityReport",
+    "CapabilityStatus",
+    "CURRENT_STATE_ENVELOPE_VERSION",
+    "NormalizedObjective",
+    "NormalizedParameter",
+    "NormalizedProblem",
+    "build_normalized_problem",
+    "is_state_envelope",
+    "required_features",
+    "unwrap_state",
+    "wrap_state",
 ]

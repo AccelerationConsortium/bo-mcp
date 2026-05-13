@@ -17,6 +17,10 @@ from importlib.metadata import entry_points
 from typing import Any
 
 from bo_engine.backend import BOBackend, Feature
+from bo_engine.backend_base import required_features
+
+from bo_mcp_server.converters import campaign_spec_to_optimization_spec
+from bo_mcp_server.domain import CampaignSpec
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +50,49 @@ def _get_available_backend_names() -> list[str]:
     return [ep.name for ep in eps]
 
 
-# Spec keys that directly map to a required feature when truthy.
-_SPEC_KEY_TO_FEATURE: dict[str, Feature] = {
+def _spec_dict_to_optimization_spec(spec_dict: dict[str, Any]):
+    """Best-effort coercion of a raw spec dict to an OptimizationSpec.
+
+    Used by :func:`resolve_backend_name` so the backend can answer
+    ``validate_capabilities`` against the same typed problem the engine
+    will receive. Falls back to the dict-only feature inference when
+    coercion fails (e.g. partially-validated specs in legacy tests).
+    """
+    try:
+        domain_spec = CampaignSpec.model_validate(spec_dict)
+        return campaign_spec_to_optimization_spec(domain_spec)
+    except (TypeError, ValueError):
+        return None
+
+
+def _detect_required_features(spec_dict: dict[str, Any]) -> frozenset[Feature]:
+    """Detect which backend features a problem specification requires.
+
+    Routes through :func:`bo_engine.backend_base.required_features` when
+    the spec coerces cleanly so the spec → feature mapping stays in one
+    place. Falls back to dict-only inference for the legacy auto-select
+    callers that pass partially-validated payloads.
+    """
+    opt_spec = _spec_dict_to_optimization_spec(spec_dict)
+    if opt_spec is not None:
+        return required_features(opt_spec)
+
+    features: set[Feature] = set()
+    if len(spec_dict.get("objectives", [])) > 1:
+        features.add(Feature.MULTI_OBJECTIVE)
+    param_types = {p.get("type", "") for p in spec_dict.get("parameters", [])}
+    if "categorical" in param_types:
+        features.add(Feature.CATEGORICAL)
+    if "categorical" in param_types and param_types & {"continuous", "discrete"}:
+        features.add(Feature.MIXED_SEARCH_SPACE)
+    for key, feature in _LEGACY_KEY_TO_FEATURE.items():
+        if spec_dict.get(key):
+            features.add(feature)
+    return frozenset(features)
+
+
+# Used only in the legacy fallback path of ``_detect_required_features``.
+_LEGACY_KEY_TO_FEATURE: dict[str, Feature] = {
     "constraints": Feature.CONSTRAINTS,
     "outcome_constraints": Feature.OUTCOME_CONSTRAINTS,
     "use_cost_aware": Feature.COST_AWARE,
@@ -58,34 +103,33 @@ _SPEC_KEY_TO_FEATURE: dict[str, Feature] = {
 }
 
 
-def _detect_required_features(spec_dict: dict[str, Any]) -> frozenset[Feature]:
-    """Detect which backend features a problem specification requires."""
-    features: set[Feature] = set()
+def _backend_is_compatible(backend: BOBackend, spec_dict: dict[str, Any]) -> bool:
+    """Spec-aware compatibility check used during auto-selection.
 
-    if len(spec_dict.get("objectives", [])) > 1:
-        features.add(Feature.MULTI_OBJECTIVE)
-
-    # Parameter types
-    param_types = {p.get("type", "") for p in spec_dict.get("parameters", [])}
-    if "categorical" in param_types:
-        features.add(Feature.CATEGORICAL)
-    if "categorical" in param_types and param_types & {"continuous", "discrete"}:
-        features.add(Feature.MIXED_SEARCH_SPACE)
-
-    # Simple key-to-feature mapping
-    for key, feature in _SPEC_KEY_TO_FEATURE.items():
-        if spec_dict.get(key):
-            features.add(feature)
-
-    return frozenset(features)
+    Prefers :meth:`BOBackend.validate_capabilities` so backends can veto
+    based on per-option detail (e.g. BayBE rejecting hybrid constraints
+    even though ``Feature.CONSTRAINTS`` is in its broad set). Falls back
+    to the historical ``required_features <= supported_features`` check
+    when the spec dict cannot be coerced or the backend has not
+    implemented the new method.
+    """
+    opt_spec = _spec_dict_to_optimization_spec(spec_dict)
+    if opt_spec is not None:
+        try:
+            return backend.validate_capabilities(opt_spec).is_compatible
+        except (AttributeError, NotImplementedError):
+            pass
+    required = _detect_required_features(spec_dict)
+    return required <= backend.supported_features
 
 
 def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
     """Resolve a backend name, handling 'auto' by inspecting the spec.
 
-    When name is 'auto', selects a backend whose supported_features cover
-    all features the problem requires. Prefers the BO_BACKEND env var
-    default when multiple backends qualify.
+    When name is 'auto', selects a backend whose
+    :meth:`BOBackend.validate_capabilities` reports ``is_compatible`` for
+    the concrete spec. Prefers the BO_BACKEND env var default when
+    multiple backends qualify.
 
     Args:
         name: Backend name or 'auto'.
@@ -97,18 +141,13 @@ def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
     if name != "auto":
         return name
 
-    required = _detect_required_features(spec_dict)
     env_default = os.getenv("BO_BACKEND", DEFAULT_BACKEND)
 
     # Try env-var default first
     try:
         default_backend = get_backend(env_default)
-        if required <= default_backend.supported_features:
-            logger.info(
-                "Auto-selected backend '%s' (env default, supports %s)",
-                env_default,
-                required,
-            )
+        if _backend_is_compatible(default_backend, spec_dict):
+            logger.info("Auto-selected backend '%s' (env default)", env_default)
             return env_default
     except ValueError:
         pass
@@ -117,18 +156,13 @@ def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
     for backend_name in _get_available_backend_names():
         try:
             backend = get_backend(backend_name)
-            if required <= backend.supported_features:
-                logger.info(
-                    "Auto-selected backend '%s' (supports %s)",
-                    backend_name,
-                    required,
-                )
+            if _backend_is_compatible(backend, spec_dict):
+                logger.info("Auto-selected backend '%s'", backend_name)
                 return backend_name
         except ValueError:
             continue
 
-    # Fallback — botorch supports everything
-    logger.warning("No backend fully supports %s, falling back to '%s'", required, DEFAULT_BACKEND)
+    logger.warning("No backend fully supports spec, falling back to '%s'", DEFAULT_BACKEND)
     return DEFAULT_BACKEND
 
 

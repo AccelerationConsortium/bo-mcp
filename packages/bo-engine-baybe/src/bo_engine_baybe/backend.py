@@ -28,12 +28,16 @@ from baybe.recommenders import (
 )
 from baybe.searchspace import SearchSpaceType
 from bo_engine.backend import (
-    BatchDiversityMetrics,
-    DuplicateInfo,
     Feature,
     SuggestionBatch,
 )
-from bo_engine.batch_diversity import compute_batch_diversity
+from bo_engine.backend_base import (
+    BackendValidationResult,
+    BaseBackend,
+    CapabilityReport,
+    CapabilityStatus,
+    required_features,
+)
 from bo_engine.device import get_device, get_dtype
 from bo_engine.diagnostics import (
     compute_best_value,
@@ -48,9 +52,6 @@ from bo_engine.diagnostics import (
     compute_pareto_front as engine_compute_pareto_front,
 )
 from bo_engine.reference_point import get_reference_point
-from bo_engine.result_validation import (
-    detect_duplicates as engine_detect_duplicates,
-)
 from bo_engine.result_validation import (
     detect_outliers,
 )
@@ -327,12 +328,13 @@ def _build_fitted_campaign(
 # ---------------------------------------------------------------------------
 
 
-class BayBEBackend:
+class BayBEBackend(BaseBackend):
     """BayBE-based Bayesian Optimization backend.
 
     Implements the BOBackend protocol, maximizing use of BayBE-native APIs.
-    Delegates to bo_engine only for hypervolume, near-duplicate detection,
-    and batch diversity (which BayBE does not provide).
+    Inherits duplicate detection, batch diversity, and JSON state-envelope
+    helpers from :class:`BaseBackend`; overrides validation and method
+    metadata to encode the BayBE-specific capability matrix.
     """
 
     @property
@@ -344,29 +346,74 @@ class BayBEBackend:
         return _SUPPORTED_FEATURES
 
     # -- Spec features that BayBE does NOT support --------------------------
-    _UNSUPPORTED_CHECKS: list[tuple[str, str]] = [
+    _UNSUPPORTED_OPTIONS: list[tuple[str, str]] = [
         ("turbo_config", "TuRBO trust-region optimization"),
         ("saasbo_config", "SAASBO high-dimensional optimization"),
         ("fidelity_parameter", "Multi-fidelity optimization"),
         ("transfer_learning", "Transfer learning (RGPE)"),
-    ]
-
-    _UNSUPPORTED_BOOL_CHECKS: list[tuple[str, str]] = [
         ("use_cost_aware", "Cost-aware optimization (EIpu)"),
         ("use_input_warping", "Input warping"),
+        ("outcome_constraints", "Outcome constraints"),
     ]
 
+    def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
+        """Per-feature, per-option capability report for BayBE.
+
+        Features the BayBE backend models natively map to ``SUPPORTED``;
+        options BayBE silently ignores in this BoTorch-shaped neutral
+        spec map to ``IGNORED`` so the warning is preserved without
+        rejecting the campaign. Hard incompatibilities (e.g. RGPE
+        transfer learning, multi-fidelity) map to ``UNSUPPORTED`` so
+        ``backend="auto"`` routes away from BayBE.
+        """
+        feature_reports: list[CapabilityReport] = []
+        supported = self.supported_features
+        for feature in sorted(required_features(spec)):
+            if feature in supported:
+                feature_reports.append(
+                    CapabilityReport(key=str(feature), status=CapabilityStatus.SUPPORTED)
+                )
+            else:
+                feature_reports.append(
+                    CapabilityReport(
+                        key=str(feature),
+                        status=CapabilityStatus.UNSUPPORTED,
+                        reason=f"{feature} is not supported by BayBE",
+                    )
+                )
+
+        option_reports: list[CapabilityReport] = []
+        for attr, label in self._UNSUPPORTED_OPTIONS:
+            value = getattr(spec, attr, None)
+            is_set = bool(value) if not isinstance(value, list) else len(value) > 0
+            if is_set:
+                option_reports.append(
+                    CapabilityReport(
+                        key=attr,
+                        status=CapabilityStatus.IGNORED,
+                        reason=f"{label} is not supported by BayBE and will be ignored.",
+                    )
+                )
+        return BackendValidationResult(
+            backend=self.name,
+            feature_reports=tuple(feature_reports),
+            option_reports=tuple(option_reports),
+        )
+
     def validate_spec(self, spec: OptimizationSpec) -> list[str]:
-        """Return warnings for spec features that BayBE will silently ignore."""
+        """Backward-compatible string-warning surface for BayBE.
+
+        Preserves the exact phrasing the previous implementation used so
+        callers that grep the warnings (and tests that assert on the
+        wording) keep working: ``"<label> is not supported by BayBE and
+        will be ignored."``.
+        """
         warnings: list[str] = []
-        for attr, label in self._UNSUPPORTED_CHECKS:
-            if getattr(spec, attr, None) is not None:
+        for attr, label in self._UNSUPPORTED_OPTIONS:
+            value = getattr(spec, attr, None)
+            is_set = bool(value) if not isinstance(value, list) else len(value) > 0
+            if is_set:
                 warnings.append(f"{label} is not supported by BayBE and will be ignored.")
-        for attr, label in self._UNSUPPORTED_BOOL_CHECKS:
-            if getattr(spec, attr, False):
-                warnings.append(f"{label} is not supported by BayBE and will be ignored.")
-        if spec.outcome_constraints:
-            warnings.append("Outcome constraints are not supported by BayBE and will be ignored.")
         return warnings
 
     def generate_initial_design(
@@ -392,7 +439,8 @@ class BayBEBackend:
         # currently ignored (future work can thread this into BayBE's
         # TELL/ASK cycle).
         del pending_points
-        campaign = _restore_or_build_campaign(spec, backend_state)
+        inner_state = self.unwrap_state(backend_state)
+        campaign = _restore_or_build_campaign(spec, inner_state)
 
         # Add only delta observations to avoid duplicate accumulation (E1)
         if observations:
@@ -425,7 +473,7 @@ class BayBEBackend:
         return SuggestionBatch(
             suggestions=suggestions,
             method_info=method_info,
-            backend_state=_serialize_campaign(campaign),
+            backend_state=self.wrap_state(_serialize_campaign(campaign)),
             warnings=spec_warnings,
         )
 
@@ -441,56 +489,6 @@ class BayBEBackend:
         pareto_y, _ = engine_compute_pareto_front(y_bo)
         ref_point = _compute_reference_point(y_bo)
         return engine_compute_hypervolume(pareto_y, ref_point)
-
-    def detect_duplicates(
-        self,
-        new_params: dict[str, Any],
-        existing_params: list[dict[str, Any]],
-        tolerance: float,
-    ) -> list[DuplicateInfo]:
-        raw = engine_detect_duplicates(new_params, existing_params, tolerance)
-        return [
-            DuplicateInfo(
-                index=d.index,
-                is_exact=d.is_exact,
-                parameter_distance=d.parameter_distance,
-            )
-            for d in raw
-        ]
-
-    def update_state_after_results(
-        self,
-        spec: OptimizationSpec,
-        new_observations: list[ObservationData],
-        backend_state: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        _ = spec, new_observations
-        return backend_state
-
-    def compute_batch_diversity(
-        self,
-        spec: OptimizationSpec,
-        candidates: list[dict[str, Any]],
-    ) -> BatchDiversityMetrics | None:
-        if len(candidates) < 2:
-            return None
-
-        try:
-            bounds = get_bounds_tensor(spec)
-            param_names = [p.name for p in spec.parameters]
-            values = [[float(c.get(name, 0.0)) for name in param_names] for c in candidates]
-            tensor = torch.tensor(values, device=get_device(), dtype=get_dtype())
-
-            m = compute_batch_diversity(tensor, bounds)
-            return BatchDiversityMetrics(
-                min_pairwise_distance=m.min_pairwise_distance,
-                mean_pairwise_distance=m.mean_pairwise_distance,
-                diversity_score=m.diversity_score,
-                is_diverse=m.is_diverse,
-            )
-        except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
-            logger.debug("Batch diversity computation failed: %s", e)
-            return None
 
     def select_methods(
         self,

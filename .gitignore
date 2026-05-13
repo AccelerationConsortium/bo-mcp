@@ -276,5 +276,6 @@ temp/
 # Archived planning documents
 docs/archive/
 
+.claude
 CLAUDE.md
 TODO.md

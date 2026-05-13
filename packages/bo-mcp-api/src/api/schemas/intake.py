@@ -23,7 +23,7 @@ class ParameterInput(BaseModel):
     name: str = Field(..., min_length=1)
     type: str = Field(..., pattern="^(continuous|discrete|categorical)$")
     bounds: list[float] | None = None
-    values: list[int] | None = None
+    values: list[float] | None = None
     categories: list[str] | None = None
     description: str = ""
     parameter_options: dict[str, dict[str, Any]] | None = None

@@ -114,3 +114,93 @@ def test_auto_selects_env_default_when_compatible(monkeypatch):
     monkeypatch.setenv("BO_BACKEND", "botorch")
     resolved = resolve_backend_name("auto", _simple_spec_dict())
     assert resolved == "botorch"
+
+
+def test_auto_routes_baybe_hybrid_constraint_to_botorch(monkeypatch):
+    """TODO 1.64 — BayBE rejects hybrid constraints, so ``auto`` falls back.
+
+    A constraint over a mixed continuous/discrete parameter set is not
+    expressible as a BayBE ``ContinuousLinearConstraint`` (numerical_only)
+    nor as a ``DiscreteSumConstraint`` (discrete-only), so BayBE returns
+    ``CapabilityStatus.UNSUPPORTED`` for the constraint and the selector
+    must route to BoTorch.
+    """
+    monkeypatch.setenv("BO_BACKEND", "baybe")
+    spec_dict = {
+        "name": "Hybrid",
+        "parameters": [
+            {"name": "a", "type": "continuous", "bounds": [0.0, 1.0]},
+            {"name": "b", "type": "discrete", "values": [0.0, 0.5, 1.0]},
+        ],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+        "constraints": [
+            {"type": "sum_equals", "parameters": ["a", "b"], "value": 1.0},
+        ],
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "botorch"
+
+
+def test_auto_prefers_full_support_over_degraded(monkeypatch):
+    """A backend that fully honors the spec wins over one that ignores knobs.
+
+    With ``BO_BACKEND=baybe`` and ``use_input_warping=True``, BayBE is
+    *compatible* (the knob is mapped to ``IGNORED``, not ``UNSUPPORTED``),
+    but BoTorch fully honors the warping. The selector must prefer the
+    fully-supported backend so auto never silently drops options another
+    installed backend could honor.
+    """
+    monkeypatch.setenv("BO_BACKEND", "baybe")
+    spec_dict = {
+        "name": "Warped",
+        "parameters": [
+            {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+        ],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+        "use_input_warping": True,
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "botorch"
+
+
+def test_auto_picks_env_default_when_both_fully_support(monkeypatch):
+    """Within the FULL tier, ``BO_BACKEND`` env default still wins ties.
+
+    A simple continuous spec has no advanced knobs, so both BoTorch and
+    BayBE are FULL. The env default (BayBE) must win — this is the
+    deploy-time preference and the original behavior of the selector.
+    """
+    monkeypatch.setenv("BO_BACKEND", "baybe")
+    spec_dict = {
+        "name": "Simple",
+        "parameters": [
+            {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+        ],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "baybe"
+
+
+def test_auto_falls_back_to_degraded_when_no_full_support(monkeypatch):
+    """If only degraded backends exist, the selector still picks one.
+
+    Simulated by patching the available-backends list to BayBE only.
+    BayBE is DEGRADED (the warping knob is ignored) but it's the only
+    candidate, so the selector picks it rather than failing with
+    ``DEFAULT_BACKEND`` (which is unavailable here).
+    """
+    from bo_mcp_server import backend as backend_module
+
+    monkeypatch.setenv("BO_BACKEND", "baybe")
+    monkeypatch.setattr(backend_module, "_get_available_backend_names", lambda: ["baybe"])
+    spec_dict = {
+        "name": "Warped",
+        "parameters": [
+            {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+        ],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+        "use_input_warping": True,
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "baybe"

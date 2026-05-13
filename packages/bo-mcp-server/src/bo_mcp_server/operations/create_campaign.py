@@ -120,11 +120,39 @@ async def create_campaign_operation(
     spec = _build_spec_from_dict(spec_data)
     warnings: list[str] = validation.get("warnings", [])
 
-    # Ask the backend whether it can handle this spec — surface warnings
+    # Ask the backend whether it can handle this spec — surface warnings AND
+    # enforce typed-option/feature capability. ``resolve_backend_name("auto",
+    # ...)`` already routes around incompatible backends; the explicit-backend
+    # path also has to fail-fast on UNSUPPORTED reports so misshaped BayBE
+    # ``parameter_options`` / ``backend_options`` cannot reach the suggestion
+    # path.
     backend = get_backend(spec.backend)
     opt_spec = campaign_spec_to_optimization_spec(spec)
-    backend_warnings = backend.validate_spec(opt_spec)
-    warnings.extend(backend_warnings)
+    capabilities = backend.validate_capabilities(opt_spec)
+    if not capabilities.is_compatible:
+        unsupported_reports = [{"key": r.key, "reason": r.reason} for r in capabilities.unsupported]
+        logger.warning(
+            "Campaign creation rejected: backend %s reports %d unsupported items",
+            spec.backend,
+            len(unsupported_reports),
+        )
+        response = make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=(
+                f"Backend '{spec.backend}' cannot handle this spec: "
+                + "; ".join(r["reason"] for r in unsupported_reports if r["reason"])
+            ),
+            details={
+                "backend": spec.backend,
+                "unsupported": unsupported_reports,
+            },
+        )
+        response["campaign_id"] = None
+        response["spec_id"] = None
+        response["errors"] = [r["reason"] for r in unsupported_reports if r["reason"]]
+        response["warnings"] = warnings
+        return response
+    warnings.extend(capabilities.warnings)
 
     # Generate IDs
     spec_id = uuid4()

@@ -42,7 +42,7 @@ class InputParameter(BaseModel):
     name: str = Field(..., min_length=1)
     type: ParameterType
     bounds: Bounds | None = None  # For continuous/discrete
-    values: list[int] | None = None  # For discrete
+    values: list[float] | None = None  # For discrete (fractional values ok)
     categories: list[str] | None = None  # For categorical
     description: str = ""
     parameter_options: dict[str, dict[str, Any]] | None = None

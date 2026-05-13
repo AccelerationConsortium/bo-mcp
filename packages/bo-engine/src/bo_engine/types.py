@@ -88,7 +88,7 @@ class ParameterSpec:
     name: str
     type: ParameterType
     bounds: tuple[float, float] | None = None  # For continuous/discrete
-    values: list[int] | None = None  # For discrete (explicit values)
+    values: list[float] | None = None  # For discrete (explicit values; fractional ok)
     categories: list[str] | None = None  # For categorical
     parameter_options: dict[str, dict[str, Any]] | None = None
 

@@ -19,6 +19,7 @@ dependencies = [
     "bo-engine",
     "baybe>=0.14",
     "pandas>=2.0",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]

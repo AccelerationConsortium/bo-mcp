@@ -599,6 +599,11 @@ def generate_next_batch(
         train_x, train_y = _prepare_training_data(observations, spec)
         bounds = get_bounds_tensor(spec)
 
+        # Per-observation measurement uncertainty (variance). Only used when
+        # every observation carries every objective's stddev; partial
+        # coverage falls back to the trainable noise prior.
+        train_yvar = _prepare_train_yvar(observations, spec)
+
         # Prepare cost data if cost-aware optimization is enabled
         train_costs = None
         if spec.use_cost_aware:
@@ -622,6 +627,7 @@ def generate_next_batch(
             observations=observations,
             train_costs=train_costs,
             pending_x=pending_tensor,
+            train_yvar=train_yvar,
         )
 
         if is_single_objective:
@@ -918,15 +924,25 @@ def _generate_single_objective_batch(
     turbo_state = ctx.turbo_state
     observations = ctx.observations
     train_costs = ctx.train_costs
+    train_yvar = ctx.train_yvar
 
     minimize = spec.objectives[0].minimize
 
-    # Negate if maximizing (BoTorch assumes minimization)
+    # Negate if maximizing (BoTorch assumes minimization). Variance is
+    # sign-invariant -- ``Var(-Y) == Var(Y)`` -- so ``train_yvar`` flows
+    # through unchanged.
     train_y_bo = -train_y if not minimize else train_y.clone()
 
-    # Create and fit model
+    # Create and fit model. When every observation has measurement
+    # uncertainty for this objective, route through the
+    # ``FixedNoiseGaussianLikelihood`` path so the GP trusts the user's
+    # known noise instead of re-estimating it from MLL.
     model = create_and_fit_single_task_model(
-        train_x, train_y_bo, bounds, use_input_warping=spec.use_input_warping
+        train_x,
+        train_y_bo,
+        bounds,
+        use_input_warping=spec.use_input_warping,
+        train_yvar=train_yvar,
     )
 
     # Outcome constraint models (constraints on OUTPUT space)
@@ -1164,13 +1180,19 @@ def _generate_multi_objective_batch(
     # Get minimize mask for objectives
     minimize_mask = torch.tensor([obj.minimize for obj in spec.objectives], dtype=torch.bool)
 
-    # Negate maximization objectives (BoTorch assumes minimization)
+    # Negate maximization objectives (BoTorch assumes minimization). Variance
+    # is sign-invariant, so ``train_yvar`` flows through unchanged.
     train_y_bo = train_y.clone()
     train_y_bo[:, ~minimize_mask] = -train_y_bo[:, ~minimize_mask]
 
-    # Create and fit model
+    # Create and fit model -- pass per-objective measurement variance when
+    # every observation supplied it for every objective.
     model = create_and_fit_model(
-        train_x, train_y_bo, bounds, use_input_warping=spec.use_input_warping
+        train_x,
+        train_y_bo,
+        bounds,
+        use_input_warping=spec.use_input_warping,
+        train_yvar=ctx.train_yvar,
     )
 
     # Get reference point (using STATIC strategy for backward compatibility;
@@ -1396,3 +1418,33 @@ def _prepare_training_data(
     train_y = torch.stack(y_list)
 
     return train_x, train_y
+
+
+def _prepare_train_yvar(
+    observations: list[ObservationData],
+    spec: OptimizationSpec,
+) -> Tensor | None:
+    """Build the per-observation noise-variance tensor in objective order.
+
+    Returns ``None`` when any observation is missing measurement uncertainty
+    for any objective — partial coverage falls back to the trainable noise
+    path (rather than imputing zeros, which would silently claim the
+    uncovered points are noise-free). Returned tensor has shape
+    ``(n_observations, n_objectives)`` and units of variance (stddev**2).
+    """
+    if not observations:
+        return None
+    objective_names = [obj.name for obj in spec.objectives]
+    rows: list[list[float]] = []
+    for obs in observations:
+        unc = obs.measurement_uncertainty
+        if unc is None:
+            return None
+        row: list[float] = []
+        for name in objective_names:
+            if name not in unc:
+                return None
+            stddev = float(unc[name])
+            row.append(stddev * stddev)
+        rows.append(row)
+    return torch.tensor(rows, dtype=get_dtype(), device=get_device())

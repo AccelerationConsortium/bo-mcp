@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from bo_mcp_server.domain.campaign import CampaignStatus
@@ -72,6 +72,12 @@ class CampaignSpecModel(Base):
     constraints_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON
     batch_size: Mapped[int] = mapped_column(Integer, default=1)
     max_iterations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_observations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    convergence_tolerance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Per-campaign acquisition-optimizer overrides. Both columns are nullable
+    # — when unset, bo-engine falls back to its dimension-adaptive defaults.
+    acquisition_num_restarts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    acquisition_raw_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
     initial_design_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     random_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     backend: Mapped[str] = mapped_column(String(50), default="botorch", server_default="botorch")
@@ -205,6 +211,22 @@ class ResultModel(Base):
     """Result ORM model."""
 
     __tablename__ = "results"
+    # Partial-unique index on ``suggestion_id``: at most one Result row can
+    # reference any given suggestion. NULL values (free-floating results)
+    # are intentionally excluded so manual/imported rows can coexist
+    # without forcing them to share a single global NULL slot. Postgres and
+    # SQLite both honour the ``WHERE`` clause; the server-side phase-1
+    # check (:func:`_validate_suggestion_references`) catches duplicates
+    # within a single batch before they reach this constraint.
+    __table_args__ = (
+        Index(
+            "ix_results_suggestion_id_unique",
+            "suggestion_id",
+            unique=True,
+            sqlite_where=text("suggestion_id IS NOT NULL"),
+            postgresql_where=text("suggestion_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     campaign_id: Mapped[str] = mapped_column(

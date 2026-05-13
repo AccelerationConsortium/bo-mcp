@@ -200,6 +200,19 @@ class SaasboConfig(BaseModel):
     thinning: int = 16
 
 
+class AcquisitionOptimizationConfig(BaseModel):
+    """Override L-BFGS-B restart count and raw-sample budget.
+
+    Both fields are optional; ``None`` keeps the dimension-adaptive defaults
+    from bo-engine. Use this only when calibrating against a benchmark or
+    when the campaign has a known multi-modal acquisition surface that needs
+    more aggressive exploration.
+    """
+
+    num_restarts: int | None = Field(default=None, ge=1)
+    raw_samples: int | None = Field(default=None, ge=1)
+
+
 class CampaignSpec(BaseModel):
     """Immutable campaign specification.
 
@@ -213,6 +226,13 @@ class CampaignSpec(BaseModel):
     constraints: list[Constraint] = Field(default_factory=list)
     batch_size: int = Field(default=1, ge=1)
     max_iterations: int | None = None
+    # Total observation cap. Counted across all iterations; reaching it short-
+    # circuits ``generate_suggestions`` even mid-iteration.
+    max_observations: int | None = Field(default=None, ge=1)
+    # Relative-improvement threshold passed to ``detect_convergence``. When
+    # set, the suggestion entry point reports ``CONVERGED`` once recent
+    # improvement falls below this value.
+    convergence_tolerance: float | None = Field(default=None, gt=0.0)
     initial_design_size: int | None = None
     random_seed: int | None = None
     # v1.0.1: Acquisition method selection
@@ -231,6 +251,9 @@ class CampaignSpec(BaseModel):
     transfer_learning: TransferLearningConfig | None = None
     # v2.0: SAASBO for high-dimensional optimization (None = disabled)
     saasbo_config: SaasboConfig | None = None
+    # Acquisition-optimizer restart / raw-sample budget. Defaults to None so
+    # the bo-engine dimension-adaptive defaults apply.
+    acquisition_optimization: AcquisitionOptimizationConfig | None = None
     # v3.0: Backend selection (default uses BO_BACKEND env var)
     backend: str = "botorch"
 
@@ -265,6 +288,18 @@ class CampaignSpec(BaseModel):
                 if param_name not in param_names:
                     msg = f"Constraint references unknown parameter: {param_name}"
                     raise ValueError(msg)
+
+        # ``convergence_tolerance`` is wired to a single-objective running-best
+        # trajectory. Hypervolume-based convergence for multi-objective specs
+        # is tracked separately; reject the setting at create time instead of
+        # silently using only the first objective at suggestion time.
+        if self.convergence_tolerance is not None and len(self.objectives) > 1:
+            msg = (
+                "convergence_tolerance is only supported for single-objective "
+                "campaigns; multi-objective campaigns must rely on hypervolume "
+                "diagnostics instead."
+            )
+            raise ValueError(msg)
 
         return self
 

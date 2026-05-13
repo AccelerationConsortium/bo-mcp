@@ -38,12 +38,18 @@ from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.models.transforms.input import ChainedInputTransform, Normalize, Warp
 from botorch.models.transforms.outcome import Standardize
+from gpytorch.constraints import GreaterThan
+from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch.mlls.sum_marginal_log_likelihood import SumMarginalLogLikelihood
+from gpytorch.priors import GammaPrior, Prior
 from gpytorch.priors.torch_priors import LogNormalPrior
 from torch import Tensor
 
 from bo_engine.constants import (
+    NOISE_PRIOR_GAMMA_CONCENTRATION,
+    NOISE_PRIOR_GAMMA_RATE,
+    NOISE_PRIOR_MIN_INFERRED,
     STANDARDIZATION_MEAN_TOLERANCE,
     STANDARDIZATION_VAR_TOLERANCE,
 )
@@ -61,6 +67,63 @@ class ModelFittingError(RuntimeError):
     def __init__(self, message: str, original_error: Exception) -> None:
         super().__init__(message)
         self.original_error = original_error
+
+
+def _default_noise_prior() -> GammaPrior:
+    """Return the default mildly informative ``GammaPrior`` for GP noise.
+
+    Concentrations come from :mod:`bo_engine.constants` and are calibrated for
+    targets that have been standardized to unit variance via
+    ``Standardize(m=1)``.
+    """
+    return GammaPrior(NOISE_PRIOR_GAMMA_CONCENTRATION, NOISE_PRIOR_GAMMA_RATE)
+
+
+def _build_likelihood(noise_prior: Prior | None) -> GaussianLikelihood:
+    """Build a Gaussian likelihood with an explicit, mildly informative prior.
+
+    A floor of ``NOISE_PRIOR_MIN_INFERRED`` is applied via ``GreaterThan`` so
+    the inferred noise cannot collapse to zero on multi-scale objectives — a
+    known source of singular Cholesky factors during ``fit_gpytorch_mll``.
+    """
+    prior = noise_prior if noise_prior is not None else _default_noise_prior()
+    return GaussianLikelihood(
+        noise_prior=prior,
+        noise_constraint=GreaterThan(NOISE_PRIOR_MIN_INFERRED),
+    )
+
+
+def _log_fitted_noise(model: SingleTaskGP | ModelListGP, *, fixed_noise: bool) -> None:
+    """Emit a debug log of the post-fit noise hyperparameter for drift tracking.
+
+    Targets are standardized, so values close to 0 mean the GP is treating the
+    objective as nearly deterministic; values approaching 1 mean noise has
+    absorbed most of the signal variance (a silent under-fit symptom).
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
+    if isinstance(model, ModelListGP):
+        sub_models: list[SingleTaskGP] = list(model.models)  # ty: ignore[invalid-argument-type]
+    else:
+        sub_models = [model]
+
+    for idx, gp in enumerate(sub_models):
+        likelihood = getattr(gp, "likelihood", None)
+        if likelihood is None:
+            continue
+        noise = getattr(likelihood, "noise", None)
+        if noise is None:
+            continue
+        flat = noise.detach().reshape(-1).to(dtype=torch.float64)
+        logger.debug(
+            "Fitted noise (model=%d, fixed=%s): min=%.4g mean=%.4g max=%.4g",
+            idx,
+            fixed_noise,
+            float(flat.min().item()),
+            float(flat.mean().item()),
+            float(flat.max().item()),
+        )
 
 
 def create_input_transform(
@@ -109,6 +172,8 @@ def create_single_task_model(
     train_y: Tensor,
     bounds: Tensor,
     use_input_warping: bool = False,
+    train_yvar: Tensor | None = None,
+    noise_prior: Prior | None = None,
 ) -> SingleTaskGP:
     """Create a SingleTaskGP for single-objective optimization.
 
@@ -123,15 +188,29 @@ def create_single_task_model(
             Raw, unstandardized targets -- do not pre-standardize.
         bounds: Parameter bounds of shape (2, n_dims)
         use_input_warping: If True, use Kumaraswamy input warping
+        train_yvar: Optional per-observation noise variance of shape
+            (n_samples, 1) or (n_samples,). When supplied, BoTorch builds a
+            ``FixedNoiseGaussianLikelihood`` internally and the noise
+            hyperparameter is no longer trainable -- ``noise_prior`` is
+            therefore ignored in this branch.
+        noise_prior: Optional explicit GPyTorch ``Prior`` on the trainable
+            noise hyperparameter. Defaults to a mildly informative
+            ``GammaPrior`` calibrated for standardized targets (see
+            ``bo_engine.constants``). Only used when ``train_yvar`` is None.
 
     Returns:
         SingleTaskGP model (unfitted)
     """
-    train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
+    if train_yvar is not None:
+        train_x, train_y, train_yvar, bounds = ensure_device(train_x, train_y, train_yvar, bounds)
+    else:
+        train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
 
     # Ensure train_y has correct shape (n_samples, 1)
     if train_y.dim() == 1:
         train_y = train_y.unsqueeze(-1)
+    if train_yvar is not None and train_yvar.dim() == 1:
+        train_yvar = train_yvar.unsqueeze(-1)
 
     input_transform = create_input_transform(
         n_dims=train_x.shape[-1],
@@ -139,12 +218,21 @@ def create_single_task_model(
         use_input_warping=use_input_warping,
     )
 
-    return SingleTaskGP(
-        train_X=train_x,
-        train_Y=train_y,
-        input_transform=input_transform,
-        outcome_transform=Standardize(m=1),
-    )
+    kwargs: dict = {
+        "train_X": train_x,
+        "train_Y": train_y,
+        "input_transform": input_transform,
+        "outcome_transform": Standardize(m=1),
+    }
+    if train_yvar is not None:
+        # Heteroskedastic / known-uncertainty path. BoTorch routes Yvar
+        # through a FixedNoiseGaussianLikelihood, so the noise hyperparameter
+        # is non-trainable and any ``noise_prior`` would have no effect.
+        kwargs["train_Yvar"] = train_yvar
+    else:
+        kwargs["likelihood"] = _build_likelihood(noise_prior)
+
+    return SingleTaskGP(**kwargs)
 
 
 def create_model(
@@ -152,6 +240,8 @@ def create_model(
     train_y: Tensor,
     bounds: Tensor,
     use_input_warping: bool = False,
+    train_yvar: Tensor | None = None,
+    noise_prior: Prior | None = None,
 ) -> ModelListGP:
     """Create a ModelListGP for multi-objective optimization.
 
@@ -166,11 +256,21 @@ def create_model(
             Raw, unstandardized targets -- do not pre-standardize.
         bounds: Parameter bounds of shape (2, n_dims)
         use_input_warping: If True, use Kumaraswamy input warping
+        train_yvar: Optional per-objective noise variance of shape
+            (n_samples, n_objectives). When supplied, every sub-model is
+            built with a ``FixedNoiseGaussianLikelihood`` and ``noise_prior``
+            is ignored.
+        noise_prior: Optional GPyTorch ``Prior`` shared across sub-models.
+            Defaults to a mildly informative ``GammaPrior`` for standardized
+            targets. Only used when ``train_yvar`` is None.
 
     Returns:
         ModelListGP with one GP per objective
     """
-    train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
+    if train_yvar is not None:
+        train_x, train_y, train_yvar, bounds = ensure_device(train_x, train_y, train_yvar, bounds)
+    else:
+        train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
 
     n_objectives = train_y.shape[-1]
     n_dims = train_x.shape[-1]
@@ -184,14 +284,18 @@ def create_model(
             use_input_warping=use_input_warping,
         )
 
-        # Create single-task GP for each objective
-        model = SingleTaskGP(
-            train_X=train_x,
-            train_Y=train_y[:, i : i + 1],
-            input_transform=input_transform,
-            outcome_transform=Standardize(m=1),
-        )
-        models.append(model)
+        kwargs: dict = {
+            "train_X": train_x,
+            "train_Y": train_y[:, i : i + 1],
+            "input_transform": input_transform,
+            "outcome_transform": Standardize(m=1),
+        }
+        if train_yvar is not None:
+            kwargs["train_Yvar"] = train_yvar[:, i : i + 1]
+        else:
+            kwargs["likelihood"] = _build_likelihood(noise_prior)
+
+        models.append(SingleTaskGP(**kwargs))
 
     return ModelListGP(*models)
 
@@ -218,6 +322,7 @@ def fit_single_task_model(model: SingleTaskGP) -> SingleTaskGP:
         )
         logger.error(msg)
         raise ModelFittingError(msg, original_error=e) from e
+    _log_fitted_noise(model, fixed_noise=_has_fixed_noise(model))
     return model
 
 
@@ -243,7 +348,25 @@ def fit_model(model: ModelListGP) -> ModelListGP:
         )
         logger.error(msg)
         raise ModelFittingError(msg, original_error=e) from e
+    _log_fitted_noise(model, fixed_noise=_has_fixed_noise(model))
     return model
+
+
+def _has_fixed_noise(model: SingleTaskGP | ModelListGP) -> bool:
+    """Return True iff any sub-model uses a FixedNoiseGaussianLikelihood."""
+    if isinstance(model, ModelListGP):
+        sub_models: list[SingleTaskGP] = list(model.models)  # ty: ignore[invalid-argument-type]
+    else:
+        sub_models = [model]
+    for gp in sub_models:
+        likelihood = getattr(gp, "likelihood", None)
+        if likelihood is None:
+            continue
+        # FixedNoiseGaussianLikelihood exposes `noise_covar` of type FixedGaussianNoise
+        noise_covar = getattr(likelihood, "noise_covar", None)
+        if noise_covar is not None and not hasattr(noise_covar, "raw_noise"):
+            return True
+    return False
 
 
 def create_and_fit_single_task_model(
@@ -251,6 +374,8 @@ def create_and_fit_single_task_model(
     train_y: Tensor,
     bounds: Tensor,
     use_input_warping: bool = False,
+    train_yvar: Tensor | None = None,
+    noise_prior: Prior | None = None,
 ) -> SingleTaskGP:
     """Create and fit a SingleTaskGP.
 
@@ -261,11 +386,22 @@ def create_and_fit_single_task_model(
         train_y: Training outputs of shape (n_samples, 1) or (n_samples,)
         bounds: Parameter bounds of shape (2, n_dims)
         use_input_warping: If True, use Kumaraswamy input warping
+        train_yvar: Optional per-observation noise variance. See
+            :func:`create_single_task_model`.
+        noise_prior: Optional GPyTorch prior on the trainable noise
+            hyperparameter. See :func:`create_single_task_model`.
 
     Returns:
         Fitted SingleTaskGP
     """
-    model = create_single_task_model(train_x, train_y, bounds, use_input_warping)
+    model = create_single_task_model(
+        train_x,
+        train_y,
+        bounds,
+        use_input_warping=use_input_warping,
+        train_yvar=train_yvar,
+        noise_prior=noise_prior,
+    )
     return fit_single_task_model(model)
 
 
@@ -274,6 +410,8 @@ def create_and_fit_model(
     train_y: Tensor,
     bounds: Tensor,
     use_input_warping: bool = False,
+    train_yvar: Tensor | None = None,
+    noise_prior: Prior | None = None,
 ) -> ModelListGP:
     """Create and fit a ModelListGP.
 
@@ -284,11 +422,22 @@ def create_and_fit_model(
         train_y: Training outputs of shape (n_samples, n_objectives)
         bounds: Parameter bounds of shape (2, n_dims)
         use_input_warping: If True, use Kumaraswamy input warping
+        train_yvar: Optional per-observation per-objective noise variance.
+            See :func:`create_model`.
+        noise_prior: Optional GPyTorch prior shared across sub-models. See
+            :func:`create_model`.
 
     Returns:
         Fitted ModelListGP
     """
-    model = create_model(train_x, train_y, bounds, use_input_warping)
+    model = create_model(
+        train_x,
+        train_y,
+        bounds,
+        use_input_warping=use_input_warping,
+        train_yvar=train_yvar,
+        noise_prior=noise_prior,
+    )
     return fit_model(model)
 
 

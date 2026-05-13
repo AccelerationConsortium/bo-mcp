@@ -5,6 +5,9 @@ from bo_engine.types import (
     AcquisitionMethod as BOAcquisitionMethod,
 )
 from bo_engine.types import (
+    AcquisitionOptimizationConfig as BOAcquisitionOptimizationConfig,
+)
+from bo_engine.types import (
     ConstraintSpec,
     FidelityParameterSpec,
     ObjectiveSpec,
@@ -115,6 +118,18 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
             temperature=spec.transfer_learning.temperature,
         )
 
+    # Acquisition-optimizer budget overrides (optional). Carrying these
+    # through into the bo-engine OptimizationSpec lets `optimize_acquisition`
+    # respect per-campaign tuning instead of falling back to its
+    # dimension-adaptive defaults.
+    if spec.acquisition_optimization is not None:
+        acquisition_optimization = BOAcquisitionOptimizationConfig(
+            num_restarts=spec.acquisition_optimization.num_restarts,
+            raw_samples=spec.acquisition_optimization.raw_samples,
+        )
+    else:
+        acquisition_optimization = BOAcquisitionOptimizationConfig()
+
     return OptimizationSpec(
         parameters=parameters,
         objectives=objectives,
@@ -130,4 +145,8 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         fidelity_parameter=fidelity_parameter,
         transfer_learning=transfer_learning,
         saasbo_config=saasbo_config,
+        acquisition_optimization=acquisition_optimization,
+        max_iterations=spec.max_iterations,
+        max_observations=spec.max_observations,
+        convergence_tolerance=spec.convergence_tolerance,
     )

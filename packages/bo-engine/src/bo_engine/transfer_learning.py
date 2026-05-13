@@ -33,6 +33,7 @@ from torch.distributions import Normal
 
 from bo_engine.constants import NUMERICAL_EPSILON, SAFE_DIVISION_EPSILON
 from bo_engine.device import ensure_device
+from bo_engine.types import AcquisitionOptimizationConfig
 
 
 @dataclass(frozen=True)
@@ -556,6 +557,7 @@ def generate_rgpe_suggestions(
     batch_size: int = 1,
     config: RGPEConfig | None = None,
     use_ensemble_acquisition: bool = True,
+    acquisition_optimization: AcquisitionOptimizationConfig | None = None,
 ) -> tuple[Tensor, Tensor, dict[str, Any]]:
     """Generate suggestions using RGPE transfer learning.
 
@@ -618,12 +620,14 @@ def generate_rgpe_suggestions(
         acq_name = "qLogNoisyExpectedImprovement (Target Only)"
 
     # Optimize acquisition
+    acq_config = acquisition_optimization or AcquisitionOptimizationConfig()
+    num_restarts, raw_samples = acq_config.resolve(int(bounds.shape[-1]))
     candidates, acq_values = optimize_acqf(
         acq_function=acqf,
         bounds=bounds,
         q=batch_size,
-        num_restarts=20,
-        raw_samples=512,
+        num_restarts=num_restarts,
+        raw_samples=raw_samples,
         sequential=True,
     )
 

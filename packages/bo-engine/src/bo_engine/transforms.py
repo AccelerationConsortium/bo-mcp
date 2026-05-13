@@ -305,7 +305,7 @@ def _decode_param_value(
 
     For continuous parameters, extracts a float.
     For discrete parameters, extracts and rounds to the nearest integer.
-    For categorical parameters, decodes one-hot via softmax and argmax.
+    For categorical parameters, decodes one-hot via ``argmax``.
 
     Args:
         param: Parameter specification
@@ -321,15 +321,18 @@ def _decode_param_value(
     if param.type == ParameterType.DISCRETE:
         return round(tensor[idx].item()), idx + 1
 
-    # ParameterType.CATEGORICAL — decode one-hot via softmax then argmax.
-    # Softmax sharpens the encoding so ties from continuous relaxation
-    # are resolved deterministically.
+    # ParameterType.CATEGORICAL — pick the argmax over the one-hot block.
+    # Softmax is monotone, so ``softmax(x).argmax() == x.argmax()``; the
+    # extra transform was a no-op that misled readers about the semantics
+    # (no probabilistic sampling happens here) and cost an unnecessary
+    # exp/normalize per decode. ``torch.argmax`` resolves ties to the
+    # lowest index deterministically — matching the encoder's category
+    # ordering — so callers see the canonical category name on ties.
     if param.categories is None:
         raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
     n_cats = len(param.categories)
     cat_values = tensor[idx : idx + n_cats]
-    sharpened = torch.softmax(cat_values, dim=0)
-    best_cat_idx = int(sharpened.argmax().item())
+    best_cat_idx = int(torch.argmax(cat_values).item())
     return param.categories[best_cat_idx], idx + n_cats
 
 

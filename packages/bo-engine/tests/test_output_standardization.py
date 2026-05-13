@@ -28,6 +28,7 @@ from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize
 
 from bo_engine.models import (
+    _build_likelihood,
     create_and_fit_model,
     create_and_fit_single_task_model,
     fit_single_task_model,
@@ -141,6 +142,10 @@ class TestPosteriorMatchesManualStandardization:
             train_Y=train_y_std,
             input_transform=Normalize(d=N_DIMS, bounds=bounds),
             outcome_transform=None,
+            # Match the production likelihood (explicit GammaPrior + GreaterThan
+            # constraint) so this self-consistency check compares the
+            # outcome-transform behaviour only, not differences in noise priors.
+            likelihood=_build_likelihood(None),
         )
         fit_single_task_model(baseline_model)
 

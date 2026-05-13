@@ -20,16 +20,20 @@ from uuid import UUID
 
 from bo_engine.backend import BOBackend
 from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
+from bo_engine.convergence import (
+    StoppingDecision,
+    StoppingReason,
+    evaluate_stopping_decision,
+)
 from bo_engine.pending_points import filter_pending_points
 from bo_engine.suggestions import SearchSpaceExhaustedError
-from bo_engine.types import OptimizationSpec
+from bo_engine.types import ObservationData, OptimizationSpec
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     CampaignStatus,
-    Result,
     Suggestion,
     SuggestionProvenance,
     SuggestionStatus,
@@ -106,11 +110,70 @@ def _make_suggestions_error(
     return response
 
 
+_STOPPING_REASON_TO_CODE: dict[StoppingReason, ErrorCode] = {
+    StoppingReason.BUDGET_EXCEEDED_ITERATIONS: ErrorCode.BUDGET_EXCEEDED,
+    StoppingReason.BUDGET_EXCEEDED_OBSERVATIONS: ErrorCode.BUDGET_EXCEEDED,
+    StoppingReason.CONVERGED: ErrorCode.CAMPAIGN_CONVERGED,
+}
+
+
+def _build_stopping_response(
+    stopping: StoppingDecision,
+    iteration: int,
+    campaign_id: str,
+) -> dict[str, Any]:
+    """Render a :class:`StoppingDecision` as a structured response envelope.
+
+    The shape mirrors ``SEARCH_SPACE_EXHAUSTED`` so agent loops can route on
+    ``next_action_recommendation == "terminate_campaign"`` without parsing
+    free-form text.
+    """
+    assert stopping.reason is not None  # narrows the optional for the type checker
+    code = _STOPPING_REASON_TO_CODE[stopping.reason]
+    details = {
+        "campaign_id": campaign_id,
+        "stopping_reason": stopping.reason.value,
+        **stopping.details,
+    }
+    return _make_suggestions_error(
+        code,
+        message=stopping.message,
+        iteration=iteration,
+        details=details,
+    )
+
+
+def _status_breakdown(suggestions: list[Suggestion]) -> dict[str, int]:
+    """Split a list of actionable suggestions by ``PENDING``/``ACCEPTED``.
+
+    Used wherever a response previously surfaced a single ``n_pending`` /
+    ``valid_pending`` count: clients now also see how many of those slots
+    are user-approved (``accepted``) vs awaiting acknowledgement
+    (``pending``). Statuses outside ``is_actionable`` are not expected here
+    -- the caller already filters them -- but are bucketed under ``other``
+    so a regression cannot silently disappear.
+    """
+    breakdown = {"pending": 0, "accepted": 0, "other": 0}
+    for sugg in suggestions:
+        if sugg.status == SuggestionStatus.PENDING:
+            breakdown["pending"] += 1
+        elif sugg.status == SuggestionStatus.ACCEPTED:
+            breakdown["accepted"] += 1
+        else:
+            breakdown["other"] += 1
+    return breakdown
+
+
 async def _handle_pending_suggestions(
     pending: list[Suggestion],
     suggestion_repo: SuggestionRepository,
 ) -> tuple[dict[str, Any] | None, list[Suggestion]]:
-    """Filter pending suggestions, expire stale ones.
+    """Filter actionable suggestions, expire stale ones.
+
+    Auto-staleness applies only to ``PENDING`` rows: an ``ACCEPTED``
+    suggestion is a user-approved commitment and must not be dropped just
+    because an experiment is taking a long time, so it always counts as a
+    reservation regardless of age.
 
     Returns (pending_info dict or None, valid pending list).
     """
@@ -131,19 +194,28 @@ async def _handle_pending_suggestions(
     valid_pending: list[Suggestion] = []
     stale_count = 0
     for sugg, info in zip(pending, point_info, strict=True):
-        if info.is_stale:
+        if info.is_stale and sugg.status == SuggestionStatus.PENDING:
             await suggestion_repo.save(sugg.with_status(SuggestionStatus.EXPIRED))
             stale_count += 1
         else:
             valid_pending.append(sugg)
 
+    # Split the actionable set into PENDING vs ACCEPTED so clients can
+    # distinguish "generated, awaiting acknowledgement" from "user-approved,
+    # awaiting result". The legacy ``total_pending``/``valid_pending`` keys
+    # remain for back-compat but already include both statuses since
+    # ``list_actionable_by_campaign`` started returning ACCEPTED rows; the
+    # explicit breakdown makes that semantics visible.
+    breakdown = _status_breakdown(valid_pending)
     pending_info = {
         "total_pending": len(pending),
         "valid_pending": len(valid_pending),
         "stale_expired": stale_count,
+        "actionable_breakdown": breakdown,
         "note": (
-            f"{len(valid_pending)} pending experiments"
-            " considered for diversity. "
+            f"{len(valid_pending)} actionable experiments "
+            f"(pending={breakdown['pending']}, accepted={breakdown['accepted']}) "
+            "considered for diversity. "
             f"{stale_count} stale suggestions expired."
             if valid_pending
             else "No valid pending experiments."
@@ -369,8 +441,13 @@ async def _generate_within_session(
     # Fetch existing results
     results = await result_repo.list_by_campaign(campaign_uuid)
 
-    # Handle pending suggestions
-    pending = await suggestion_repo.list_by_campaign(campaign_uuid, status=SuggestionStatus.PENDING)
+    # Handle actionable suggestions. PENDING and ACCEPTED both reserve
+    # experiment slots (see ``Suggestion.is_actionable``): PENDING means
+    # "generated, awaiting execution"; ACCEPTED means "user approved, awaiting
+    # result". Both must be considered for X_pending diversification *and* for
+    # the observation budget so accepted-but-unsubmitted experiments cannot
+    # have their slot stolen by free-floating submissions or new generations.
+    pending = await suggestion_repo.list_actionable_by_campaign(campaign_uuid)
     pending_info, valid_pending = await _handle_pending_suggestions(pending, suggestion_repo)
 
     # Prepare generation inputs
@@ -378,6 +455,58 @@ async def _generate_within_session(
     opt_spec = campaign_spec_to_optimization_spec(spec)
     new_iteration = campaign.iteration + 1
     backend = get_backend(spec.backend)
+
+    # Budget / convergence-based automatic stopping. Runs before any BO work
+    # so we never spend a model fit when the campaign has already exhausted
+    # its iteration or observation budget, or improvement has plateaued
+    # below ``convergence_tolerance``.
+    observations = results_to_observations(results)
+    stopping = evaluate_stopping_decision(opt_spec, observations, new_iteration)
+    if stopping.should_stop:
+        return _build_stopping_response(stopping, campaign.iteration, campaign_id)
+
+    # Clamp the requested batch to the remaining observation budget so a
+    # campaign with ``max_observations=3``, ``batch_size=2`` and two
+    # existing observations does not finish with four observations. Valid
+    # pending suggestions count as already-reserved budget: a generated-but-
+    # unsubmitted batch is an in-flight experiment we have committed to.
+    if opt_spec.max_observations is not None:
+        remaining_budget = int(opt_spec.max_observations) - len(observations) - len(valid_pending)
+        if remaining_budget <= 0:
+            actionable_breakdown = _status_breakdown(valid_pending)
+            stopping = StoppingDecision(
+                should_stop=True,
+                reason=StoppingReason.BUDGET_EXCEEDED_OBSERVATIONS,
+                message=(
+                    f"max_observations={opt_spec.max_observations} already "
+                    "covered by stored results plus actionable suggestions "
+                    f"(pending={actionable_breakdown['pending']}, "
+                    f"accepted={actionable_breakdown['accepted']})."
+                ),
+                details={
+                    "n_observations": len(observations),
+                    # ``n_pending`` is preserved for back-compat -- it has
+                    # always meant "actionable count" since ACCEPTED was
+                    # added to the budget calculation. The explicit
+                    # ``actionable_breakdown`` makes the split visible.
+                    "n_pending": len(valid_pending),
+                    "actionable_breakdown": actionable_breakdown,
+                    "max_observations": int(opt_spec.max_observations),
+                    "next_action_recommendation": "terminate_campaign",
+                },
+            )
+            return _build_stopping_response(stopping, campaign.iteration, campaign_id)
+        if remaining_budget < actual_batch_size:
+            logger.info(
+                "Clamping batch_size %d -> %d to respect max_observations=%d "
+                "(n_observations=%d, n_pending=%d)",
+                actual_batch_size,
+                remaining_budget,
+                opt_spec.max_observations,
+                len(observations),
+                len(valid_pending),
+            )
+            actual_batch_size = remaining_budget
 
     logger.debug(
         "Generation context: n_results=%d, batch_size=%d, iteration=%d, n_pending=%d",
@@ -395,7 +524,7 @@ async def _generate_within_session(
     suggestion_data, new_backend_state, warnings = await _generate_via_backend(
         backend,
         opt_spec,
-        results,
+        observations,
         actual_batch_size,
         new_iteration,
         campaign.backend_state,
@@ -445,7 +574,7 @@ async def _generate_within_session(
 async def _generate_via_backend(
     backend: BOBackend,
     opt_spec: OptimizationSpec,
-    results: list[Result],
+    observations: list[ObservationData],
     batch_size: int,
     iteration: int,
     prior_backend_state: dict[str, Any] | None,
@@ -481,7 +610,6 @@ async def _generate_via_backend(
 
     Returns (suggestion_data, backend_state, warnings).
     """
-    observations = results_to_observations(results)
     batch = await asyncio.to_thread(
         backend.generate_suggestions,
         spec=opt_spec,

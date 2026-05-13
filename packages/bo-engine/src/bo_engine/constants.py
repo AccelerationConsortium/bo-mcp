@@ -5,6 +5,37 @@ the bo-engine package, making them easy to understand, tune, and override.
 """
 
 # =============================================================================
+# SAASBO Active-Dimension Threshold
+# =============================================================================
+
+# Median per-dimension lengthscale above which the SAAS prior considers a
+# dimension "inactive". Eriksson & Jankowiak (UAI 2021, §3.3 & Appendix B)
+# report that truly inactive dimensions converge to lengthscales of order
+# 1e2-1e3 under the sparsity-inducing half-Cauchy prior; values below ~10
+# remain attached to the signal. We use 10.0 as the conservative cut-off so
+# the boolean mask reports an "inactive" dimension only when the prior has
+# clearly pushed it past the noise threshold, in keeping with the paper's
+# recommendation.
+SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD = 10.0
+
+# =============================================================================
+# GP Noise Prior (likelihood)
+# =============================================================================
+
+# Default ``GammaPrior`` shape/rate for the GP observation-noise hyperparameter.
+# Mildly informative; matches the BoTorch single-task tutorial defaults
+# (Eriksson & Jankowiak, UAI 2021; BoTorch reference implementation
+# https://botorch.org). Operates on standardized (unit-variance) targets — see
+# ``models.create_single_task_model`` for the standardization convention.
+NOISE_PRIOR_GAMMA_CONCENTRATION = 1.1
+NOISE_PRIOR_GAMMA_RATE = 0.05
+
+# Lower bound applied to the inferred noise hyperparameter via ``GreaterThan``
+# to keep the GP Cholesky factor well conditioned under noisy / multi-scale
+# objectives.
+NOISE_PRIOR_MIN_INFERRED = 1e-4
+
+# =============================================================================
 # High-Dimensional Optimization Thresholds
 # =============================================================================
 
@@ -82,11 +113,31 @@ TURBO_CONTRACTION_FACTOR = 2.0
 # Acquisition Optimization
 # =============================================================================
 
-# Number of random restarts for L-BFGS-B optimization
-NUM_RESTARTS = 10
+# Base counts used by ``AcquisitionOptimizationConfig.for_dimension`` to scale
+# restart count and raw-sample budget with problem dimensionality. The
+# defaults follow the BoTorch tutorial guidance to grow restart density with
+# acquisition multimodality (Balandat et al., 2020, §6.1) instead of leaving a
+# single fixed value that under-performs in SAASBO / high-D campaigns.
+#
+# Effective values per call:
+#   num_restarts = NUM_RESTARTS_BASE + NUM_RESTARTS_PER_DIM * d
+#   raw_samples  = max(RAW_SAMPLES_MIN, RAW_SAMPLES_PER_DIM * d)
+NUM_RESTARTS_BASE = 10
+NUM_RESTARTS_PER_DIM = 2
 
-# Number of raw samples for initial candidates
-RAW_SAMPLES = 512
+RAW_SAMPLES_MIN = 512
+RAW_SAMPLES_PER_DIM = 32
+
+# Hard upper bounds so very-high-D campaigns do not blow up CPU budget.
+# Picked at ~4× the linear-extrapolation value for d=20 (the SAASBO threshold)
+# so the cap only bites well beyond the typical campaign size.
+NUM_RESTARTS_MAX = 200
+RAW_SAMPLES_MAX = 8192
+
+# Legacy compatibility aliases. Existing callers still reference these names;
+# they resolve to the base counts used by the dimension-adaptive formula.
+NUM_RESTARTS = NUM_RESTARTS_BASE
+RAW_SAMPLES = RAW_SAMPLES_MIN
 
 # =============================================================================
 # Discrete / Mixed Search Space Optimization

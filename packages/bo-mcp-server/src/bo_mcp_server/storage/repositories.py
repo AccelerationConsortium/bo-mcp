@@ -7,6 +7,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain import (
+    AcquisitionOptimizationConfig,
     Campaign,
     CampaignSpec,
     CampaignStatus,
@@ -124,6 +125,7 @@ class CampaignSpecRepository:
 
     async def save(self, spec: CampaignSpec, spec_id: UUID) -> CampaignSpec:
         """Save campaign spec with explicit ID (specs are immutable)."""
+        acq_opt = spec.acquisition_optimization
         model = CampaignSpecModel(
             id=str(spec_id),
             name=spec.name,
@@ -133,6 +135,10 @@ class CampaignSpecRepository:
             constraints_json=json.dumps([c.model_dump() for c in spec.constraints]),
             batch_size=spec.batch_size,
             max_iterations=spec.max_iterations,
+            max_observations=spec.max_observations,
+            convergence_tolerance=spec.convergence_tolerance,
+            acquisition_num_restarts=acq_opt.num_restarts if acq_opt is not None else None,
+            acquisition_raw_samples=acq_opt.raw_samples if acq_opt is not None else None,
             initial_design_size=spec.initial_design_size,
             random_seed=spec.random_seed,
             backend=spec.backend,
@@ -208,6 +214,17 @@ class CampaignSpecRepository:
             for c in model.get_constraints()
         ]
 
+        acq_restarts = getattr(model, "acquisition_num_restarts", None)
+        acq_samples = getattr(model, "acquisition_raw_samples", None)
+        acquisition_optimization: AcquisitionOptimizationConfig | None
+        if acq_restarts is None and acq_samples is None:
+            acquisition_optimization = None
+        else:
+            acquisition_optimization = AcquisitionOptimizationConfig(
+                num_restarts=acq_restarts,
+                raw_samples=acq_samples,
+            )
+
         return CampaignSpec(
             name=model.name,
             description=model.description,
@@ -216,6 +233,9 @@ class CampaignSpecRepository:
             constraints=constraints,
             batch_size=model.batch_size,
             max_iterations=model.max_iterations,
+            max_observations=getattr(model, "max_observations", None),
+            convergence_tolerance=getattr(model, "convergence_tolerance", None),
+            acquisition_optimization=acquisition_optimization,
             initial_design_size=model.initial_design_size,
             random_seed=model.random_seed,
             backend=getattr(model, "backend", "botorch"),
@@ -421,6 +441,23 @@ class SuggestionRepository:
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
 
+    async def list_actionable_by_campaign(self, campaign_id: UUID) -> list[Suggestion]:
+        """List PENDING+ACCEPTED suggestions for a campaign.
+
+        Mirrors :attr:`Suggestion.is_actionable`: both PENDING (generated,
+        not yet acknowledged) and ACCEPTED (user-approved, awaiting result)
+        suggestions reserve an experiment slot. The budget calculations in
+        ``generate_suggestions`` and ``submit_results`` consume this list so
+        free-floating submissions and new generations cannot steal slots
+        already committed to an actionable suggestion.
+        """
+        query = select(SuggestionModel).where(
+            SuggestionModel.campaign_id == str(campaign_id),
+            SuggestionModel.status.in_((SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED)),
+        )
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()]
+
     async def list_by_campaign_paginated(
         self,
         campaign_id: UUID,
@@ -579,9 +616,18 @@ class ResultRepository:
         return self._to_entity(model)
 
     async def list_by_campaign(self, campaign_id: UUID) -> list[Result]:
-        """List results for a campaign."""
+        """List results for a campaign in deterministic insertion order.
+
+        Ordering by ``(created_at, id)`` makes the returned sequence stable
+        across query plans, restored database snapshots, and concurrent
+        writes — a load-bearing assumption for the convergence-stop
+        running-best trajectory and for any future identity-based campaign
+        state reconciliation.
+        """
         result = await self.session.execute(
-            select(ResultModel).where(ResultModel.campaign_id == str(campaign_id))
+            select(ResultModel)
+            .where(ResultModel.campaign_id == str(campaign_id))
+            .order_by(ResultModel.created_at.asc(), ResultModel.id.asc())
         )
         return [self._to_entity(m) for m in result.scalars()]
 

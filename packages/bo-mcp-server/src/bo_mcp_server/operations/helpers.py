@@ -99,12 +99,19 @@ def parse_campaign_id(campaign_id: str) -> UUID | dict[str, Any]:
 
 
 def results_to_observations(results: list[Result]) -> list[ObservationData]:
-    """Convert domain Result objects to ObservationData for bo-engine."""
+    """Convert domain Result objects to ObservationData for bo-engine.
+
+    Forwards ``Result.measurement_uncertainty`` so the bo-engine can route
+    the GP onto a ``FixedNoiseGaussianLikelihood`` when every observation
+    has uncertainty for every objective. Missing entries fall through as
+    ``None``, which the engine treats as "trainable noise for this batch".
+    """
     return [
         ObservationData(
             parameter_values=r.parameter_values,
             objective_values=r.objective_values,
             cost=r.metadata.get("cost") if r.metadata else None,
+            measurement_uncertainty=r.measurement_uncertainty,
         )
         for r in results
     ]

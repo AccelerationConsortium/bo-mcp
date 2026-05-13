@@ -4,7 +4,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from bo_mcp_server.domain.campaign_spec import Constraint, InputParameter, Objective
+from bo_mcp_server.domain.campaign_spec import (
+    AcquisitionOptimizationConfig,
+    Constraint,
+    InputParameter,
+    Objective,
+)
 
 
 class CampaignIntakeInput(BaseModel):
@@ -17,8 +22,15 @@ class CampaignIntakeInput(BaseModel):
     constraints: list[Constraint] = Field(default_factory=list)
     batch_size: int = Field(default=1, ge=1)
     max_iterations: int | None = None
+    # Budget / convergence-based stopping (optional). Mirrors the fields on
+    # ``CampaignSpec``; see :mod:`bo_engine.convergence.evaluate_stopping_decision`.
+    max_observations: int | None = Field(default=None, ge=1)
+    convergence_tolerance: float | None = Field(default=None, gt=0.0)
     initial_design_size: int | None = None
     random_seed: int | None = 42
+    # Per-campaign override for L-BFGS-B restart count / raw-sample budget.
+    # Leave None to use the dimension-adaptive defaults in bo-engine.
+    acquisition_optimization: AcquisitionOptimizationConfig | None = None
     backend: str = Field(default="auto", pattern="^(auto|botorch|baybe)$")
 
     model_config = {"extra": "forbid"}

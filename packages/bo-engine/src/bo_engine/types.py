@@ -189,6 +189,58 @@ class TurboConfig:
 
 
 @dataclass(frozen=True)
+class AcquisitionOptimizationConfig:
+    """L-BFGS-B / multi-start budget for acquisition optimization.
+
+    Restart and raw-sample budgets must scale with problem dimensionality so
+    that SAASBO and other high-D campaigns do not return shallow local
+    optima. The defaults are derived from :mod:`bo_engine.constants` and grow
+    linearly with the number of acquisition-input dimensions; both values are
+    capped to keep CPU budget bounded.
+
+    Attributes:
+        num_restarts: Override for restart count. ``None`` means use the
+            dimension-adaptive default.
+        raw_samples: Override for the raw-sample budget. ``None`` means use
+            the dimension-adaptive default.
+    """
+
+    num_restarts: int | None = None
+    raw_samples: int | None = None
+
+    def resolve(self, n_dims: int) -> tuple[int, int]:
+        """Return the effective ``(num_restarts, raw_samples)`` for ``n_dims``.
+
+        Caller-provided overrides on the dataclass take precedence; otherwise
+        the formula
+        ``num_restarts = NUM_RESTARTS_BASE + NUM_RESTARTS_PER_DIM * d`` and
+        ``raw_samples = max(RAW_SAMPLES_MIN, RAW_SAMPLES_PER_DIM * d)`` apply,
+        each clamped by the corresponding ``*_MAX`` constant.
+        """
+        from bo_engine.constants import (
+            NUM_RESTARTS_BASE,
+            NUM_RESTARTS_MAX,
+            NUM_RESTARTS_PER_DIM,
+            RAW_SAMPLES_MAX,
+            RAW_SAMPLES_MIN,
+            RAW_SAMPLES_PER_DIM,
+        )
+
+        d = max(int(n_dims), 1)
+        restarts = (
+            int(self.num_restarts)
+            if self.num_restarts is not None
+            else NUM_RESTARTS_BASE + NUM_RESTARTS_PER_DIM * d
+        )
+        samples = (
+            int(self.raw_samples)
+            if self.raw_samples is not None
+            else max(RAW_SAMPLES_MIN, RAW_SAMPLES_PER_DIM * d)
+        )
+        return min(restarts, NUM_RESTARTS_MAX), min(samples, RAW_SAMPLES_MAX)
+
+
+@dataclass(frozen=True)
 class OptimizationSpec:
     """Full specification for an optimization problem.
 
@@ -229,6 +281,23 @@ class OptimizationSpec:
     transfer_learning: TransferLearningSpec | None = None
     # v2.0: SAASBO for high-dimensional optimization (None = disabled)
     saasbo_config: SAASBOConfig | None = None
+    # Acquisition-optimizer restart / raw-sample budget. Defaults scale with
+    # parameter dimensionality (see ``AcquisitionOptimizationConfig``); set
+    # explicit fields here to override per campaign.
+    acquisition_optimization: AcquisitionOptimizationConfig = field(
+        default_factory=AcquisitionOptimizationConfig
+    )
+    # Budget / convergence-based automatic stopping. Each field is optional;
+    # when set, the suggestion entry point uses the corresponding signal to
+    # short-circuit further suggestion generation. ``max_iterations`` caps
+    # the number of completed BO iterations; ``max_observations`` caps the
+    # number of observed results irrespective of iteration grouping;
+    # ``convergence_tolerance`` is forwarded to ``detect_convergence`` as the
+    # relative-improvement threshold below which the campaign is considered
+    # converged.
+    max_iterations: int | None = None
+    max_observations: int | None = None
+    convergence_tolerance: float | None = None
 
     @property
     def use_turbo(self) -> bool:
@@ -286,11 +355,21 @@ class ObservationData:
     """Observed data point for optimization.
 
     Contains parameter values and their corresponding objective values.
+
+    ``measurement_uncertainty`` holds per-objective measurement *standard
+    deviations* (one entry per objective name). When supplied for every
+    observation in a campaign, the bo-engine builds ``train_yvar`` as
+    ``stddev**2`` and switches the GP to a ``FixedNoiseGaussianLikelihood``,
+    so the user's measurement uncertainty is trusted instead of re-estimated
+    by MLL. Partial coverage (some observations missing or with a missing
+    objective key) is treated as "unknown for this batch" -- the GP falls
+    back to its trainable-noise prior.
     """
 
     parameter_values: dict[str, Any]
     objective_values: dict[str, float]
     cost: float | None = None  # v1.3: Cost for cost-aware optimization
+    measurement_uncertainty: dict[str, float] | None = None  # per-objective stddev
 
 
 # =============================================================================
@@ -320,6 +399,10 @@ class GenerationContext:
     observations: list[ObservationData] | None = None
     train_costs: Any | None = None  # Tensor
     pending_x: Any | None = None  # Tensor of encoded pending / in-flight points
+    # Per-objective measurement noise variance ``(n_obs, n_objectives)``
+    # derived from ``ObservationData.measurement_uncertainty``. ``None`` when
+    # any observation lacks uncertainty data so the GP keeps trainable noise.
+    train_yvar: Any | None = None  # Tensor
 
 
 @dataclass

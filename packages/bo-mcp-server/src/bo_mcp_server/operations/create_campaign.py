@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from bo_mcp_server.backend import get_backend, resolve_backend_name
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
+    AcquisitionOptimizationConfig,
     Campaign,
     CampaignIntakeInput,
     CampaignSpec,
@@ -67,6 +68,16 @@ def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
         for c in data.get("constraints", [])
     ]
 
+    acquisition_optimization_raw = data.get("acquisition_optimization")
+    if acquisition_optimization_raw is None:
+        acquisition_optimization = None
+    elif isinstance(acquisition_optimization_raw, AcquisitionOptimizationConfig):
+        acquisition_optimization = acquisition_optimization_raw
+    else:
+        acquisition_optimization = AcquisitionOptimizationConfig.model_validate(
+            acquisition_optimization_raw
+        )
+
     return CampaignSpec(
         name=data["name"],
         description=data.get("description", ""),
@@ -75,8 +86,11 @@ def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
         constraints=constraints,
         batch_size=data.get("batch_size", 1),
         max_iterations=data.get("max_iterations"),
+        max_observations=data.get("max_observations"),
+        convergence_tolerance=data.get("convergence_tolerance"),
         initial_design_size=data.get("initial_design_size"),
         random_seed=data.get("random_seed"),
+        acquisition_optimization=acquisition_optimization,
         backend=data.get("backend", "botorch"),
     )
 

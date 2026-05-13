@@ -96,10 +96,13 @@ from bo_engine.constraints import (
 )
 from bo_engine.convergence import (
     ConvergenceReport,
+    StoppingDecision,
+    StoppingReason,
     detect_convergence,
     detect_hypervolume_convergence,
     detect_single_objective_convergence,
     estimate_remaining_iterations,
+    evaluate_stopping_decision,
 )
 
 # Cross-validation optimization (v2.6 - Section 2.4)
@@ -280,7 +283,9 @@ from bo_engine.result_validation import (
 )
 from bo_engine.saasbo import (
     SAASBOConfig,
+    SAASBOImportance,
     compute_saasbo_importance,
+    compute_saasbo_importance_report,
     create_and_fit_saasbo_model,
     create_saasbo_model,
     estimate_saasbo_runtime,
@@ -349,6 +354,7 @@ from bo_engine.turbo import (
 from bo_engine.types import (
     LEGACY_ACQUISITION_VALUES,
     AcquisitionMethod,
+    AcquisitionOptimizationConfig,
     ConstraintSpec,
     ConstraintType,
     FidelityParameterSpec,
@@ -480,7 +486,9 @@ __all__ = [
     "get_rgpe_weights_explanation",
     # SAASBO (v2.0)
     "SAASBOConfig",
+    "SAASBOImportance",
     "compute_saasbo_importance",
+    "compute_saasbo_importance_report",
     "create_and_fit_saasbo_model",
     "create_saasbo_model",
     "estimate_saasbo_runtime",
@@ -501,6 +509,7 @@ __all__ = [
     "LEGACY_ACQUISITION_VALUES",
     "TurboConfig",
     "AcquisitionMethod",
+    "AcquisitionOptimizationConfig",
     "ConstraintSpec",
     "ConstraintType",
     "FidelityParameterSpec",
@@ -527,10 +536,13 @@ __all__ = [
     "detect_outliers",
     # Convergence Detection (v2.5 - Section 1.4)
     "ConvergenceReport",
+    "StoppingDecision",
+    "StoppingReason",
     "detect_convergence",
     "detect_hypervolume_convergence",
     "detect_single_objective_convergence",
     "estimate_remaining_iterations",
+    "evaluate_stopping_decision",
     # Batch Diversity (v2.5 - Section 1.5)
     "DiversityMetrics",
     "apply_local_penalization",

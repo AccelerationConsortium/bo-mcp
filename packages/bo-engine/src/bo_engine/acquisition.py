@@ -586,12 +586,38 @@ class EIpuAcquisition(AcquisitionFunction):
         return eipu
 
 
+def _resolve_restart_budget(
+    spec: OptimizationSpec | None,
+    bounds: Tensor,
+    num_restarts: int | None,
+    raw_samples: int | None,
+) -> tuple[int, int]:
+    """Return the effective ``(num_restarts, raw_samples)`` for this call.
+
+    Explicit ``num_restarts`` / ``raw_samples`` arguments override the spec's
+    :class:`AcquisitionOptimizationConfig`. Otherwise the dimension-adaptive
+    defaults derived from the acquisition-input width of ``bounds`` apply.
+    """
+    from bo_engine.types import AcquisitionOptimizationConfig  # local to avoid cycles
+
+    n_dims = int(bounds.shape[-1])
+    config = (
+        spec.acquisition_optimization
+        if spec is not None and spec.acquisition_optimization is not None
+        else AcquisitionOptimizationConfig()
+    )
+    default_restarts, default_samples = config.resolve(n_dims)
+    restarts = int(num_restarts) if num_restarts is not None else default_restarts
+    samples = int(raw_samples) if raw_samples is not None else default_samples
+    return restarts, samples
+
+
 def optimize_acquisition(
     acqf: AcquisitionFunction,
     bounds: Tensor,
     batch_size: int = 1,
-    num_restarts: int = 20,
-    raw_samples: int = 512,
+    num_restarts: int | None = None,
+    raw_samples: int | None = None,
     spec: OptimizationSpec | None = None,
     x_avoid: Tensor | None = None,  # noqa: N803
     inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
@@ -611,8 +637,12 @@ def optimize_acquisition(
         acqf: Acquisition function to optimize
         bounds: Parameter bounds of shape (2, n_dims)
         batch_size: Number of candidates to generate
-        num_restarts: Number of optimization restarts
-        raw_samples: Number of raw samples for initialization
+        num_restarts: Optional override for the restart count. When ``None``,
+            the value is derived from ``spec.acquisition_optimization`` and
+            falls back to the dimension-adaptive default in
+            :class:`AcquisitionOptimizationConfig`.
+        raw_samples: Optional override for the raw-sample budget. Same
+            resolution rules as ``num_restarts``.
         spec: Optimization specification for discrete/mixed dispatch.
             If None, falls back to continuous optimization.
         x_avoid: Points to avoid (e.g., already-evaluated training data).
@@ -639,14 +669,24 @@ def optimize_acquisition(
     if X_pending is not None:
         X_pending = to_device(X_pending)
 
+    effective_restarts, effective_samples = _resolve_restart_budget(
+        spec, bounds, num_restarts, raw_samples
+    )
+    logger.debug(
+        "Acquisition optimization budget: n_dims=%d, num_restarts=%d, raw_samples=%d",
+        int(bounds.shape[-1]),
+        effective_restarts,
+        effective_samples,
+    )
+
     if spec is None:
         _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_continuous(
             acqf,
             bounds,
             batch_size,
-            num_restarts,
-            raw_samples,
+            effective_restarts,
+            effective_samples,
             inequality_constraints=inequality_constraints,
             equality_constraints=equality_constraints,
         )
@@ -667,15 +707,17 @@ def optimize_acquisition(
                 "with integer encoding for larger mixed spaces."
             )
         _apply_pending_to_acqf(acqf, X_pending)
-        return _optimize_mixed(acqf, bounds, spec, batch_size, num_restarts, raw_samples)
+        return _optimize_mixed(
+            acqf, bounds, spec, batch_size, effective_restarts, effective_samples
+        )
     else:
         _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_continuous(
             acqf,
             bounds,
             batch_size,
-            num_restarts,
-            raw_samples,
+            effective_restarts,
+            effective_samples,
             inequality_constraints=inequality_constraints,
             equality_constraints=equality_constraints,
         )

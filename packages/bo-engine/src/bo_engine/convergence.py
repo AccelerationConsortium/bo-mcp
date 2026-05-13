@@ -8,7 +8,10 @@ References:
 - Hypervolume improvement tracking: https://botorch.org/docs/multi_objective/
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from enum import StrEnum
 
 from bo_engine.constants import (
     CONVERGENCE_IMPROVEMENT_THRESHOLD,
@@ -16,6 +19,7 @@ from bo_engine.constants import (
     CONVERGENCE_WINDOW_SIZE,
     IMPROVEMENT_TOLERANCE_ABSOLUTE,
 )
+from bo_engine.types import ObjectiveSpec, ObservationData, OptimizationSpec
 
 
 @dataclass
@@ -218,6 +222,149 @@ def detect_single_objective_convergence(
         window_size=window_size,
         improvement_threshold=improvement_threshold,
         min_observations=min_observations,
+    )
+
+
+class StoppingReason(StrEnum):
+    """Reason a campaign was instructed to stop generating suggestions."""
+
+    BUDGET_EXCEEDED_ITERATIONS = "budget_exceeded_iterations"
+    BUDGET_EXCEEDED_OBSERVATIONS = "budget_exceeded_observations"
+    CONVERGED = "converged"
+
+
+@dataclass(frozen=True)
+class StoppingDecision:
+    """Outcome of the budget / convergence check.
+
+    Attributes:
+        should_stop: True iff the suggestion entry point must short-circuit.
+        reason: Discriminator describing why the decision was reached. Only
+            meaningful when ``should_stop`` is True.
+        message: User-facing message for the response envelope.
+        details: Structured payload (iteration/observation counts, threshold,
+            etc.) — included verbatim in the ``next_action_recommendation``
+            response so agent loops can branch on it.
+    """
+
+    should_stop: bool
+    reason: StoppingReason | None
+    message: str
+    details: dict[str, object]
+
+
+def _best_value_history(
+    observations: list[ObservationData], objective: ObjectiveSpec
+) -> list[float]:
+    """Build the running-best trajectory of a single objective.
+
+    Used only by :func:`evaluate_stopping_decision` to feed
+    ``detect_single_objective_convergence``. The full history is returned
+    (not just the last window) so the detector can decide its own
+    minimum-observation gate.
+    """
+    history: list[float] = []
+    running_best: float | None = None
+    for obs in observations:
+        if objective.name not in obs.objective_values:
+            continue
+        value = float(obs.objective_values[objective.name])
+        is_better = running_best is None or (
+            value < running_best if objective.minimize else value > running_best
+        )
+        if is_better:
+            running_best = value
+        # ``running_best`` is set on the first observation, so it is no longer
+        # ``None`` here -- but the static type checker cannot see that, hence
+        # the explicit fallback.
+        history.append(running_best if running_best is not None else value)
+    return history
+
+
+def evaluate_stopping_decision(
+    spec: OptimizationSpec,
+    observations: list[ObservationData],
+    next_iteration: int,
+) -> StoppingDecision:
+    """Decide whether to stop suggestion generation based on spec budgets.
+
+    The check runs in three deterministic stages so the response envelope
+    is predictable for agent loops:
+
+    1. ``max_iterations`` cap — compared against the *next* iteration the
+       caller is about to start (``campaign.iteration + 1``). Reaching the
+       budget short-circuits suggestion generation before any BO work runs.
+    2. ``max_observations`` cap — compared against the count of stored
+       observations regardless of iteration grouping.
+    3. ``convergence_tolerance`` — forwarded to the existing
+       :func:`detect_single_objective_convergence` detector for the first
+       objective. Multi-objective campaigns are out of scope here because
+       hypervolume tracking lives in the diagnostics layer.
+
+    When no budget field is configured the decision is a no-op
+    (``should_stop=False``).
+    """
+    if spec.max_iterations is not None and next_iteration > int(spec.max_iterations):
+        return StoppingDecision(
+            should_stop=True,
+            reason=StoppingReason.BUDGET_EXCEEDED_ITERATIONS,
+            message=(
+                f"Reached max_iterations={spec.max_iterations}; "
+                "campaign has exhausted its iteration budget."
+            ),
+            details={
+                "next_iteration": next_iteration,
+                "max_iterations": int(spec.max_iterations),
+                "next_action_recommendation": "terminate_campaign",
+            },
+        )
+
+    n_obs = len(observations)
+    if spec.max_observations is not None and n_obs >= int(spec.max_observations):
+        return StoppingDecision(
+            should_stop=True,
+            reason=StoppingReason.BUDGET_EXCEEDED_OBSERVATIONS,
+            message=(
+                f"Reached max_observations={spec.max_observations}; "
+                "campaign has exhausted its observation budget."
+            ),
+            details={
+                "n_observations": n_obs,
+                "max_observations": int(spec.max_observations),
+                "next_action_recommendation": "terminate_campaign",
+            },
+        )
+
+    # Engine-level defense in depth: the server domain rejects
+    # ``convergence_tolerance`` on multi-objective specs at create time, but
+    # callers using the engine directly might bypass that validation. Treat
+    # multi-objective specs as a silent no-op rather than picking objective 0.
+    if spec.convergence_tolerance is not None and len(spec.objectives) == 1:
+        history = _best_value_history(observations, spec.objectives[0])
+        report = detect_single_objective_convergence(
+            best_value_history=history,
+            minimize=spec.objectives[0].minimize,
+            improvement_threshold=float(spec.convergence_tolerance),
+        )
+        if report.converged:
+            return StoppingDecision(
+                should_stop=True,
+                reason=StoppingReason.CONVERGED,
+                message=("Convergence detected: " + report.reason + ". " + report.recommendation),
+                details={
+                    "avg_improvement": report.avg_improvement,
+                    "convergence_score": report.convergence_score,
+                    "iterations_without_improvement": (report.iterations_without_improvement),
+                    "convergence_tolerance": float(spec.convergence_tolerance),
+                    "next_action_recommendation": "terminate_campaign",
+                },
+            )
+
+    return StoppingDecision(
+        should_stop=False,
+        reason=None,
+        message="",
+        details={},
     )
 
 

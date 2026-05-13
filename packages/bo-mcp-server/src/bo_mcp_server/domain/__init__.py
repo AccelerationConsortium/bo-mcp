@@ -3,6 +3,7 @@
 from bo_mcp_server.domain.campaign import Campaign, CampaignStatus
 from bo_mcp_server.domain.campaign_spec import (
     AcquisitionMethod,
+    AcquisitionOptimizationConfig,
     Bounds,
     CampaignSpec,
     Constraint,
@@ -26,6 +27,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "AcquisitionMethod",
+    "AcquisitionOptimizationConfig",
     "Campaign",
     "Event",
     "EventType",

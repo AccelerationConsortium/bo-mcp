@@ -95,6 +95,8 @@ class ErrorCode(StrEnum):
     SUGGESTION_NOT_FOUND = "E009"
     CONCURRENT_MODIFICATION = "E010"
     SEARCH_SPACE_EXHAUSTED = "E011"
+    BUDGET_EXCEEDED = "E012"
+    CAMPAIGN_CONVERGED = "E013"
 
     # Processing errors (E1xx)
     MODEL_FITTING_FAILED = "E101"
@@ -180,6 +182,17 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "cannot provide new information. Verify via campaign://{id} before "
         "closing out."
     ),
+    ErrorCode.BUDGET_EXCEEDED: (
+        "Campaign reached its configured iteration or observation budget. "
+        "Use bo_terminate_campaign to close it out, or increase the budget "
+        "via a new campaign spec."
+    ),
+    ErrorCode.CAMPAIGN_CONVERGED: (
+        "Use bo_terminate_campaign to accept the current best solution; "
+        "recent improvement is below convergence_tolerance. "
+        "Review the search space and submit a fresh campaign if a better "
+        "solution is plausible."
+    ),
     ErrorCode.MODEL_FITTING_FAILED: (
         "Check data quality with bo_get_diagnostics. May need more observations (minimum 2)."
     ),
@@ -211,6 +224,8 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
         "Entity was modified by another request; your update lost the version race"
     ),
     ErrorCode.SEARCH_SPACE_EXHAUSTED: "Search space has no remaining unique combinations",
+    ErrorCode.BUDGET_EXCEEDED: "Campaign exceeded its iteration or observation budget",
+    ErrorCode.CAMPAIGN_CONVERGED: "Campaign has converged to its plateau",
     ErrorCode.MODEL_FITTING_FAILED: "Model fitting failed",
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: "Acquisition optimization failed",
     ErrorCode.DATABASE_ERROR: "Database operation failed",
@@ -294,6 +309,8 @@ ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.SUGGESTION_NOT_FOUND: 404,
     ErrorCode.CONCURRENT_MODIFICATION: 409,
     ErrorCode.SEARCH_SPACE_EXHAUSTED: 409,
+    ErrorCode.BUDGET_EXCEEDED: 409,
+    ErrorCode.CAMPAIGN_CONVERGED: 409,
     ErrorCode.MODEL_FITTING_FAILED: 500,
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: 500,
     ErrorCode.DATABASE_ERROR: 500,

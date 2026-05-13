@@ -191,3 +191,65 @@ class TestCampaignSpec:
 
         missing = sample_campaign_spec.get_parameter("nonexistent")
         assert missing is None
+
+
+class TestConvergenceToleranceValidation:
+    """``convergence_tolerance`` is single-objective only.
+
+    The stopping helper consumes a running-best trajectory over the first
+    objective, so multi-objective campaigns must reject the field at create
+    time rather than silently misinterpreting it.
+    """
+
+    def test_single_objective_convergence_tolerance_accepted(self):
+        """One objective + ``convergence_tolerance`` is valid."""
+        spec = CampaignSpec(
+            name="single",
+            parameters=[
+                InputParameter(
+                    name="x",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
+                ),
+            ],
+            objectives=[Objective(name="y", direction="minimize")],
+            convergence_tolerance=0.01,
+        )
+        assert spec.convergence_tolerance == pytest.approx(0.01)
+
+    def test_multi_objective_convergence_tolerance_rejected(self):
+        """Two objectives + ``convergence_tolerance`` raises validation error."""
+        with pytest.raises(ValidationError, match="convergence_tolerance"):
+            CampaignSpec(
+                name="multi",
+                parameters=[
+                    InputParameter(
+                        name="x",
+                        type=ParameterType.CONTINUOUS,
+                        bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
+                    ),
+                ],
+                objectives=[
+                    Objective(name="y1", direction="minimize"),
+                    Objective(name="y2", direction="minimize"),
+                ],
+                convergence_tolerance=0.01,
+            )
+
+    def test_multi_objective_without_tolerance_accepted(self):
+        """Multi-objective campaigns without the field still validate."""
+        spec = CampaignSpec(
+            name="multi",
+            parameters=[
+                InputParameter(
+                    name="x",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
+                ),
+            ],
+            objectives=[
+                Objective(name="y1", direction="minimize"),
+                Objective(name="y2", direction="minimize"),
+            ],
+        )
+        assert spec.convergence_tolerance is None

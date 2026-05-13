@@ -43,4 +43,13 @@ export BO_MCP_NETWORK_NAME="${BO_MCP_NETWORK_NAME:-akg4pyscf-gpu-s${slot}-net}"
 docker network inspect "${BO_MCP_NETWORK_NAME}" >/dev/null 2>&1 \
   || docker network create "${BO_MCP_NETWORK_NAME}" >/dev/null
 
+cat <<EOF
+Compose slot: ${slot}
+Project: ${COMPOSE_PROJECT_NAME}
+BO-MCP frontend: http://127.0.0.1:${BO_MCP_FRONTEND_PORT}
+BO-MCP API: http://127.0.0.1:${BO_MCP_API_PORT}
+BO-MCP SSE: http://127.0.0.1:${BO_MCP_SSE_PORT}/sse
+Docker network: ${BO_MCP_NETWORK_NAME}
+EOF
+
 exec docker compose "$@"

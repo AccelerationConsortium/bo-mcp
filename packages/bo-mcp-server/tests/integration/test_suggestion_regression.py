@@ -36,9 +36,9 @@ class TestSuggestionReproducibility:
         """Initial design (Sobol sequence) produces same suggestions with same setup.
 
         Sobol sequences are deterministic when seeded; the campaign's
-        ``random_seed`` (default 42 in intake) is threaded through
-        ``OptimizationSpec`` into ``SobolEngine`` so two campaigns sharing
-        a spec produce identical initial-design batches.
+        explicit ``random_seed`` is threaded through ``OptimizationSpec``
+        into ``SobolEngine`` so two campaigns sharing a spec produce
+        identical initial-design batches.
         """
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -53,6 +53,7 @@ class TestSuggestionReproducibility:
             ],
             "objectives": [{"name": "f", "direction": "minimize"}],
             "batch_size": 5,
+            "random_seed": 42,
         }
 
         # Create first campaign and generate

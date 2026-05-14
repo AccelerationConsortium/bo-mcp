@@ -73,7 +73,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - uses: ./.github/actions/setup
-      - run: uv sync --dev
+      - run: uv sync --all-packages
       - name: Run fast tests for ${{ matrix.package }}
         run: |
           cd packages/${{ matrix.package }}
@@ -105,7 +105,7 @@ jobs:
         with:
           python-version: '3.13'
       - uses: ./.github/actions/setup
-      - run: uv sync --dev
+      - run: uv sync --all-packages
       - name: Run slow tests for ${{ matrix.package }}
         run: |
           cd packages/${{ matrix.package }}
@@ -135,7 +135,7 @@ jobs:
         with:
           python-version: '3.13'
       - uses: ./.github/actions/setup
-      - run: uv sync --dev
+      - run: uv sync --all-packages
       - name: Run comprehensive tests for ${{ matrix.package }}
         run: |
           cd packages/${{ matrix.package }}

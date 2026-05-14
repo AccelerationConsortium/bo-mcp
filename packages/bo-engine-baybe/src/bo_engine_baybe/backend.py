@@ -8,6 +8,7 @@ Maximizes use of BayBE-native functionality:
 - Campaign.to_json()/from_json() for state persistence (Approach B)
 - ParetoObjective for multi-objective optimization
 - allow_recommending_already_measured=False to prevent re-suggestions
+- Native pending_experiments support to prevent re-recommending in-flight points
 
 Delegates to bo_engine only for what BayBE doesn't provide:
 hypervolume computation, near-duplicate detection, batch diversity metrics.
@@ -15,25 +16,34 @@ hypervolume computation, near-duplicate detection, batch diversity metrics.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any
 
 import pandas as pd
+import pydantic
 import torch
 from baybe import Campaign
+from baybe import __version__ as baybe_version
 from baybe.recommenders import (
     BotorchRecommender,
     RandomRecommender,
     TwoPhaseMetaRecommender,
 )
+from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
 from baybe.searchspace import SearchSpaceType
 from bo_engine.backend import (
-    BatchDiversityMetrics,
-    DuplicateInfo,
     Feature,
     SuggestionBatch,
 )
-from bo_engine.batch_diversity import compute_batch_diversity
+from bo_engine.backend_base import (
+    BackendValidationResult,
+    BaseBackend,
+    CapabilityReport,
+    CapabilityStatus,
+    required_features,
+)
 from bo_engine.device import get_device, get_dtype
 from bo_engine.diagnostics import (
     compute_best_value,
@@ -49,23 +59,57 @@ from bo_engine.diagnostics import (
 )
 from bo_engine.reference_point import get_reference_point
 from bo_engine.result_validation import (
-    detect_duplicates as engine_detect_duplicates,
-)
-from bo_engine.result_validation import (
     detect_outliers,
 )
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
-from bo_engine.types import ObservationData, OptimizationSpec
-from scipy import stats as scipy_stats
+from bo_engine.types import (
+    ObservationData,
+    OptimizationSpec,
+    ParameterType,
+)
 
 from bo_engine_baybe.converters import (
+    baybe_constraint_support,
     dataframe_to_suggestions,
     observations_to_dataframe,
+    pending_points_to_dataframe,
     spec_to_objective,
     spec_to_searchspace,
 )
+from bo_engine_baybe.options import (
+    BayBEParameterOptions,
+    BayBEParameterRole,
+    extract_baybe_backend_options,
+    extract_baybe_parameter_options,
+)
 
 logger = logging.getLogger(__name__)
+
+# Version of this backend package. Imported lazily into ``method_info`` so the
+# backend module does not need to import ``bo_engine_baybe.__init__`` (which
+# would create a circular import via ``__init__`` re-exporting BayBEBackend).
+_BO_ENGINE_BAYBE_VERSION = "0.1.0"
+
+
+def _detect_chemistry_extras() -> tuple[bool, str | None]:
+    """Probe whether BayBE's optional chemistry extras are installed.
+
+    BayBE's :class:`SubstanceParameter` requires ``baybe[chem]`` (which
+    pulls in ``scikit-fingerprints`` etc.) before any descriptor table
+    can be built. The plain ``baybe`` install advertises the class but
+    raises :class:`OptionalImportError` at construction time. Probing
+    once at import lets :meth:`BayBEBackend.validate_capabilities`
+    surface the gap as an ``UNSUPPORTED`` report at intake instead of a
+    deferred crash during suggestion generation.
+    """
+    try:
+        import baybe._optional.chem  # noqa: F401 — import side effect only
+    except ImportError as e:
+        return False, str(e)
+    return True, None
+
+
+_CHEMISTRY_AVAILABLE, _CHEMISTRY_UNAVAILABLE_REASON = _detect_chemistry_extras()
 
 _SUPPORTED_FEATURES = frozenset(
     {
@@ -73,16 +117,49 @@ _SUPPORTED_FEATURES = frozenset(
         Feature.CONSTRAINTS,
         Feature.CATEGORICAL,
         Feature.MIXED_SEARCH_SPACE,
+        Feature.TRANSFER_LEARNING,
     }
+)
+
+
+# BayBE silently ignores these BoTorch-only knobs at runtime. The map
+# associates each spec attribute with the abstract :class:`Feature`(s)
+# it activates via :func:`bo_engine.backend_base.required_features`.
+# Both the option report (BayBE knob, IGNORED) and the derived feature
+# report (e.g. ``Feature.HIGH_DIMENSIONAL`` from ``turbo_config``)
+# emit :class:`CapabilityStatus.IGNORED` rather than ``UNSUPPORTED``,
+# so create-time capability enforcement still accepts the campaign
+# with a warning instead of rejecting it. ``transfer_learning`` is
+# intentionally absent — its feature-level routing is decided by
+# :meth:`BayBEBackend._transfer_learning_report` (TaskParameter ⇒
+# SUPPORTED, RGPE config ⇒ UNSUPPORTED).
+_BAYBE_IGNORED_FEATURE_MAP: dict[str, tuple[Feature, ...]] = {
+    "turbo_config": (Feature.HIGH_DIMENSIONAL,),
+    "saasbo_config": (Feature.HIGH_DIMENSIONAL,),
+    "fidelity_parameter": (Feature.MULTI_FIDELITY,),
+    "use_cost_aware": (Feature.COST_AWARE,),
+    "use_input_warping": (Feature.INPUT_WARPING,),
+    "outcome_constraints": (Feature.OUTCOME_CONSTRAINTS,),
+}
+_BAYBE_IGNORED_FEATURES: frozenset[Feature] = frozenset(
+    f for features in _BAYBE_IGNORED_FEATURE_MAP.values() for f in features
 )
 
 _MIN_OBSERVATIONS_FOR_CONFIDENCE = 5
 _MODEL_TYPE_SINGLE = "BayBE GP"
 _MODEL_TYPE_MULTI = "BayBE GP (CompositeSurrogate)"
+_FALLBACK_ACQ_SINGLE = "qLogNoisyExpectedImprovement"
+_FALLBACK_ACQ_MULTI = "qLogNoisyExpectedHypervolumeImprovement"
+_FALLBACK_LABEL = "(fallback)"
 
 # Minimum observations before fitting a model for diagnostics
 _MIN_DATA_ABSOLUTE = 3
 _MIN_DATA_PARAM_MULTIPLIER = 2
+
+# Backend-state schema versions. v1 = bare {campaign_json}; v2 adds the
+# stable observation identity index introduced for TODO 1.63.
+_STATE_SCHEMA_VERSION_LEGACY = 1
+_STATE_SCHEMA_VERSION_IDENTITY = 2
 
 # BayBE-specific exceptions that must be caught alongside standard ones.
 # IncompatibilityError is raised when the recommender phase (random vs BO)
@@ -111,19 +188,25 @@ def _build_campaign(spec: OptimizationSpec) -> Campaign:
     """Create a fresh BayBE Campaign from an OptimizationSpec."""
     searchspace = spec_to_searchspace(spec)
     is_purely_discrete = searchspace.type == SearchSpaceType.DISCRETE
+    options = extract_baybe_backend_options(spec.backend_options)
 
+    switch_after = options.recommender.switch_after if options.recommender else 1
     kwargs: dict[str, object] = {
         "searchspace": searchspace,
         "objective": spec_to_objective(spec),
         "recommender": TwoPhaseMetaRecommender(
             initial_recommender=RandomRecommender(),
             recommender=BotorchRecommender(),
+            switch_after=switch_after,
         ),
     }
 
     if is_purely_discrete:
         kwargs["allow_recommending_already_measured"] = False
         kwargs["allow_recommending_already_recommended"] = False
+        kwargs["allow_recommending_pending_experiments"] = (
+            options.allow_recommending_pending_experiments
+        )
 
     return Campaign(**kwargs)  # ty: ignore[invalid-argument-type]
 
@@ -141,37 +224,172 @@ def _restore_or_build_campaign(
     return _build_campaign(spec)
 
 
-def _serialize_campaign(campaign: Campaign) -> dict[str, str]:
-    """Serialize a Campaign to a dict for storage as backend_state."""
-    return {"campaign_json": campaign.to_json()}
+def _observation_fingerprint(
+    obs: ObservationData,
+    param_names: list[str],
+    obj_names: list[str],
+) -> str:
+    """Compute a stable identity hash for an observation.
 
-
-def _count_existing_measurements(campaign: Campaign) -> int:
-    """Return the number of measurements already in a restored campaign."""
-    try:
-        return len(campaign.measurements)
-    except (AttributeError, TypeError):
-        return 0
-
-
-def _add_delta_measurements(
-    campaign: Campaign,
-    observations: list[ObservationData],
-    spec: OptimizationSpec,
-) -> None:
-    """Add only *new* observations not already present in the campaign.
-
-    A restored campaign already contains measurements from prior iterations.
-    Adding the full observation list again would create duplicates, corrupting
-    the GP and bloating the serialized state.
+    Uses sorted parameter and objective columns so reordering the input
+    list (or shuffling the underlying DB query) produces the same hash.
+    The hash is intentionally short (12 hex chars) — enough to make
+    collisions astronomically unlikely for any realistic campaign and
+    cheap to compare during reconciliation.
     """
-    n_existing = _count_existing_measurements(campaign)
-    if n_existing >= len(observations):
-        return  # Campaign already has all observations
+    payload = {
+        "params": [(name, obs.parameter_values.get(name)) for name in param_names],
+        "objectives": [(name, obs.objective_values.get(name)) for name in obj_names],
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.blake2b(encoded, digest_size=8).hexdigest()
 
-    new_observations = observations[n_existing:]
-    obs_df = observations_to_dataframe(new_observations, spec)
-    campaign.add_measurements(obs_df)
+
+def _build_observation_identity(
+    spec: OptimizationSpec,
+    observations: list[ObservationData],
+) -> list[str]:
+    """Return one fingerprint per observation in input order."""
+    param_names = [p.name for p in spec.parameters]
+    obj_names = [o.name for o in spec.objectives]
+    return [_observation_fingerprint(o, param_names, obj_names) for o in observations]
+
+
+def _serialize_campaign(
+    campaign: Campaign,
+    observation_identity: list[str],
+) -> dict[str, Any]:
+    """Serialize a Campaign and identity index for storage as backend_state.
+
+    The identity index is the list of fingerprints for the measurements
+    BayBE believes it has. On restore, the next call compares its incoming
+    observation fingerprints to this list and adds only truly unseen rows
+    (TODO 1.63). Schema version bumps to ``_STATE_SCHEMA_VERSION_IDENTITY``.
+    """
+    return {
+        "schema_version": _STATE_SCHEMA_VERSION_IDENTITY,
+        "campaign_json": campaign.to_json(),
+        "observation_identity": list(observation_identity),
+    }
+
+
+def _reconcile_measurements(
+    campaign: Campaign,
+    spec: OptimizationSpec,
+    observations: list[ObservationData],
+    backend_state: dict[str, Any] | None,
+) -> tuple[Campaign, list[str]]:
+    """Add new measurements to a restored campaign via stable identity (TODO 1.63).
+
+    Returns ``(campaign, identity_index)`` — the campaign may be a freshly
+    built replacement when the stored identity index references rows that
+    have since been deleted from storage. Reconciliation rules:
+
+    * Compute a fingerprint for each observation in the current
+      ``observations`` list.
+    * Fingerprints are reconciled as a **multiset**, not a set, so two
+      observations with identical parameter/objective values (real
+      replicates) both stay in the campaign.
+    * Stored identities that no longer appear in storage trigger a
+      rebuild — the user deleted or rewrote rows, so the BayBE campaign
+      must not keep training on data the server no longer owns.
+    * Storage emptying out (``observations=[]``) is also a rebuild
+      trigger: the restored campaign has measurements the source of
+      truth no longer has.
+    * Legacy payloads (no identity index) cannot be reconciled safely —
+      the previous count-prefix logic was the bug 1.63 set out to fix.
+      The migration path is therefore to rebuild from current
+      observations and start tracking identities from this call onwards.
+    """
+    from collections import Counter
+
+    incoming_ids = _build_observation_identity(spec, observations)
+    incoming_counts: Counter[str] = Counter(incoming_ids)
+    stored_ids = list(_extract_stored_identity(backend_state))
+    stored_counts: Counter[str] = Counter(stored_ids)
+    has_identity_field = _has_stored_identity_field(backend_state)
+
+    if not has_identity_field and _campaign_has_measurements(campaign):
+        logger.info(
+            "Restored BayBE state has no identity index; rebuilding campaign from "
+            "%d current observation(s).",
+            len(observations),
+        )
+        return _rebuild_from_observations(spec, observations), incoming_ids
+
+    # A stored multiplicity that exceeds the incoming one means a measurement
+    # the campaign believes it has is no longer in storage — rebuild.
+    if any(stored_counts[k] > incoming_counts[k] for k in stored_counts):
+        missing = sum(max(stored_counts[k] - incoming_counts[k], 0) for k in stored_counts)
+        logger.warning(
+            "Restored BayBE campaign references %d measurement(s) no longer present "
+            "in storage; rebuilding from current observations.",
+            missing,
+        )
+        return _rebuild_from_observations(spec, observations), incoming_ids
+
+    # Add the multiplicity delta per fingerprint, preserving observation order
+    # so each replicate produces a distinct BayBE row.
+    remaining: Counter[str] = stored_counts.copy()
+    new_observations: list[ObservationData] = []
+    for fingerprint, obs in zip(incoming_ids, observations, strict=True):
+        if remaining[fingerprint] > 0:
+            remaining[fingerprint] -= 1
+            continue
+        new_observations.append(obs)
+
+    if new_observations:
+        obs_df = observations_to_dataframe(new_observations, spec)
+        campaign.add_measurements(obs_df)
+
+    return campaign, incoming_ids
+
+
+def _has_stored_identity_field(backend_state: dict[str, Any] | None) -> bool:
+    """Return True when the payload includes the v2 ``observation_identity`` key."""
+    if not backend_state:
+        return False
+    return "observation_identity" in backend_state
+
+
+def _campaign_has_measurements(campaign: Campaign) -> bool:
+    """Defensive check for whether the restored campaign carries any data."""
+    try:
+        return len(campaign.measurements) > 0
+    except (AttributeError, TypeError):
+        return False
+
+
+def _rebuild_from_observations(
+    spec: OptimizationSpec,
+    observations: list[ObservationData],
+) -> Campaign:
+    """Build a fresh campaign and add all current observations.
+
+    Used as the safe fallback whenever identity reconciliation can no
+    longer trust the restored campaign (legacy payload, missing rows).
+    """
+    fresh = _build_campaign(spec)
+    if observations:
+        obs_df = observations_to_dataframe(observations, spec)
+        fresh.add_measurements(obs_df)
+    return fresh
+
+
+def _extract_stored_identity(backend_state: dict[str, Any] | None) -> list[str]:
+    """Pull the identity index out of a stored payload.
+
+    Supports both the new schema (``observation_identity`` field, v2) and
+    the legacy schema (no identity field, v1). For v1 payloads the
+    reconciliation falls back to ``len(campaign.measurements)`` interpretation
+    via an empty identity list (treated as "no prior identities recorded").
+    """
+    if not backend_state:
+        return []
+    raw = backend_state.get("observation_identity")
+    if not isinstance(raw, list):
+        return []
+    return [str(v) for v in raw]
 
 
 def _observations_to_minimization_tensor(
@@ -210,8 +428,15 @@ def _extract_posterior_stats(
     campaign: Campaign,
     rec_df: pd.DataFrame,
     spec: OptimizationSpec,
-) -> list[dict[str, dict[str, float] | None]]:
-    """Extract BayBE posterior mean and std per objective for each recommendation."""
+) -> tuple[list[dict[str, dict[str, float] | None]], str | None]:
+    """Extract BayBE posterior mean and std per objective for each recommendation.
+
+    Returns ``(predictions, warning)`` where ``warning`` is a short
+    message explaining why posterior_stats was unavailable for the active
+    recommender phase, or ``None`` when extraction succeeded. The warning
+    is forwarded to :class:`SuggestionBatch.warnings` (TODO 1.67) so users
+    see "no posterior in random-warmup phase" instead of a silent ``None``.
+    """
     obj_names = [o.name for o in spec.objectives]
     empty: dict[str, dict[str, float] | None] = {
         "predicted_objectives": None,
@@ -219,10 +444,13 @@ def _extract_posterior_stats(
     }
     try:
         stats_df = campaign.posterior_stats(candidates=rec_df, stats=("mean", "std"))
-        return [_parse_prediction_row(stats_df.iloc[i], obj_names) for i in range(len(rec_df))]
+        return (
+            [_parse_prediction_row(stats_df.iloc[i], obj_names) for i in range(len(rec_df))],
+            None,
+        )
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
         logger.debug("Posterior stats extraction failed: %s", e)
-        return [empty] * len(rec_df)
+        return [empty] * len(rec_df), str(e)
 
 
 def _parse_prediction_row(
@@ -248,26 +476,49 @@ def _parse_prediction_row(
 def _extract_acquisition_values(
     campaign: Campaign,
     rec_df: pd.DataFrame,
-) -> list[float | None]:
-    """Extract per-suggestion acquisition function values from BayBE."""
+    pending_df: pd.DataFrame | None,
+) -> tuple[list[float | None], str | None]:
+    """Extract per-suggestion acquisition function values from BayBE.
+
+    Pending experiments are forwarded so the acquisition values reflect
+    the same conditioning BayBE used during ``recommend`` (TODO 1.62). A
+    short warning message is returned alongside the values when
+    extraction is impossible in the current recommender phase so the
+    backend can surface it via :class:`SuggestionBatch.warnings`.
+    """
     try:
-        acq_series = campaign.acquisition_values(candidates=rec_df)
-        return [float(v) for v in acq_series.values]
+        acq_series = campaign.acquisition_values(
+            candidates=rec_df,
+            pending_experiments=pending_df,
+        )
+        return [float(v) for v in acq_series.values], None
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
         logger.debug("Acquisition value extraction failed: %s", e)
-        return [None] * len(rec_df)
+        return [None] * len(rec_df), str(e)
 
 
-def _extract_model_info(campaign: Campaign) -> dict[str, str | list[float] | float | None]:
-    """Extract model hyperparameters from BayBE's fitted surrogate."""
+def _extract_model_info(
+    campaign: Campaign,
+) -> tuple[dict[str, str | list[float] | float | None], str | None]:
+    """Extract model hyperparameters from BayBE's fitted surrogate.
+
+    Returns ``(info, warning)`` mirroring :func:`_extract_posterior_stats`.
+    Multi-target campaigns produce a ``ModelListGP``; in that case the
+    first sub-model's hyperparameters are reported (BayBE composes one
+    GP per target). The ``kernel_type`` key is always present so callers
+    can distinguish "fitted" (string class name) from "not available"
+    (``None``) — surfacing only the latter as a method warning (TODO 1.67).
+    """
     info: dict[str, str | list[float] | float | None] = {
-        "model_type": _MODEL_TYPE_SINGLE,
-        "kernel_type": "unknown",
+        "kernel_type": None,
     }
     try:
         surrogate = campaign.get_surrogate()
         botorch_model = surrogate.to_botorch()
-        covar = botorch_model.covar_module
+        model_for_kernel = _select_kernel_model(botorch_model)
+        covar = getattr(model_for_kernel, "covar_module", None)
+        if covar is None:
+            return info, "BayBE surrogate did not expose a covariance module"
         kernel = getattr(covar, "base_kernel", covar)
         info["kernel_type"] = type(kernel).__name__
 
@@ -277,15 +528,33 @@ def _extract_model_info(campaign: Campaign) -> dict[str, str | list[float] | flo
         else:
             info["lengthscales"] = [round(float(v), 4) for v in ls.tolist()]
 
-        if hasattr(botorch_model, "likelihood") and hasattr(botorch_model.likelihood, "noise"):
-            noise = botorch_model.likelihood.noise.item()  # ty: ignore[unresolved-attribute]
+        if hasattr(model_for_kernel, "likelihood") and hasattr(
+            model_for_kernel.likelihood, "noise"
+        ):
+            noise = model_for_kernel.likelihood.noise.item()  # ty: ignore[unresolved-attribute]
             info["noise_variance"] = round(float(noise), 6)
         if hasattr(covar, "outputscale"):
             oscale = covar.outputscale.item()  # ty: ignore[unresolved-attribute]
             info["output_scale"] = round(float(oscale), 4)
+        return info, None
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
         logger.debug("Model info extraction failed: %s", e)
-    return info
+        return info, str(e)
+
+
+def _select_kernel_model(botorch_model: Any) -> Any:
+    """Pick the BoTorch model whose hyperparameters we report.
+
+    ``ModelListGP`` (used by multi-target/multi-objective BayBE campaigns)
+    wraps one sub-model per target. We report the first sub-model so the
+    metadata is non-empty and consistent across calls; the per-target
+    breakdown can be reconstructed from BayBE's posterior_stats output
+    when finer granularity is needed.
+    """
+    sub_models = getattr(botorch_model, "models", None)
+    if sub_models is not None and len(sub_models) > 0:
+        return sub_models[0]
+    return botorch_model
 
 
 def _extract_feature_importance(campaign: Campaign) -> dict[str, float] | None:
@@ -322,17 +591,96 @@ def _build_fitted_campaign(
     return campaign
 
 
+def _active_recommender(campaign: Campaign):
+    """Return the active non-meta recommender of the campaign, if exposed.
+
+    BayBE's meta-recommender flow advances state during ``recommend``; the
+    method-info path needs the recommender after that switch happened
+    rather than the meta-recommender wrapper. Falls back to the raw
+    ``campaign.recommender`` attribute when the campaign exposes no
+    helper.
+    """
+    helper = getattr(campaign, "_get_non_meta_recommender", None)
+    if callable(helper):
+        try:
+            return helper()
+        except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
+            logger.debug("Could not resolve active BayBE recommender: %s", e)
+    return getattr(campaign, "recommender", None)
+
+
+def _active_acquisition_label(recommender: Any) -> str | None:
+    """Read the acquisition function class name from a BayBE recommender, if any."""
+    acq_fn = getattr(recommender, "acquisition_function", None)
+    if acq_fn is None:
+        return None
+    return type(acq_fn).__name__
+
+
+def _campaign_searchspace_label(campaign: Campaign) -> str:
+    """Return the BayBE searchspace type as a stable string label."""
+    searchspace_type = getattr(getattr(campaign, "searchspace", None), "type", None)
+    if hasattr(searchspace_type, "value"):
+        return str(searchspace_type.value)
+    return str(searchspace_type)
+
+
+def _strategy_and_model(
+    rec_name: str | None,
+    is_nonpredictive: bool,
+    is_multi: bool,
+) -> tuple[str, str]:
+    """Compose the live ``(strategy, model_type)`` labels for method-info.
+
+    Nonpredictive recommenders (e.g. random warmup) explicitly report
+    ``"none (space-filling)"`` for the model type so the audit trail
+    cannot claim a GP surrogate when none is fitted.
+    """
+    if is_nonpredictive:
+        strategy = (
+            f"{rec_name} (space-filling, no surrogate)"
+            if rec_name
+            else "RandomRecommender (space-filling initial design)"
+        )
+        return strategy, "none (space-filling)"
+    surrogate = _MODEL_TYPE_MULTI if is_multi else _MODEL_TYPE_SINGLE
+    if rec_name is not None:
+        return f"{rec_name} (GP-based)", surrogate
+    return "BotorchRecommender (GP-based)", surrogate
+
+
+def _acquisition_label(
+    recommender: Any,
+    is_nonpredictive: bool,
+    is_multi: bool,
+) -> str:
+    """Choose the acquisition-function label live from the recommender."""
+    if is_nonpredictive:
+        # Nonpredictive recommenders do not have an acquisition function;
+        # claiming qLogNEI here would mislead audit metadata.
+        return "none (space-filling)"
+    live_acq = _active_acquisition_label(recommender)
+    if live_acq is not None:
+        return live_acq
+    return (
+        f"{_FALLBACK_ACQ_MULTI} {_FALLBACK_LABEL}"
+        if is_multi
+        else f"{_FALLBACK_ACQ_SINGLE} {_FALLBACK_LABEL}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # BayBEBackend
 # ---------------------------------------------------------------------------
 
 
-class BayBEBackend:
+class BayBEBackend(BaseBackend):
     """BayBE-based Bayesian Optimization backend.
 
     Implements the BOBackend protocol, maximizing use of BayBE-native APIs.
-    Delegates to bo_engine only for hypervolume, near-duplicate detection,
-    and batch diversity (which BayBE does not provide).
+    Inherits duplicate detection, batch diversity, and JSON state-envelope
+    helpers from :class:`BaseBackend`; overrides validation and method
+    metadata to encode the BayBE-specific capability matrix.
     """
 
     @property
@@ -344,29 +692,226 @@ class BayBEBackend:
         return _SUPPORTED_FEATURES
 
     # -- Spec features that BayBE does NOT support --------------------------
-    _UNSUPPORTED_CHECKS: list[tuple[str, str]] = [
+    _UNSUPPORTED_OPTIONS: list[tuple[str, str]] = [
         ("turbo_config", "TuRBO trust-region optimization"),
         ("saasbo_config", "SAASBO high-dimensional optimization"),
         ("fidelity_parameter", "Multi-fidelity optimization"),
         ("transfer_learning", "Transfer learning (RGPE)"),
-    ]
-
-    _UNSUPPORTED_BOOL_CHECKS: list[tuple[str, str]] = [
         ("use_cost_aware", "Cost-aware optimization (EIpu)"),
         ("use_input_warping", "Input warping"),
+        ("outcome_constraints", "Outcome constraints"),
     ]
 
+    def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
+        """Per-feature, per-option capability report for BayBE.
+
+        ``Feature.CONSTRAINTS`` is reported per-constraint so hybrid /
+        categorical-arithmetic constraints route ``backend="auto"`` away
+        from BayBE instead of failing inside SearchSpace construction
+        (TODO 1.64). ``Feature.TRANSFER_LEARNING`` is supported only when
+        the campaign uses BayBE-native ``TaskParameter``s (TODO 1.65) —
+        the BoTorch RGPE flavour exposed by ``OptimizationSpec.transfer_learning``
+        remains an ignored option for BayBE. Misshaped
+        ``parameter_options['baybe']`` and ``backend_options['baybe']``
+        payloads surface as :class:`CapabilityStatus.UNSUPPORTED` reports
+        here rather than crashing the suggestion path.
+        """
+        feature_reports = self._feature_reports(spec)
+        option_reports = self._option_reports(spec)
+        return BackendValidationResult(
+            backend=self.name,
+            feature_reports=tuple(feature_reports),
+            option_reports=tuple(option_reports),
+        )
+
+    def _feature_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
+        """Build the feature half of :meth:`validate_capabilities` output.
+
+        Features whose source spec attribute is in
+        :data:`_BAYBE_IGNORED_FEATURE_MAP` (``turbo_config``,
+        ``saasbo_config``, ``fidelity_parameter``, ``use_cost_aware``,
+        ``use_input_warping``, ``outcome_constraints``) emit
+        :class:`CapabilityStatus.IGNORED` so create-time capability
+        enforcement keeps accepting BayBE campaigns that carry
+        BoTorch-only knobs — the warning still surfaces via the
+        option-level IGNORED report. Genuinely incompatible items
+        (hybrid constraints, RGPE transfer learning, malformed BayBE
+        typed options) stay :class:`CapabilityStatus.UNSUPPORTED`.
+        """
+        reports: list[CapabilityReport] = []
+        supported = self.supported_features
+        transfer_handled = False
+        for feature in sorted(required_features(spec)):
+            if feature == Feature.CONSTRAINTS:
+                reports.extend(self._constraint_feature_reports(spec))
+                continue
+            if feature == Feature.TRANSFER_LEARNING:
+                reports.append(self._transfer_learning_report(spec))
+                transfer_handled = True
+                continue
+            if feature in supported:
+                reports.append(
+                    CapabilityReport(key=str(feature), status=CapabilityStatus.SUPPORTED)
+                )
+            elif feature in _BAYBE_IGNORED_FEATURES:
+                reports.append(
+                    CapabilityReport(
+                        key=str(feature),
+                        status=CapabilityStatus.IGNORED,
+                        reason=f"{feature} is not honored by BayBE and will be ignored.",
+                    )
+                )
+            else:
+                reports.append(
+                    CapabilityReport(
+                        key=str(feature),
+                        status=CapabilityStatus.UNSUPPORTED,
+                        reason=f"{feature} is not supported by BayBE",
+                    )
+                )
+        # A BayBE-native TaskParameter is the supported transfer-learning path
+        # even when the neutral spec did not flag transfer_learning itself.
+        if not transfer_handled:
+            task_report = self._task_parameter_feature_report(spec)
+            if task_report is not None:
+                reports.append(task_report)
+        return reports
+
+    def _constraint_feature_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
+        """One :class:`CapabilityReport` per constraint.
+
+        Delegates to :func:`baybe_constraint_support` so the capability
+        report and the converter agree on what BayBE can construct. The
+        report key includes the index plus neutral constraint type so an
+        agent can match the warning back to the input spec.
+        """
+        if not spec.constraints:
+            return []
+        reports: list[CapabilityReport] = []
+        for idx, constraint in enumerate(spec.constraints):
+            key = f"constraint[{idx}]({constraint.type.value})"
+            ok, reason = baybe_constraint_support(constraint, spec.parameters)
+            if ok:
+                reports.append(CapabilityReport(key=key, status=CapabilityStatus.SUPPORTED))
+            else:
+                reports.append(
+                    CapabilityReport(
+                        key=key,
+                        status=CapabilityStatus.UNSUPPORTED,
+                        reason=reason or "Unsupported constraint",
+                    )
+                )
+        return reports
+
+    def _transfer_learning_report(self, spec: OptimizationSpec) -> CapabilityReport:
+        """Classify the spec's ``transfer_learning`` slot.
+
+        BayBE's transfer-learning path is the native ``TaskParameter``
+        mechanism — the neutral RGPE-style ``transfer_learning`` config
+        targets the BoTorch backend. Reporting RGPE as ``IGNORED`` keeps
+        BoTorch-shaped campaigns on BayBE only when the user explicitly
+        pins ``backend="baybe"``; otherwise the
+        :class:`~bo_engine.backend_base.CapabilityReport` is preserved as
+        a method warning. When the spec exposes a TaskParameter via
+        ``parameter_options['baybe'].role == 'task'`` the report flips to
+        ``SUPPORTED``.
+        """
+        if any(_parameter_is_task(p.parameter_options) for p in spec.parameters):
+            return CapabilityReport(
+                key=str(Feature.TRANSFER_LEARNING),
+                status=CapabilityStatus.SUPPORTED,
+                reason="BayBE-native TaskParameter declared via parameter_options['baybe']",
+            )
+        return CapabilityReport(
+            key=str(Feature.TRANSFER_LEARNING),
+            status=CapabilityStatus.UNSUPPORTED,
+            reason=(
+                "BayBE supports transfer learning via TaskParameter; the neutral "
+                "RGPE config targets the BoTorch backend."
+            ),
+        )
+
+    def _task_parameter_feature_report(
+        self,
+        spec: OptimizationSpec,
+    ) -> CapabilityReport | None:
+        """Return a SUPPORTED transfer-learning report when a TaskParameter is present."""
+        if not any(_parameter_is_task(p.parameter_options) for p in spec.parameters):
+            return None
+        return CapabilityReport(
+            key=str(Feature.TRANSFER_LEARNING),
+            status=CapabilityStatus.SUPPORTED,
+            reason="BayBE-native TaskParameter declared via parameter_options['baybe']",
+        )
+
+    def _option_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
+        """Option-half of validate_capabilities: ignored knobs + typed BayBE option validation."""
+        reports: list[CapabilityReport] = []
+        for attr, label in self._UNSUPPORTED_OPTIONS:
+            value = getattr(spec, attr, None)
+            is_set = bool(value) if not isinstance(value, list) else len(value) > 0
+            if is_set:
+                reports.append(
+                    CapabilityReport(
+                        key=attr,
+                        status=CapabilityStatus.IGNORED,
+                        reason=f"{label} is not supported by BayBE and will be ignored.",
+                    )
+                )
+        reports.extend(self._parameter_option_reports(spec))
+        reports.extend(self._backend_option_reports(spec))
+        return reports
+
+    def _parameter_option_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
+        """Validate ``parameter_options['baybe']`` and surface schema errors."""
+        reports: list[CapabilityReport] = []
+        for p in spec.parameters:
+            if not p.parameter_options or "baybe" not in p.parameter_options:
+                continue
+            try:
+                opts = extract_baybe_parameter_options(p.parameter_options)
+            except pydantic.ValidationError as e:
+                reports.append(
+                    CapabilityReport(
+                        key=f"parameter_options[{p.name}].baybe",
+                        status=CapabilityStatus.UNSUPPORTED,
+                        reason=f"Invalid BayBE parameter options: {e.errors()[0]['msg']}",
+                    )
+                )
+                continue
+            reports.extend(_validate_parameter_role(p, opts))
+        return reports
+
+    def _backend_option_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
+        """Validate ``backend_options['baybe']`` and surface schema errors."""
+        if not spec.backend_options or "baybe" not in spec.backend_options:
+            return []
+        try:
+            extract_baybe_backend_options(spec.backend_options)
+        except pydantic.ValidationError as e:
+            return [
+                CapabilityReport(
+                    key="backend_options.baybe",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=f"Invalid BayBE backend options: {e.errors()[0]['msg']}",
+                )
+            ]
+        return []
+
     def validate_spec(self, spec: OptimizationSpec) -> list[str]:
-        """Return warnings for spec features that BayBE will silently ignore."""
+        """Backward-compatible string-warning surface for BayBE.
+
+        Preserves the exact phrasing the previous implementation used so
+        callers that grep the warnings (and tests that assert on the
+        wording) keep working: ``"<label> is not supported by BayBE and
+        will be ignored."``.
+        """
         warnings: list[str] = []
-        for attr, label in self._UNSUPPORTED_CHECKS:
-            if getattr(spec, attr, None) is not None:
+        for attr, label in self._UNSUPPORTED_OPTIONS:
+            value = getattr(spec, attr, None)
+            is_set = bool(value) if not isinstance(value, list) else len(value) > 0
+            if is_set:
                 warnings.append(f"{label} is not supported by BayBE and will be ignored.")
-        for attr, label in self._UNSUPPORTED_BOOL_CHECKS:
-            if getattr(spec, attr, False):
-                warnings.append(f"{label} is not supported by BayBE and will be ignored.")
-        if spec.outcome_constraints:
-            warnings.append("Outcome constraints are not supported by BayBE and will be ignored.")
         return warnings
 
     def generate_initial_design(
@@ -387,47 +932,125 @@ class BayBEBackend:
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
-        # BayBE handles batch diversity internally via its own sequential
-        # recommenders; pending_points is accepted for protocol parity but
-        # currently ignored (future work can thread this into BayBE's
-        # TELL/ASK cycle).
-        del pending_points
-        campaign = _restore_or_build_campaign(spec, backend_state)
+        inner_state = self.unwrap_state(backend_state)
+        campaign = _restore_or_build_campaign(spec, inner_state)
 
-        # Add only delta observations to avoid duplicate accumulation (E1)
-        if observations:
-            _add_delta_measurements(campaign, observations, spec)
+        # Reconcile measurements by stable identity (TODO 1.63). Run the
+        # reconciliation even when observations is empty so a restored
+        # campaign with stale measurements is rebuilt instead of carrying
+        # forward data the storage layer no longer owns.
+        campaign, identity_index = _reconcile_measurements(
+            campaign, spec, observations, inner_state
+        )
 
-        rec_df = campaign.recommend(batch_size=batch_size)
+        pending_df, pending_warnings = self._convert_pending_points(spec, pending_points)
+        rec_df = campaign.recommend(batch_size=batch_size, pending_experiments=pending_df)
         param_dicts = dataframe_to_suggestions(rec_df, spec)
 
-        predictions = _extract_posterior_stats(campaign, rec_df, spec)
-        acq_values = _extract_acquisition_values(campaign, rec_df)
-        model_info = _extract_model_info(campaign)
+        predictions, posterior_warning = _extract_posterior_stats(campaign, rec_df, spec)
+        acq_values, acq_warning = _extract_acquisition_values(campaign, rec_df, pending_df)
+        model_info, model_warning = _extract_model_info(campaign)
+
+        method_info = self._method_info_from_campaign(campaign, spec, len(observations))
+        method_info.update(model_info)
+        acq_label = str(method_info.get("acquisition_function") or "")
 
         suggestions = _build_suggestion_list(
             param_dicts,
             predictions,
             acq_values,
-            model_info,
-            spec,
+            method_info,
             observations,
             iteration,
             batch_size,
+            acquisition_label=acq_label,
         )
 
-        method_info = self.select_methods(spec, len(observations))
-        method_info.update(model_info)
-
-        # Surface unsupported-feature warnings via validate_spec (E6)
-        spec_warnings = self.validate_spec(spec)
+        warnings_out = self.validate_spec(spec)
+        warnings_out.extend(pending_warnings)
+        for warning in (posterior_warning, acq_warning, model_warning):
+            if warning is None:
+                continue
+            warnings_out.append(f"BayBE introspection incomplete: {warning}")
 
         return SuggestionBatch(
             suggestions=suggestions,
             method_info=method_info,
-            backend_state=_serialize_campaign(campaign),
-            warnings=spec_warnings,
+            backend_state=self.wrap_state(
+                _serialize_campaign(campaign, identity_index),
+                schema_version=_STATE_SCHEMA_VERSION_IDENTITY,
+            ),
+            warnings=warnings_out,
         )
+
+    def _convert_pending_points(
+        self,
+        spec: OptimizationSpec,
+        pending_points: list[dict[str, Any]] | None,
+    ) -> tuple[pd.DataFrame | None, list[str]]:
+        """Translate neutral pending dicts to BayBE's dataframe shape (TODO 1.62).
+
+        Validation failures are downgraded to warnings rather than
+        raising — pending points are an optimization hint, not a
+        correctness requirement, and dropping them silently would defeat
+        the whole feature. ``None`` is returned when no usable pending
+        rows remain.
+        """
+        if not pending_points:
+            return None, []
+        try:
+            df = pending_points_to_dataframe(pending_points, spec)
+        except (TypeError, ValueError) as e:
+            return None, [f"Pending points dropped: could not build BayBE dataframe ({e})"]
+        if df.empty:
+            return None, []
+        return df, []
+
+    def _method_info_from_campaign(
+        self,
+        campaign: Campaign,
+        spec: OptimizationSpec,
+        n_observations: int,
+    ) -> dict[str, Any]:
+        """Source method metadata from the active campaign (TODO 1.67).
+
+        Falls back to the previous static labels only when BayBE cannot
+        provide live introspection (e.g. before the first recommend or
+        after a serialization edge case). Static fallbacks are tagged
+        with ``"(fallback)"`` so callers can tell live metadata from a
+        guess.
+        """
+        recommender = _active_recommender(campaign)
+        is_multi = spec.n_objectives > 1
+        is_nonpredictive = isinstance(recommender, NonPredictiveRecommender)
+        rec_name = type(recommender).__name__ if recommender is not None else None
+        searchspace_str = _campaign_searchspace_label(campaign)
+        objective_type = type(getattr(campaign, "objective", None)).__name__
+        strategy, model_type = _strategy_and_model(rec_name, is_nonpredictive, is_multi)
+        acq_fn = _acquisition_label(recommender, is_nonpredictive, is_multi)
+
+        return {
+            "model_type": model_type,
+            "acquisition_function": acq_fn,
+            "optimization_strategy": strategy,
+            "recommender": rec_name,
+            "is_nonpredictive": is_nonpredictive,
+            "searchspace_type": searchspace_str,
+            "objective_type": objective_type,
+            "input_transforms": ["BayBE internal encoding"],
+            "explanation": (
+                f"BayBE backend with {n_observations} observations. "
+                f"Using {strategy}."
+                + (f" Multi-objective with {spec.n_objectives} targets." if is_multi else "")
+            ),
+            "confidence": (
+                "medium" if n_observations < _MIN_OBSERVATIONS_FOR_CONFIDENCE else "high"
+            ),
+            "alternatives": [],
+            "warnings": [],
+            "baybe_version": baybe_version,
+            "bo_engine_baybe_version": _BO_ENGINE_BAYBE_VERSION,
+        }
 
     def compute_hypervolume(
         self,
@@ -442,74 +1065,30 @@ class BayBEBackend:
         ref_point = _compute_reference_point(y_bo)
         return engine_compute_hypervolume(pareto_y, ref_point)
 
-    def detect_duplicates(
-        self,
-        new_params: dict[str, Any],
-        existing_params: list[dict[str, Any]],
-        tolerance: float,
-    ) -> list[DuplicateInfo]:
-        raw = engine_detect_duplicates(new_params, existing_params, tolerance)
-        return [
-            DuplicateInfo(
-                index=d.index,
-                is_exact=d.is_exact,
-                parameter_distance=d.parameter_distance,
-            )
-            for d in raw
-        ]
-
-    def update_state_after_results(
-        self,
-        spec: OptimizationSpec,
-        new_observations: list[ObservationData],
-        backend_state: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        _ = spec, new_observations
-        return backend_state
-
-    def compute_batch_diversity(
-        self,
-        spec: OptimizationSpec,
-        candidates: list[dict[str, Any]],
-    ) -> BatchDiversityMetrics | None:
-        if len(candidates) < 2:
-            return None
-
-        try:
-            bounds = get_bounds_tensor(spec)
-            param_names = [p.name for p in spec.parameters]
-            values = [[float(c.get(name, 0.0)) for name in param_names] for c in candidates]
-            tensor = torch.tensor(values, device=get_device(), dtype=get_dtype())
-
-            m = compute_batch_diversity(tensor, bounds)
-            return BatchDiversityMetrics(
-                min_pairwise_distance=m.min_pairwise_distance,
-                mean_pairwise_distance=m.mean_pairwise_distance,
-                diversity_score=m.diversity_score,
-                is_diverse=m.is_diverse,
-            )
-        except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
-            logger.debug("Batch diversity computation failed: %s", e)
-            return None
-
     def select_methods(
         self,
         spec: OptimizationSpec,
         n_observations: int,
     ) -> dict[str, Any]:
+        """Fallback method metadata when no live campaign is available.
+
+        Live metadata is normally read off the running campaign inside
+        :meth:`generate_suggestions` via
+        :meth:`_method_info_from_campaign`. This entry point is invoked
+        by the server's diagnostics pipeline when no campaign exists yet
+        (e.g. before the first iteration) and therefore can only return
+        static labels marked as ``(fallback)``.
+        """
         is_multi = spec.n_objectives > 1
-
         if n_observations == 0:
-            strategy = "RandomRecommender (space-filling initial design)"
+            strategy = f"RandomRecommender (space-filling initial design) {_FALLBACK_LABEL}"
         else:
-            strategy = "BotorchRecommender (GP-based)"
-
+            strategy = f"BotorchRecommender (GP-based) {_FALLBACK_LABEL}"
         acq_fn = (
-            "qLogNoisyExpectedHypervolumeImprovement"
+            f"{_FALLBACK_ACQ_MULTI} {_FALLBACK_LABEL}"
             if is_multi
-            else "qLogNoisyExpectedImprovement"
+            else f"{_FALLBACK_ACQ_SINGLE} {_FALLBACK_LABEL}"
         )
-
         return {
             "model_type": _MODEL_TYPE_MULTI if is_multi else _MODEL_TYPE_SINGLE,
             "acquisition_function": acq_fn,
@@ -525,6 +1104,8 @@ class BayBEBackend:
             ),
             "alternatives": [],
             "warnings": [],
+            "baybe_version": baybe_version,
+            "bo_engine_baybe_version": _BO_ENGINE_BAYBE_VERSION,
         }
 
     def compute_diagnostics(
@@ -646,7 +1227,7 @@ class BayBEBackend:
             campaign = _build_fitted_campaign(spec, observations)
             obs_df = observations_to_dataframe(observations, spec)
 
-            model_info = _extract_model_info(campaign)
+            model_info, _ = _extract_model_info(campaign)
             fi = _extract_feature_importance(campaign)
             corr = _baybe_model_correlation(campaign, obs_df, spec)
 
@@ -719,12 +1300,128 @@ class BayBEBackend:
 # ---------------------------------------------------------------------------
 
 
+def _parameter_is_task(parameter_options: dict[str, dict[str, Any]] | None) -> bool:
+    """Return True when ``parameter_options['baybe'].role == 'task'``."""
+    try:
+        opts = extract_baybe_parameter_options(parameter_options)
+    except pydantic.ValidationError:
+        return False
+    return opts.role == BayBEParameterRole.TASK
+
+
+def _validate_parameter_role(
+    p: Any,
+    opts: BayBEParameterOptions,
+) -> list[CapabilityReport]:
+    """Cross-check parameter-spec type against the requested BayBE role.
+
+    Beyond the shape-level Pydantic checks, this also enforces BayBE
+    semantic invariants:
+
+    * ``role`` of ``task``/``substance`` requires a categorical base
+      parameter.
+    * ``active_values`` for ``role=task`` must all be members of the
+      declared categories — BayBE's ``TaskParameter`` constructor
+      raises a ``ValueError`` otherwise.
+    * ``substance_data`` for ``role=substance`` must cover every
+      declared category and ``baybe[chem]`` must be installed before
+      BayBE's :class:`SubstanceParameter` can build its descriptor table.
+    """
+    if opts.role not in (BayBEParameterRole.TASK, BayBEParameterRole.SUBSTANCE):
+        return []
+    if p.type != ParameterType.CATEGORICAL:
+        return [
+            CapabilityReport(
+                key=f"parameter_options[{p.name}].baybe.role",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"BayBE {opts.role.value} parameter requires a categorical base, "
+                    f"got {p.type.value}"
+                ),
+            )
+        ]
+
+    categories = set(p.categories or [])
+    if opts.role == BayBEParameterRole.TASK:
+        return _task_role_reports(p.name, opts, categories)
+    return _substance_role_reports(p.name, opts, categories)
+
+
+def _task_role_reports(
+    name: str,
+    opts: BayBEParameterOptions,
+    categories: set[str],
+) -> list[CapabilityReport]:
+    """Validate the ``role=task`` shape against the declared categories."""
+    if not opts.active_values:
+        return []
+    unknown = sorted(set(opts.active_values) - categories)
+    if not unknown:
+        return []
+    return [
+        CapabilityReport(
+            key=f"parameter_options[{name}].baybe.active_values",
+            status=CapabilityStatus.UNSUPPORTED,
+            reason=(
+                f"BayBE TaskParameter active_values {unknown} not in declared "
+                f"categories {sorted(categories)}"
+            ),
+        )
+    ]
+
+
+def _substance_role_reports(
+    name: str,
+    opts: BayBEParameterOptions,
+    categories: set[str],
+) -> list[CapabilityReport]:
+    """Validate the ``role=substance`` shape plus runtime chemistry availability.
+
+    Independent checks: missing ``baybe[chem]`` extras and a malformed
+    ``substance_data`` are separate problems, so both can fire on the
+    same parameter to give the user a complete punch list.
+    """
+    reports: list[CapabilityReport] = []
+    if not _CHEMISTRY_AVAILABLE:
+        reports.append(
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.role",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "BayBE substance parameters require the 'baybe[chem]' optional "
+                    f"dependency, which is not installed ({_CHEMISTRY_UNAVAILABLE_REASON})."
+                ),
+            )
+        )
+    if not opts.substance_data:
+        reports.append(
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.substance_data",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason="BayBE substance parameter requires substance_data (SMILES map).",
+            )
+        )
+        return reports
+    missing = sorted(categories - set(opts.substance_data.keys()))
+    if missing:
+        reports.append(
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.substance_data",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=f"BayBE substance_data is missing SMILES for categories {missing}",
+            )
+        )
+    return reports
+
+
 def _baybe_model_correlation(
     campaign: Campaign,
     obs_df: pd.DataFrame,
     spec: OptimizationSpec,
 ) -> float:
     """Compute rank correlation between BayBE posterior mean and actuals."""
+    from scipy import stats as scipy_stats
+
     try:
         stats_df = campaign.posterior_stats(candidates=obs_df, stats=("mean",))
         obj_name = spec.objectives[0].name
@@ -773,18 +1470,13 @@ def _build_suggestion_list(
     param_dicts: list[dict[str, Any]],
     predictions: list[dict[str, dict[str, float] | None]],
     acq_values: list[float | None],
-    model_info: dict[str, str | list[float] | float | None],
-    spec: OptimizationSpec,
+    method_info: dict[str, Any],
     observations: list[ObservationData],
     iteration: int,
     batch_size: int,
+    acquisition_label: str,
 ) -> list[dict[str, Any]]:
     """Build the suggestion list with full BayBE-sourced provenance."""
-    is_multi = spec.n_objectives > 1
-    acq_fn = (
-        "qLogNoisyExpectedHypervolumeImprovement" if is_multi else "qLogNoisyExpectedImprovement"
-    )
-
     suggestions: list[dict[str, Any]] = []
     for i, params in enumerate(param_dicts):
         pred = predictions[i] if i < len(predictions) else {}
@@ -797,9 +1489,9 @@ def _build_suggestion_list(
                     "iteration": iteration,
                     "batch_index": i,
                     "generation_method": "baybe_bo",
-                    "acquisition_function": acq_fn,
+                    "acquisition_function": acquisition_label,
                     "acquisition_value": acq_val,
-                    "model_type": model_info.get("model_type", _MODEL_TYPE_SINGLE),
+                    "model_type": method_info.get("model_type", _MODEL_TYPE_SINGLE),
                     "confidence_level": (
                         "medium" if len(observations) < _MIN_OBSERVATIONS_FOR_CONFIDENCE else "high"
                     ),

@@ -7,16 +7,10 @@ from uuid import UUID, uuid4
 from bo_mcp_server.backend import get_backend, resolve_backend_name
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
-    AcquisitionOptimizationConfig,
     Campaign,
     CampaignIntakeInput,
     CampaignSpec,
     CampaignStatus,
-    Constraint,
-    ConstraintType,
-    InputParameter,
-    Objective,
-    ParameterType,
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_verbosity
@@ -35,64 +29,16 @@ logger = logging.getLogger(__name__)
 
 
 def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
-    """Reconstruct CampaignSpec from dictionary."""
-    parameters = [
-        InputParameter(
-            name=p["name"],
-            type=ParameterType(p["type"]),
-            bounds=p.get("bounds"),
-            values=p.get("values"),
-            categories=p.get("categories"),
-            description=p.get("description", ""),
-        )
-        for p in data["parameters"]
-    ]
+    """Canonically reconstruct CampaignSpec from a validated dict.
 
-    objectives = [
-        Objective(
-            name=o["name"],
-            direction=o["direction"],
-            unit=o.get("unit", ""),
-            target=o.get("target"),
-        )
-        for o in data["objectives"]
-    ]
-
-    constraints = [
-        Constraint(
-            type=ConstraintType(c["type"]),
-            parameters=c["parameters"],
-            value=c["value"],
-            coefficients=c.get("coefficients"),
-        )
-        for c in data.get("constraints", [])
-    ]
-
-    acquisition_optimization_raw = data.get("acquisition_optimization")
-    if acquisition_optimization_raw is None:
-        acquisition_optimization = None
-    elif isinstance(acquisition_optimization_raw, AcquisitionOptimizationConfig):
-        acquisition_optimization = acquisition_optimization_raw
-    else:
-        acquisition_optimization = AcquisitionOptimizationConfig.model_validate(
-            acquisition_optimization_raw
-        )
-
-    return CampaignSpec(
-        name=data["name"],
-        description=data.get("description", ""),
-        parameters=parameters,
-        objectives=objectives,
-        constraints=constraints,
-        batch_size=data.get("batch_size", 1),
-        max_iterations=data.get("max_iterations"),
-        max_observations=data.get("max_observations"),
-        convergence_tolerance=data.get("convergence_tolerance"),
-        initial_design_size=data.get("initial_design_size"),
-        random_seed=data.get("random_seed"),
-        acquisition_optimization=acquisition_optimization,
-        backend=data.get("backend", "botorch"),
-    )
+    The previous implementation manually unpacked a hand-picked subset of
+    fields, dropping any advanced spec attributes (turbo_config,
+    saasbo_config, outcome_constraints, etc.) silently. Routing through
+    :meth:`CampaignSpec.model_validate` reuses the single source of truth
+    for the schema so every field present in the dict round-trips into
+    the persisted spec.
+    """
+    return CampaignSpec.model_validate(data)
 
 
 async def create_campaign_operation(
@@ -174,11 +120,39 @@ async def create_campaign_operation(
     spec = _build_spec_from_dict(spec_data)
     warnings: list[str] = validation.get("warnings", [])
 
-    # Ask the backend whether it can handle this spec — surface warnings
+    # Ask the backend whether it can handle this spec — surface warnings AND
+    # enforce typed-option/feature capability. ``resolve_backend_name("auto",
+    # ...)`` already routes around incompatible backends; the explicit-backend
+    # path also has to fail-fast on UNSUPPORTED reports so misshaped BayBE
+    # ``parameter_options`` / ``backend_options`` cannot reach the suggestion
+    # path.
     backend = get_backend(spec.backend)
     opt_spec = campaign_spec_to_optimization_spec(spec)
-    backend_warnings = backend.validate_spec(opt_spec)
-    warnings.extend(backend_warnings)
+    capabilities = backend.validate_capabilities(opt_spec)
+    if not capabilities.is_compatible:
+        unsupported_reports = [{"key": r.key, "reason": r.reason} for r in capabilities.unsupported]
+        logger.warning(
+            "Campaign creation rejected: backend %s reports %d unsupported items",
+            spec.backend,
+            len(unsupported_reports),
+        )
+        response = make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=(
+                f"Backend '{spec.backend}' cannot handle this spec: "
+                + "; ".join(r["reason"] for r in unsupported_reports if r["reason"])
+            ),
+            details={
+                "backend": spec.backend,
+                "unsupported": unsupported_reports,
+            },
+        )
+        response["campaign_id"] = None
+        response["spec_id"] = None
+        response["errors"] = [r["reason"] for r in unsupported_reports if r["reason"]]
+        response["warnings"] = warnings
+        return response
+    warnings.extend(capabilities.warnings)
 
     # Generate IDs
     spec_id = uuid4()

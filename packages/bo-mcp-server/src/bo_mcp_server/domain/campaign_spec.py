@@ -30,14 +30,22 @@ class Bounds(BaseModel):
 
 
 class InputParameter(BaseModel):
-    """Input parameter definition."""
+    """Input parameter definition.
+
+    ``parameter_options`` carries per-backend metadata that has no neutral
+    cross-backend equivalent (encoding choices, task-parameter active
+    values, candidate-table mode). Outer keys are backend names; inner
+    dicts are opaque to the neutral model. Backends ignore options
+    addressed to other backends.
+    """
 
     name: str = Field(..., min_length=1)
     type: ParameterType
     bounds: Bounds | None = None  # For continuous/discrete
-    values: list[int] | None = None  # For discrete
+    values: list[float] | None = None  # For discrete (fractional values ok)
     categories: list[str] | None = None  # For categorical
     description: str = ""
+    parameter_options: dict[str, dict[str, Any]] | None = None
 
     @field_validator("bounds", mode="before")
     @classmethod
@@ -256,6 +264,11 @@ class CampaignSpec(BaseModel):
     acquisition_optimization: AcquisitionOptimizationConfig | None = None
     # v3.0: Backend selection (default uses BO_BACKEND env var)
     backend: str = "botorch"
+    # Typed backend-native option surface. Outer keys are backend names
+    # (``"botorch"``, ``"baybe"``); inner dicts hold options that have no
+    # neutral cross-backend equivalent. Backends ignore options addressed
+    # to other backends.
+    backend_options: dict[str, dict[str, Any]] | None = None
 
     model_config = {"frozen": True}
 

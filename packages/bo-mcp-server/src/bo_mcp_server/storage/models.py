@@ -81,6 +81,15 @@ class CampaignSpecModel(Base):
     initial_design_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     random_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     backend: Mapped[str] = mapped_column(String(50), default="botorch", server_default="botorch")
+    # Per-backend native option surface (TODO 1.66). JSON-encoded because
+    # each entry is opaque to the neutral spec. NULL means "no options".
+    backend_options_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Advanced cross-backend knobs (TODO 1.66): acquisition_method,
+    # use_input_warping, use_cost_aware, turbo_config, saasbo_config,
+    # fidelity_parameter, transfer_learning, outcome_constraints. Stored
+    # as a JSON blob because the values are consumed in-process and
+    # adding a new advanced field should not require another migration.
+    advanced_options_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationships

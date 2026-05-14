@@ -17,6 +17,10 @@ from importlib.metadata import entry_points
 from typing import Any
 
 from bo_engine.backend import BOBackend, Feature
+from bo_engine.backend_base import required_features
+
+from bo_mcp_server.converters import campaign_spec_to_optimization_spec
+from bo_mcp_server.domain import CampaignSpec
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +50,49 @@ def _get_available_backend_names() -> list[str]:
     return [ep.name for ep in eps]
 
 
-# Spec keys that directly map to a required feature when truthy.
-_SPEC_KEY_TO_FEATURE: dict[str, Feature] = {
+def _spec_dict_to_optimization_spec(spec_dict: dict[str, Any]):
+    """Best-effort coercion of a raw spec dict to an OptimizationSpec.
+
+    Used by :func:`resolve_backend_name` so the backend can answer
+    ``validate_capabilities`` against the same typed problem the engine
+    will receive. Falls back to the dict-only feature inference when
+    coercion fails (e.g. partially-validated specs in legacy tests).
+    """
+    try:
+        domain_spec = CampaignSpec.model_validate(spec_dict)
+        return campaign_spec_to_optimization_spec(domain_spec)
+    except (TypeError, ValueError):
+        return None
+
+
+def _detect_required_features(spec_dict: dict[str, Any]) -> frozenset[Feature]:
+    """Detect which backend features a problem specification requires.
+
+    Routes through :func:`bo_engine.backend_base.required_features` when
+    the spec coerces cleanly so the spec → feature mapping stays in one
+    place. Falls back to dict-only inference for the legacy auto-select
+    callers that pass partially-validated payloads.
+    """
+    opt_spec = _spec_dict_to_optimization_spec(spec_dict)
+    if opt_spec is not None:
+        return required_features(opt_spec)
+
+    features: set[Feature] = set()
+    if len(spec_dict.get("objectives", [])) > 1:
+        features.add(Feature.MULTI_OBJECTIVE)
+    param_types = {p.get("type", "") for p in spec_dict.get("parameters", [])}
+    if "categorical" in param_types:
+        features.add(Feature.CATEGORICAL)
+    if "categorical" in param_types and param_types & {"continuous", "discrete"}:
+        features.add(Feature.MIXED_SEARCH_SPACE)
+    for key, feature in _LEGACY_KEY_TO_FEATURE.items():
+        if spec_dict.get(key):
+            features.add(feature)
+    return frozenset(features)
+
+
+# Used only in the legacy fallback path of ``_detect_required_features``.
+_LEGACY_KEY_TO_FEATURE: dict[str, Feature] = {
     "constraints": Feature.CONSTRAINTS,
     "outcome_constraints": Feature.OUTCOME_CONSTRAINTS,
     "use_cost_aware": Feature.COST_AWARE,
@@ -58,34 +103,102 @@ _SPEC_KEY_TO_FEATURE: dict[str, Feature] = {
 }
 
 
-def _detect_required_features(spec_dict: dict[str, Any]) -> frozenset[Feature]:
-    """Detect which backend features a problem specification requires."""
-    features: set[Feature] = set()
+class _CompatibilityTier:
+    """Auto-selection preference tiers for ``backend="auto"``.
 
-    if len(spec_dict.get("objectives", [])) > 1:
-        features.add(Feature.MULTI_OBJECTIVE)
+    A single boolean "compatible" signal conflates two separate
+    questions: "can this backend run the spec at all" vs "would this
+    backend honor every active option in the spec". ``IGNORED`` reports
+    answer "yes to the first, no to the second" — fine for explicit
+    backend selection ("I asked for BayBE, I accept the warning"), but
+    misleading for ``backend="auto"`` because the selector would pick
+    BayBE for ``use_input_warping=True`` even though BoTorch could
+    actually honor it.
 
-    # Parameter types
-    param_types = {p.get("type", "") for p in spec_dict.get("parameters", [])}
-    if "categorical" in param_types:
-        features.add(Feature.CATEGORICAL)
-    if "categorical" in param_types and param_types & {"continuous", "discrete"}:
-        features.add(Feature.MIXED_SEARCH_SPACE)
+    The selector therefore ranks candidates: ``FULL`` (compatible AND
+    no IGNORED reports) wins over ``DEGRADED`` (compatible WITH IGNORED
+    reports). ``INCOMPATIBLE`` is filtered out entirely.
+    """
 
-    # Simple key-to-feature mapping
-    for key, feature in _SPEC_KEY_TO_FEATURE.items():
-        if spec_dict.get(key):
-            features.add(feature)
+    FULL = "full"
+    DEGRADED = "degraded"
+    INCOMPATIBLE = "incompatible"
 
-    return frozenset(features)
+
+def _backend_compatibility_tier(backend: BOBackend, spec_dict: dict[str, Any]) -> str:
+    """Classify a backend's fit for the spec into one of three tiers.
+
+    Prefers :meth:`BOBackend.validate_capabilities` so backends can veto
+    based on per-option detail (e.g. BayBE rejecting hybrid constraints
+    even though ``Feature.CONSTRAINTS`` is in its broad set), and so the
+    auto-selector can spot ``IGNORED`` reports — which mean "I'll silently
+    drop part of the spec" rather than "I fully support this".
+
+    Falls back to the historical ``required_features <= supported_features``
+    check (always FULL when satisfied) when the spec dict cannot be
+    coerced or the backend has not implemented the new method.
+    """
+    opt_spec = _spec_dict_to_optimization_spec(spec_dict)
+    if opt_spec is not None:
+        try:
+            result = backend.validate_capabilities(opt_spec)
+        except (AttributeError, NotImplementedError):
+            result = None
+        if result is not None:
+            if not result.is_compatible:
+                return _CompatibilityTier.INCOMPATIBLE
+            has_ignored = any(
+                r.status.value == "ignored"
+                for r in (*result.feature_reports, *result.option_reports)
+            )
+            return _CompatibilityTier.DEGRADED if has_ignored else _CompatibilityTier.FULL
+
+    required = _detect_required_features(spec_dict)
+    if required <= backend.supported_features:
+        return _CompatibilityTier.FULL
+    return _CompatibilityTier.INCOMPATIBLE
+
+
+def _backend_is_compatible(backend: BOBackend, spec_dict: dict[str, Any]) -> bool:
+    """Boolean compatibility — kept for callers that don't care about tiers."""
+    return _backend_compatibility_tier(backend, spec_dict) != _CompatibilityTier.INCOMPATIBLE
+
+
+def _candidate_backends(env_default: str) -> list[str]:
+    """Yield candidate backends in selection order.
+
+    Env default goes first (preserves the deploy-time preference), then
+    every other installed backend in entry-point order. Duplicates are
+    removed.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in (env_default, *_get_available_backend_names()):
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
 
 
 def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
     """Resolve a backend name, handling 'auto' by inspecting the spec.
 
-    When name is 'auto', selects a backend whose supported_features cover
-    all features the problem requires. Prefers the BO_BACKEND env var
-    default when multiple backends qualify.
+    When name is 'auto', the selector classifies each candidate backend
+    into a tier:
+
+    * ``FULL`` — :meth:`BackendValidationResult.is_compatible` is true
+      AND there are no ``IGNORED`` reports. The backend will honor
+      every active option in the spec.
+    * ``DEGRADED`` — compatible, but the backend will silently ignore
+      one or more BoTorch-only knobs (``use_input_warping``,
+      ``turbo_config``, …).
+    * ``INCOMPATIBLE`` — filtered out.
+
+    ``FULL`` candidates win over ``DEGRADED`` candidates so an
+    auto-selected backend never quietly drops options another installed
+    backend could honor. Within each tier, the ``BO_BACKEND`` env var
+    default wins ties.
 
     Args:
         name: Backend name or 'auto'.
@@ -97,38 +210,37 @@ def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
     if name != "auto":
         return name
 
-    required = _detect_required_features(spec_dict)
     env_default = os.getenv("BO_BACKEND", DEFAULT_BACKEND)
-
-    # Try env-var default first
-    try:
-        default_backend = get_backend(env_default)
-        if required <= default_backend.supported_features:
-            logger.info(
-                "Auto-selected backend '%s' (env default, supports %s)",
-                env_default,
-                required,
-            )
-            return env_default
-    except ValueError:
-        pass
-
-    # Try all available backends
-    for backend_name in _get_available_backend_names():
+    full: list[str] = []
+    degraded: list[str] = []
+    for backend_name in _candidate_backends(env_default):
         try:
             backend = get_backend(backend_name)
-            if required <= backend.supported_features:
-                logger.info(
-                    "Auto-selected backend '%s' (supports %s)",
-                    backend_name,
-                    required,
-                )
-                return backend_name
         except ValueError:
             continue
+        tier = _backend_compatibility_tier(backend, spec_dict)
+        if tier == _CompatibilityTier.FULL:
+            full.append(backend_name)
+        elif tier == _CompatibilityTier.DEGRADED:
+            degraded.append(backend_name)
 
-    # Fallback — botorch supports everything
-    logger.warning("No backend fully supports %s, falling back to '%s'", required, DEFAULT_BACKEND)
+    if full:
+        chosen = full[0]
+        logger.info(
+            "Auto-selected backend '%s' (full support)%s",
+            chosen,
+            " — env default" if chosen == env_default else "",
+        )
+        return chosen
+    if degraded:
+        chosen = degraded[0]
+        logger.info(
+            "Auto-selected backend '%s' (degraded; some options will be ignored)",
+            chosen,
+        )
+        return chosen
+
+    logger.warning("No backend fully supports spec, falling back to '%s'", DEFAULT_BACKEND)
     return DEFAULT_BACKEND
 
 

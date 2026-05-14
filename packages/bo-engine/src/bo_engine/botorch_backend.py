@@ -12,13 +12,17 @@ from typing import Any
 import torch
 
 from bo_engine.backend import (
-    BatchDiversityMetrics,
-    DuplicateInfo,
     Feature,
     SuggestionBatch,
 )
-from bo_engine.batch_diversity import compute_batch_diversity
-from bo_engine.device import get_device, get_dtype
+from bo_engine.backend_base import (
+    BackendValidationResult,
+    BaseBackend,
+    CapabilityReport,
+    CapabilityStatus,
+    option_is_active,
+    required_features,
+)
 from bo_engine.diagnostics import (
     LOOCVMetrics,
     compute_best_value,
@@ -35,9 +39,8 @@ from bo_engine.feature_importance import compute_feature_importance
 from bo_engine.method_selector import select_methods
 from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
 from bo_engine.reference_point import get_reference_point
-from bo_engine.result_validation import detect_duplicates, detect_outliers
+from bo_engine.result_validation import detect_outliers
 from bo_engine.suggestions import (
-    generate_initial_design,
     generate_next_batch,
     update_turbo_after_evaluation,
 )
@@ -82,10 +85,13 @@ def _turbo_state_to_dict(state: TurboState) -> dict[str, Any]:
     }
 
 
-class BoTorchBackend:
+class BoTorchBackend(BaseBackend):
     """BoTorch-based Bayesian Optimization backend.
 
     Wraps existing bo-engine functions behind the BOBackend protocol.
+    Inherits Sobol initial design, duplicate detection, batch diversity,
+    and JSON state-envelope helpers from :class:`BaseBackend`; overrides
+    metric and diagnostic helpers that need BoTorch-specific GP work.
     """
 
     @property
@@ -96,17 +102,26 @@ class BoTorchBackend:
     def supported_features(self) -> frozenset[Feature]:
         return frozenset(Feature)  # BoTorch supports all features
 
-    def validate_spec(self, spec: OptimizationSpec) -> list[str]:
-        return []  # BoTorch supports all features
+    def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
+        """BoTorch supports every neutral feature and option in the spec."""
+        feature_reports = [
+            CapabilityReport(key=str(f), status=CapabilityStatus.SUPPORTED)
+            for f in sorted(required_features(spec))
+        ]
+        from bo_engine.backend_base import _SPEC_OPTION_KEYS
+
+        option_reports = [
+            CapabilityReport(key=key, status=CapabilityStatus.SUPPORTED)
+            for key in _SPEC_OPTION_KEYS
+            if option_is_active(spec, key)
+        ]
+        return BackendValidationResult(
+            backend=self.name,
+            feature_reports=tuple(feature_reports),
+            option_reports=tuple(option_reports),
+        )
 
     # ----- Suggestion Generation -----
-
-    def generate_initial_design(
-        self,
-        spec: OptimizationSpec,
-        n_points: int,
-    ) -> list[dict[str, Any]]:
-        return generate_initial_design(spec, n_points)
 
     def generate_suggestions(
         self,
@@ -117,10 +132,12 @@ class BoTorchBackend:
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
+        # Accept either the new envelope or a legacy bare payload.
+        inner_state = self.unwrap_state(backend_state)
         turbo_state = None
         use_turbo = spec.use_turbo or should_use_turbo(spec.n_parameters)
-        if use_turbo and spec.n_objectives == 1 and backend_state is not None:
-            turbo_state = _dict_to_turbo_state(backend_state)
+        if use_turbo and spec.n_objectives == 1 and inner_state is not None:
+            turbo_state = _dict_to_turbo_state(inner_state)
 
         results, new_turbo = generate_next_batch(
             spec=spec,
@@ -153,7 +170,8 @@ class BoTorchBackend:
             for sr in results
         ]
 
-        new_state = _turbo_state_to_dict(new_turbo) if new_turbo else None
+        new_payload = _turbo_state_to_dict(new_turbo) if new_turbo else None
+        new_state = self.wrap_state(new_payload)
         method_info = self.select_methods(spec, len(observations))
 
         batch_warnings: list[str] = []
@@ -207,22 +225,6 @@ class BoTorchBackend:
 
         return compute_hypervolume(pareto_y, ref_point)
 
-    def detect_duplicates(
-        self,
-        new_params: dict[str, Any],
-        existing_params: list[dict[str, Any]],
-        tolerance: float,
-    ) -> list[DuplicateInfo]:
-        raw = detect_duplicates(new_params, existing_params, tolerance)
-        return [
-            DuplicateInfo(
-                index=d.index,
-                is_exact=d.is_exact,
-                parameter_distance=d.parameter_distance,
-            )
-            for d in raw
-        ]
-
     def update_state_after_results(
         self,
         spec: OptimizationSpec,
@@ -232,39 +234,16 @@ class BoTorchBackend:
         if spec.n_objectives != 1 or backend_state is None:
             return None
 
-        turbo_state = _dict_to_turbo_state(backend_state)
+        inner = self.unwrap_state(backend_state)
+        if inner is None:
+            return None
+        turbo_state = _dict_to_turbo_state(inner)
         new_turbo = update_turbo_after_evaluation(
             turbo_state=turbo_state,
             new_observations=new_observations,
             spec=spec,
         )
-        return _turbo_state_to_dict(new_turbo)
-
-    def compute_batch_diversity(
-        self,
-        spec: OptimizationSpec,
-        candidates: list[dict[str, Any]],
-    ) -> BatchDiversityMetrics | None:
-        if len(candidates) < 2:
-            return None
-
-        try:
-            bounds = get_bounds_tensor(spec)
-            param_names = [p.name for p in spec.parameters]
-
-            values = [[float(c.get(name, 0.0)) for name in param_names] for c in candidates]
-            tensor = torch.tensor(values, device=get_device(), dtype=get_dtype())
-
-            m = compute_batch_diversity(tensor, bounds)
-            return BatchDiversityMetrics(
-                min_pairwise_distance=m.min_pairwise_distance,
-                mean_pairwise_distance=m.mean_pairwise_distance,
-                diversity_score=m.diversity_score,
-                is_diverse=m.is_diverse,
-            )
-        except (RuntimeError, ValueError, TypeError) as e:
-            logger.debug("Batch diversity computation failed: %s", e)
-            return None
+        return self.wrap_state(_turbo_state_to_dict(new_turbo))
 
     def select_methods(
         self,

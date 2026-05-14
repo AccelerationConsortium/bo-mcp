@@ -77,13 +77,20 @@ class ConstraintType(StrEnum):
 
 @dataclass(frozen=True)
 class ParameterSpec:
-    """Specification for a single input parameter."""
+    """Specification for a single input parameter.
+
+    ``parameter_options`` carries per-backend metadata that has no neutral
+    cross-backend equivalent (BayBE encoding choice, active task values,
+    candidate-table mode, etc.). Keys are concrete backend names — a
+    backend that does not recognize its slot must silently ignore it.
+    """
 
     name: str
     type: ParameterType
     bounds: tuple[float, float] | None = None  # For continuous/discrete
-    values: list[int] | None = None  # For discrete (explicit values)
+    values: list[float] | None = None  # For discrete (explicit values; fractional ok)
     categories: list[str] | None = None  # For categorical
+    parameter_options: dict[str, dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -298,6 +305,12 @@ class OptimizationSpec:
     max_iterations: int | None = None
     max_observations: int | None = None
     convergence_tolerance: float | None = None
+    # Typed backend-native option surface. Outer keys are backend names
+    # (``"botorch"``, ``"baybe"``); inner dicts hold options that have no
+    # neutral cross-backend equivalent. Consumed by ``validate_capabilities``
+    # and the per-backend converters; backends that do not recognize a key
+    # must silently ignore it.
+    backend_options: dict[str, dict[str, Any]] | None = None
 
     @property
     def use_turbo(self) -> bool:

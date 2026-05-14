@@ -143,8 +143,10 @@ from bo_engine.diagnostics import (
     LOOCVMetrics,
     SingleObjectiveDiagnostics,
     UncertaintyTrend,
+    analyze_hypervolume_history,
     assess_model_health,
     compute_best_value,
+    compute_campaign_health,
     compute_constraint_satisfaction,
     compute_exploration_exploitation_metrics,
     compute_hypervolume,
@@ -153,6 +155,7 @@ from bo_engine.diagnostics import (
     compute_loo_cv_metrics,
     compute_pareto_front,
     compute_single_objective_improvement_rate,
+    compute_single_objective_progress_status,
     compute_uncertainty_trend,
     determine_single_objective_health_status,
     extract_hyperparameters,
@@ -327,6 +330,13 @@ from bo_engine.sensitivity_analysis import (
     compute_sensitivity,
     compute_sensitivity_heatmap_data,
     rank_parameters_by_sensitivity,
+)
+from bo_engine.spec_ir import (
+    ConstraintTargetClass,
+    NormalizedConstraint,
+    NormalizedSpec,
+    classify_constraint_target,
+    normalize_spec,
 )
 from bo_engine.suggestions import (
     generate_initial_design,
@@ -524,8 +534,11 @@ __all__ = [
     "ExplorationExploitationMetrics",
     "HyperparameterInfo",
     "UncertaintyTrend",
+    "analyze_hypervolume_history",
+    "compute_campaign_health",
     "compute_constraint_satisfaction",
     "compute_exploration_exploitation_metrics",
+    "compute_single_objective_progress_status",
     "compute_uncertainty_trend",
     "extract_hyperparameters",
     # Types
@@ -546,6 +559,12 @@ __all__ = [
     "SingleObjectiveDiagnostics",
     "SuggestionResult",
     "TransferLearningSpec",
+    # Shared spec IR
+    "ConstraintTargetClass",
+    "NormalizedConstraint",
+    "NormalizedSpec",
+    "classify_constraint_target",
+    "normalize_spec",
     # Model Validation (v2.5 - Section 1.1)
     "ModelHealthReport",
     "compute_model_convergence_score",

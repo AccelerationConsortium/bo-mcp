@@ -4,19 +4,20 @@ import io
 from typing import Any
 
 import pandas as pd
-from bo_mcp_server.domain import ResultSubmissionInput
-from bo_mcp_server.operations.list_results import list_results_operation
-from bo_mcp_server.operations.submit_results import submit_results_operation
-from bo_mcp_server.result_upload_parser import parse_named_result_rows
-from bo_mcp_server.storage import (
-    CampaignRepository,
-    CampaignSpecRepository,
-    ResultRepository,
-    get_session,
+from bo_mcp_server.client import (
+    InvalidIdentifierError,
+    NotAuthorizedError,
+    NotFoundError,
+    ResultSubmissionInput,
+    get_campaign_with_spec,
+    list_campaign_results,
+    list_results_operation,
+    parse_named_result_rows,
+    submit_results_operation,
 )
 from fastapi import APIRouter, HTTPException, UploadFile, status
 
-from api.deps import CurrentUser, get_authorized_campaign, validate_uuid
+from api.deps import CurrentUser, get_authorized_campaign
 from api.schemas.result import (
     ResultBatchCreate,
     ResultQueryRequest,
@@ -69,7 +70,28 @@ async def upload_results_file(
     current_user: CurrentUser,
 ) -> ResultSubmitResponse:
     """Upload results from CSV or Excel file."""
-    campaign = await get_authorized_campaign(campaign_id, current_user)
+    try:
+        _, spec = await get_campaign_with_spec(campaign_id, current_user.id)
+    except InvalidIdentifierError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid campaign_id format",
+        ) from None
+    except NotAuthorizedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this campaign",
+        ) from None
+    except NotFoundError as exc:
+        detail = (
+            "Campaign spec not found"
+            if exc.resource == "Campaign spec"
+            else f"Campaign {campaign_id} not found"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=detail,
+        ) from None
 
     # Parse file
     filename = file.filename or ""
@@ -90,17 +112,6 @@ async def upload_results_file(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to parse file: {e}",
         ) from e
-
-    # Get spec to identify columns
-    async with get_session() as session:
-        spec_repo = CampaignSpecRepository(session)
-        spec = await spec_repo.get(campaign.spec_id)
-
-        if spec is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Campaign spec not found",
-            )
 
     param_names = [p.name for p in spec.parameters]
     objective_names = [o.name for o in spec.objectives]
@@ -164,42 +175,39 @@ async def query_campaign_results(
 
 
 @router.get("/{campaign_id}", response_model=list[ResultResponse])
-async def list_campaign_results(
+async def list_campaign_results_route(
     campaign_id: str,
     current_user: CurrentUser,
 ) -> list[ResultResponse]:
     """List results for a campaign."""
-    campaign_uuid = validate_uuid(campaign_id, "campaign_id")
+    try:
+        results = await list_campaign_results(campaign_id, current_user.id)
+    except InvalidIdentifierError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid campaign_id format",
+        ) from None
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Campaign {campaign_id} not found",
+        ) from None
+    except NotAuthorizedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this campaign",
+        ) from None
 
-    async with get_session() as session:
-        campaign_repo = CampaignRepository(session)
-        result_repo = ResultRepository(session)
-
-        campaign = await campaign_repo.get(campaign_uuid)
-        if campaign is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Campaign {campaign_id} not found",
-            )
-
-        if campaign.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to access this campaign",
-            )
-
-        results = await result_repo.list_by_campaign(campaign_uuid)
-
-        return [
-            ResultResponse(
-                id=str(r.id),
-                campaign_id=str(r.campaign_id),
-                suggestion_id=str(r.suggestion_id) if r.suggestion_id else None,
-                parameter_values=r.parameter_values,
-                objective_values=r.objective_values,
-                source=r.source.value,
-                submitted_by=str(r.submitted_by),
-                created_at=r.created_at,
-            )
-            for r in results
-        ]
+    return [
+        ResultResponse(
+            id=str(r.id),
+            campaign_id=str(r.campaign_id),
+            suggestion_id=str(r.suggestion_id) if r.suggestion_id else None,
+            parameter_values=r.parameter_values,
+            objective_values=r.objective_values,
+            source=r.source.value,
+            submitted_by=str(r.submitted_by),
+            created_at=r.created_at,
+        )
+        for r in results
+    ]

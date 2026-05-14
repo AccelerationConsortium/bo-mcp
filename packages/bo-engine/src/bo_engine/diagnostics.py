@@ -11,6 +11,7 @@ v2.3: Added GPU auto-detection and acceleration
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, overload
 
@@ -42,7 +43,10 @@ from bo_engine.constants import (
     EXPLORATION_EXPLOITATION_OFFSET,
     EXPLORATION_HEAVY_THRESHOLD,
     EXPLORATION_RATIO_MULTIPLIER,
+    FALLBACK_HYPERVOLUME_IMPROVEMENT,
+    HYPERVOLUME_STABILITY_THRESHOLD,
     IMPROVEMENT_TOLERANCE_ABSOLUTE,
+    MIN_IMPROVEMENT_RATE,
     PROGRESS_IMPROVING_THRESHOLD,
     PROGRESS_REGRESSING_THRESHOLD,
     SATISFACTION_TREND_THRESHOLD,
@@ -377,6 +381,132 @@ def determine_progress_status(
 
     improvement_rate = (recent_avg - previous_avg) / previous_avg
     return _classify_improvement(improvement_rate)
+
+
+def analyze_hypervolume_history(
+    hypervolume_history: list[float],
+    n_results: int,
+    current_hypervolume: float = 0.0,
+) -> tuple[float, int]:
+    """Summarize a hypervolume trajectory for multi-objective health checks.
+
+    Returns the **signed** last-step delta so
+    :func:`determine_health_status` can detect a genuine hypervolume
+    decrease (its ``DIAGNOSTICS_HYPERVOLUME_DECREASE_WARNING`` threshold
+    is negative, so a clamp to ``>= 0`` would silently suppress the
+    warning). Stagnation is reported separately as a count of recent
+    iterations whose step was below
+    :data:`HYPERVOLUME_STABILITY_THRESHOLD` (scaled by the magnitude of
+    the last value so flat-but-large hypervolumes are not mis-flagged).
+
+    When fewer than two history samples exist but enough results have
+    accumulated to expect a hypervolume reading, ``current_hypervolume``
+    is used as a presence signal: a non-zero value yields the synthetic
+    :data:`FALLBACK_HYPERVOLUME_IMPROVEMENT` so the campaign is not
+    driven into ``critical`` purely on missing-history grounds.
+
+    Returns:
+        ``(recent_delta, iterations_stagnant)`` ready to hand to
+        :func:`determine_health_status`. ``recent_delta`` is signed —
+        negative when the last step regressed.
+    """
+    if len(hypervolume_history) >= 2:
+        recent_delta = hypervolume_history[-1] - hypervolume_history[-2]
+        threshold = (
+            HYPERVOLUME_STABILITY_THRESHOLD * abs(hypervolume_history[-1])
+            if not math.isclose(hypervolume_history[-1], 0.0, abs_tol=1e-12)
+            else HYPERVOLUME_STABILITY_THRESHOLD
+        )
+        iters_stagnant = 0
+        for i in range(len(hypervolume_history) - 1, 0, -1):
+            if hypervolume_history[i] - hypervolume_history[i - 1] < threshold:
+                iters_stagnant += 1
+            else:
+                break
+        return recent_delta, iters_stagnant
+
+    if n_results >= 2:
+        has_hv = current_hypervolume > 0
+        hv_improvement = FALLBACK_HYPERVOLUME_IMPROVEMENT if has_hv else 0.0
+        return hv_improvement, 0
+
+    return 0.0, 0
+
+
+def compute_single_objective_progress_status(improvement_rate: float) -> str:
+    """Classify a single-objective campaign's progress from a scalar rate.
+
+    A rate strictly greater than :data:`MIN_IMPROVEMENT_RATE` is reported as
+    ``"improving"``; anything at or below is ``"stable"``. The thresholds
+    live in bo-engine so server / API layers cannot diverge on what counts
+    as "still making progress" for a single-objective campaign.
+    """
+    return "improving" if improvement_rate > MIN_IMPROVEMENT_RATE else "stable"
+
+
+def compute_campaign_health(
+    *,
+    is_single_objective: bool,
+    n_results: int,
+    diagnostics: dict[str, Any],
+    model_correlation: float,
+    hypervolume_history: list[float],
+) -> tuple[str, list[str], str]:
+    """End-to-end campaign-health computation.
+
+    Combines the existing single- and multi-objective status helpers with
+    the hypervolume-history analysis so the server / API layers do not have
+    to assemble (status, warnings, progress) themselves — and cannot drift
+    in *how* they assemble it. The function does not mutate
+    ``diagnostics``; callers persist the returned tuple under their own
+    transport keys.
+
+    Args:
+        is_single_objective: True for single-objective campaigns.
+        n_results: Number of observed results (used by both branches).
+        diagnostics: Diagnostics dict from
+            :func:`compute_improvement_history` / multi-objective
+            counterparts. Reads ``improvement_history`` (single-obj),
+            ``improvement_rate`` (single-obj), and ``hypervolume``
+            (multi-obj fallback).
+        model_correlation: Spearman rank correlation between GP
+            predictions and observed objectives.
+        hypervolume_history: Hypervolume samples per iteration (newest
+            last). Empty list signals no history yet.
+
+    Returns:
+        ``(status, warnings, progress_status)`` triple. Statuses are
+        ``"healthy"``/``"warning"``/``"critical"`` and progress is
+        ``"improving"``/``"stable"`` (single-obj) or
+        ``"improving"``/``"stagnant"``/``"regressing"`` (multi-obj).
+    """
+    if is_single_objective:
+        improvement_history = diagnostics.get("improvement_history", [])
+        status, warnings = determine_single_objective_health_status(
+            improvement_history=improvement_history,
+            model_correlation=model_correlation,
+        )
+        progress = compute_single_objective_progress_status(
+            float(diagnostics.get("improvement_rate", 0.0))
+        )
+        return status, warnings, progress
+
+    hv_improvement, iters_stagnant = analyze_hypervolume_history(
+        hypervolume_history,
+        n_results=n_results,
+        current_hypervolume=float(diagnostics.get("hypervolume", 0.0)),
+    )
+    status, warnings = determine_health_status(
+        n_results=n_results,
+        hypervolume_improvement=hv_improvement,
+        model_correlation=model_correlation,
+        iterations_without_improvement=iters_stagnant,
+    )
+    hv_for_progress = (
+        hypervolume_history if hypervolume_history else [float(diagnostics.get("hypervolume", 0.0))]
+    )
+    progress = determine_progress_status(hv_for_progress)
+    return status, warnings, progress
 
 
 def compute_exploration_exploitation_ratio(

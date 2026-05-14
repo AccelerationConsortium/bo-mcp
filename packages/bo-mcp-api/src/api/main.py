@@ -6,13 +6,11 @@ import uuid as _uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from bo_mcp_server.storage import get_session, init_database
+from bo_mcp_server.client import ensure_dev_user, init_database, ping_database
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy import text
 
-from api.dev_auth import ensure_dev_user
 from api.routes import campaigns, capabilities, diagnostics, results, suggestions
 
 logger = logging.getLogger(__name__)
@@ -82,22 +80,17 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health_check() -> dict[str, str | bool | int]:
         """Health check endpoint for API readiness."""
-        db_status = "error"
-        try:
-            async with get_session() as session:
-                await session.execute(text("SELECT 1"))
-                db_status = "connected"
-        except Exception as e:  # noqa: BLE001 - health checks must never crash
-            logger.warning("API health check failed: %s", e)
+        db_connected = await ping_database()
+        if not db_connected:
+            logger.warning("API health check: database not reachable")
 
-        healthy = db_status == "connected"
         uptime = int(time.time() - _api_start_time)
 
         return {
-            "healthy": healthy,
+            "healthy": db_connected,
             "service": "api",
             "version": app.version,
-            "database": db_status,
+            "database": "connected" if db_connected else "error",
             "uptime_seconds": uptime,
         }
 

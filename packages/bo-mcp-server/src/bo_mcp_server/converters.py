@@ -1,9 +1,12 @@
-"""Converters between domain and bo-engine types."""
+"""Converters between domain and bo-engine types.
+
+The neutral enums (``ParameterType``, ``ConstraintType``,
+``AcquisitionMethod``) live in :mod:`bo_engine.types` and are re-exported
+from ``bo_mcp_server.domain``; both names refer to the *same* enum object,
+so this converter no longer maps between two enum hierarchies.
+"""
 
 from bo_engine.saasbo import SAASBOConfig
-from bo_engine.types import (
-    AcquisitionMethod as BOAcquisitionMethod,
-)
 from bo_engine.types import (
     AcquisitionOptimizationConfig as BOAcquisitionOptimizationConfig,
 )
@@ -15,12 +18,6 @@ from bo_engine.types import (
     OutcomeConstraintSpec,
     ParameterSpec,
     TransferLearningSpec,
-)
-from bo_engine.types import (
-    ConstraintType as BOConstraintType,
-)
-from bo_engine.types import (
-    ParameterType as BOParameterType,
 )
 from bo_engine.types import (
     TurboConfig as BOTurboConfig,
@@ -44,7 +41,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
     parameters = [
         ParameterSpec(
             name=p.name,
-            type=BOParameterType(p.type.value),
+            type=p.type,
             bounds=(p.bounds.lower, p.bounds.upper) if p.bounds is not None else None,
             values=p.values,
             categories=p.categories,
@@ -57,7 +54,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
 
     constraints = [
         ConstraintSpec(
-            type=BOConstraintType(c.type.value),
+            type=c.type,
             parameters=c.parameters,
             value=c.value,
             coefficients=c.coefficients,
@@ -74,8 +71,6 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         )
         for oc in spec.outcome_constraints
     ]
-
-    acquisition_method = BOAcquisitionMethod(spec.acquisition_method.value)
 
     # Convert TuRBO config
     turbo_config = None
@@ -142,7 +137,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         batch_size=spec.batch_size,
         initial_design_size=spec.initial_design_size,
         random_seed=spec.random_seed,
-        acquisition_method=acquisition_method,
+        acquisition_method=spec.acquisition_method,
         use_input_warping=spec.use_input_warping,
         turbo_config=turbo_config,
         outcome_constraints=outcome_constraints,

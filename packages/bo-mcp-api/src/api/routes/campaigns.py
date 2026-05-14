@@ -1,18 +1,24 @@
 """Campaign routes."""
 
-from bo_mcp_server.domain import CampaignIntakeInput
-from bo_mcp_server.operations.batch_status import batch_get_status_operation
-from bo_mcp_server.operations.campaign_lifecycle import manage_campaign_lifecycle_operation
-from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
-from bo_mcp_server.operations.create_campaign import create_campaign_operation
-from bo_mcp_server.operations.export_campaign import export_campaign_operation
-from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
-from bo_mcp_server.operations.transfer_candidates import (
+from bo_mcp_server.client import (
+    CampaignIntakeInput,
+    InvalidIdentifierError,
+    NotAuthorizedError,
+    NotFoundError,
+    VerbosityLevel,
+    batch_get_status_operation,
+    compare_campaigns_operation,
+    create_campaign_operation,
     discover_transfer_candidates_operation,
+    export_campaign_operation,
+    format_validate_intake_response,
+    get_campaign_spec_by_id,
+    get_campaign_with_spec,
+    list_campaigns_operation,
+    list_owner_campaigns_with_specs,
+    manage_campaign_lifecycle_operation,
+    validate_intake_operation,
 )
-from bo_mcp_server.operations.validate_intake import validate_intake_operation
-from bo_mcp_server.response_formatter import VerbosityLevel, format_validate_intake_response
-from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
@@ -100,44 +106,27 @@ async def create_new_campaign(
 async def list_campaigns(current_user: CurrentUser) -> CampaignListResponse:
     """List campaigns for the current user.
 
-    Uses batch loading to avoid N+1 query problem: fetches all campaigns
-    in one query, then fetches all needed specs in a second query.
+    The facade helper batches the spec lookup in a single query, so the
+    historical N+1 issue stays fixed without the route reaching into
+    repositories itself.
     """
-    async with get_session() as session:
-        campaign_repo = CampaignRepository(session)
-        spec_repo = CampaignSpecRepository(session)
-
-        # Query 1: Get all campaigns for the user
-        campaigns = await campaign_repo.list_by_owner(current_user.id)
-
-        if not campaigns:
-            return CampaignListResponse(campaigns=[], total=0)
-
-        # Query 2: Batch fetch all specs in a single query (fixes N+1)
-        spec_ids = [campaign.spec_id for campaign in campaigns]
-        specs_by_id = await spec_repo.get_by_ids(spec_ids)
-
-        # Build responses using the prefetched specs
-        responses = []
-        for campaign in campaigns:
-            spec = specs_by_id.get(campaign.spec_id)
-            if spec:
-                responses.append(
-                    CampaignResponse(
-                        id=str(campaign.id),
-                        spec_id=str(campaign.spec_id),
-                        name=spec.name,
-                        description=spec.description,
-                        status=campaign.status.value,
-                        iteration=campaign.iteration,
-                        created_at=campaign.created_at,
-                        updated_at=campaign.updated_at,
-                        n_parameters=spec.n_parameters,
-                        n_objectives=spec.n_objectives,
-                    )
-                )
-
-        return CampaignListResponse(campaigns=responses, total=len(responses))
+    pairs = await list_owner_campaigns_with_specs(current_user.id)
+    responses = [
+        CampaignResponse(
+            id=str(campaign.id),
+            spec_id=str(campaign.spec_id),
+            name=spec.name,
+            description=spec.description,
+            status=campaign.status.value,
+            iteration=campaign.iteration,
+            created_at=campaign.created_at,
+            updated_at=campaign.updated_at,
+            n_parameters=spec.n_parameters,
+            n_objectives=spec.n_objectives,
+        )
+        for campaign, spec in pairs
+    ]
+    return CampaignListResponse(campaigns=responses, total=len(responses))
 
 
 @router.post("/validate", response_model=ValidateIntakeResponse)
@@ -283,53 +272,63 @@ async def export_campaign(
 @router.get("/spec/{spec_id}")
 async def get_campaign_spec(spec_id: str, current_user: CurrentUser) -> dict:
     """Get campaign spec details."""
-    spec_uuid = validate_uuid(spec_id, "spec_id")
+    # validate_uuid raises a 400 directly; preserve that behavior.
+    validate_uuid(spec_id, "spec_id")
+    try:
+        spec = await get_campaign_spec_by_id(spec_id)
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Spec {spec_id} not found",
+        ) from None
 
-    async with get_session() as session:
-        spec_repo = CampaignSpecRepository(session)
-        spec = await spec_repo.get(spec_uuid)
-
-        if spec is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Spec {spec_id} not found",
-            )
-
-        return {
-            "id": spec_id,
-            "name": spec.name,
-            "description": spec.description,
-            "parameters": [p.model_dump() for p in spec.parameters],
-            "objectives": [o.model_dump() for o in spec.objectives],
-            "constraints": [c.model_dump() for c in spec.constraints] if spec.constraints else [],
-            "batch_size": spec.batch_size,
-            "created_at": "",  # Spec doesn't have created_at, use empty string
-        }
+    return {
+        "id": spec_id,
+        "name": spec.name,
+        "description": spec.description,
+        "parameters": [p.model_dump() for p in spec.parameters],
+        "objectives": [o.model_dump() for o in spec.objectives],
+        "constraints": [c.model_dump() for c in spec.constraints] if spec.constraints else [],
+        "batch_size": spec.batch_size,
+        "created_at": "",  # Spec doesn't have created_at, use empty string
+    }
 
 
 @router.get("/{campaign_id}", response_model=CampaignResponse)
 async def get_campaign(campaign_id: str, current_user: CurrentUser) -> CampaignResponse:
     """Get campaign details."""
-    campaign = await get_authorized_campaign(campaign_id, current_user)
-
-    async with get_session() as session:
-        spec_repo = CampaignSpecRepository(session)
-        spec = await spec_repo.get(campaign.spec_id)
-        if spec is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Campaign spec not found",
-            )
-
-        return CampaignResponse(
-            id=str(campaign.id),
-            spec_id=str(campaign.spec_id),
-            name=spec.name,
-            description=spec.description,
-            status=campaign.status.value,
-            iteration=campaign.iteration,
-            created_at=campaign.created_at,
-            updated_at=campaign.updated_at,
-            n_parameters=spec.n_parameters,
-            n_objectives=spec.n_objectives,
+    try:
+        campaign, spec = await get_campaign_with_spec(campaign_id, current_user.id)
+    except InvalidIdentifierError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid campaign_id format",
+        ) from None
+    except NotAuthorizedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this campaign",
+        ) from None
+    except NotFoundError as exc:
+        detail = (
+            "Campaign spec not found"
+            if exc.resource == "Campaign spec"
+            else f"Campaign {campaign_id} not found"
         )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=detail,
+        ) from None
+
+    return CampaignResponse(
+        id=str(campaign.id),
+        spec_id=str(campaign.spec_id),
+        name=spec.name,
+        description=spec.description,
+        status=campaign.status.value,
+        iteration=campaign.iteration,
+        created_at=campaign.created_at,
+        updated_at=campaign.updated_at,
+        n_parameters=spec.n_parameters,
+        n_objectives=spec.n_objectives,
+    )

@@ -5,6 +5,7 @@ from collections.abc import Callable
 import torch
 from torch import Tensor
 
+from bo_engine.spec_ir import ConstraintTargetClass, classify_constraint_target
 from bo_engine.types import ConstraintSpec, ConstraintType, OptimizationSpec, ParameterType
 
 
@@ -188,13 +189,15 @@ def build_botorch_linear_constraints(
     for constraint in spec.constraints:
         indices = _get_parameter_indices(constraint.parameters, spec)
 
-        # Constraints on categorical (one-hot) params can't be native linear constraints
-        has_categorical = any(
-            p.type == ParameterType.CATEGORICAL
-            for p in spec.parameters
-            if p.name in constraint.parameters
-        )
-        if has_categorical:
+        # Any constraint that touches a categorical parameter cannot be
+        # expressed as a native BoTorch linear constraint (the parameter
+        # is one-hot encoded). The shared classifier returns CATEGORICAL
+        # for both all-categorical and mixed-with-categorical cases —
+        # the same dispatch BayBE uses to refuse those constraints.
+        if (
+            classify_constraint_target(constraint, spec.parameters)
+            == ConstraintTargetClass.CATEGORICAL
+        ):
             projection_constraints.append(constraint)
             continue
 

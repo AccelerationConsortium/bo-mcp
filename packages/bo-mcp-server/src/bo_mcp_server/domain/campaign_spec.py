@@ -1,17 +1,23 @@
-"""Campaign specification value object."""
+"""Campaign specification value object.
 
-from enum import StrEnum
+The neutral parameter, constraint, and acquisition-method enums live in
+:mod:`bo_engine.types` (the lower-dependency package). They are re-exported
+from this module so domain consumers keep the historic ``bo_mcp_server.domain``
+import path; both names refer to the same enum object, so converters no
+longer need a manual mapping layer.
+"""
+
 from typing import Any
 
+from bo_engine.types import (
+    LEGACY_ACQUISITION_VALUES as _LEGACY_ACQUISITION_VALUES,
+)
+from bo_engine.types import (
+    AcquisitionMethod,
+    ConstraintType,
+    ParameterType,
+)
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-
-class ParameterType(StrEnum):
-    """Type of input parameter."""
-
-    CONTINUOUS = "continuous"
-    DISCRETE = "discrete"
-    CATEGORICAL = "categorical"
 
 
 class Bounds(BaseModel):
@@ -92,15 +98,6 @@ class Objective(BaseModel):
         return self.direction == "minimize"
 
 
-class ConstraintType(StrEnum):
-    """Type of constraint."""
-
-    SUM_EQUALS = "sum_equals"
-    SUM_LESS_THAN = "sum_less_than"
-    SUM_GREATER_THAN = "sum_greater_than"
-    LINEAR = "linear"
-
-
 class Constraint(BaseModel):
     """Constraint definition."""
 
@@ -108,33 +105,6 @@ class Constraint(BaseModel):
     parameters: list[str]  # Parameter names involved
     value: float  # Constraint value (e.g., sum equals this value)
     coefficients: list[float] | None = None  # For linear constraints
-
-
-class AcquisitionMethod(StrEnum):
-    """Acquisition function method.
-
-    Values are backend-agnostic semantic names.
-    """
-
-    AUTO = "auto"
-    NOISY_EI = "noisy_expected_improvement"
-    EXPECTED_IMPROVEMENT = "expected_improvement"
-    HYPERVOLUME_IMPROVEMENT = "hypervolume_improvement"
-    SCALARIZED_MULTI_OBJ = "scalarized_multi_objective"
-    COST_WEIGHTED_EI = "cost_weighted_ei"
-    MULTI_FIDELITY_KG = "multi_fidelity_kg"
-
-
-# Maps legacy BoTorch class-name values to current semantic names.
-_LEGACY_ACQUISITION_VALUES: dict[str, str] = {
-    "qLogNEI": "noisy_expected_improvement",
-    "qLogEI": "expected_improvement",
-    "qLogNEHVI": "hypervolume_improvement",
-    "qLogNParEGO": "scalarized_multi_objective",
-    "EIpu": "cost_weighted_ei",
-    "qMFKG": "multi_fidelity_kg",
-    "SAASBO": "noisy_expected_improvement",
-}
 
 
 class OutcomeConstraint(BaseModel):

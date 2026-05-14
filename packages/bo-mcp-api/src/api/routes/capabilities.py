@@ -1,6 +1,6 @@
 """Capabilities routes."""
 
-from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
+from bo_mcp_server.client import list_capabilities_operation
 from fastapi import APIRouter
 
 from api.deps import CurrentUser

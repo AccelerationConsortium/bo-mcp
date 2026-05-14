@@ -251,6 +251,20 @@ PROGRESS_IMPROVING_MULTIPLIER = 1.01
 PROGRESS_REGRESSING_MULTIPLIER = 0.99
 
 # =============================================================================
+# Hypervolume Trajectory Thresholds (analyze_hypervolume_history)
+# =============================================================================
+
+# Relative change below this counts as a "no-improvement" step when scanning
+# the tail of the hypervolume history for stagnation.
+HYPERVOLUME_STABILITY_THRESHOLD = 0.001
+
+# Synthetic improvement value used when only a single hypervolume reading is
+# available but a non-zero hypervolume has been observed. Keeps single-step
+# multi-objective campaigns out of "critical" while genuine stagnation is
+# still detectable once a second sample arrives.
+FALLBACK_HYPERVOLUME_IMPROVEMENT = 0.1
+
+# =============================================================================
 # Random Seeds
 # =============================================================================
 

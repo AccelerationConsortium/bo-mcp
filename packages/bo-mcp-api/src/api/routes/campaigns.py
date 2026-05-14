@@ -47,24 +47,52 @@ from api.schemas.campaign import (
     ValidateIntakeRequest,
     ValidateIntakeResponse,
 )
+from api.schemas.intake import IntakeData
 
 router = APIRouter()
 
 
-def _coerce_intake(request: CampaignCreate) -> CampaignIntakeInput:
-    """Re-validate the loose REST intake into the strict domain model.
+def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
+    """Build a strict domain intake from the validated REST payload.
 
-    REST keeps the advanced spec knobs (``turbo_config``,
-    ``saasbo_config``, ``fidelity_parameter``, …) as untyped dicts so the
-    REST schema stays decoupled from the bo-engine/bo-mcp-server Pydantic
-    models. Strict validation happens once we pass the payload to the
-    domain ``CampaignIntakeInput``. Any inner-shape error must surface as
-    a 422 (unprocessable entity) — same status FastAPI uses for body
+    ``IntakeData`` already validates the shared field shape: parameters,
+    objectives, and constraints are parsed into the canonical domain
+    types, so they can be forwarded by reference. The advanced
+    cross-backend knobs (``turbo_config``, ``saasbo_config``,
+    ``fidelity_parameter``, …) stay typed as plain dict on REST so the
+    schema does not couple to backend-specific Pydantic models;
+    ``CampaignIntakeInput`` validates their inner shape here.
+
+    Any validation error on the advanced knobs must surface as a 422
+    (unprocessable entity) — the same status FastAPI uses for stock body
     validation failures — instead of bubbling up as an unhandled
     ``ValidationError`` 500.
     """
     try:
-        return CampaignIntakeInput.model_validate(request.intake.model_dump())
+        return CampaignIntakeInput(
+            name=intake.name,
+            description=intake.description,
+            parameters=intake.parameters,
+            objectives=intake.objectives,
+            constraints=intake.constraints,
+            batch_size=intake.batch_size,
+            max_iterations=intake.max_iterations,
+            max_observations=intake.max_observations,
+            convergence_tolerance=intake.convergence_tolerance,
+            initial_design_size=intake.initial_design_size,
+            random_seed=intake.random_seed,
+            acquisition_optimization=intake.acquisition_optimization,  # ty: ignore[invalid-argument-type]
+            backend=intake.backend,
+            backend_options=intake.backend_options,
+            acquisition_method=intake.acquisition_method,  # ty: ignore[invalid-argument-type]
+            use_input_warping=intake.use_input_warping,
+            use_cost_aware=intake.use_cost_aware,
+            turbo_config=intake.turbo_config,  # ty: ignore[invalid-argument-type]
+            saasbo_config=intake.saasbo_config,  # ty: ignore[invalid-argument-type]
+            fidelity_parameter=intake.fidelity_parameter,  # ty: ignore[invalid-argument-type]
+            transfer_learning=intake.transfer_learning,  # ty: ignore[invalid-argument-type]
+            outcome_constraints=intake.outcome_constraints,  # ty: ignore[invalid-argument-type]
+        )
     except ValidationError as exc:
         # Prefix locations with ("body", "intake") so the error shape
         # matches FastAPI's stock request-validation envelope.
@@ -88,7 +116,7 @@ async def create_new_campaign(
     current_user: CurrentUser,
 ) -> CampaignCreateResponse:
     """Create a new optimization campaign."""
-    intake = _coerce_intake(request)
+    intake = _coerce_intake(request.intake)
     result = await create_campaign_operation(
         intake_data=intake,
         owner_id=str(current_user.id),
@@ -134,8 +162,16 @@ async def validate_campaign_intake(
     request: ValidateIntakeRequest,
     current_user: CurrentUser,
 ) -> ValidateIntakeResponse:
-    """Validate a campaign specification without creating a campaign (dry-run)."""
-    full_result = validate_intake_operation(request.intake.model_dump())
+    """Validate a campaign specification without creating a campaign (dry-run).
+
+    Builds the domain intake from the validated REST payload (without a
+    dump/validate round-trip; see :func:`_coerce_intake`) so any
+    validation error on the advanced cross-backend knobs surfaces as a
+    422 instead of a 500. ``validate_intake_operation`` accepts the typed
+    ``CampaignIntakeInput`` directly.
+    """
+    intake = _coerce_intake(request.intake)
+    full_result = validate_intake_operation(intake)
     formatted = format_validate_intake_response(full_result, VerbosityLevel.STANDARD)
 
     return ValidateIntakeResponse(

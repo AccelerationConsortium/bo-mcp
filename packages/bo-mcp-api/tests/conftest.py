@@ -65,16 +65,14 @@ def sample_campaign_spec() -> CampaignSpec:
     return CampaignSpec(
         name="Test Campaign",
         description="A test campaign for unit tests",
-        parameters=[
+        parameters=(
             InputParameter(
                 name="temperature",
                 type=ParameterType.CONTINUOUS,
                 bounds=Bounds(lower=20.0, upper=100.0),
             ),
-        ],
-        objectives=[
-            Objective(name="yield", direction="maximize"),
-        ],
+        ),
+        objectives=(Objective(name="yield", direction="maximize"),),
         batch_size=1,
     )
 

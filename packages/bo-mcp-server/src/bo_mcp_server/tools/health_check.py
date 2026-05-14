@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import text
 
 from bo_mcp_server import __version__
+from bo_mcp_server.backend import get_backend_capabilities
 from bo_mcp_server.server import create_mcp_server, mcp
 from bo_mcp_server.storage.database import get_session
 from bo_mcp_server.tools.annotations import READ_ONLY
@@ -44,6 +45,10 @@ async def health_check() -> dict[str, Any]:
             - database: Database connectivity status ("connected" or "error")
             - tools_available: Number of available MCP tools
             - uptime_seconds: Approximate server uptime in seconds
+            - backends: Mapping of discovered backend name to capability
+              metadata (loaded flag, declared features, or load error).
+              Reported so agents can confirm the backend they intend to
+              use is actually installed before issuing a campaign create.
     """
     logger.debug("Health check requested")
 
@@ -64,13 +69,16 @@ async def health_check() -> dict[str, Any]:
     create_mcp_server()
     tools_count = len(mcp._tool_manager.list_tools())
 
-    healthy = db_status == "connected"
+    backends = get_backend_capabilities()
+
+    healthy = db_status == "connected" and any(info.get("loaded") for info in backends.values())
 
     logger.info(
-        "Health check completed: healthy=%s, database=%s, uptime=%ds",
+        "Health check completed: healthy=%s, database=%s, uptime=%ds, backends=%s",
         healthy,
         db_status,
         uptime,
+        sorted(backends),
     )
 
     return {
@@ -79,4 +87,5 @@ async def health_check() -> dict[str, Any]:
         "database": db_status,
         "tools_available": tools_count,
         "uptime_seconds": uptime,
+        "backends": backends,
     }

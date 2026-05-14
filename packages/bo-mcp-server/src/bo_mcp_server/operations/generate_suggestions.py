@@ -25,9 +25,9 @@ from bo_engine.convergence import (
     StoppingReason,
     evaluate_stopping_decision,
 )
+from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.pending_points import filter_pending_points
 from bo_engine.progress import ProgressCallback
-from bo_engine.suggestions import SearchSpaceExhaustedError
 from bo_engine.types import ObservationData, OptimizationSpec
 from sqlalchemy.ext.asyncio import AsyncSession
 

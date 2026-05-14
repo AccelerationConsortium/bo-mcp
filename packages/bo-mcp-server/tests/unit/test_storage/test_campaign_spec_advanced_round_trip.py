@@ -50,14 +50,14 @@ async def session() -> AsyncGenerator[AsyncSession]:
 
 def _base_spec(**overrides: object) -> CampaignSpec:
     """Build a minimal valid :class:`CampaignSpec` with optional overrides."""
-    parameters = [
+    parameters = (
         InputParameter(
             name="x",
             type=ParameterType.CONTINUOUS,
             bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
         ),
-    ]
-    objectives = [Objective(name="y", direction="minimize")]
+    )
+    objectives = (Objective(name="y", direction="minimize"),)
     return CampaignSpec(
         name="Round Trip",
         parameters=parameters,
@@ -129,21 +129,23 @@ class TestAdvancedFieldRoundTrip:
     async def test_transfer_learning_round_trip(self, session: AsyncSession) -> None:
         spec = _base_spec(
             transfer_learning=TransferLearningConfig(
-                prior_campaign_ids=["abc-123"],
+                prior_campaign_ids=("abc-123",),
                 num_ranking_samples=128,
             ),
         )
         reloaded = await _save_and_reload(session, spec)
         assert reloaded.transfer_learning is not None
-        assert reloaded.transfer_learning.prior_campaign_ids == ["abc-123"]
+        # ``prior_campaign_ids`` is a tuple on the domain model (TODO 1.22 follow-up
+        # for deep immutability); the round-trip preserves order and contents.
+        assert reloaded.transfer_learning.prior_campaign_ids == ("abc-123",)
         assert reloaded.transfer_learning.num_ranking_samples == 128
 
     @pytest.mark.asyncio
     async def test_outcome_constraints_round_trip(self, session: AsyncSession) -> None:
         spec = _base_spec(
-            outcome_constraints=[
+            outcome_constraints=(
                 OutcomeConstraint(objective_name="y", threshold=0.5, greater_than=False),
-            ],
+            ),
         )
         reloaded = await _save_and_reload(session, spec)
         assert len(reloaded.outcome_constraints) == 1
@@ -159,9 +161,7 @@ class TestAdvancedFieldRoundTrip:
             use_cost_aware=True,
             turbo_config=TurboConfig(),
             saasbo_config=SaasboConfig(warmup_steps=8, num_samples=8, thinning=2),
-            outcome_constraints=[
-                OutcomeConstraint(objective_name="y", threshold=0.0),
-            ],
+            outcome_constraints=(OutcomeConstraint(objective_name="y", threshold=0.0),),
             backend_options={"botorch": {"acquisition_optimizer": "lbfgsb"}},
         )
         reloaded = await _save_and_reload(session, spec)

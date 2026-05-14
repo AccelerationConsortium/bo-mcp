@@ -170,7 +170,14 @@ class CampaignSpecRepository:
     async def save(self, spec: CampaignSpec, spec_id: UUID) -> CampaignSpec:
         """Save campaign spec with explicit ID (specs are immutable)."""
         acq_opt = spec.acquisition_optimization
-        backend_options_json = json.dumps(spec.backend_options) if spec.backend_options else None
+        # ``backend_options`` is wrapped in nested ``MappingProxyType`` views
+        # by the domain validator; ``json.dumps`` cannot serialize those
+        # directly, so materialize a plain nested dict at the boundary.
+        backend_options_json = (
+            json.dumps({k: dict(v) for k, v in spec.backend_options.items()})
+            if spec.backend_options
+            else None
+        )
         advanced_options_json = _serialize_advanced_options(spec)
         model = CampaignSpecModel(
             id=str(spec_id),
@@ -283,9 +290,9 @@ class CampaignSpecRepository:
         return CampaignSpec(
             name=model.name,
             description=model.description,
-            parameters=parameters,
-            objectives=objectives,
-            constraints=constraints,
+            parameters=tuple(parameters),
+            objectives=tuple(objectives),
+            constraints=tuple(constraints),
             batch_size=model.batch_size,
             max_iterations=model.max_iterations,
             max_observations=getattr(model, "max_observations", None),

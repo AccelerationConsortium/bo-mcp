@@ -106,19 +106,19 @@ CAMPAIGN_DATA = CampaignIntakeInput(
         "objective is to minimize HOMO–LUMO gap (eV) of the coupled molecule "
         "computed via fast DFT (B3LYP/def2-SVP)."
     ),
-    parameters=[
+    parameters=(
         InputParameter(
             name="donor",
             type=ParameterType.CATEGORICAL,
-            categories=DONOR_CATEGORIES,
+            categories=tuple(DONOR_CATEGORIES),
         ),
         InputParameter(
             name="acceptor",
             type=ParameterType.CATEGORICAL,
-            categories=ACCEPTOR_CATEGORIES,
+            categories=tuple(ACCEPTOR_CATEGORIES),
         ),
-    ],
-    objectives=[Objective(name="gap_eV", direction="minimize")],
+    ),
+    objectives=(Objective(name="gap_eV", direction="minimize"),),
     batch_size=EXPECTED_BATCH_SIZE,
     max_iterations=N_CYCLES,
     initial_design_size=2,

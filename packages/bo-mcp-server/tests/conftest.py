@@ -61,7 +61,7 @@ def sample_categorical_param() -> InputParameter:
     return InputParameter(
         name="catalyst",
         type=ParameterType.CATEGORICAL,
-        categories=["Pt", "Pd", "Rh"],
+        categories=("Pt", "Pd", "Rh"),
         description="Catalyst type",
     )
 
@@ -97,8 +97,8 @@ def sample_campaign_spec(
     return CampaignSpec(
         name="Test Campaign",
         description="A test optimization campaign",
-        parameters=[sample_continuous_param, sample_discrete_param],
-        objectives=[sample_objective_minimize, sample_objective_maximize],
+        parameters=(sample_continuous_param, sample_discrete_param),
+        objectives=(sample_objective_minimize, sample_objective_maximize),
         batch_size=2,
     )
 

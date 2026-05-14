@@ -72,6 +72,28 @@ class TestHealthCheckResponse:
         assert isinstance(result["uptime_seconds"], int)
         assert result["uptime_seconds"] >= 0
 
+    @pytest.mark.asyncio
+    async def test_health_check_reports_discovered_backends(self, setup_database: None) -> None:
+        """Health check exposes the cached backend discovery surface.
+
+        Agents need to know which optimization backends are installed
+        before they pick one in the ``backend`` field of a campaign
+        intake. Without this, a typo or missing optional dependency only
+        surfaces deep inside the first suggestion call.
+        """
+        result = await health_check()
+
+        backends = result["backends"]
+        assert isinstance(backends, dict)
+        assert backends, "At least one backend must be discovered in the test env"
+        # The default ``botorch`` backend is registered via the bo-engine
+        # package's entry point and must always be loadable in the test
+        # environment.
+        botorch = backends.get("botorch")
+        assert botorch is not None
+        assert botorch["loaded"] is True
+        assert isinstance(botorch["features"], list)
+
 
 class TestHealthCheckDatabaseError:
     """Tests for health_check behavior when database is unavailable."""

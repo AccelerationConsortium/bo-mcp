@@ -41,11 +41,11 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of basic continuous parameters."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
                 InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(-5.0, 5.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -61,14 +61,14 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of categorical parameters."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="method",
                     type=ParameterType.CATEGORICAL,
-                    categories=["A", "B", "C"],
+                    categories=("A", "B", "C"),
                 ),
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -81,14 +81,14 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of discrete parameters with values."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="n_layers",
                     type=ParameterType.DISCRETE,
-                    values=[1, 2, 3, 4, 5],
+                    values=(1, 2, 3, 4, 5),
                 ),
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -100,13 +100,13 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of objectives with minimize/maximize."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[
+            ),
+            objectives=(
                 Objective(name="loss", direction="minimize"),
                 Objective(name="accuracy", direction="maximize"),
-            ],
+            ),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -121,18 +121,18 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of constraints."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
                 InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
-            constraints=[
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
+            constraints=(
                 Constraint(
                     type=ConstraintType.SUM_EQUALS,
-                    parameters=["x1", "x2"],
+                    parameters=("x1", "x2"),
                     value=1.0,
                 ),
-            ],
+            ),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -146,13 +146,13 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of outcome constraints."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
-            outcome_constraints=[
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
+            outcome_constraints=(
                 OutcomeConstraint(objective_name="y", threshold=0.5, greater_than=True),
-            ],
+            ),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -166,10 +166,10 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of acquisition method."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
             acquisition_method=AcquisitionMethod.NOISY_EI,
         )
 
@@ -181,10 +181,10 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of fidelity parameter for multi-fidelity optimization."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
             fidelity_parameter=FidelityParameter(
                 name="fidelity",
                 bounds=(0.1, 1.0),  # ty: ignore[invalid-argument-type]
@@ -207,12 +207,12 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of transfer learning config."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
             transfer_learning=TransferLearningConfig(
-                prior_campaign_ids=["campaign-1", "campaign-2"],
+                prior_campaign_ids=("campaign-1", "campaign-2"),
                 num_ranking_samples=256,
             ),
         )
@@ -227,10 +227,10 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of optional optimization flags."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
             use_input_warping=True,
             turbo_config=TurboConfig(),
             use_cost_aware=True,
@@ -252,10 +252,10 @@ class TestCampaignSpecToOptimizationSpec:
         """Test that missing fidelity parameter results in None."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -266,10 +266,10 @@ class TestCampaignSpecToOptimizationSpec:
         """Test that missing transfer learning config results in None."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -280,19 +280,19 @@ class TestCampaignSpecToOptimizationSpec:
         """Test conversion of linear constraint with coefficients."""
         spec = CampaignSpec(
             name="test",
-            parameters=[
+            parameters=(
                 InputParameter(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
                 InputParameter(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),  # ty: ignore[invalid-argument-type]
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
-            constraints=[
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
+            constraints=(
                 Constraint(
                     type=ConstraintType.LINEAR,
-                    parameters=["x1", "x2"],
+                    parameters=("x1", "x2"),
                     value=2.0,
-                    coefficients=[1.0, 2.0],
+                    coefficients=(1.0, 2.0),
                 ),
-            ],
+            ),
         )
 
         opt_spec = campaign_spec_to_optimization_spec(spec)

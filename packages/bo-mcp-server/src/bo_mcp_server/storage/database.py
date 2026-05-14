@@ -20,6 +20,7 @@ from pathlib import Path
 import dotenv
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -154,13 +155,21 @@ async def init_database() -> None:
 
 @asynccontextmanager
 async def get_session() -> AsyncGenerator[AsyncSession]:
-    """Get a database session."""
+    """Get a database session.
+
+    Exits via either ``commit`` (no exception) or ``rollback`` followed by
+    re-raise. Only ``SQLAlchemyError`` and ``RuntimeError`` are caught
+    explicitly so storage-layer programming bugs (``AttributeError``,
+    ``KeyError``, …) surface unchanged; ``AsyncSession.__aexit__`` still
+    rolls back and disposes the connection for those cases. The bare
+    ``raise`` preserves the originating traceback.
+    """
     factory = _get_session_factory()
     async with factory() as session:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except (SQLAlchemyError, RuntimeError):
             await session.rollback()
             raise
 

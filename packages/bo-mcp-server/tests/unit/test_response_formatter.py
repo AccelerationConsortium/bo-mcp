@@ -13,9 +13,12 @@ import pytest
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_compare_campaigns_response,
+    format_create_campaign_response,
     format_diagnostics_response,
+    format_submit_results_response,
     format_suggestions_response,
     format_transfer_candidates_response,
+    format_validate_intake_response,
 )
 
 
@@ -140,11 +143,21 @@ class TestFormatDiagnosticsResponse:
         assert "convergence" in result
 
     def test_detailed_verbosity_returns_all_fields(self, full_diagnostics_response: dict) -> None:
-        """Verify detailed verbosity returns complete response."""
+        """Verify detailed verbosity returns complete response.
+
+        The formatter now validates the payload through a Pydantic model
+        and returns a fresh dict so the input is not mutated; the result
+        therefore contains ``_metadata`` in addition to every field
+        present in the input. The key-set assertion also pins that no
+        spurious keys leak through the passthrough projection.
+        """
         result = format_diagnostics_response(full_diagnostics_response, VerbosityLevel.DETAILED)
 
-        # Should have ALL fields
-        assert result == full_diagnostics_response
+        # All input fields survive the round trip, exactly — same keys
+        # plus ``_metadata``, nothing else.
+        assert set(result) == set(full_diagnostics_response) | {"_metadata"}
+        for key, value in full_diagnostics_response.items():
+            assert result[key] == value
 
 
 class TestFormatSuggestionsResponse:
@@ -218,10 +231,17 @@ class TestFormatSuggestionsResponse:
         assert "batch_diversity" in result
 
     def test_detailed_verbosity_returns_all_fields(self, full_suggestions_response: dict) -> None:
-        """Verify detailed verbosity returns complete response."""
+        """Verify detailed verbosity returns complete response.
+
+        The formatter validates the payload through Pydantic and returns
+        a fresh dict, so the result must carry exactly the input keys
+        plus the ``_metadata`` envelope — no spurious leaks.
+        """
         result = format_suggestions_response(full_suggestions_response, VerbosityLevel.DETAILED)
 
-        assert result == full_suggestions_response
+        assert set(result) == set(full_suggestions_response) | {"_metadata"}
+        for key, value in full_suggestions_response.items():
+            assert result[key] == value
 
 
 class TestFormatCompareCampaignsResponse:
@@ -304,10 +324,12 @@ class TestFormatCompareCampaignsResponse:
         assert "is_multi_objective" not in first_campaign
 
     def test_detailed_verbosity_returns_all_fields(self, full_compare_response: dict) -> None:
-        """Verify detailed verbosity returns complete response."""
+        """Verify detailed verbosity returns complete response (plus ``_metadata``)."""
         result = format_compare_campaigns_response(full_compare_response, VerbosityLevel.DETAILED)
 
-        assert result == full_compare_response
+        assert set(result) == set(full_compare_response) | {"_metadata"}
+        for key, value in full_compare_response.items():
+            assert result[key] == value
 
 
 class TestFormatTransferCandidatesResponse:
@@ -414,12 +436,14 @@ class TestFormatTransferCandidatesResponse:
         assert "iteration" not in first_candidate
 
     def test_detailed_verbosity_returns_all_fields(self, full_transfer_response: dict) -> None:
-        """Verify detailed verbosity returns complete response."""
+        """Verify detailed verbosity returns complete response (plus ``_metadata``)."""
         result = format_transfer_candidates_response(
             full_transfer_response, VerbosityLevel.DETAILED
         )
 
-        assert result == full_transfer_response
+        assert set(result) == set(full_transfer_response) | {"_metadata"}
+        for key, value in full_transfer_response.items():
+            assert result[key] == value
 
 
 class TestTokenEstimation:
@@ -479,3 +503,87 @@ class TestTokenEstimation:
         minimal_size = len(str(minimal))
         detailed_size = len(str(detailed))
         assert minimal_size < detailed_size * 0.5
+
+
+class TestResponseContractValidation:
+    """Format outputs validate against their declared Pydantic contracts.
+
+    The formatter now routes every dict through a per-(operation,
+    verbosity) Pydantic model, so the dict served to the agent is
+    guaranteed to (a) carry the documented keys, (b) carry no spurious
+    extras at MINIMAL / STANDARD verbosity, and (c) coerce the simple
+    field types (bool / int / str / list[str]) at the transport
+    boundary instead of silently passing typos through ``cast`` as the
+    previous ``TypedDict`` implementation did.
+
+    Reference: Pydantic v2 ``ConfigDict(extra="forbid")`` and
+    ``model_validate`` semantics. See TODO 1.20 for the original
+    typing-strength complaint.
+    """
+
+    def test_diagnostics_minimal_rejects_unknown_keys(self) -> None:
+        """The strict Minimal model rejects extras when constructed directly."""
+        import pytest as _pytest
+        from pydantic import ValidationError
+
+        from bo_mcp_server.response_formatter import DiagnosticsMinimalResponse
+
+        with _pytest.raises(ValidationError):
+            DiagnosticsMinimalResponse(success=True, mystery_key="oops")  # ty: ignore[unknown-argument]
+
+    def test_create_campaign_minimal_round_trip(self) -> None:
+        """A MINIMAL create_campaign response carries exactly the documented keys."""
+        result = format_create_campaign_response(
+            {
+                "success": True,
+                "campaign_id": "cmp-123",
+                "spec_id": "spec-456",  # excluded at MINIMAL
+                "campaign_name": "ignored",  # excluded at MINIMAL
+                "warnings": ["w"],
+                "errors": [],
+            },
+            VerbosityLevel.MINIMAL,
+        )
+        assert set(result) == {
+            "success",
+            "campaign_id",
+            "warnings",
+            "errors",
+            "_metadata",
+        }
+        assert result["campaign_id"] == "cmp-123"
+
+    def test_validate_intake_standard_validates_spec_summary(self) -> None:
+        """The STANDARD validate-intake projection materializes a typed spec_summary."""
+        full = {
+            "valid": True,
+            "errors": [],
+            "warnings": ["w1"],
+            "spec": {
+                "name": "campaign",
+                "parameters": [{"name": "x"}, {"name": "y"}],
+                "objectives": [{"name": "yld"}],
+                "constraints": [],
+                "batch_size": 4,
+            },
+        }
+        result = format_validate_intake_response(full, VerbosityLevel.STANDARD)
+        summary = result["spec_summary"]
+        assert summary["name"] == "campaign"
+        assert summary["n_parameters"] == 2
+        assert summary["n_objectives"] == 1
+        assert summary["n_constraints"] == 0
+        assert summary["batch_size"] == 4
+
+    def test_submit_results_standard_does_not_leak_duplicates_detail(self) -> None:
+        """STANDARD submit_results exposes count, never the full duplicates list."""
+        full = {
+            "success": True,
+            "result_ids": ["r1", "r2"],
+            "errors": [],
+            "warnings": [],
+            "duplicates_detected": [{"index": 1, "matches_existing": "abc"}],
+        }
+        result = format_submit_results_response(full, VerbosityLevel.STANDARD)
+        assert result["n_duplicates_detected"] == 1
+        assert "duplicates_detected" not in result

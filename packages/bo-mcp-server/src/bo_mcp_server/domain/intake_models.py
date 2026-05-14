@@ -31,9 +31,9 @@ class CampaignIntakeInput(BaseModel):
 
     name: str = Field(..., min_length=1)
     description: str = ""
-    parameters: list[InputParameter] = Field(..., min_length=1)
-    objectives: list[Objective] = Field(..., min_length=1)
-    constraints: list[Constraint] = Field(default_factory=list)
+    parameters: tuple[InputParameter, ...] = Field(..., min_length=1)
+    objectives: tuple[Objective, ...] = Field(..., min_length=1)
+    constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
     batch_size: int = Field(default=1, ge=1)
     max_iterations: int | None = None
     # Budget / convergence-based stopping (optional). Mirrors the fields on
@@ -64,7 +64,7 @@ class CampaignIntakeInput(BaseModel):
     saasbo_config: SaasboConfig | None = None
     fidelity_parameter: FidelityParameter | None = None
     transfer_learning: TransferLearningConfig | None = None
-    outcome_constraints: list[OutcomeConstraint] = Field(default_factory=list)
+    outcome_constraints: tuple[OutcomeConstraint, ...] = Field(default_factory=tuple)
 
     model_config = {"extra": "forbid"}
 

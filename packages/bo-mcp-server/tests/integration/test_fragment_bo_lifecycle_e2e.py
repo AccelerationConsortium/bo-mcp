@@ -59,19 +59,19 @@ class TestFragmentLifecycleE2E:
         intake_data = CampaignIntakeInput(
             name="BO normal-run six-cycle completion test",
             description="Track when normal categorical run can complete all six cycles.",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="donor",
                     type=ParameterType.CATEGORICAL,
-                    categories=donor_categories,
+                    categories=tuple(donor_categories),
                 ),
                 InputParameter(
                     name="acceptor",
                     type=ParameterType.CATEGORICAL,
-                    categories=acceptor_categories,
+                    categories=tuple(acceptor_categories),
                 ),
-            ],
-            objectives=[Objective(name="gap_eV", direction="minimize")],
+            ),
+            objectives=(Objective(name="gap_eV", direction="minimize"),),
             batch_size=batch_size,
             max_iterations=n_cycles,
             initial_design_size=3,

@@ -179,6 +179,17 @@ MIN_OBJECTIVE_RANGE = 1e-6
 # Use for denominators, range checks, and absolute-value comparisons.
 NUMERICAL_EPSILON = 1e-10
 
+
+def is_zero(value: float, tol: float = NUMERICAL_EPSILON) -> bool:
+    """Return ``True`` when ``value`` is within ``tol`` of zero.
+
+    Use in place of bare ``x == 0`` / ``x != 0`` checks on computed
+    floats so finite-precision artifacts (a result of order 1e-16
+    instead of an exact zero) do not flip the branch.
+    """
+    return abs(value) <= tol
+
+
 # Epsilon for clamping standard deviations and values before log().
 # Slightly larger than NUMERICAL_EPSILON to avoid log-space underflow
 # while remaining negligible relative to any realistic objective scale.

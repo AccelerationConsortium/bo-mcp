@@ -106,14 +106,14 @@ class TestCanonicalCampaignSpecRoundTrip:
     def test_advanced_fields_round_trip(self) -> None:
         spec = CampaignSpec(
             name="Advanced",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="x",
                     type=ParameterType.CONTINUOUS,
                     bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
                 ),
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
             use_input_warping=True,
             backend="botorch",
             backend_options={"botorch": {"acquisition_optimizer": "lbfgsb"}},
@@ -126,15 +126,15 @@ class TestCanonicalCampaignSpecRoundTrip:
     def test_parameter_options_round_trip(self) -> None:
         spec = CampaignSpec(
             name="Param Options",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="x",
                     type=ParameterType.CONTINUOUS,
                     bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
                     parameter_options={"baybe": {"encoding": "ohe"}},
                 ),
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
         )
         spec_dict = spec.to_dict()
         rebuilt = _build_spec_from_dict(spec_dict)
@@ -143,15 +143,15 @@ class TestCanonicalCampaignSpecRoundTrip:
     def test_convert_preserves_backend_options(self) -> None:
         spec = CampaignSpec(
             name="Convert",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="x",
                     type=ParameterType.CONTINUOUS,
                     bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
                     parameter_options={"baybe": {"encoding": "ohe"}},
                 ),
-            ],
-            objectives=[Objective(name="y", direction="minimize")],
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
             backend_options={"botorch": {"acquisition_optimizer": "lbfgsb"}},
         )
         opt_spec = campaign_spec_to_optimization_spec(spec)

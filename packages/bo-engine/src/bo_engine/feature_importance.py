@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 from botorch.models import ModelListGP, SingleTaskGP
+
+from bo_engine.constants import NUMERICAL_EPSILON
 
 # Optional dependency - imported at module level for clarity
 try:
@@ -19,6 +22,8 @@ except ImportError:
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 GPModel = SingleTaskGP | ModelListGP
 
@@ -59,8 +64,20 @@ def compute_lengthscale_importance(
 
     all_importance = []
     for obj_name, ls in lengthscales.items():
-        # Inverse and normalize
-        importance = 1.0 / ls
+        # Clamp lengthscales to NUMERICAL_EPSILON before taking the
+        # reciprocal so a near-zero entry (a sign of a poorly conditioned
+        # GP fit or a fully active dimension at the boundary) produces a
+        # large finite importance instead of inf and downstream NaN. Warn
+        # once per objective when the clamp fires so the underlying fit
+        # is still visible in logs.
+        if torch.any(ls < NUMERICAL_EPSILON):
+            logger.warning(
+                "Lengthscale below NUMERICAL_EPSILON detected for %s; "
+                "clamping before reciprocal to avoid inf importance",
+                obj_name,
+            )
+        safe_ls = torch.clamp(ls, min=NUMERICAL_EPSILON)
+        importance = 1.0 / safe_ls
         importance = importance / importance.sum()
 
         result["by_objective"][obj_name] = {

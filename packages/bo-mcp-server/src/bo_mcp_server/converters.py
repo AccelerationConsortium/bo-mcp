@@ -38,14 +38,21 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
     Returns:
         OptimizationSpec for use with bo-engine functions
     """
+    # Domain value objects use tuples for deep immutability; the bo-engine
+    # dataclasses still type sequence fields as ``list`` and skip
+    # field-level coercion, so we materialize lists at the boundary.
     parameters = [
         ParameterSpec(
             name=p.name,
             type=p.type,
             bounds=(p.bounds.lower, p.bounds.upper) if p.bounds is not None else None,
-            values=p.values,
-            categories=p.categories,
-            parameter_options=dict(p.parameter_options) if p.parameter_options else None,
+            values=list(p.values) if p.values is not None else None,
+            categories=list(p.categories) if p.categories is not None else None,
+            parameter_options=(
+                {k: dict(v) for k, v in p.parameter_options.items()}
+                if p.parameter_options
+                else None
+            ),
         )
         for p in spec.parameters
     ]
@@ -55,9 +62,9 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
     constraints = [
         ConstraintSpec(
             type=c.type,
-            parameters=c.parameters,
+            parameters=list(c.parameters),
             value=c.value,
-            coefficients=c.coefficients,
+            coefficients=list(c.coefficients) if c.coefficients is not None else None,
         )
         for c in spec.constraints
     ]
@@ -109,7 +116,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
     transfer_learning = None
     if spec.transfer_learning is not None:
         transfer_learning = TransferLearningSpec(
-            prior_campaign_ids=spec.transfer_learning.prior_campaign_ids,
+            prior_campaign_ids=list(spec.transfer_learning.prior_campaign_ids),
             num_ranking_samples=spec.transfer_learning.num_ranking_samples,
             temperature=spec.transfer_learning.temperature,
         )

@@ -9,11 +9,18 @@ Usage:
     backend = get_backend()           # default (env var or "botorch")
     backend = get_backend("baybe")    # explicit backend name
     name = resolve_backend_name("auto", spec_dict)  # auto-select
+
+Entry-point discovery runs once at module import. The resulting list is
+cached in :data:`_discovered_entry_points` so :func:`get_backend` and
+:func:`resolve_backend_name` never repeat the scan. The module also
+asserts at least one backend is installed — a missing entry-point
+registration would otherwise surface as a confusing "backend not found"
+error deep inside the first suggestion call.
 """
 
 import logging
 import os
-from importlib.metadata import entry_points
+from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
 from bo_engine.backend import BOBackend, Feature
@@ -30,24 +37,97 @@ DEFAULT_BACKEND = "botorch"
 _ENTRY_POINT_GROUP = "bo_mcp.backends"
 
 
+def _scan_entry_points() -> tuple[EntryPoint, ...]:
+    """Scan installed packages for backend entry points (module load only)."""
+    return tuple(entry_points(group=_ENTRY_POINT_GROUP))
+
+
+# Cached entry-point discovery. Populated at module import so subsequent
+# ``get_backend`` / ``resolve_backend_name`` calls do not re-scan the
+# installed package metadata. Tests that monkey-patch ``entry_points``
+# can call :func:`_refresh_discovered_backends` to invalidate.
+_discovered_entry_points: tuple[EntryPoint, ...] = _scan_entry_points()
+
+
+def _refresh_discovered_backends() -> None:
+    """Re-run entry-point discovery; intended for tests that mock entry points."""
+    global _discovered_entry_points  # noqa: PLW0603
+    _discovered_entry_points = _scan_entry_points()
+
+
 def _load_backend(name: str) -> BOBackend:
-    """Load a backend by name via entry-point discovery."""
-    eps = entry_points(group=_ENTRY_POINT_GROUP)
-    for ep in eps:
+    """Load a backend by name via entry-point discovery (cached scan)."""
+    for ep in _discovered_entry_points:
         if ep.name == name:
             backend_class = ep.load()
             logger.info("Loaded backend '%s' via entry point: %s", name, ep.value)
             return backend_class()
 
-    available = [ep.name for ep in eps]
+    available = [ep.name for ep in _discovered_entry_points]
     msg = f"Unknown backend '{name}'. Available: {available}"
     raise ValueError(msg)
 
 
 def _get_available_backend_names() -> list[str]:
-    """Return names of all installed backends."""
-    eps = entry_points(group=_ENTRY_POINT_GROUP)
-    return [ep.name for ep in eps]
+    """Return names of all installed backends (cached scan)."""
+    return [ep.name for ep in _discovered_entry_points]
+
+
+def list_available_backends() -> list[str]:
+    """Public accessor for the discovered backend names.
+
+    The list is built once at module import (see
+    :data:`_discovered_entry_points`) so repeated calls are O(1) and
+    safe to use inside health-check responses.
+    """
+    return _get_available_backend_names()
+
+
+def get_backend_capabilities() -> dict[str, dict[str, Any]]:
+    """Return capability metadata for every discovered backend.
+
+    Used by the health endpoint to advertise which backends are actually
+    available at runtime. Each entry exposes the backend's display name
+    and the string values of its declared :class:`Feature` set; loading
+    failures (missing optional dependency, broken entry point) are
+    captured under ``error`` so the health response surfaces the
+    misconfiguration instead of silently dropping the backend.
+    """
+    capabilities: dict[str, dict[str, Any]] = {}
+    for name in _get_available_backend_names():
+        try:
+            backend = get_backend(name)
+        except (ValueError, ImportError) as exc:
+            capabilities[name] = {"loaded": False, "error": str(exc)}
+            continue
+        capabilities[name] = {
+            "loaded": True,
+            "name": backend.name,
+            "features": sorted(f.value for f in backend.supported_features),
+        }
+    return capabilities
+
+
+def _assert_backend_discovered() -> None:
+    """Fail loudly when no backends are installed.
+
+    Raised at module import so a broken install surfaces immediately at
+    startup rather than deep inside the first suggestion call. The
+    discovered names are also logged so operators can see which backends
+    are wired up without inspecting the package metadata directly.
+    """
+    names = _get_available_backend_names()
+    if not names:
+        msg = (
+            "No bo-mcp backends discovered. Ensure at least one package "
+            f"registers an entry point under '{_ENTRY_POINT_GROUP}' "
+            "(e.g. bo-engine for the BoTorch backend)."
+        )
+        raise RuntimeError(msg)
+    logger.info("Discovered bo-mcp backends: %s", names)
+
+
+_assert_backend_discovered()
 
 
 def _spec_dict_to_optimization_spec(spec_dict: dict[str, Any]):

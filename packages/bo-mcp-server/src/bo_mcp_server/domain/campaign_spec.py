@@ -7,6 +7,8 @@ import path; both names refer to the same enum object, so converters no
 longer need a manual mapping layer.
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 from bo_engine.types import (
@@ -17,11 +19,114 @@ from bo_engine.types import (
     ConstraintType,
     ParameterType,
 )
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+
+def _freeze_option_value(value: Any) -> Any:
+    """Recursively convert an option value into a deeply immutable shape.
+
+    Mappings become :class:`types.MappingProxyType` over a freshly-copied
+    dict whose values are themselves recursively frozen. Lists become
+    tuples; tuples are walked recursively. Atoms (str / int / float /
+    bool / None / enums / anything not list-or-mapping-like) pass through
+    unchanged. The result is safe to expose from a frozen value object
+    because every reachable container is read-only — neither
+    ``param.parameter_options["baybe"]["nested"]["a"] = …`` nor
+    ``param.parameter_options["baybe"]["items"].append(…)`` can land.
+    """
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: _freeze_option_value(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_option_value(v) for v in value)
+    return value
+
+
+def _freeze_backend_options(
+    value: Mapping[str, Mapping[str, Any]] | None,
+) -> Mapping[str, Mapping[str, Any]] | None:
+    """Deeply wrap a ``backend → option-dict`` mapping in read-only views.
+
+    The outer mapping (keyed by backend name) and every nested
+    mapping / sequence inside each backend's option dict is converted
+    via :func:`_freeze_option_value`, so attempts like
+    ``param.parameter_options["baybe"]["nested"]["a"] = …`` and
+    ``param.parameter_options["baybe"]["items"].append(…)`` both raise
+    instead of silently mutating shared state. Defensive copying ensures
+    a held reference to the original source dict cannot mutate the
+    frozen view either.
+
+    The transformation runs in ``field_validator(mode="after")``; JSON
+    round-trips go through :func:`_serialize_backend_options` which
+    walks the frozen views back into plain dicts and lists.
+    """
+    if value is None:
+        return None
+    return MappingProxyType(
+        {k: _freeze_option_value(v) for k, v in value.items()},
+    )
+
+
+def _thaw_option_value(value: Any) -> Any:
+    """Recursively materialize a frozen option value back to plain dict / list.
+
+    Inverse of :func:`_freeze_option_value`: ``MappingProxyType`` becomes
+    ``dict``, ``tuple`` becomes ``list``. Used by the field serializers
+    so JSON output never leaks ``mappingproxy`` (which ``json.dumps``
+    cannot encode) and so external consumers see the same shape they
+    submitted at construction time.
+    """
+    if isinstance(value, Mapping):
+        return {k: _thaw_option_value(v) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_option_value(v) for v in value]
+    return value
+
+
+def _serialize_backend_options(
+    value: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, dict[str, Any]] | None:
+    """Convert a deeply frozen option mapping back to a plain nested dict."""
+    if value is None:
+        return None
+    return {k: _thaw_option_value(v) for k, v in value.items()}
+
+
+def _hashable_option_value(value: Any) -> Any:
+    """Recursively project an opaque option value into a hashable form.
+
+    Lists / tuples become tuples; mappings become frozensets of
+    ``(key, hashable_value)`` pairs. Atoms (str, int, float, bool, None,
+    enums) pass through unchanged. Used by the custom ``__hash__`` on
+    :class:`InputParameter` and :class:`CampaignSpec` so a value object
+    that carries an option payload can still be hashed.
+    """
+    if isinstance(value, Mapping):
+        return frozenset((k, _hashable_option_value(v)) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return tuple(_hashable_option_value(v) for v in value)
+    return value
+
+
+def _hashable_backend_options(
+    value: Mapping[str, Mapping[str, Any]] | None,
+) -> tuple[tuple[str, Any], ...] | None:
+    """Project a ``backend → options`` mapping into a hashable tuple form."""
+    if value is None:
+        return None
+    return tuple((k, _hashable_option_value(v)) for k, v in sorted(value.items()))
 
 
 class Bounds(BaseModel):
     """Numeric lower/upper bounds."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     lower: float
     upper: float
@@ -43,15 +148,31 @@ class InputParameter(BaseModel):
     values, candidate-table mode). Outer keys are backend names; inner
     dicts are opaque to the neutral model. Backends ignore options
     addressed to other backends.
+
+    Sequence fields (``values``, ``categories``) are typed as tuples so a
+    frozen :class:`InputParameter` instance is also deeply immutable:
+    ``param.categories.append(...)`` raises ``AttributeError`` instead of
+    silently mutating shared state. JSON round-trips still produce
+    arrays (Pydantic serializes tuples as JSON arrays).
+
+    ``parameter_options`` is wrapped in nested :class:`types.MappingProxyType`
+    views by ``field_validator(mode="after")`` so subscript assignment
+    (``p.parameter_options["baybe"]["encoding"] = "x"``) raises
+    ``TypeError`` instead of silently mutating the shared option dict.
+    The custom :meth:`__hash__` projects the option mapping into a
+    hashable form so instances with option payloads remain hashable for
+    use as cache keys.
     """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(..., min_length=1)
     type: ParameterType
     bounds: Bounds | None = None  # For continuous/discrete
-    values: list[float] | None = None  # For discrete (fractional values ok)
-    categories: list[str] | None = None  # For categorical
+    values: tuple[float, ...] | None = None  # For discrete (fractional values ok)
+    categories: tuple[str, ...] | None = None  # For categorical
     description: str = ""
-    parameter_options: dict[str, dict[str, Any]] | None = None
+    parameter_options: Mapping[str, Mapping[str, Any]] | None = None
 
     @field_validator("bounds", mode="before")
     @classmethod
@@ -65,6 +186,21 @@ class InputParameter(BaseModel):
                 raise ValueError(msg)
             return {"lower": value[0], "upper": value[1]}
         return value
+
+    @field_validator("parameter_options", mode="after")
+    @classmethod
+    def freeze_parameter_options(
+        cls, value: Mapping[str, Mapping[str, Any]] | None
+    ) -> Mapping[str, Mapping[str, Any]] | None:
+        """Wrap the option mapping in read-only views (see module docstring)."""
+        return _freeze_backend_options(value)
+
+    @field_serializer("parameter_options", when_used="always")
+    def _dump_parameter_options(
+        self, value: Mapping[str, Mapping[str, Any]] | None
+    ) -> dict[str, dict[str, Any]] | None:
+        """Materialize the frozen view back to a plain dict for JSON output."""
+        return _serialize_backend_options(value)
 
     @model_validator(mode="after")
     def validate_parameter(self) -> "InputParameter":
@@ -83,9 +219,32 @@ class InputParameter(BaseModel):
                 raise ValueError(msg)
         return self
 
+    def __hash__(self) -> int:
+        """Hash that handles the read-only ``parameter_options`` mapping.
+
+        Pydantic's auto-generated ``__hash__`` would fail because the
+        option mapping (even wrapped in ``MappingProxyType``) isn't
+        natively hashable. Project the options into a tuple-of-items
+        form so the instance remains usable as a dict / cache key.
+        """
+        return hash(
+            (
+                type(self).__name__,
+                self.name,
+                self.type,
+                self.bounds,
+                self.values,
+                self.categories,
+                self.description,
+                _hashable_backend_options(self.parameter_options),
+            )
+        )
+
 
 class Objective(BaseModel):
     """Optimization objective definition."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(..., min_length=1)
     direction: str = Field(..., pattern="^(minimize|maximize)$")
@@ -99,12 +258,18 @@ class Objective(BaseModel):
 
 
 class Constraint(BaseModel):
-    """Constraint definition."""
+    """Constraint definition.
+
+    ``parameters`` and ``coefficients`` are tuples so a frozen instance
+    is deeply immutable. JSON round-trips preserve these as arrays.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: ConstraintType
-    parameters: list[str]  # Parameter names involved
+    parameters: tuple[str, ...]  # Parameter names involved
     value: float  # Constraint value (e.g., sum equals this value)
-    coefficients: list[float] | None = None  # For linear constraints
+    coefficients: tuple[float, ...] | None = None  # For linear constraints
 
 
 class OutcomeConstraint(BaseModel):
@@ -112,6 +277,8 @@ class OutcomeConstraint(BaseModel):
 
     Specifies a threshold on an objective that defines feasibility.
     """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     objective_name: str  # Which objective to constrain
     threshold: float  # Constraint value
@@ -125,6 +292,8 @@ class FidelityParameter(BaseModel):
     Fidelity parameters control the approximation level of evaluations.
     Lower fidelity = cheaper but less accurate.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     name: str = Field(..., min_length=1)
     bounds: Bounds  # (min_fidelity, max_fidelity)
@@ -147,10 +316,14 @@ class FidelityParameter(BaseModel):
 class TransferLearningConfig(BaseModel):
     """Configuration for transfer learning from prior campaigns (v2.0).
 
-    Allows leveraging data from prior optimization campaigns.
+    Allows leveraging data from prior optimization campaigns. The
+    ``prior_campaign_ids`` field is a tuple so a frozen config instance
+    is deeply immutable.
     """
 
-    prior_campaign_ids: list[str] = Field(..., min_length=1)
+    model_config = ConfigDict(frozen=True)
+
+    prior_campaign_ids: tuple[str, ...] = Field(..., min_length=1)
     num_ranking_samples: int = Field(default=512, ge=1)
     temperature: float = Field(default=0.5, gt=0.0)
 
@@ -160,6 +333,8 @@ class TurboConfig(BaseModel):
 
     Present = use TuRBO, absent (None) = standard acquisition optimization.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     initial_length: float = 0.8
     length_min: float = 0.5**7
@@ -172,6 +347,8 @@ class SaasboConfig(BaseModel):
 
     Present = use SAASBO, absent (None) = standard GP.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     warmup_steps: int = 256
     num_samples: int = 128
@@ -187,6 +364,8 @@ class AcquisitionOptimizationConfig(BaseModel):
     more aggressive exploration.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     num_restarts: int | None = Field(default=None, ge=1)
     raw_samples: int | None = Field(default=None, ge=1)
 
@@ -195,13 +374,24 @@ class CampaignSpec(BaseModel):
     """Immutable campaign specification.
 
     Created from validated intake and contains all resolved configuration.
+    Collection fields (``parameters``, ``objectives``, ``constraints``,
+    ``outcome_constraints``) are typed as tuples so the spec is deeply
+    immutable: a caller cannot ``spec.parameters.append(...)`` and
+    silently corrupt every consumer holding the same instance. Pydantic
+    coerces lists from JSON / intake input into tuples automatically.
+
+    The ``backend_options`` mapping is wrapped in nested read-only views
+    (see :func:`_freeze_backend_options`) so subscript assignment fails
+    the same way the sequence fields do, and the custom :meth:`__hash__`
+    projects the option mapping into a hashable form so a spec carrying
+    an options payload remains usable as a cache / dedup key.
     """
 
     name: str = Field(..., min_length=1)
     description: str = ""
-    parameters: list[InputParameter] = Field(..., min_length=1)
-    objectives: list[Objective] = Field(..., min_length=1)
-    constraints: list[Constraint] = Field(default_factory=list)
+    parameters: tuple[InputParameter, ...] = Field(..., min_length=1)
+    objectives: tuple[Objective, ...] = Field(..., min_length=1)
+    constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
     batch_size: int = Field(default=1, ge=1)
     max_iterations: int | None = None
     # Total observation cap. Counted across all iterations; reaching it short-
@@ -220,7 +410,7 @@ class CampaignSpec(BaseModel):
     # v1.2: TuRBO for high-dimensional optimization (None = disabled)
     turbo_config: TurboConfig | None = None
     # v1.3: Outcome constraints learned from data
-    outcome_constraints: list[OutcomeConstraint] = Field(default_factory=list)
+    outcome_constraints: tuple[OutcomeConstraint, ...] = Field(default_factory=tuple)
     # v1.3: Cost-aware optimization
     use_cost_aware: bool = False
     # v2.0: Multi-fidelity optimization
@@ -238,9 +428,9 @@ class CampaignSpec(BaseModel):
     # (``"botorch"``, ``"baybe"``); inner dicts hold options that have no
     # neutral cross-backend equivalent. Backends ignore options addressed
     # to other backends.
-    backend_options: dict[str, dict[str, Any]] | None = None
+    backend_options: Mapping[str, Mapping[str, Any]] | None = None
 
-    model_config = {"frozen": True}
+    model_config = ConfigDict(frozen=True)
 
     @field_validator("acquisition_method", mode="before")
     @classmethod
@@ -249,6 +439,21 @@ class CampaignSpec(BaseModel):
         if isinstance(value, str) and value in _LEGACY_ACQUISITION_VALUES:
             return _LEGACY_ACQUISITION_VALUES[value]
         return value
+
+    @field_validator("backend_options", mode="after")
+    @classmethod
+    def freeze_backend_options(
+        cls, value: Mapping[str, Mapping[str, Any]] | None
+    ) -> Mapping[str, Mapping[str, Any]] | None:
+        """Wrap ``backend_options`` in nested read-only views (see module docstring)."""
+        return _freeze_backend_options(value)
+
+    @field_serializer("backend_options", when_used="always")
+    def _dump_backend_options(
+        self, value: Mapping[str, Mapping[str, Any]] | None
+    ) -> dict[str, dict[str, Any]] | None:
+        """Materialize the frozen view back to a plain dict for JSON output."""
+        return _serialize_backend_options(value)
 
     @property
     def use_turbo(self) -> bool:
@@ -311,3 +516,40 @@ class CampaignSpec(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return self.model_dump()
+
+    def __hash__(self) -> int:
+        """Hash that handles the read-only ``backend_options`` mapping.
+
+        Pydantic's auto-generated ``__hash__`` would fail for the
+        option mapping (even wrapped in ``MappingProxyType``) because
+        ``Mapping`` is not natively hashable. We project the options
+        into a tuple-of-items form so a spec with an options payload
+        can still be hashed (e.g. for cache keys keyed on spec identity).
+        """
+        return hash(
+            (
+                type(self).__name__,
+                self.name,
+                self.description,
+                self.parameters,
+                self.objectives,
+                self.constraints,
+                self.batch_size,
+                self.max_iterations,
+                self.max_observations,
+                self.convergence_tolerance,
+                self.initial_design_size,
+                self.random_seed,
+                self.acquisition_method,
+                self.use_input_warping,
+                self.turbo_config,
+                self.outcome_constraints,
+                self.use_cost_aware,
+                self.fidelity_parameter,
+                self.transfer_learning,
+                self.saasbo_config,
+                self.acquisition_optimization,
+                self.backend,
+                _hashable_backend_options(self.backend_options),
+            )
+        )

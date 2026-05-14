@@ -8,6 +8,8 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.storage import EventRepository, get_session
 
@@ -22,6 +24,13 @@ async def log_tool_call(
     actor_id: str | None = None,
 ) -> None:
     """Log an MCP tool invocation as an audit event.
+
+    Audit logging must never break the tool call: persistence failures
+    (``SQLAlchemyError``) and invalid input payloads (``ValueError``,
+    ``RuntimeError``) are caught and logged with ``exc_info=True`` so the
+    traceback survives in operator logs while the parent tool call keeps
+    running. Truly unexpected exception types are allowed to surface so
+    programming bugs are not silently buried.
 
     Args:
         tool_name: Name of the MCP tool (e.g., "bo_create_campaign")
@@ -42,5 +51,5 @@ async def log_tool_call(
         async with get_session() as session:
             repo = EventRepository(session)
             await repo.save(event)
-    except Exception:  # noqa: BLE001 - audit logging must never break the tool call
-        logger.debug("Failed to log audit event for %s", tool_name, exc_info=True)
+    except (SQLAlchemyError, ValueError, RuntimeError):
+        logger.warning("Failed to log audit event for %s", tool_name, exc_info=True)

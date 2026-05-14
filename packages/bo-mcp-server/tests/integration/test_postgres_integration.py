@@ -202,16 +202,14 @@ class TestPostgresCampaignLifecycle:
         spec = CampaignSpec(
             name="Test Spec",
             description="Integration test specification",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="x",
                     type=ParameterType.CONTINUOUS,
                     bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
-                )
-            ],
-            objectives=[
-                Objective(name="y", direction="minimize"),
-            ],
+                ),
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
             batch_size=2,
         )
         await spec_repo.save(spec, spec_id)

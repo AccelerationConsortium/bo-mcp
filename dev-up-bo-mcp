@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: ./dev-up-bo-mcp <slot> [docker compose args...]
+
+Runs the BO-MCP Docker stack in an isolated Compose project while joining the
+same external Docker network contract used by gpu4pyscf.
+
+The slot must be an integer from 0 to 99. Host ports are shifted by slot * 100:
+  frontend: 3001 + slot * 100
+  api:      8000 + slot * 100
+  mcp sse:  8001 + slot * 100
+
+Example:
+  ./dev-up-bo-mcp 3 up --build
+EOF
+}
+
+if [[ $# -lt 1 ]]; then
+  usage >&2
+  exit 2
+fi
+
+slot="$1"
+shift
+
+if [[ ! "$slot" =~ ^[0-9]+$ ]] || (( slot < 0 || slot > 99 )); then
+  echo "slot must be an integer from 0 to 99" >&2
+  exit 2
+fi
+
+offset=$((slot * 100))
+
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-bo-mcp-s${slot}}"
+export BO_MCP_FRONTEND_PORT="${BO_MCP_FRONTEND_PORT:-$((3001 + offset))}"
+export BO_MCP_API_PORT="${BO_MCP_API_PORT:-$((8000 + offset))}"
+export BO_MCP_SSE_PORT="${BO_MCP_SSE_PORT:-$((8001 + offset))}"
+export BO_MCP_NETWORK_NAME="${BO_MCP_NETWORK_NAME:-akg4pyscf-gpu-s${slot}-net}"
+
+docker network inspect "${BO_MCP_NETWORK_NAME}" >/dev/null 2>&1 \
+  || docker network create "${BO_MCP_NETWORK_NAME}" >/dev/null
+
+cat <<EOF
+Compose slot: ${slot}
+Project: ${COMPOSE_PROJECT_NAME}
+BO-MCP frontend: http://127.0.0.1:${BO_MCP_FRONTEND_PORT}
+BO-MCP API: http://127.0.0.1:${BO_MCP_API_PORT}
+BO-MCP SSE: http://127.0.0.1:${BO_MCP_SSE_PORT}/sse
+Docker network: ${BO_MCP_NETWORK_NAME}
+EOF
+
+exec docker compose "$@"

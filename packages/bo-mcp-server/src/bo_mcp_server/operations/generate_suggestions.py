@@ -26,6 +26,7 @@ from bo_engine.convergence import (
     evaluate_stopping_decision,
 )
 from bo_engine.pending_points import filter_pending_points
+from bo_engine.progress import ProgressCallback
 from bo_engine.suggestions import SearchSpaceExhaustedError
 from bo_engine.types import ObservationData, OptimizationSpec
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +44,7 @@ from bo_mcp_server.errors import (
     make_concurrent_modification_response,
     make_error_response,
 )
+from bo_mcp_server.idempotency import session_scope
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
     parse_verbosity,
@@ -58,7 +60,6 @@ from bo_mcp_server.storage import (
     ConcurrentModificationError,
     ResultRepository,
     SuggestionRepository,
-    get_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -301,6 +302,9 @@ async def generate_suggestions_operation(
     campaign_id: str,
     batch_size: int | None = None,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
+    progress_callback: ProgressCallback | None = None,
+    *,
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Generate next batch of experiment suggestions.
 
@@ -312,6 +316,14 @@ async def generate_suggestions_operation(
         campaign_id: UUID of the campaign
         batch_size: Number of suggestions (default: campaign's)
         verbosity: Response detail level
+        progress_callback: Optional progress hook. When supplied (e.g.
+            built from an MCP :class:`Context` via
+            :func:`bo_mcp_server.progress_bridge.make_progress_callback_from_context`),
+            the backend's coarse milestones are forwarded to the client.
+        session: Optional SQLAlchemy session to reuse. When supplied,
+            ``apply_idempotency``'s session-aware path commits the
+            generated suggestions atomically with the idempotency
+            cache row.
 
     Returns:
         Dictionary with success, suggestions, iteration, errors.
@@ -335,17 +347,31 @@ async def generate_suggestions_operation(
     campaign_uuid = campaign_id_result
 
     # --- Database session scope ---
+    # Re-use the caller's session when provided; otherwise open and
+    # commit our own. Used by ``apply_idempotency``'s session-aware
+    # path so the new suggestion rows and the cache finalize commit
+    # together.
     try:
-        async with get_session() as session:
-            repos = _init_repositories(session)
+        async with session_scope(session) as db:
+            repos = _init_repositories(db)
             return await _generate_within_session(
                 campaign_id,
                 campaign_uuid,
                 batch_size,
                 verbosity_level,
                 repos,
+                progress_callback=progress_callback,
             )
     except ConcurrentModificationError as err:
+        # When a caller (typically ``apply_idempotency``'s session-aware
+        # path) supplied the session, ``session_scope`` only yields it
+        # — the partial writes that landed before the optimistic-lock
+        # conflict (e.g. new suggestion rows saved at
+        # ``_create_and_save_suggestions`` before the campaign-version
+        # save raised) would otherwise survive the outer commit. Roll
+        # back here so the conflict produces no observable state.
+        if session is not None:
+            await session.rollback()
         logger.warning(
             "Concurrent modification while generating suggestions for campaign %s: %s",
             campaign_id,
@@ -391,6 +417,7 @@ async def _generate_within_session(
     batch_size: int | None,
     verbosity_level: VerbosityLevel,
     repos: _Repositories,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Run the suggestion generation within an active DB session.
 
@@ -529,6 +556,7 @@ async def _generate_within_session(
         new_iteration,
         campaign.backend_state,
         pending_parameter_values,
+        progress_callback=progress_callback,
     )
 
     # Create and save suggestion entities
@@ -579,6 +607,7 @@ async def _generate_via_backend(
     iteration: int,
     prior_backend_state: dict[str, Any] | None,
     pending_parameter_values: list[dict[str, Any]] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> tuple[
     SuggestionDataList,
     dict[str, Any] | None,
@@ -618,6 +647,7 @@ async def _generate_via_backend(
         iteration=iteration,
         backend_state=prior_backend_state,
         pending_points=pending_parameter_values,
+        progress_callback=progress_callback,
     )
     suggestion_data = [(item["parameter_values"], item["provenance"]) for item in batch.suggestions]
     return (

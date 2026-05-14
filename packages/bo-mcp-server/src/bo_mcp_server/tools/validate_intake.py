@@ -10,9 +10,10 @@ from bo_mcp_server.response_formatter import (
     format_validate_intake_response,
 )
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import READ_ONLY
 
 
-@mcp.tool(name="bo_validate_intake")
+@mcp.tool(name="bo_validate_intake", annotations=READ_ONLY)
 async def validate_intake(
     intake_data: CampaignIntakeInput | dict[str, Any],
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",

@@ -18,6 +18,7 @@ Usage:
     )
 """
 
+import json
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -97,6 +98,7 @@ class ErrorCode(StrEnum):
     SEARCH_SPACE_EXHAUSTED = "E011"
     BUDGET_EXCEEDED = "E012"
     CAMPAIGN_CONVERGED = "E013"
+    IDEMPOTENCY_IN_PROGRESS = "E014"
 
     # Processing errors (E1xx)
     MODEL_FITTING_FAILED = "E101"
@@ -193,6 +195,12 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "Review the search space and submit a fresh campaign if a better "
         "solution is plausible."
     ),
+    ErrorCode.IDEMPOTENCY_IN_PROGRESS: (
+        "Another retry with the same idempotency_key is currently executing "
+        "the operation. Wait a few hundred milliseconds and retry with the "
+        "same key — the cached response will be available once the original "
+        "call finishes. Do not reuse the key for a different payload."
+    ),
     ErrorCode.MODEL_FITTING_FAILED: (
         "Check data quality with bo_get_diagnostics. May need more observations (minimum 2)."
     ),
@@ -226,6 +234,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.SEARCH_SPACE_EXHAUSTED: "Search space has no remaining unique combinations",
     ErrorCode.BUDGET_EXCEEDED: "Campaign exceeded its iteration or observation budget",
     ErrorCode.CAMPAIGN_CONVERGED: "Campaign has converged to its plateau",
+    ErrorCode.IDEMPOTENCY_IN_PROGRESS: ("Operation with this idempotency_key is still executing"),
     ErrorCode.MODEL_FITTING_FAILED: "Model fitting failed",
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: "Acquisition optimization failed",
     ErrorCode.DATABASE_ERROR: "Database operation failed",
@@ -311,6 +320,7 @@ ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.SEARCH_SPACE_EXHAUSTED: 409,
     ErrorCode.BUDGET_EXCEEDED: 409,
     ErrorCode.CAMPAIGN_CONVERGED: 409,
+    ErrorCode.IDEMPOTENCY_IN_PROGRESS: 409,
     ErrorCode.MODEL_FITTING_FAILED: 500,
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: 500,
     ErrorCode.DATABASE_ERROR: 500,
@@ -358,6 +368,30 @@ def make_concurrent_modification_response(
         message=message,
         details=details,
     )
+
+
+def render_resource_error(
+    code: ErrorCode,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> str:
+    """Render a structured error envelope as a JSON string for MCP resources.
+
+    MCP resource handlers return strings, but historically they returned
+    plain-text error messages while MCP tools returned structured
+    ``{success: false, error: {...}}`` envelopes. That asymmetry forced
+    agents to maintain two error parsers. This helper renders the same
+    envelope as :func:`make_error_response` serialized as a JSON string,
+    so agents that see a resource response starting with ``{"success":
+    false`` can apply the same recovery logic they already use for tools.
+
+    The output is stable JSON (sorted keys disabled to preserve the
+    canonical field ordering of ``success``, ``error``, ``errors``) so
+    downstream string parsers and snapshot tests get deterministic
+    output.
+    """
+    envelope = make_error_response(code, message=message, details=details)
+    return json.dumps(envelope, ensure_ascii=False)
 
 
 def http_status_for_error(error_response: dict[str, Any]) -> int:

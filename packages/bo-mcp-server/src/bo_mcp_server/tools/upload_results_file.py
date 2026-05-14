@@ -6,10 +6,14 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.idempotency import apply_idempotency, digest_large_field
 from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.result_upload_parser import parse_prefixed_result_rows
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +48,13 @@ def _parse_uuids(campaign_id: str, submitted_by: str | None) -> dict[str, Any] |
     return campaign_uuid, submitter_uuid
 
 
-@mcp.tool(name="bo_upload_results_file")
+@mcp.tool(name="bo_upload_results_file", annotations=NON_IDEMPOTENT_MUTATION)
 async def upload_results_file(
     campaign_id: str,
     file_content: str,
     file_format: str = "csv",
     submitted_by: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Upload experimental results from a CSV file.
 
@@ -65,6 +70,10 @@ async def upload_results_file(
         file_content: File content as string (CSV format)
         file_format: File format ("csv" supported)
         submitted_by: UUID of user submitting (optional, defaults to campaign_id)
+        idempotency_key: Optional client-supplied key (recommended: UUIDv7
+            per logical upload). Replays the prior response with
+            ``idempotency_replay: True`` if the same key + payload was
+            seen in the last 24 hours instead of re-ingesting the file.
 
     Returns:
         Dictionary with:
@@ -72,6 +81,44 @@ async def upload_results_file(
             - results_created: Number of results saved
             - errors: List of row-level errors
     """
+    # Pre-digest ``file_content`` so a multi-MB CSV upload does not
+    # inflate the idempotency cache row. The digest is collision-safe
+    # within this cache's lifetime, so a retry with the same bytes
+    # still matches, and a retry with different bytes (a corrected
+    # CSV) still produces an ``idempotency_conflict`` envelope.
+    request_payload = {
+        "campaign_id": campaign_id,
+        "file_content_digest": digest_large_field(file_content),
+        "file_format": file_format,
+        "submitted_by": submitted_by,
+    }
+
+    async def run(session: AsyncSession) -> dict[str, Any]:
+        return await _upload_results_file_inner(
+            campaign_id=campaign_id,
+            file_content=file_content,
+            file_format=file_format,
+            submitted_by=submitted_by,
+            session=session,
+        )
+
+    return await apply_idempotency(
+        tool_name="bo_upload_results_file",
+        idempotency_key=idempotency_key,
+        request_payload=request_payload,
+        executor=run,
+    )
+
+
+async def _upload_results_file_inner(
+    campaign_id: str,
+    file_content: str,
+    file_format: str,
+    submitted_by: str | None,
+    *,
+    session: AsyncSession | None = None,
+) -> dict[str, Any]:
+    """Core upload-file pipeline used by the public tool and the cache path."""
     logger.info(
         "Uploading results file for campaign %s (format=%s, size=%d bytes)",
         campaign_id,
@@ -136,6 +183,7 @@ async def upload_results_file(
         source="file_upload",
         atomic=False,
         continue_on_error=True,
+        session=session,
     )
 
     result_ids = submit_result.get("result_ids", [])

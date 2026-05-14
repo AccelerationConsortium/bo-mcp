@@ -8,9 +8,10 @@ from typing import Any
 
 from bo_mcp_server.operations.campaign_lifecycle import manage_campaign_lifecycle_operation
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import DESTRUCTIVE_MUTATION, IDEMPOTENT_MUTATION
 
 
-@mcp.tool(name="bo_pause_campaign")
+@mcp.tool(name="bo_pause_campaign", annotations=IDEMPOTENT_MUTATION)
 async def pause_campaign(campaign_id: str) -> dict[str, Any]:
     """Pause a running campaign.
 
@@ -28,7 +29,7 @@ async def pause_campaign(campaign_id: str) -> dict[str, Any]:
     return await manage_campaign_lifecycle_operation(campaign_id=campaign_id, action="pause")
 
 
-@mcp.tool(name="bo_resume_campaign")
+@mcp.tool(name="bo_resume_campaign", annotations=IDEMPOTENT_MUTATION)
 async def resume_campaign(campaign_id: str) -> dict[str, Any]:
     """Resume a paused campaign.
 
@@ -45,7 +46,7 @@ async def resume_campaign(campaign_id: str) -> dict[str, Any]:
     return await manage_campaign_lifecycle_operation(campaign_id=campaign_id, action="resume")
 
 
-@mcp.tool(name="bo_terminate_campaign")
+@mcp.tool(name="bo_terminate_campaign", annotations=DESTRUCTIVE_MUTATION)
 async def terminate_campaign(campaign_id: str) -> dict[str, Any]:
     """Terminate a campaign, marking it as completed.
 

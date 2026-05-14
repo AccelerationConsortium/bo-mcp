@@ -296,3 +296,34 @@ class EventModel(Base):
     output_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class IdempotencyCacheModel(Base):
+    """Persisted ``(tool_name, idempotency_key) -> response`` cache.
+
+    Backs the ``idempotency_key`` argument added to state-mutating MCP
+    tools in TODO 1.46. The cache is shared across processes (rows live
+    in the campaign DB) so retries that land on a different worker still
+    short-circuit. Stale rows are pruned on read by
+    :class:`bo_mcp_server.idempotency.IdempotencyStore`.
+
+    ``reservation_token`` is set when the row is first inserted (during
+    reservation) and re-matched on finalize/drop so a slow operation
+    whose reservation expired cannot accidentally overwrite or delete
+    a newer reservation taken by a concurrent retry.
+    """
+
+    __tablename__ = "idempotency_cache"
+
+    tool_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    # SHA256 of the canonical request payload so a re-used key paired
+    # with a different payload is surfaced as a conflict rather than
+    # silently masking a client bug.
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Per-reservation UUID. Nullable for migration compatibility with
+    # rows written before TODO 1.46 follow-up.
+    reservation_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    response_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

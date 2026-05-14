@@ -13,6 +13,7 @@ from sqlalchemy import text
 from bo_mcp_server import __version__
 from bo_mcp_server.server import create_mcp_server, mcp
 from bo_mcp_server.storage.database import get_session
+from bo_mcp_server.tools.annotations import READ_ONLY
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def _get_server_start_time() -> float:
     return _server_start_time
 
 
-@mcp.tool(name="bo_health_check")
+@mcp.tool(name="bo_health_check", annotations=READ_ONLY)
 async def health_check() -> dict[str, Any]:
     """Check MCP server health and connectivity.
 

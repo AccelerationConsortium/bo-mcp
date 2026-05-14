@@ -16,6 +16,7 @@ from typing import Any
 from uuid import UUID
 
 from bo_engine.backend import DiagnosticSection
+from bo_engine.progress import ProgressCallback
 
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.cache import diagnostics_cache
@@ -122,6 +123,7 @@ async def _compute_sections(
     all_suggestions: list[Suggestion],
     pending_suggestions: list[Suggestion],
     campaign: Campaign,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Compute only the requested diagnostic sections."""
     is_single_objective = len(spec.objectives) == 1
@@ -148,6 +150,7 @@ async def _compute_sections(
                 opt_spec,
                 observations,
                 backend_sections,
+                progress_callback,
             )
         )
 
@@ -209,6 +212,7 @@ async def get_diagnostics_operation(
     use_cache: bool = True,
     verbosity: str = "standard",
     sections: list[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Compute diagnostic information for a campaign.
 
@@ -222,6 +226,9 @@ async def get_diagnostics_operation(
         sections: Optional list of sections to compute. When omitted, all
             sections are computed. Valid: health, objectives, model,
             convergence, suggestions, outliers, constraints.
+        progress_callback: Optional progress hook (see
+            :class:`bo_engine.progress.ProgressEvent`). Backend
+            diagnostic sections emit start/done milestones through this.
 
     Returns:
         Formatted diagnostics dictionary.
@@ -281,6 +288,7 @@ async def get_diagnostics_operation(
             all_suggestions,
             pending_suggestions,
             campaign,
+            progress_callback=progress_callback,
         )
 
         logger.info(

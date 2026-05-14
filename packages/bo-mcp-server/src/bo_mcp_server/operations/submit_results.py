@@ -14,6 +14,7 @@ from uuid import UUID
 
 from bo_engine.backend import BOBackend
 from bo_engine.constants import DUPLICATE_DETECTION_TOLERANCE
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
@@ -31,6 +32,7 @@ from bo_mcp_server.errors import (
     make_concurrent_modification_response,
     make_error_response,
 )
+from bo_mcp_server.idempotency import session_scope
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
     parse_verbosity,
@@ -46,7 +48,6 @@ from bo_mcp_server.storage import (
     ConcurrentModificationError,
     ResultRepository,
     SuggestionRepository,
-    get_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -1015,6 +1016,42 @@ def _build_submit_response(
     return response_data
 
 
+async def _handle_submit_results_cm_error(
+    err: ConcurrentModificationError,
+    campaign_id: str,
+    session: AsyncSession | None,
+    tracking: _SubmitTracking,
+) -> dict[str, Any]:
+    """Build the structured envelope for an optimistic-lock conflict.
+
+    When a caller (typically ``apply_idempotency``'s session-aware
+    path) supplied the session, ``session_scope`` only yields it —
+    partial writes that landed before the conflict (Result rows saved
+    via ``result_repo.save_batch`` at phase 2 before
+    ``_update_campaign_state`` raised) would otherwise survive the
+    outer commit. Roll back explicitly so the conflict leaves no
+    observable state.
+    """
+    if session is not None:
+        await session.rollback()
+    logger.warning(
+        "Concurrent modification while submitting results for campaign %s: %s",
+        campaign_id,
+        err,
+    )
+    response = make_concurrent_modification_response(
+        err, extra_details={"campaign_id": campaign_id}
+    )
+    response.update(
+        {
+            "result_ids": [],
+            "warnings": tracking.warnings,
+            "duplicates_detected": tracking.duplicates_detected,
+        }
+    )
+    return response
+
+
 async def submit_results_operation(
     campaign_id: str,
     results: list[ResultSubmissionInput],
@@ -1024,6 +1061,8 @@ async def submit_results_operation(
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
+    *,
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Submit experimental results for a campaign.
 
@@ -1069,11 +1108,11 @@ async def submit_results_operation(
     tracking = _SubmitTracking()
 
     try:
-        async with get_session() as session:
-            campaign_repo = CampaignRepository(session)
-            spec_repo = CampaignSpecRepository(session)
-            result_repo = ResultRepository(session)
-            suggestion_repo = SuggestionRepository(session)
+        async with session_scope(session) as db:
+            campaign_repo = CampaignRepository(db)
+            spec_repo = CampaignSpecRepository(db)
+            result_repo = ResultRepository(db)
+            suggestion_repo = SuggestionRepository(db)
 
             fetched = await _fetch_campaign_and_spec(
                 campaign_id,
@@ -1154,19 +1193,4 @@ async def submit_results_operation(
                 verbosity_level,
             )
     except ConcurrentModificationError as err:
-        logger.warning(
-            "Concurrent modification while submitting results for campaign %s: %s",
-            campaign_id,
-            err,
-        )
-        response = make_concurrent_modification_response(
-            err, extra_details={"campaign_id": campaign_id}
-        )
-        response.update(
-            {
-                "result_ids": [],
-                "warnings": tracking.warnings,
-                "duplicates_detected": tracking.duplicates_detected,
-            }
-        )
-        return response
+        return await _handle_submit_results_cm_error(err, campaign_id, session, tracking)

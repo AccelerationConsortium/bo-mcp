@@ -6,6 +6,7 @@ from uuid import UUID
 
 from bo_mcp_server.domain import Campaign, CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.pagination import build_page_cursor, parse_optional_cursor
 from bo_mcp_server.response_formatter import VerbosityLevel
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -69,34 +70,17 @@ def _build_detailed_summary(
     }
 
 
-async def list_campaigns_operation(
-    owner_id: UUID | None = None,
-    status: str | None = None,
-    limit: int = 20,
-    offset: int = 0,
-    verbosity: str = "standard",
-) -> dict[str, Any]:
-    """List optimization campaigns with optional filtering and pagination.
+def _validate_list_campaigns_inputs(
+    status: str | None,
+    verbosity: str,
+    cursor: str | None,
+) -> dict[str, Any] | tuple[VerbosityLevel, CampaignStatus | None, Any, Any]:
+    """Validate filter and pagination inputs.
 
-    Args:
-        owner_id: Optional owner UUID to filter by.
-        status: Optional campaign status string to filter by.
-        limit: Maximum number of campaigns to return (capped at MAX_LIMIT).
-        offset: Number of campaigns to skip for pagination.
-        verbosity: Response verbosity level (minimal, standard, detailed).
-
-    Returns:
-        Dictionary with success, campaigns, total_count, limit, offset, errors.
+    Splits the multi-step validation out of the main operation so
+    cognitive complexity stays manageable. Returns an error response
+    dict on failure, or the parsed tuple on success.
     """
-    logger.info(
-        "Listing campaigns: owner_id=%s, status=%s, limit=%d, offset=%d, verbosity=%s",
-        owner_id,
-        status,
-        limit,
-        offset,
-        verbosity,
-    )
-
     try:
         verbosity_level = VerbosityLevel(verbosity)
     except ValueError:
@@ -117,6 +101,58 @@ async def list_campaigns_operation(
                 details={"status": status, "valid_statuses": valid_statuses},
             )
 
+    cursor_parsed = parse_optional_cursor(cursor)
+    if isinstance(cursor_parsed, str):
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=f"Invalid cursor: {cursor_parsed}",
+            details={"cursor": cursor},
+        )
+
+    return verbosity_level, status_filter, cursor_parsed[0], cursor_parsed[1]
+
+
+async def list_campaigns_operation(
+    owner_id: UUID | None = None,
+    status: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    verbosity: str = "standard",
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """List optimization campaigns with optional filtering and pagination.
+
+    Args:
+        owner_id: Optional owner UUID to filter by.
+        status: Optional campaign status string to filter by.
+        limit: Maximum number of campaigns to return (capped at MAX_LIMIT).
+        offset: **Deprecated** — kept for backward compatibility. Use
+            ``cursor`` for stable pagination under concurrent inserts.
+        verbosity: Response verbosity level (minimal, standard, detailed).
+        cursor: Opaque cursor from a previous response's ``next_cursor``
+            field. When supplied, ``offset`` is ignored and pagination
+            walks the keyset on ``(created_at, id)``.
+
+    Returns:
+        Dictionary with success, campaigns, total_count, limit, offset,
+        next_cursor, errors. ``next_cursor`` is ``null`` when there are
+        no more pages.
+    """
+    logger.info(
+        "Listing campaigns: owner_id=%s, status=%s, limit=%d, offset=%d, cursor=%s, verbosity=%s",
+        owner_id,
+        status,
+        limit,
+        offset,
+        "set" if cursor else None,
+        verbosity,
+    )
+
+    validated = _validate_list_campaigns_inputs(status, verbosity, cursor)
+    if isinstance(validated, dict):
+        return validated
+    verbosity_level, status_filter, cursor_created_at, cursor_id = validated
+
     limit = max(1, min(limit, MAX_LIMIT))
     offset = max(0, offset)
 
@@ -125,12 +161,29 @@ async def list_campaigns_operation(
         spec_repo = CampaignSpecRepository(session)
         result_repo = ResultRepository(session)
 
-        campaigns, total_count = await campaign_repo.list_filtered(
-            owner_id=owner_id,
-            status=status_filter,
-            limit=limit,
-            offset=offset,
-        )
+        if cursor is not None:
+            # Over-fetch by 1 so we can distinguish "exactly limit rows
+            # left" from "more rows remain". Otherwise an exact final
+            # page emits a misleading ``next_cursor`` that points past
+            # the last row.
+            campaigns, total_count = await campaign_repo.list_keyset(
+                owner_id=owner_id,
+                status=status_filter,
+                cursor_created_at=cursor_created_at,
+                cursor_id=cursor_id,
+                limit=limit + 1,
+            )
+        else:
+            campaigns, total_count = await campaign_repo.list_filtered(
+                owner_id=owner_id,
+                status=status_filter,
+                limit=limit + 1,
+                offset=offset,
+            )
+
+        has_more_page = len(campaigns) > limit
+        if has_more_page:
+            campaigns = campaigns[:limit]
 
         # Batch-fetch specs for all campaigns in one query
         spec_ids = list({c.spec_id for c in campaigns})
@@ -162,11 +215,16 @@ async def list_campaigns_operation(
         total_count,
     )
 
+    next_cursor = None
+    if has_more_page:
+        next_cursor = build_page_cursor(campaigns, "created_at", "id")
+
     return {
         "success": True,
         "campaigns": campaign_summaries,
         "total_count": total_count,
         "limit": limit,
         "offset": offset,
+        "next_cursor": next_cursor,
         "errors": [],
     }

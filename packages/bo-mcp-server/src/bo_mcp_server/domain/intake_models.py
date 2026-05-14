@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from bo_mcp_server.domain.campaign_spec import (
     AcquisitionMethod,
@@ -16,6 +16,7 @@ from bo_mcp_server.domain.campaign_spec import (
     TransferLearningConfig,
     TurboConfig,
 )
+from bo_mcp_server.domain.result import ResultMetadata
 
 
 class CampaignIntakeInput(BaseModel):
@@ -113,13 +114,92 @@ class CampaignIntakeInput(BaseModel):
         return self
 
 
+_DEFS_KEY = "$defs"
+_REF_KEY = "$ref"
+_REF_PREFIX = f"#/{_DEFS_KEY}/"
+
+
+def _inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline ``$ref`` pointers so the schema stands alone.
+
+    Pydantic emits nested models as ``$defs`` references rooted at the
+    outer schema. When we splice a sub-schema into another model's
+    ``json_schema_extra`` those references dangle, so we walk the tree
+    and substitute the referenced definitions in place. This keeps the
+    metadata schema self-contained inside the splice point.
+    """
+    defs = schema.get(_DEFS_KEY, {})
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            ref = node.get(_REF_KEY)
+            if isinstance(ref, str) and ref.startswith(_REF_PREFIX):
+                target = ref[len(_REF_PREFIX) :]
+                if target in defs:
+                    return walk(defs[target])
+            return {k: walk(v) for k, v in node.items() if k != _DEFS_KEY}
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    return walk(schema)
+
+
+# Projected JSON schema for the metadata sub-blob. Generated lazily so
+# tests / agents see a stable shape regardless of import order. The
+# field below uses ``json_schema_extra`` to splice this directly into
+# the generated tool schema (TODO 1.12 review): the runtime type is
+# still ``dict[str, Any]`` to preserve compatibility with persisted
+# rows, but agents see the documented key set in the MCP tool
+# definition instead of the bare ``additionalProperties: true``.
+_METADATA_SCHEMA = _inline_defs(ResultMetadata.model_json_schema())
+
+
 class ResultSubmissionInput(BaseModel):
-    """Validated input payload for each submitted result."""
+    """Validated input payload for each submitted result.
+
+    The ``metadata`` blob is validated against :class:`ResultMetadata`
+    so unknown keys fail at intake with a 422 / structured error envelope
+    rather than being silently dropped on the way to storage. The
+    consumed key set is documented on ``ResultMetadata``; submit a
+    no-metadata batch by omitting the field or passing ``{}``.
+    """
 
     parameter_values: dict[str, Any]
     objective_values: dict[str, float]
     suggestion_id: str | None = None
     measurement_uncertainty: dict[str, float] | None = None  # Per-objective noise std
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    # Runtime type is dict[str, Any] for backward-compat with persisted
+    # rows; the JSON schema is overridden to reference the
+    # ResultMetadata key set so agents introspect the documented schema.
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Optional per-result metadata. Validated against the "
+            "ResultMetadata schema (see properties below); unknown keys "
+            "are rejected at intake."
+        ),
+        json_schema_extra={
+            "properties": _METADATA_SCHEMA.get("properties", {}),
+            "$defs": _METADATA_SCHEMA.get("$defs", {}),
+            "additionalProperties": False,
+        },
+    )
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("metadata")
+    @classmethod
+    def _validate_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Reject unknown metadata keys at intake time.
+
+        Round-trips through :class:`ResultMetadata` so the schema lives
+        in one place. We re-dump (excluding unset fields) so the stored
+        blob keeps its original shape — callers do not get
+        ``{"cost": null, "operator": null, ...}`` filled in for keys
+        they never sent.
+        """
+        if not value:
+            return value
+        typed = ResultMetadata.model_validate(value)
+        return typed.model_dump(exclude_unset=True, mode="json")

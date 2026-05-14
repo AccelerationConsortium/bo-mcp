@@ -38,6 +38,7 @@ from bo_engine.diagnostics import (
 from bo_engine.feature_importance import compute_feature_importance
 from bo_engine.method_selector import select_methods
 from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
+from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reference_point import get_reference_point
 from bo_engine.result_validation import detect_outliers
 from bo_engine.suggestions import (
@@ -131,6 +132,7 @@ class BoTorchBackend(BaseBackend):
         iteration: int,
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
         # Accept either the new envelope or a legacy bare payload.
         inner_state = self.unwrap_state(backend_state)
@@ -139,6 +141,17 @@ class BoTorchBackend(BaseBackend):
         if use_turbo and spec.n_objectives == 1 and inner_state is not None:
             turbo_state = _dict_to_turbo_state(inner_state)
 
+        emit(
+            progress_callback,
+            ProgressEvent(
+                phase="generate_suggestions_start",
+                message=(
+                    f"Fitting GP and optimizing acquisition for {batch_size} "
+                    f"suggestion(s) on {len(observations)} observation(s)"
+                ),
+            ),
+        )
+
         results, new_turbo = generate_next_batch(
             spec=spec,
             observations=observations,
@@ -146,6 +159,16 @@ class BoTorchBackend(BaseBackend):
             iteration=iteration,
             turbo_state=turbo_state,
             pending_points=pending_points,
+        )
+
+        emit(
+            progress_callback,
+            ProgressEvent(
+                phase="generate_suggestions_done",
+                message=f"Produced {len(results)} suggestion(s)",
+                progress=float(len(results)),
+                total=float(batch_size),
+            ),
         )
 
         suggestions = [
@@ -269,24 +292,49 @@ class BoTorchBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
         sections: frozenset[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Compute model-based diagnostics using BoTorch/GPyTorch."""
         all_sections = frozenset(["objectives", "model", "outliers", "suggestions_tensor"])
         requested = all_sections if sections is None else sections
         result: dict[str, Any] = {}
         is_single = spec.n_objectives == 1
+        completed = 0
+        total = float(len(requested))
+
+        def announce(phase: str, message: str) -> None:
+            nonlocal completed
+            emit(
+                progress_callback,
+                ProgressEvent(
+                    phase=phase,
+                    message=message,
+                    progress=float(completed),
+                    total=total,
+                ),
+            )
+
+        announce("diagnostics_start", f"Computing diagnostics: {sorted(requested)}")
 
         if "objectives" in requested:
             result.update(self._compute_objective_diagnostics(spec, observations))
+            completed += 1
+            announce("diagnostics_objectives_done", "Objective metrics complete")
 
         if "model" in requested:
             result.update(self._compute_model_diagnostics(spec, observations, is_single))
+            completed += 1
+            announce("diagnostics_model_done", "Model fitting and LOO-CV complete")
 
         if "outliers" in requested:
             result.update(self._compute_outlier_diagnostics(spec, observations))
+            completed += 1
+            announce("diagnostics_outliers_done", "Outlier detection complete")
 
         if "suggestions_tensor" in requested:
             result.update(self._compute_hyperparameters(spec, observations, is_single))
+            completed += 1
+            announce("diagnostics_hyperparameters_done", "Hyperparameter extraction complete")
 
         return result
 

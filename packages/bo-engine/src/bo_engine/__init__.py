@@ -252,6 +252,13 @@ from bo_engine.prediction_intervals import (
     compute_suggestion_predictions,
     format_prediction_interval_string,
 )
+from bo_engine.progress import (
+    ProgressCallback,
+    ProgressEvent,
+)
+from bo_engine.progress import (
+    emit as emit_progress,
+)
 
 # Result Provenance (v2.7 - Section 3.6)
 from bo_engine.provenance import (
@@ -572,6 +579,10 @@ __all__ = [
     "encode_pending_points",
     "filter_pending_points",
     "penalize_near_pending",
+    # Progress reporting hook (TODO 1.48)
+    "ProgressCallback",
+    "ProgressEvent",
+    "emit_progress",
     # Dynamic Reference Point (v2.6 - Section 2.1)
     "ReferencePointConfig",
     "ReferencePointState",

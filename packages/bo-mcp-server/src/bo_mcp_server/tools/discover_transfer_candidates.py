@@ -6,9 +6,10 @@ from bo_mcp_server.operations.transfer_candidates import (
     discover_transfer_candidates_operation,
 )
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import READ_ONLY
 
 
-@mcp.tool(name="bo_discover_transfer_candidates")
+@mcp.tool(name="bo_discover_transfer_candidates", annotations=READ_ONLY)
 async def discover_transfer_candidates(
     campaign_id: str,
     similarity_threshold: float = 0.5,

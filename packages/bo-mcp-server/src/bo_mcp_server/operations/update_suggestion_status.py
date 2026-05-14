@@ -4,10 +4,13 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from bo_mcp_server.domain import SuggestionStatus
 from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.storage import EventRepository, SuggestionRepository, get_session
+from bo_mcp_server.idempotency import session_scope
+from bo_mcp_server.storage import EventRepository, SuggestionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,8 @@ VALID_SOURCE_STATUSES: dict[SuggestionStatus, set[SuggestionStatus]] = {
 async def update_suggestion_status_operation(
     suggestion_id: str,
     status: str,
+    *,
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Update the status of a suggestion.
 
@@ -43,6 +48,9 @@ async def update_suggestion_status_operation(
     Args:
         suggestion_id: UUID string of the suggestion to update.
         status: New status string. One of: "accepted", "rejected", "expired".
+        session: Optional session to reuse for atomic commit with an
+            outer transaction (e.g. ``apply_idempotency``'s
+            session-aware path).
 
     Returns:
         Dictionary with success, suggestion_id, status, previous_status, errors.
@@ -79,8 +87,8 @@ async def update_suggestion_status_operation(
             ),
         )
 
-    async with get_session() as session:
-        suggestion_repo = SuggestionRepository(session)
+    async with session_scope(session) as db:
+        suggestion_repo = SuggestionRepository(db)
         suggestion = await suggestion_repo.get(suggestion_uuid)
 
         if suggestion is None:
@@ -111,7 +119,7 @@ async def update_suggestion_status_operation(
         await suggestion_repo.save(updated)
 
         # Record audit event for traceability
-        event_repo = EventRepository(session)
+        event_repo = EventRepository(db)
         await event_repo.save(
             Event(
                 campaign_id=suggestion.campaign_id,

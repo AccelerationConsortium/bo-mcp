@@ -4,6 +4,8 @@ import logging
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from bo_mcp_server.backend import get_backend, resolve_backend_name
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
@@ -13,6 +15,7 @@ from bo_mcp_server.domain import (
     CampaignStatus,
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.idempotency import session_scope
 from bo_mcp_server.operations.helpers import parse_verbosity
 from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import (
@@ -22,7 +25,6 @@ from bo_mcp_server.response_formatter import (
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
-    get_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,8 @@ async def create_campaign_operation(
     intake_data: CampaignIntakeInput,
     owner_id: str,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
+    *,
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Create a new campaign from validated intake data.
 
@@ -56,6 +60,12 @@ async def create_campaign_operation(
             CampaignIntakeInput instance.
         owner_id: UUID string identifying the campaign owner.
         verbosity: Response detail level.
+        session: Optional SQLAlchemy session to reuse. When supplied,
+            all DB writes happen on that session and the caller owns
+            the commit boundary — used by ``apply_idempotency``'s
+            session-aware path so the campaign write and the cache
+            finalize commit atomically. Omit to keep the operation
+            self-contained.
 
     Returns:
         Formatted response dictionary with campaign details.
@@ -166,10 +176,11 @@ async def create_campaign_operation(
         status=CampaignStatus.CREATED,
     )
 
-    # Save to storage
-    async with get_session() as session:
-        spec_repo = CampaignSpecRepository(session)
-        campaign_repo = CampaignRepository(session)
+    # Save to storage — re-use the caller's session if one was passed,
+    # otherwise open and commit our own.
+    async with session_scope(session) as db:
+        spec_repo = CampaignSpecRepository(db)
+        campaign_repo = CampaignRepository(db)
 
         await spec_repo.save(spec, spec_id)
         await campaign_repo.save(campaign)

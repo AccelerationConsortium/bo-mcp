@@ -1,10 +1,11 @@
 """Repository implementations."""
 
 import json
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain import (
@@ -372,6 +373,54 @@ class CampaignRepository:
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
+    async def list_keyset(
+        self,
+        owner_id: UUID | None = None,
+        status: CampaignStatus | None = None,
+        cursor_created_at: datetime | None = None,
+        cursor_id: str | None = None,
+        limit: int = 20,
+    ) -> tuple[list[Campaign], int]:
+        """List campaigns via keyset pagination on ``(created_at, id)``.
+
+        The ordering is ascending so the cursor advances forward in
+        time. Under concurrent inserts, this gives a stable window:
+        rows the agent has already paged past will never re-appear, and
+        new rows always show up after the current cursor position.
+
+        ``total_count`` is still reported so the agent can show "X of N"
+        when desired; under concurrency the totals can drift, which is
+        why the cursor (not the offset) is the load-bearing contract.
+        """
+        base_filters: list[Any] = []
+        if owner_id is not None:
+            base_filters.append(CampaignModel.owner_id == str(owner_id))
+        if status is not None:
+            base_filters.append(CampaignModel.status == status)
+
+        count_query = select(func.count()).select_from(CampaignModel)
+        if base_filters:
+            count_query = count_query.where(*base_filters)
+        total_count = (await self.session.execute(count_query)).scalar_one()
+
+        query = select(CampaignModel)
+        if base_filters:
+            query = query.where(*base_filters)
+        if cursor_created_at is not None and cursor_id is not None:
+            query = query.where(
+                or_(
+                    CampaignModel.created_at > cursor_created_at,
+                    and_(
+                        CampaignModel.created_at == cursor_created_at,
+                        CampaignModel.id > cursor_id,
+                    ),
+                )
+            )
+        query = query.order_by(CampaignModel.created_at.asc(), CampaignModel.id.asc()).limit(limit)
+
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
+
     async def get_by_ids(self, ids: list[UUID]) -> dict[UUID, Campaign]:
         """Get multiple campaigns by their IDs in a single query.
 
@@ -540,6 +589,47 @@ class SuggestionRepository:
         total_count = total_result.scalar_one()
 
         query = base.order_by(SuggestionModel.created_at.desc()).offset(offset).limit(limit)
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
+
+    async def list_by_campaign_keyset(
+        self,
+        campaign_id: UUID,
+        status: SuggestionStatus | None = None,
+        cursor_created_at: datetime | None = None,
+        cursor_id: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[Suggestion], int]:
+        """List suggestions via keyset pagination on ``(created_at, id)``.
+
+        Ascending order keeps the page sequence stable while the
+        backend issues new suggestions concurrently (a common pattern
+        in live agent workflows that interleave generation and review).
+        """
+        base_filters: list[Any] = [SuggestionModel.campaign_id == str(campaign_id)]
+        if status is not None:
+            base_filters.append(SuggestionModel.status == status)
+
+        total_count = (
+            await self.session.execute(
+                select(func.count()).select_from(SuggestionModel).where(*base_filters)
+            )
+        ).scalar_one()
+
+        query = select(SuggestionModel).where(*base_filters)
+        if cursor_created_at is not None and cursor_id is not None:
+            query = query.where(
+                or_(
+                    SuggestionModel.created_at > cursor_created_at,
+                    and_(
+                        SuggestionModel.created_at == cursor_created_at,
+                        SuggestionModel.id > cursor_id,
+                    ),
+                )
+            )
+        query = query.order_by(SuggestionModel.created_at.asc(), SuggestionModel.id.asc()).limit(
+            limit
+        )
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
@@ -712,6 +802,43 @@ class ResultRepository:
             .offset(offset)
             .limit(limit)
         )
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
+
+    async def list_by_campaign_keyset(
+        self,
+        campaign_id: UUID,
+        cursor_created_at: datetime | None = None,
+        cursor_id: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[Result], int]:
+        """List results via keyset pagination on ``(created_at, id)``.
+
+        Ascending order matches the canonical insertion order already
+        used by ``list_by_campaign`` (convergence trajectory) so callers
+        paginating through results see them in submission order, never
+        skipping or duplicating under concurrent writes.
+        """
+        base_where = ResultModel.campaign_id == str(campaign_id)
+        total_count = (
+            await self.session.execute(
+                select(func.count()).select_from(ResultModel).where(base_where)
+            )
+        ).scalar_one()
+
+        query = select(ResultModel).where(base_where)
+        if cursor_created_at is not None and cursor_id is not None:
+            query = query.where(
+                or_(
+                    ResultModel.created_at > cursor_created_at,
+                    and_(
+                        ResultModel.created_at == cursor_created_at,
+                        ResultModel.id > cursor_id,
+                    ),
+                )
+            )
+        query = query.order_by(ResultModel.created_at.asc(), ResultModel.id.asc()).limit(limit)
+
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 

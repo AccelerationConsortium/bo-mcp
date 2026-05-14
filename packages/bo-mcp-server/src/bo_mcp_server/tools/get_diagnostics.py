@@ -2,22 +2,27 @@
 
 from typing import Any
 
+from mcp.server.fastmcp import Context
+
 from bo_mcp_server.operations.get_diagnostics import (
     ALL_SECTIONS,
     get_diagnostics_operation,
 )
+from bo_mcp_server.progress_bridge import make_progress_callback_from_context
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import READ_ONLY
 
 # Re-export for backward compatibility
 __all__ = ["get_diagnostics", "ALL_SECTIONS"]
 
 
-@mcp.tool(name="bo_get_diagnostics")
+@mcp.tool(name="bo_get_diagnostics", annotations=READ_ONLY)
 async def get_diagnostics(
     campaign_id: str,
     use_cache: bool = True,
     verbosity: str = "standard",
     sections: list[str] | None = None,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Get diagnostic information for a campaign.
 
@@ -48,4 +53,5 @@ async def get_diagnostics(
         use_cache=use_cache,
         verbosity=verbosity,
         sections=sections,
+        progress_callback=make_progress_callback_from_context(ctx),
     )

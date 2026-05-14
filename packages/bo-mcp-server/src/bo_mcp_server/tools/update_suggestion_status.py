@@ -2,16 +2,21 @@
 
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.update_suggestion_status import (
     update_suggestion_status_operation,
 )
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
 
 
-@mcp.tool(name="bo_update_suggestion_status")
+@mcp.tool(name="bo_update_suggestion_status", annotations=NON_IDEMPOTENT_MUTATION)
 async def update_suggestion_status(
     suggestion_id: str,
     status: str,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Update the status of a suggestion.
 
@@ -31,6 +36,10 @@ async def update_suggestion_status(
     Args:
         suggestion_id: UUID of the suggestion to update.
         status: New status. One of: "accepted", "rejected", "expired".
+        idempotency_key: Optional client-supplied key (recommended: UUIDv7
+            per logical transition). Replays the prior response with
+            ``idempotency_replay: True`` if the same key + payload was
+            seen in the last 24 hours.
 
     Returns:
         Dictionary with:
@@ -40,7 +49,21 @@ async def update_suggestion_status(
             - previous_status: Status before the update
             - errors: List of error messages
     """
-    return await update_suggestion_status_operation(
-        suggestion_id=suggestion_id,
-        status=status,
+    request_payload = {
+        "suggestion_id": suggestion_id,
+        "status": status,
+    }
+
+    async def run(session: AsyncSession) -> dict[str, Any]:
+        return await update_suggestion_status_operation(
+            suggestion_id=suggestion_id,
+            status=status,
+            session=session,
+        )
+
+    return await apply_idempotency(
+        tool_name="bo_update_suggestion_status",
+        idempotency_key=idempotency_key,
+        request_payload=request_payload,
+        executor=run,
     )

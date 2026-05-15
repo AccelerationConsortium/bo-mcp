@@ -43,6 +43,7 @@ async def submit_campaign_results(
             parameter_values=r.parameter_values,
             objective_values=r.objective_values,
             suggestion_id=r.suggestion_id,
+            measurement_uncertainty=r.measurement_uncertainty,
             metadata=r.metadata,
         )
         for r in request.results
@@ -60,6 +61,7 @@ async def submit_campaign_results(
         result_ids=result["result_ids"],
         errors=result["errors"],
         warnings=result["warnings"],
+        field_errors=result.get("field_errors", {}),
     )
 
 
@@ -153,6 +155,7 @@ async def upload_results_file(
         result_ids=result["result_ids"],
         errors=result["errors"],
         warnings=result["warnings"],
+        field_errors=result.get("field_errors", {}),
     )
 
 
@@ -207,6 +210,7 @@ async def list_campaign_results_route(
             objective_values=r.objective_values,
             source=r.source.value,
             submitted_by=str(r.submitted_by),
+            measurement_uncertainty=r.measurement_uncertainty,
             created_at=r.created_at,
         )
         for r in results

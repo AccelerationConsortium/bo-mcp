@@ -549,6 +549,7 @@ class TestResponseContractValidation:
             "campaign_id",
             "warnings",
             "errors",
+            "field_errors",
             "_metadata",
         }
         assert result["campaign_id"] == "cmp-123"

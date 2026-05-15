@@ -61,6 +61,7 @@ from bo_mcp_server.storage import (
     ResultRepository,
     SuggestionRepository,
 )
+from bo_mcp_server.subscriptions import notify_campaign_updated_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +361,7 @@ async def generate_suggestions_operation(
                 batch_size,
                 verbosity_level,
                 repos,
+                db,
                 progress_callback=progress_callback,
             )
     except ConcurrentModificationError as err:
@@ -411,17 +413,55 @@ def _init_repositories(session: AsyncSession) -> _Repositories:
     )
 
 
+async def _save_campaign_after_generation(
+    campaign: Any,
+    campaign_uuid: UUID,
+    new_backend_state: Any,
+    campaign_repo: CampaignRepository,
+    db: AsyncSession,
+) -> None:
+    """Persist the campaign post-suggestion and arm a post-commit notification.
+
+    The CREATED→RUNNING transition is the one state change subscribers
+    care about on the suggestion path. We deliberately do not push for
+    the iteration bump because that would flood subscribers with one
+    notification per generated batch.
+
+    The notification is registered as an ``after_commit`` hook on
+    ``db`` rather than fired inline so subscribers see the transition
+    only after the row is durable -- and never see it at all if a
+    later optimistic-lock conflict (or the idempotency external-
+    session path) rolls the transaction back.
+    """
+    updated_campaign = campaign.advance_iteration()
+    status_changed = campaign.status == CampaignStatus.CREATED
+    if status_changed:
+        updated_campaign = updated_campaign.with_status(CampaignStatus.RUNNING)
+    if new_backend_state is not None:
+        updated_campaign = updated_campaign.with_backend_state(new_backend_state)
+    await campaign_repo.save(
+        updated_campaign,
+        expected_version=campaign.version,
+    )
+    if status_changed:
+        notify_campaign_updated_after_commit(db, campaign_uuid)
+
+
 async def _generate_within_session(
     campaign_id: str,
     campaign_uuid: UUID,
     batch_size: int | None,
     verbosity_level: VerbosityLevel,
     repos: _Repositories,
+    db: AsyncSession,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Run the suggestion generation within an active DB session.
 
-    Handles fetching, validation, generation, and persistence.
+    ``db`` is threaded through so post-commit notifications can attach
+    to its ``after_commit`` event without having to plumb the session
+    into every helper that needs to fire one. Handles fetching,
+    validation, generation, and persistence.
     """
     campaign_repo = repos.campaign
     spec_repo = repos.spec
@@ -567,15 +607,16 @@ async def _generate_within_session(
     # Compute batch diversity
     diversity_info = await _compute_diversity_info(backend, opt_spec, suggestions)
 
-    # Update campaign state
-    updated_campaign = campaign.advance_iteration()
-    if campaign.status == CampaignStatus.CREATED:
-        updated_campaign = updated_campaign.with_status(CampaignStatus.RUNNING)
-    if new_backend_state is not None:
-        updated_campaign = updated_campaign.with_backend_state(new_backend_state)
-    await campaign_repo.save(
-        updated_campaign,
-        expected_version=campaign.version,
+    # Update campaign state -- promotes CREATED→RUNNING when needed
+    # and arms a post-commit hook so subscribers learn about that
+    # transition only after the row is durable. Subscribers do not
+    # care about per-iteration bumps so the hook is conditional.
+    await _save_campaign_after_generation(
+        campaign,
+        campaign_uuid,
+        new_backend_state,
+        campaign_repo,
+        db,
     )
 
     logger.info(

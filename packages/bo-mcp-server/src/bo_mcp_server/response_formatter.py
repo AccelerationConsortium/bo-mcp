@@ -232,6 +232,7 @@ class CreateCampaignMinimalResponse(_StrictResponse):
     campaign_id: str | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class CreateCampaignStandardResponse(_StrictResponse):
@@ -241,6 +242,7 @@ class CreateCampaignStandardResponse(_StrictResponse):
     campaign_name: str | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class CreateCampaignDetailedResponse(_PassthroughResponse):
@@ -250,6 +252,7 @@ class CreateCampaignDetailedResponse(_PassthroughResponse):
     campaign_name: str | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # ---------- Submit results ----------
@@ -259,12 +262,14 @@ class SubmitResultsMinimalResponse(_StrictResponse):
     success: bool | None = None
     n_submitted: int = 0
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class SubmitResultsStandardResponse(_StrictResponse):
     success: bool | None = None
     result_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     n_duplicates_detected: int = 0
 
@@ -273,6 +278,7 @@ class SubmitResultsDetailedResponse(_PassthroughResponse):
     success: bool | None = None
     result_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     duplicates_detected: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -283,6 +289,7 @@ class SubmitResultsDetailedResponse(_PassthroughResponse):
 class ValidateIntakeMinimalResponse(_StrictResponse):
     valid: bool | None = None
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class ValidateIntakeSpecSummary(_StrictResponse):
@@ -296,6 +303,7 @@ class ValidateIntakeSpecSummary(_StrictResponse):
 class ValidateIntakeStandardResponse(_StrictResponse):
     valid: bool | None = None
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     spec_summary: ValidateIntakeSpecSummary | None = None
 
@@ -303,6 +311,7 @@ class ValidateIntakeStandardResponse(_StrictResponse):
 class ValidateIntakeDetailedResponse(_PassthroughResponse):
     valid: bool | None = None
     errors: list[str] = Field(default_factory=list)
+    field_errors: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     spec: dict[str, Any] | None = None
 
@@ -508,6 +517,7 @@ def format_create_campaign_response(
                 campaign_id=full_response.get("campaign_id"),
                 warnings=full_response.get("warnings", []),
                 errors=full_response.get("errors", []),
+                field_errors=full_response.get("field_errors", {}),
             )
         )
 
@@ -520,6 +530,7 @@ def format_create_campaign_response(
                 campaign_name=full_response.get("campaign_name"),
                 warnings=full_response.get("warnings", []),
                 errors=full_response.get("errors", []),
+                field_errors=full_response.get("field_errors", {}),
             )
         )
 
@@ -539,6 +550,7 @@ def format_submit_results_response(
                 success=full_response.get("success"),
                 n_submitted=len(result_ids),
                 errors=full_response.get("errors", []),
+                field_errors=full_response.get("field_errors", {}),
             )
         )
 
@@ -548,6 +560,7 @@ def format_submit_results_response(
                 success=full_response.get("success"),
                 result_ids=full_response.get("result_ids", []),
                 errors=full_response.get("errors", []),
+                field_errors=full_response.get("field_errors", {}),
                 warnings=full_response.get("warnings", []),
                 n_duplicates_detected=len(full_response.get("duplicates_detected", [])),
             )
@@ -567,6 +580,7 @@ def format_validate_intake_response(
             ValidateIntakeMinimalResponse(
                 valid=full_response.get("valid"),
                 errors=full_response.get("errors", []),
+                field_errors=full_response.get("field_errors", {}),
             )
         )
 
@@ -585,6 +599,7 @@ def format_validate_intake_response(
             ValidateIntakeStandardResponse(
                 valid=full_response.get("valid"),
                 errors=full_response.get("errors", []),
+                field_errors=full_response.get("field_errors", {}),
                 warnings=full_response.get("warnings", []),
                 spec_summary=spec_summary,
             )

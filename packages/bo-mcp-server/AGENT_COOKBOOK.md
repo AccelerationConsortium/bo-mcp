@@ -506,6 +506,64 @@ The system uses Sobol sequence for initial exploration before model-based optimi
 
 ---
 
+## Resource Subscriptions for Long-Running Workflows
+
+Long-running orchestration loops can stop polling `campaign://{id}` and
+let the server push state-change notifications instead. The server
+implements MCP `resources/subscribe` so the initialize handshake
+advertises `resources.subscribe = true`.
+
+### Lifecycle
+
+1. **Subscribe** to a campaign URI immediately after `bo_create_campaign`
+   returns (or any time before you would otherwise poll):
+
+   ```python
+   await session.subscribe_resource("campaign://abc-123-def")
+   ```
+
+2. **Listen** for `notifications/resources/updated` on your MCP session
+   transport. The server emits one notification per campaign-status
+   transition (CREATED→RUNNING via `bo_generate_suggestions`,
+   RUNNING↔PAUSED via `bo_pause_campaign` / `bo_resume_campaign`,
+   ANY→COMPLETED via `bo_terminate_campaign`).
+
+3. **Re-read** the resource when notified to fetch the new state:
+
+   ```python
+   updated = await session.read_resource("campaign://abc-123-def")
+   ```
+
+4. **Unsubscribe** when the campaign reaches a terminal state
+   (`COMPLETED`, `FAILED`) or when your agent finishes:
+
+   ```python
+   await session.unsubscribe_resource("campaign://abc-123-def")
+   ```
+
+### What you do NOT receive
+
+- **Iteration bumps.** Subscriptions push on `Campaign.status`
+  transitions only; new suggestion batches against an already-RUNNING
+  campaign do not push. Use `bo_get_diagnostics` to poll iteration
+  counts when needed.
+- **Result submissions.** `bo_submit_results` does not change campaign
+  status, so it does not push. Use `bo_list_results` if you need to
+  observe new results.
+- **Errors.** A failed lifecycle transition (rejected by the state
+  machine) does not push -- subscriptions only signal observed state
+  changes.
+
+### Notification delivery semantics
+
+- Best-effort: a subscriber whose transport fails delivery is silently
+  dropped from the registry (re-subscribe to re-arm).
+- Sessions are tracked weakly: dropped transports do not need an
+  explicit `unsubscribe` to be cleaned up.
+- Notifications fire after the campaign-status write commits, so a
+  subscriber that immediately re-reads the resource sees the new
+  status.
+
 ## Related Documentation
 
 - [TOOL_SCHEMAS.md](TOOL_SCHEMAS.md) - Complete input/output schemas for all tools

@@ -1,32 +1,88 @@
 """Create campaign tool wrapper for MCP."""
 
-from typing import Any, Literal
+from collections.abc import Mapping
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bo_mcp_server.domain import CampaignIntakeInput
+from bo_mcp_server.domain.intake_models import INTAKE_INPUT_JSON_SCHEMA
+from bo_mcp_server.field_errors import shape_envelope
 from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.create_campaign import create_campaign_operation
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
 
+# The tool boundary is typed ``Any`` (not ``dict[str, Any]``) so that
+# FastMCP's pre-call Pydantic validator cannot intercept the failure
+# when callers send the wrong outer shape (e.g. a string instead of
+# an object). Without this, FastMCP would raise an opaque ``ToolError``
+# before our wrapper runs and agents would lose both the structured
+# envelope and the dotted-path ``field_errors`` map. The shape check
+# now lives inside the wrapper. Schema discoverability is preserved
+# by splicing the full ``CampaignIntakeInput`` JSON schema into
+# ``json_schema_extra`` so ``tools/list`` still advertises the rich
+# nested structure.
+IntakePayload = Annotated[
+    Any,
+    Field(
+        description=(
+            "Campaign intake specification. Validated against "
+            "CampaignIntakeInput; validation failures are returned as a "
+            "structured error envelope with ``field_errors`` keyed by "
+            "dotted path."
+        ),
+        json_schema_extra={
+            "type": "object",
+            "properties": INTAKE_INPUT_JSON_SCHEMA.get("properties", {}),
+            "required": INTAKE_INPUT_JSON_SCHEMA.get("required", []),
+            "$defs": INTAKE_INPUT_JSON_SCHEMA.get("$defs", {}),
+            "additionalProperties": False,
+        },
+    ),
+]
 
-def _payload_for_intake(intake_data: CampaignIntakeInput | dict[str, Any]) -> dict[str, Any]:
+_INTAKE_BOUNDARY_DEFAULTS: dict[str, Any] = {
+    "campaign_id": None,
+    "spec_id": None,
+    "warnings": [],
+}
+
+
+def _payload_for_intake(intake_data: Any) -> dict[str, Any]:
     """Return a JSON-safe dict representation of the intake payload.
 
     Accepts either an already-validated :class:`CampaignIntakeInput` (the
-    typed path used by the MCP transport) or a raw dict (the path used by
-    tests that drive the tool function directly).
+    legacy in-process path used by tests pre-1.53 follow-up) or a raw
+    dict (the MCP-boundary path).
     """
     if isinstance(intake_data, BaseModel):
         return intake_data.model_dump()
     return dict(intake_data)
 
 
+def _check_intake_shape(intake_data: Any) -> dict[str, Any] | None:
+    """Return a structured envelope iff ``intake_data`` is not object-shaped.
+
+    The Pydantic models down the call chain produce per-field
+    ``field_errors`` for malformed sub-fields, but their entry points
+    expect a mapping. Anything else (string, number, list) would raise
+    an opaque ``ToolError`` if we forwarded it. Catching the
+    container-shape failure here keeps the agent-facing contract
+    identical to inner-field failures.
+    """
+    if isinstance(intake_data, Mapping) or isinstance(intake_data, BaseModel):
+        return None
+    return shape_envelope(
+        "intake_data",
+        f"Input should be an object, got {type(intake_data).__name__}",
+        extra=_INTAKE_BOUNDARY_DEFAULTS,
+    )
+
+
 @mcp.tool(name="bo_create_campaign", annotations=NON_IDEMPOTENT_MUTATION)
 async def create_campaign(
-    intake_data: CampaignIntakeInput,
+    intake_data: IntakePayload,
     owner_id: str,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
     idempotency_key: str | None = None,
@@ -51,6 +107,10 @@ async def create_campaign(
     Returns:
         Dictionary with success, campaign_id, spec_id, errors.
     """
+    shape_error = _check_intake_shape(intake_data)
+    if shape_error is not None:
+        return shape_error
+
     request_payload = {
         "intake_data": _payload_for_intake(intake_data),
         "owner_id": owner_id,

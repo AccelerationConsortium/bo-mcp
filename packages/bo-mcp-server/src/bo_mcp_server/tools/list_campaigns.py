@@ -7,7 +7,7 @@ Reference: MCP Tool Best Practices - Agents prefer tools for consistent workflow
 https://modelcontextprotocol.io/docs/concepts/tools
 """
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from bo_mcp_server.errors import ErrorCode, make_error_response
@@ -15,14 +15,28 @@ from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
 
+# ``Literal`` mirrors ``CampaignStatus`` so the generated MCP tool
+# schema declares an ``enum`` constraint -- agents discover the valid
+# values from the schema directly instead of by trial-and-error retries
+# (TODO 1.54). Keep this list aligned with
+# :class:`bo_mcp_server.domain.CampaignStatus`.
+CampaignStatusFilter = Literal[
+    "created",
+    "running",
+    "paused",
+    "completed",
+    "failed",
+]
+VerbosityLiteral = Literal["minimal", "standard", "detailed"]
+
 
 @mcp.tool(name="bo_list_campaigns", annotations=READ_ONLY)
 async def list_campaigns(
     owner_id: str | None = None,
-    status: str | None = None,
+    status: CampaignStatusFilter | None = None,
     limit: int = 20,
     offset: int = 0,
-    verbosity: str = "standard",
+    verbosity: VerbosityLiteral = "standard",
     cursor: str | None = None,
 ) -> dict[str, Any]:
     """List optimization campaigns with optional filtering and pagination.

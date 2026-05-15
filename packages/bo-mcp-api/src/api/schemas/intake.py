@@ -12,7 +12,7 @@ hand the validated nested instances straight to ``CampaignIntakeInput``
 without a ``model_dump() -> model_validate()`` round-trip (TODO 1.24).
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from bo_mcp_server.client import (
     Constraint,
@@ -53,7 +53,11 @@ class IntakeData(BaseModel):
     initial_design_size: int | None = None
     random_seed: int | None = None
     acquisition_optimization: dict[str, Any] | None = None
-    backend: str = Field(default="auto", pattern="^(auto|botorch|baybe)$")
+    # ``Literal`` mirrors :class:`bo_mcp_server.domain.CampaignIntakeInput`
+    # so the REST OpenAPI schema advertises an explicit ``enum`` constraint
+    # and the route handler can pass the value straight through without a
+    # ``ty: ignore`` widening cast.
+    backend: Literal["auto", "botorch", "baybe"] = "auto"
     backend_options: dict[str, dict[str, Any]] | None = None
     # Default ``"auto"`` matches the MCP ``CampaignIntakeInput`` default
     # so an omitted field produces identical behavior on both transports.

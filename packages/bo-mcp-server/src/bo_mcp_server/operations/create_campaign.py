@@ -43,8 +43,69 @@ def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
     return CampaignSpec.model_validate(data)
 
 
+def _intake_validation_error_response(validation: dict[str, Any]) -> dict[str, Any]:
+    """Build the structured-error response for a failed intake validation.
+
+    Forwards both the legacy ``errors`` list (for backward compatibility)
+    and the ``field_errors`` map (added in TODO 1.53) so callers can
+    address the offending fields directly.
+    """
+    field_errors = validation.get("field_errors", {})
+    response = make_error_response(
+        ErrorCode.VALIDATION_FAILED,
+        message="Intake validation failed",
+        details={
+            "validation_errors": validation["errors"],
+            "field_errors": field_errors,
+        },
+    )
+    response["errors"] = validation["errors"]
+    response["field_errors"] = field_errors
+    response["campaign_id"] = None
+    response["spec_id"] = None
+    response["warnings"] = validation.get("warnings", [])
+    return response
+
+
+def _capability_error_response(
+    spec: CampaignSpec,
+    capabilities: Any,
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Build the structured-error response for a backend capability rejection.
+
+    Capability reports are keyed by an opaque ``key`` (e.g.
+    ``"acquisition_method"``, ``"backend_options.baybe.recommender"``)
+    that already reads as a dotted path from the spec root, so we
+    forward it as-is into the field_errors map.
+    """
+    unsupported_reports = [{"key": r.key, "reason": r.reason} for r in capabilities.unsupported]
+    capability_field_errors: dict[str, list[str]] = {}
+    for report in capabilities.unsupported:
+        if report.reason:
+            capability_field_errors.setdefault(report.key or "", []).append(report.reason)
+    response = make_error_response(
+        ErrorCode.VALIDATION_FAILED,
+        message=(
+            f"Backend '{spec.backend}' cannot handle this spec: "
+            + "; ".join(r["reason"] for r in unsupported_reports if r["reason"])
+        ),
+        details={
+            "backend": spec.backend,
+            "unsupported": unsupported_reports,
+            "field_errors": capability_field_errors,
+        },
+    )
+    response["campaign_id"] = None
+    response["spec_id"] = None
+    response["errors"] = [r["reason"] for r in unsupported_reports if r["reason"]]
+    response["field_errors"] = capability_field_errors
+    response["warnings"] = warnings
+    return response
+
+
 async def create_campaign_operation(
-    intake_data: CampaignIntakeInput,
+    intake_data: CampaignIntakeInput | dict[str, Any],
     owner_id: str,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
     *,
@@ -56,8 +117,12 @@ async def create_campaign_operation(
     independent of any transport protocol (MCP, REST, etc.).
 
     Args:
-        intake_data: The campaign intake specification as a validated
-            CampaignIntakeInput instance.
+        intake_data: Campaign intake specification. Accepts either a
+            validated :class:`CampaignIntakeInput` (the REST path)
+            or a raw dict (the MCP-boundary path, where validation
+            is deferred to :func:`validate_intake_operation` so the
+            failure path renders as our structured ``field_errors``
+            envelope instead of a FastMCP ``ToolError``).
         owner_id: UUID string identifying the campaign owner.
         verbosity: Response detail level.
         session: Optional SQLAlchemy session to reuse. When supplied,
@@ -90,21 +155,7 @@ async def create_campaign_operation(
             "Campaign creation failed validation: %s",
             validation["errors"],
         )
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message="Intake validation failed",
-            details={
-                "validation_errors": validation["errors"],
-            },
-        )
-        # Surface detailed validation errors in the backward-compat errors list
-        # so callers (including agents) can inspect them without digging into
-        # error.details.
-        response["errors"] = validation["errors"]
-        response["campaign_id"] = None
-        response["spec_id"] = None
-        response["warnings"] = validation.get("warnings", [])
-        return response
+        return _intake_validation_error_response(validation)
 
     # Parse owner_id
     try:
@@ -140,28 +191,12 @@ async def create_campaign_operation(
     opt_spec = campaign_spec_to_optimization_spec(spec)
     capabilities = backend.validate_capabilities(opt_spec)
     if not capabilities.is_compatible:
-        unsupported_reports = [{"key": r.key, "reason": r.reason} for r in capabilities.unsupported]
         logger.warning(
             "Campaign creation rejected: backend %s reports %d unsupported items",
             spec.backend,
-            len(unsupported_reports),
+            len(capabilities.unsupported),
         )
-        response = make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=(
-                f"Backend '{spec.backend}' cannot handle this spec: "
-                + "; ".join(r["reason"] for r in unsupported_reports if r["reason"])
-            ),
-            details={
-                "backend": spec.backend,
-                "unsupported": unsupported_reports,
-            },
-        )
-        response["campaign_id"] = None
-        response["spec_id"] = None
-        response["errors"] = [r["reason"] for r in unsupported_reports if r["reason"]]
-        response["warnings"] = warnings
-        return response
+        return _capability_error_response(spec, capabilities, warnings)
     warnings.extend(capabilities.warnings)
 
     # Generate IDs
@@ -200,6 +235,7 @@ async def create_campaign_operation(
         "campaign_name": spec.name,
         "warnings": warnings,
         "errors": [],
+        "field_errors": {},
     }
 
     # Add detailed info for detailed verbosity

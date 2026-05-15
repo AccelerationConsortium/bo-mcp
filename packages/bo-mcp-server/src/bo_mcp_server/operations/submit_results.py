@@ -32,6 +32,7 @@ from bo_mcp_server.errors import (
     make_concurrent_modification_response,
     make_error_response,
 )
+from bo_mcp_server.field_errors import add_row_field_error
 from bo_mcp_server.idempotency import session_scope
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
@@ -59,6 +60,7 @@ def _make_submit_error(
     details: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
     duplicates: list[dict[str, Any]] | None = None,
+    field_errors: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Build a standardized error response for submit_results."""
     response = make_error_response(code, message=message, details=details)
@@ -67,6 +69,7 @@ def _make_submit_error(
             "result_ids": [],
             "warnings": warnings or [],
             "duplicates_detected": duplicates or [],
+            "field_errors": field_errors or {},
         }
     )
     return response
@@ -97,6 +100,7 @@ def _validate_submit_inputs(
                 "result_ids": [],
                 "warnings": [],
                 "duplicates_detected": [],
+                "field_errors": {"campaign_id": ["invalid UUID format"]},
             }
         )
         return campaign_id_result
@@ -110,6 +114,7 @@ def _validate_submit_inputs(
             ErrorCode.VALIDATION_FAILED,
             message="Invalid submitted_by format",
             details={"submitted_by": submitted_by},
+            field_errors={"submitted_by": ["invalid UUID format"]},
         )
 
     try:
@@ -119,15 +124,34 @@ def _validate_submit_inputs(
             ErrorCode.VALIDATION_FAILED,
             message=f"Invalid source '{source}', must be gui, file_upload, or api",
             details={"source": source},
+            field_errors={"source": [f"must be gui, file_upload, or api; got '{source}'"]},
         )
 
     if not results:
         return _make_submit_error(
             ErrorCode.VALIDATION_FAILED,
             message="At least one result is required",
+            field_errors={"results": ["at least one result is required"]},
         )
 
     return verbosity_level, campaign_uuid, submitter_uuid, result_source
+
+
+@dataclass(frozen=True)
+class _RowError:
+    """A single row-level validation error with its field path.
+
+    ``field_path`` is dotted relative to the offending row (no
+    ``results[i]`` prefix); the prefix is added by
+    :func:`_record_row_error` when the error is recorded onto tracking.
+    ``message`` is the human-facing string surfaced through the legacy
+    ``errors: list[str]`` envelope and the per-row ``partial_results``
+    payload — preserving the existing wording so older callers and
+    assertions stay green.
+    """
+
+    field_path: str
+    message: str
 
 
 def _check_duplicates_for_result(
@@ -138,7 +162,7 @@ def _check_duplicates_for_result(
     backend: BOBackend,
     warnings: list[str],
     duplicates_detected: list[dict[str, Any]],
-) -> str | None:
+) -> _RowError | None:
     """Run duplicate detection for a single result. Returns error string or None.
 
     Detection runs against two baselines so a duplicate cannot slip
@@ -178,7 +202,7 @@ def _check_duplicates_for_result(
     if not duplicates:
         return None
 
-    result_error = None
+    result_error: _RowError | None = None
     for dup in duplicates:
         is_in_batch = dup.index >= n_stored
         relative_index = dup.index - n_stored if is_in_batch else dup.index
@@ -202,7 +226,10 @@ def _check_duplicates_for_result(
                 f"Result {index} appears to be an exact duplicate of "
                 f"{target_descr}. Use force=True to submit anyway."
             )
-            result_error = f"Result {index} is exact duplicate. Use force=True to override."
+            result_error = _RowError(
+                field_path="parameter_values",
+                message=f"Result {index} is exact duplicate. Use force=True to override.",
+            )
         else:
             warnings.append(
                 f"Result {index} is very close to {target_descr} "
@@ -247,6 +274,24 @@ class _SubmitTracking:
     warnings: list[str] = field(default_factory=list)
     duplicates_detected: list[dict[str, Any]] = field(default_factory=list)
     partial_results: dict[int, str | dict[str, str]] = field(default_factory=dict)
+    field_errors: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _record_row_error(
+    tracking: _SubmitTracking,
+    row_index: int,
+    field_path: str,
+    message: str,
+) -> None:
+    """Record a row error in both the legacy ``errors`` list and ``field_errors``.
+
+    The legacy list keeps the human-readable, prefixed message shape
+    (``Result 5: ...``) so existing callers and assertions are
+    untouched. The ``field_errors`` map indexes the same finding by
+    dotted path so agents can target the field directly.
+    """
+    tracking.errors.append(message)
+    add_row_field_error(tracking.field_errors, row_index, field_path, message)
 
 
 async def _classify_suggestion_reference(
@@ -256,11 +301,11 @@ async def _classify_suggestion_reference(
     actionable_ids: set[str],
     campaign_uuid: UUID,
     suggestion_repo: SuggestionRepository,
-) -> str | None:
+) -> _RowError | None:
     """Validate a row's ``suggestion_id`` against the in-flight batch + DB.
 
-    Returns a row error string when the reference is unusable, otherwise
-    None. Cases:
+    Returns a :class:`_RowError` (with ``field_path="suggestion_id"``)
+    when the reference is unusable, otherwise None. Cases:
 
     * ``sid is None`` → no-op (free-floating row).
     * ``sid`` already used by an earlier row in this batch → duplicate-id
@@ -276,16 +321,22 @@ async def _classify_suggestion_reference(
     if sid is None:
         return None
     if sid in seen_suggestion_ids:
-        return f"Result {index}: duplicate suggestion_id '{sid}' within batch"
+        return _RowError(
+            field_path="suggestion_id",
+            message=f"Result {index}: duplicate suggestion_id '{sid}' within batch",
+        )
     if sid in actionable_ids:
         return None
     stale_status = await _classify_stale_reference(sid, campaign_uuid, suggestion_repo)
     if stale_status is None:
         return None
-    return (
-        f"Result {index}: suggestion {sid} is not actionable "
-        f"(status={stale_status}); only pending or accepted "
-        "suggestions can be completed."
+    return _RowError(
+        field_path="suggestion_id",
+        message=(
+            f"Result {index}: suggestion {sid} is not actionable "
+            f"(status={stale_status}); only pending or accepted "
+            "suggestions can be completed."
+        ),
     )
 
 
@@ -340,7 +391,7 @@ async def _phase1_row_error(
     index: int,
     r: ResultSubmissionInput,
     ctx: _Phase1Context,
-) -> str | None:
+) -> _RowError | None:
     """Run phase-1 row checks: shape, suggestion-ref, stored-duplicate.
 
     The *stored*-duplicate check stays in phase 1 because it depends only
@@ -438,8 +489,9 @@ def _check_in_batch_duplicate(
 ) -> bool:
     """Return True iff the row clears the in-batch duplicate check.
 
-    On failure the row error is recorded on ``tracking`` and (in
-    non-atomic + continue mode) on ``partial_results``.
+    On failure the row error is recorded on ``tracking`` (both the
+    legacy ``errors`` list and the keyed ``field_errors`` map) and, in
+    non-atomic + continue mode, on ``partial_results``.
     """
     if force:
         return True
@@ -454,9 +506,9 @@ def _check_in_batch_duplicate(
     )
     if dup_error is None:
         return True
-    tracking.errors.append(dup_error)
+    _record_row_error(tracking, idx, dup_error.field_path, dup_error.message)
     if not atomic and continue_on_error:
-        tracking.partial_results[idx] = {"error": dup_error}
+        tracking.partial_results[idx] = {"error": dup_error.message}
     return False
 
 
@@ -485,7 +537,9 @@ def _reject_free_floating(
         f"{spec.max_observations} "
         f"(existing={existing_count}, pending_reserved={n_actionable})."
     )
-    tracking.errors.append(err)
+    # Budget violation is a row-level (not field-level) constraint, so
+    # the path bottoms out at ``results[idx]`` itself.
+    _record_row_error(tracking, idx, "", err)
     if not atomic and continue_on_error:
         tracking.partial_results[idx] = {"error": err}
 
@@ -645,9 +699,9 @@ async def _validate_and_create_results(
     for i, r in enumerate(results):
         row_error = await _phase1_row_error(i, r, ctx)
         if row_error is not None:
-            tracking.errors.append(row_error)
+            _record_row_error(tracking, i, row_error.field_path, row_error.message)
             if not atomic and continue_on_error:
-                tracking.partial_results[i] = {"error": row_error}
+                tracking.partial_results[i] = {"error": row_error.message}
             continue
         valid_submissions.append((i, r))
         # Only claim actionable suggestion_ids in the seen-set. Missing,
@@ -780,7 +834,7 @@ def _validate_measurement_uncertainty(
     objective_names: set[str],
     index: int,
     warnings: list[str],
-) -> str | None:
+) -> _RowError | None:
     """Validate measurement uncertainty keys and values.
 
     Unknown objective keys are surfaced as warnings (they are dropped on the
@@ -789,9 +843,9 @@ def _validate_measurement_uncertainty(
     Numerical defects on declared-objective values are hard errors: the
     bo-engine squares the stddev into ``train_yvar`` and routes the GP onto a
     ``FixedNoiseGaussianLikelihood``, so a negative value would silently
-    become a positive variance and NaN/inf would propagate into MLL. Return
-    the first error string so the caller can reject the row in atomic mode
-    or drop it in non-atomic mode.
+    become a positive variance and NaN/inf would propagate into MLL. The
+    returned :class:`_RowError` pins the offending key in its
+    ``field_path`` so the caller can surface it in ``field_errors``.
     """
     invalid_keys = set(uncertainty.keys()) - objective_names
     if invalid_keys:
@@ -806,14 +860,20 @@ def _validate_measurement_uncertainty(
         if obj_name not in objective_names:
             continue
         if not isinstance(unc_val, (int, float)) or math.isnan(unc_val) or math.isinf(unc_val):
-            return (
-                f"Result {index}: measurement_uncertainty['{obj_name}'] "
-                f"is not a finite number: {unc_val}"
+            return _RowError(
+                field_path=f"measurement_uncertainty['{obj_name}']",
+                message=(
+                    f"Result {index}: measurement_uncertainty['{obj_name}'] "
+                    f"is not a finite number: {unc_val}"
+                ),
             )
         if unc_val < 0:
-            return (
-                f"Result {index}: measurement_uncertainty['{obj_name}'] "
-                f"is negative ({unc_val}); expected non-negative std"
+            return _RowError(
+                field_path=f"measurement_uncertainty['{obj_name}']",
+                message=(
+                    f"Result {index}: measurement_uncertainty['{obj_name}'] "
+                    f"is negative ({unc_val}); expected non-negative std"
+                ),
             )
     return None
 
@@ -825,7 +885,7 @@ def _validate_single_result(
     objective_names: set[str],
     warnings: list[str],
     parameters: list[InputParameter] | None = None,
-) -> str | None:
+) -> _RowError | None:
     """Validate a single result's parameter and objective *shape*.
 
     Shape-only checks: parameter presence, parameter spec validation
@@ -838,7 +898,10 @@ def _validate_single_result(
     by some other validator.
     """
     if missing_params := (param_names - set(r.parameter_values.keys())):
-        return f"Result {index} missing parameters: {missing_params}"
+        return _RowError(
+            field_path="parameter_values",
+            message=f"Result {index} missing parameters: {missing_params}",
+        )
 
     # Validate parameter values against spec bounds/categories
     if parameters is not None:
@@ -848,7 +911,10 @@ def _validate_single_result(
                 _validate_parameter_value(param_by_name[pname], pvalue, index, warnings)
 
     if missing_objectives := (objective_names - set(r.objective_values.keys())):
-        return f"Result {index} missing objectives: {missing_objectives}"
+        return _RowError(
+            field_path="objective_values",
+            message=f"Result {index} missing objectives: {missing_objectives}",
+        )
 
     if r.measurement_uncertainty is not None:
         unc_error = _validate_measurement_uncertainty(
@@ -976,6 +1042,7 @@ def _check_atomic_failures(
             details={"duplicate_count": len(exact_duplicates)},
             warnings=tracking.warnings,
             duplicates=tracking.duplicates_detected,
+            field_errors=tracking.field_errors,
         )
 
     all_or_nothing = atomic or not continue_on_error
@@ -986,6 +1053,7 @@ def _check_atomic_failures(
             "success": False,
             "result_ids": [],
             "errors": tracking.errors,
+            "field_errors": tracking.field_errors,
             "warnings": tracking.warnings,
             "duplicates_detected": tracking.duplicates_detected,
         }
@@ -1008,6 +1076,7 @@ def _build_submit_response(
         "success": overall_success,
         "result_ids": result_ids,
         "errors": tracking.errors,
+        "field_errors": tracking.field_errors,
         "warnings": tracking.warnings,
         "duplicates_detected": tracking.duplicates_detected,
     }
@@ -1047,6 +1116,7 @@ async def _handle_submit_results_cm_error(
             "result_ids": [],
             "warnings": tracking.warnings,
             "duplicates_detected": tracking.duplicates_detected,
+            "field_errors": tracking.field_errors,
         }
     )
     return response
@@ -1156,6 +1226,7 @@ async def submit_results_operation(
                     "errors": (
                         tracking.errors if tracking.errors else ["No valid results to submit"]
                     ),
+                    "field_errors": tracking.field_errors,
                     "warnings": tracking.warnings,
                     "duplicates_detected": tracking.duplicates_detected,
                 }

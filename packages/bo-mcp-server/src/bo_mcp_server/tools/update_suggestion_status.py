@@ -1,6 +1,6 @@
 """Update suggestion status tool wrapper for MCP."""
 
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,11 +11,16 @@ from bo_mcp_server.operations.update_suggestion_status import (
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
 
+# ``completed`` is intentionally excluded -- it is set automatically by
+# ``bo_submit_results`` (manual transitions live in
+# :data:`bo_mcp_server.operations.update_suggestion_status.ALLOWED_TARGET_STATUSES`).
+ManualSuggestionStatus = Literal["accepted", "rejected", "expired"]
+
 
 @mcp.tool(name="bo_update_suggestion_status", annotations=NON_IDEMPOTENT_MUTATION)
 async def update_suggestion_status(
     suggestion_id: str,
-    status: str,
+    status: ManualSuggestionStatus,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Update the status of a suggestion.

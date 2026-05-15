@@ -1,6 +1,6 @@
 """Pydantic input models for MCP tool payloads."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -49,7 +49,10 @@ class CampaignIntakeInput(BaseModel):
     # Per-campaign override for L-BFGS-B restart count / raw-sample budget.
     # Leave None to use the dimension-adaptive defaults in bo-engine.
     acquisition_optimization: AcquisitionOptimizationConfig | None = None
-    backend: str = Field(default="auto", pattern="^(auto|botorch|baybe)$")
+    # ``Literal`` produces an explicit ``enum`` constraint in the
+    # generated MCP tool schema, so agents discover the valid backend
+    # selectors directly from the schema instead of by failing requests.
+    backend: Literal["auto", "botorch", "baybe"] = "auto"
     # Typed backend-native option surface; see ``CampaignSpec.backend_options``.
     # Validation rejects options addressed to an explicit non-matching backend
     # so misrouted knobs surface at intake instead of silently disappearing.
@@ -119,14 +122,14 @@ _REF_KEY = "$ref"
 _REF_PREFIX = f"#/{_DEFS_KEY}/"
 
 
-def _inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
+def inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
     """Inline ``$ref`` pointers so the schema stands alone.
 
     Pydantic emits nested models as ``$defs`` references rooted at the
     outer schema. When we splice a sub-schema into another model's
     ``json_schema_extra`` those references dangle, so we walk the tree
     and substitute the referenced definitions in place. This keeps the
-    metadata schema self-contained inside the splice point.
+    spliced schema self-contained.
     """
     defs = schema.get(_DEFS_KEY, {})
 
@@ -145,14 +148,22 @@ def _inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
     return walk(schema)
 
 
-# Projected JSON schema for the metadata sub-blob. Generated lazily so
-# tests / agents see a stable shape regardless of import order. The
-# field below uses ``json_schema_extra`` to splice this directly into
-# the generated tool schema (TODO 1.12 review): the runtime type is
-# still ``dict[str, Any]`` to preserve compatibility with persisted
-# rows, but agents see the documented key set in the MCP tool
-# definition instead of the bare ``additionalProperties: true``.
-_METADATA_SCHEMA = _inline_defs(ResultMetadata.model_json_schema())
+# Back-compat private alias retained for any callers that imported the
+# pre-rename symbol; new code should use :func:`inline_defs`.
+_inline_defs = inline_defs
+
+
+# Projected JSON schemas re-used by tools that accept the corresponding
+# payload as a raw ``dict`` / ``list[dict]`` at the MCP boundary
+# (TODO 1.53 follow-up). Keeping the runtime type loose lets the
+# operation layer convert ``ValidationError`` into our
+# ``field_errors`` envelope instead of letting FastMCP's pre-call
+# validation raise an opaque ``ToolError``. ``json_schema_extra``
+# splices the rich nested schema back into the tool definition so
+# agent introspection still sees the documented fields.
+_METADATA_SCHEMA = inline_defs(ResultMetadata.model_json_schema())
+INTAKE_INPUT_JSON_SCHEMA = inline_defs(CampaignIntakeInput.model_json_schema())
+RESULT_SUBMISSION_JSON_SCHEMA: dict[str, Any] = {}  # populated after ResultSubmissionInput
 
 
 class ResultSubmissionInput(BaseModel):
@@ -203,3 +214,9 @@ class ResultSubmissionInput(BaseModel):
             return value
         typed = ResultMetadata.model_validate(value)
         return typed.model_dump(exclude_unset=True, mode="json")
+
+
+# Populate the projected ``ResultSubmissionInput`` schema once the
+# class above is fully defined. We re-inline so a refactor that adds a
+# new nested model to the submission payload picks up automatically.
+RESULT_SUBMISSION_JSON_SCHEMA = inline_defs(ResultSubmissionInput.model_json_schema())

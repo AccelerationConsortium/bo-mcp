@@ -15,6 +15,7 @@ from bo_mcp_server.storage import (
     ConcurrentModificationError,
     get_session,
 )
+from bo_mcp_server.subscriptions import notify_campaign_updated_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,13 @@ async def manage_campaign_lifecycle_operation(
             )
             return response
 
+        # Arm the notification as a post-commit hook so subscribers
+        # never see a transition that the surrounding transaction
+        # later rolls back (and so a future caller that wires an
+        # external session through ``apply_idempotency`` cannot
+        # accidentally publish a pre-commit notification).
+        notify_campaign_updated_after_commit(session, campaign_uuid)
+
         logger.info(
             "Campaign %s lifecycle action %s: %s -> %s",
             campaign_id,
@@ -124,10 +132,11 @@ async def manage_campaign_lifecycle_operation(
             previous_status,
             target_status.value,
         )
-        return {
-            "success": True,
-            "campaign_id": campaign_id,
-            "status": target_status.value,
-            "previous_status": previous_status,
-            "errors": [],
-        }
+
+    return {
+        "success": True,
+        "campaign_id": campaign_id,
+        "status": target_status.value,
+        "previous_status": previous_status,
+        "errors": [],
+    }

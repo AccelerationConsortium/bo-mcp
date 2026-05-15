@@ -5,16 +5,16 @@ This document describes the testing strategy for the BO-MCP monorepo, including 
 ## Quick Reference
 
 ```bash
-# Run all fast tests (what CI runs on PRs)
-uv run pytest -m "not slow and not nightly and not docker and not postgres" packages/
+# Fast PR gate (must pass on every PR, target < 5 min)
+uv run pytest -m "not integration and not slow and not nightly and not docker and not postgres" packages/
 
-# Run tests for a specific package
-cd packages/bo-engine && uv run pytest -m "not slow"
+# Integration tier (runs on PRs in a separate job)
+cd packages/bo-mcp-server && uv run pytest -m "integration and not slow and not nightly and not docker and not postgres"
 
-# Run slow tests (MCMC-based)
-uv run pytest -m "slow" packages/bo-engine/
+# Slow tests on main (MCMC, cross-validation)
+uv run pytest -m "slow and not nightly and not docker and not postgres" packages/
 
-# Run full test suite including nightly tests
+# Nightly: everything except infra-bound suites
 uv run pytest -m "not docker and not postgres" packages/
 
 # Recalibrate tolerances for stochastic tests
@@ -27,11 +27,12 @@ Tests are organized using pytest markers to enable selective execution:
 
 | Marker | Description | Run in CI | Typical Duration |
 |--------|-------------|-----------|------------------|
-| `smoke` | Fast critical path tests | PR checks | < 5s each |
-| (default) | Standard unit/integration tests | PR checks | < 30s each |
+| `smoke` | Fast critical path tests | PR fast gate | < 5s each |
+| (default, unmarked) | Standard unit tests | PR fast gate | < 30s each |
+| `integration` | Multi-module flows (auto-applied in `tests/integration/`) | PR integration gate | < 60s each |
 | `slow` | Long-running tests (MCMC, CV) | Main branch only | 30s - 5min each |
 | `nightly` | Statistical/stochastic tests | Nightly schedule | Varies |
-| `tutorial` | BoTorch tutorial reproduction | All | Varies |
+| `tutorial` | BoTorch tutorial reproduction | Inherited from `slow`/`smoke` | Varies |
 | `deterministic` | Tests requiring torch determinism | All | Varies |
 | `postgres` | Tests requiring PostgreSQL | Manual | Varies |
 | `docker` | Tests requiring Docker | Manual | Varies |
@@ -54,24 +55,30 @@ uv run pytest -m nightly packages/
 
 ## CI Pipeline Structure
 
-The CI pipeline uses a tiered approach to balance speed and coverage:
+The CI pipeline uses a tiered approach to balance speed and coverage. Each gate uses a positive (or negative) marker expression so a test only runs in the gate it has been explicitly labelled for. Auto-application of the `integration` marker happens in `packages/bo-mcp-server/tests/conftest.py::pytest_collection_modifyitems` (any test under `tests/integration/` is marked at collection time).
 
 ### 1. Fast Tests (PR Checks)
 - **Trigger:** Every push and pull request
 - **Duration:** ~2-3 minutes per package
-- **Command:** `pytest -m "not slow and not nightly and not docker and not postgres"`
+- **Command:** `pytest -m "not integration and not slow and not nightly and not docker and not postgres"`
 - **Must pass:** Yes (blocks merge)
 
-### 2. Slow Tests (Main Branch)
+### 2. Integration Tests (PR Checks)
+- **Trigger:** Every push and pull request, in a job parallel to the fast gate
+- **Duration:** ~3-5 minutes (bo-mcp-server only — bo-engine has no `tests/integration/`)
+- **Command:** `pytest -m "integration and not slow and not nightly and not docker and not postgres"`
+- **Must pass:** Yes (blocks merge)
+
+### 3. Slow Tests (Main Branch)
 - **Trigger:** Push to main branch only
 - **Duration:** ~5-10 minutes per package
-- **Command:** `pytest -m "slow and not nightly"`
+- **Command:** `pytest -m "slow and not nightly and not docker and not postgres"`
 - **Must pass:** No (tracked, but uses `continue-on-error`)
 
-### 3. Nightly Tests (Statistical)
+### 4. Nightly Tests (Statistical)
 - **Trigger:** Scheduled at 3:00 AM UTC
 - **Duration:** ~15-30 minutes total
-- **Command:** `pytest -m "not docker and not postgres"` (all tests)
+- **Command:** `pytest -m "not docker and not postgres"` (all tests including integration + nightly)
 - **Purpose:** Catch statistical regressions over multiple runs
 
 ## Handling Stochastic Tests
@@ -122,6 +129,32 @@ Calibrated values are stored in `packages/bo-engine/tests/conftest.py`:
 PARETO_MAX_TOLERANCE_CI = 8.0      # Must always pass
 PARETO_MAX_TOLERANCE_NIGHTLY = 6.0  # Statistical threshold
 ```
+
+## Database Test Isolation
+
+Two backends, two isolation strategies — both correct for the database
+they target:
+
+- **SQLite in-memory** (default for unit + most integration tests). The
+  `setup_database` fixture in `packages/bo-mcp-server/tests/conftest.py`
+  recreates the engine singleton per test. The in-memory database is bound
+  to the connection lifetime, so disposing the engine wipes everything in a
+  few hundred microseconds. Engine-recreate is the right choice here —
+  cheap, simple, and naturally isolating.
+- **PostgreSQL** (testcontainers; `@pytest.mark.postgres`). The
+  `postgres_session` fixture in `packages/bo-mcp-server/tests/conftest_postgres.py`
+  uses the SQLAlchemy "outer transaction + nested SAVEPOINT" pattern with
+  an `after_transaction_end` listener that restarts the savepoint whenever
+  application code commits. The schema is created **once** per test session,
+  not per test, so PG runs do not pay schema-rebuild cost between tests.
+  See `TestPostgresSavepointIsolation` in `test_postgres_integration.py`
+  for a regression that pins the contract — two consecutive tests share an
+  email column under a `UNIQUE` constraint, and the second only succeeds
+  because the first's savepoint truly rolled back.
+
+When a test needs to run against both backends, parameterize the database
+fixture (e.g. `pytest.mark.parametrize("session_fixture", ["setup_database", "postgres_session"], indirect=True)`)
+rather than duplicating the test body.
 
 ## Test Speed Optimization
 

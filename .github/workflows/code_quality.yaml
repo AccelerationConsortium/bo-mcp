@@ -55,7 +55,10 @@ jobs:
   # =============================================================================
   # Fast Tests (PR Checks) - Run on every push/PR
   # =============================================================================
-  # These tests must always pass and run quickly (< 5 min total)
+  # These tests must always pass and run quickly (< 5 min total).
+  # The marker expression deselects integration/slow/docker/postgres/nightly
+  # suites so the PR gate stays under the 5-minute budget. Integration tests
+  # are exercised in a separate matrix below; see TESTING.md.
   testing-fast:
     name: Fast Tests (${{ matrix.package }}, py${{ matrix.python-version }})
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -78,7 +81,7 @@ jobs:
         run: |
           cd packages/${{ matrix.package }}
           uv run pytest -v --durations=10 --cov --cov-report=xml \
-            -m "not slow and not nightly and not docker and not postgres" \
+            -m "not integration and not slow and not nightly and not docker and not postgres" \
             --timeout=60
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -86,13 +89,45 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
         if: matrix.python-version == '3.13' && matrix.package == 'bo-engine'
   # =============================================================================
+  # Integration Tests - Run on every push/PR
+  # =============================================================================
+  # Integration tests (auto-marked via tests/integration/) exercise multi-module
+  # flows but exclude infrastructure-dependent docker/postgres suites so the
+  # job stays self-contained. They run separately from fast tests so a slow
+  # integration failure can't drag the PR gate over budget.
+  testing-integration:
+    name: Integration Tests (${{ matrix.package }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    needs: [lock-file]
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ['bo-mcp-server']
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: ./.github/actions/setup
+      - run: uv sync --all-packages
+      - name: Run integration tests for ${{ matrix.package }}
+        run: |
+          cd packages/${{ matrix.package }}
+          uv run pytest -v --durations=20 \
+            -m "integration and not slow and not nightly and not docker and not postgres" \
+            --timeout=120
+  # =============================================================================
   # Slow Tests - Run on main branch pushes only
   # =============================================================================
-  # These tests take longer but are required for main branch integrity
+  # These tests take longer but are required for main branch integrity.
+  # Slow includes integration-tier tests by design — once a PR has merged we
+  # want the full picture of behavior, not just the under-30s subset.
   testing-slow:
     name: Slow Tests (${{ matrix.package }})
     runs-on: ubuntu-latest
-    needs: [lock-file, testing-fast]
+    needs: [lock-file, testing-fast, testing-integration]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false

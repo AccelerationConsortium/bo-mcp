@@ -225,11 +225,15 @@ class TestWarpingVsNoWarping:
     """Compare warped vs standard GP performance."""
 
     @pytest.mark.slow
+    @pytest.mark.nightly
     def test_warped_gp_handles_non_stationarity(self) -> None:
         """Warped GP should fit non-stationary functions better than standard GP.
 
         Non-stationary: function behavior varies across input space.
         Example: function is smooth on one side, wiggly on the other.
+        The MSE-vs-threshold comparison is single-seed and sensitive to the
+        sampled training points, so this test is marked ``nightly`` in addition
+        to ``slow`` to be exercised against multi-seed runs.
         """
         torch.manual_seed(42)
         bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)

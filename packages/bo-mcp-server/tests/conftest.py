@@ -119,9 +119,22 @@ def sample_user() -> User:
 async def setup_database():
     """Initialize fresh in-memory database for each test.
 
-    Ensures complete isolation between tests by resetting the
-    database engine singleton. This is critical for test isolation
-    when using in-memory SQLite databases.
+    SQLite in-memory test isolation is implemented by recreating the engine
+    singleton — the in-memory database is bound to the connection lifetime,
+    so disposing the engine wipes everything in a few hundred microseconds.
+    This is cheap enough that switching to savepoint isolation would not
+    materially improve runtime here.
+
+    PostgreSQL integration tests use a different, savepoint-based fixture
+    (``postgres_session`` in ``conftest_postgres.py``) because the
+    engine-recreate path on PG implies re-running migrations / ``create_all``
+    per test, which is both slow and incorrect — application code that
+    commits mid-test would survive into the next test under outer-transaction
+    isolation. The savepoint pattern documented there avoids both issues.
+
+    See ``conftest_postgres.py::postgres_session`` for the PG-side
+    implementation and ``TESTING.md`` for guidance on when to parametrize
+    a test across both fixtures.
 
     Reference: SQLAlchemy async engine lifecycle documentation
     https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html

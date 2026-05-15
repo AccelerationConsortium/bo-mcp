@@ -8,6 +8,11 @@ stale after any mutation — no explicit invalidation needed.
 
 Uses asyncio.Lock to ensure safe concurrent access from async operations.
 
+The cache accepts an injectable ``clock`` callable so tests can advance time
+without sleeping. Production code constructs the cache with the default clock
+(``datetime.now(UTC)``); tests pass a callable backed by a mutable container
+to deterministically simulate TTL expiry.
+
 Usage:
     from bo_mcp_server.cache import diagnostics_cache
 
@@ -23,11 +28,17 @@ Usage:
 """
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 # Maximum number of entries before evicting oldest
 MAX_CACHE_ENTRIES = 200
+
+
+def _default_clock() -> datetime:
+    """Return the current UTC time. Default clock for ResponseCache."""
+    return datetime.now(UTC)
 
 
 class ResponseCache:
@@ -36,17 +47,28 @@ class ResponseCache:
     Default TTL is 120 seconds for diagnostics. Version-aware keys mean
     entries become unreachable (and eventually evicted) after mutations,
     so a longer TTL is safe and improves hit rate.
+
+    The ``clock`` parameter is injectable so tests can advance time without
+    relying on wall-clock sleeps. In production, leave it at the default;
+    in tests, pass a callable that returns a controllable ``datetime``.
     """
 
-    def __init__(self, ttl_seconds: int = 120) -> None:
+    def __init__(
+        self,
+        ttl_seconds: int = 120,
+        clock: Callable[[], datetime] = _default_clock,
+    ) -> None:
         """Initialize cache with TTL.
 
         Args:
             ttl_seconds: Time-to-live for cache entries in seconds.
+            clock: Callable returning the current ``datetime``. Tests can
+                inject a fake clock to advance time deterministically.
         """
         self._cache: dict[str, tuple[datetime, Any]] = {}
         self._ttl = timedelta(seconds=ttl_seconds)
         self._lock = asyncio.Lock()
+        self._clock = clock
 
     async def get(self, key: str) -> Any | None:
         """Get cached value if not expired.
@@ -60,7 +82,7 @@ class ResponseCache:
         async with self._lock:
             if key in self._cache:
                 timestamp, value = self._cache[key]
-                if datetime.now(UTC) - timestamp < self._ttl:
+                if self._clock() - timestamp < self._ttl:
                     return value
                 del self._cache[key]
             return None
@@ -75,7 +97,7 @@ class ResponseCache:
         async with self._lock:
             if len(self._cache) >= MAX_CACHE_ENTRIES:
                 self._evict_oldest()
-            self._cache[key] = (datetime.now(UTC), value)
+            self._cache[key] = (self._clock(), value)
 
     def _evict_oldest(self) -> None:
         """Remove the oldest cache entry. Must be called under lock."""

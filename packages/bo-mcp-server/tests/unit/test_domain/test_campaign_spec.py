@@ -10,6 +10,7 @@ from bo_mcp_server.domain import (
     InputParameter,
     Objective,
     ParameterType,
+    TurboConfig,
 )
 
 
@@ -548,3 +549,65 @@ class TestConvergenceToleranceValidation:
             ),
         )
         assert spec.convergence_tolerance is None
+
+
+class TestTurboConfigValidation:
+    """Pydantic-level rejection of nonsensical TuRBO tolerance values.
+
+    The schema is the only place where REST / MCP clients can be stopped
+    before garbage propagates into the engine. Each test pins one failure
+    mode that the previous schema accepted silently — see the regression
+    note in TODO 1.49 follow-up.
+
+    Reference: Eriksson et al., NeurIPS 2019, Algorithm 1. The trust-region
+    operating band requires ``length_min < initial_length <= length_max``
+    with all three strictly positive, and the success / failure tolerances
+    are integers counting consecutive batches before adapting the region.
+    """
+
+    def test_paper_defaults_validate(self) -> None:
+        """The published defaults round-trip without raising."""
+        config = TurboConfig()
+        assert config.initial_length == pytest.approx(0.8)
+        assert config.length_min == pytest.approx(0.5**7)
+        assert config.length_max == pytest.approx(1.6)
+
+    def test_negative_initial_length_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            TurboConfig(initial_length=-1.0)
+
+    def test_zero_length_min_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            TurboConfig(length_min=0.0)
+
+    def test_zero_length_max_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            TurboConfig(length_max=0.0)
+
+    def test_inverted_band_rejected(self) -> None:
+        """``length_min >= length_max`` collapses the expand/contract zone."""
+        with pytest.raises(ValidationError, match="strictly less than"):
+            TurboConfig(length_min=2.0, length_max=1.0)
+
+    def test_initial_length_outside_band_rejected(self) -> None:
+        """An initial length above ``length_max`` would clamp on the first expand."""
+        with pytest.raises(ValidationError, match="initial_length"):
+            TurboConfig(initial_length=2.0, length_min=0.01, length_max=1.6)
+
+    def test_initial_length_below_min_rejected(self) -> None:
+        """An initial length under ``length_min`` triggers restart on iteration 1."""
+        with pytest.raises(ValidationError, match="initial_length"):
+            TurboConfig(initial_length=0.001, length_min=0.01, length_max=1.6)
+
+    def test_success_tolerance_below_one_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            TurboConfig(success_tolerance=0)
+
+    def test_failure_tolerance_below_one_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            TurboConfig(failure_tolerance=0)
+
+    def test_failure_tolerance_none_accepted(self) -> None:
+        """``None`` means "derive at TurboState construction time"."""
+        config = TurboConfig(failure_tolerance=None)
+        assert config.failure_tolerance is None

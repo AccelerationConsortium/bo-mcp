@@ -87,6 +87,7 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
             length_min=spec.turbo_config.length_min,
             length_max=spec.turbo_config.length_max,
             success_tolerance=spec.turbo_config.success_tolerance,
+            failure_tolerance=spec.turbo_config.failure_tolerance,
         )
 
     # Convert SAASBO config

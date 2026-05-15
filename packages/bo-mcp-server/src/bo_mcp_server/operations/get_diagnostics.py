@@ -29,6 +29,7 @@ from bo_mcp_server.operations.diagnostics import (
     compute_exploration_exploitation,
     compute_health_and_progress,
     compute_next_action_recommendation,
+    compute_outcome_constraint_calibration_metrics,
     compute_suggestion_diversity_metrics,
     compute_uncertainty_trends,
     enrich_diagnostics,
@@ -184,6 +185,7 @@ async def _compute_sections(
 
     if "constraints" in requested:
         compute_constraint_satisfaction_metrics(results, spec, diagnostics)
+        compute_outcome_constraint_calibration_metrics(results, spec, diagnostics)
 
     if "convergence" in requested:
         compute_convergence_diagnostics(

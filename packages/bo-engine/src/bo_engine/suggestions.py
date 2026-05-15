@@ -58,6 +58,7 @@ from bo_engine.transforms import (
 )
 from bo_engine.turbo import (
     TurboState,
+    assert_unit_scale_targets,
     create_turbo_state,
     get_turbo_bounds,
     should_use_turbo,
@@ -314,6 +315,11 @@ def _initialize_turbo_state(
 ) -> TurboState | None:
     """Initialize TuRBO state if applicable.
 
+    Forwards ``spec.turbo_config`` overrides (or paper defaults when unset)
+    into :func:`bo_engine.turbo.create_turbo_state` and asserts that the
+    training targets sit close to unit scale before construction — see
+    :class:`bo_engine.turbo.TurboState` for the scale assumption.
+
     Args:
         spec: Optimization specification
         train_y_bo: Training outputs (BoTorch convention - minimization)
@@ -325,12 +331,26 @@ def _initialize_turbo_state(
     """
     use_turbo = spec.use_turbo or (turbo_state is not None) or should_use_turbo(spec.n_parameters)
     if use_turbo and turbo_state is None:
+        assert_unit_scale_targets(train_y_bo)
         best_y = train_y_bo.min().item()
-        turbo_state = create_turbo_state(
-            dim=spec.n_parameters,
-            batch_size=batch_size,
-            initial_best_value=-best_y,
-        )
+        config = spec.turbo_config
+        if config is None:
+            turbo_state = create_turbo_state(
+                dim=spec.n_parameters,
+                batch_size=batch_size,
+                initial_best_value=-best_y,
+            )
+        else:
+            turbo_state = create_turbo_state(
+                dim=spec.n_parameters,
+                batch_size=batch_size,
+                initial_best_value=-best_y,
+                initial_length=config.initial_length,
+                length_min=config.length_min,
+                length_max=config.length_max,
+                success_tolerance=config.success_tolerance,
+                failure_tolerance=config.failure_tolerance,
+            )
     return turbo_state
 
 

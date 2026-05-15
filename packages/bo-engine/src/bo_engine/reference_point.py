@@ -27,6 +27,7 @@ from torch import Tensor
 from bo_engine.constants import (
     MIN_OBJECTIVE_RANGE,
     REFERENCE_POINT_PADDING,
+    REFERENCE_POINT_RELATIVE_TOLERANCE,
 )
 from bo_engine.device import ensure_device, to_device
 
@@ -155,9 +156,26 @@ def _compute_static_reference_point(
 ) -> Tensor:
     """Compute static reference point (current behavior).
 
-    The reference point is set to worst + margin * range for each objective.
-    For minimization objectives, worst = max.
-    For maximization objectives (if any), worst = min (before negation).
+    The reference point is set to ``worst + margin * window`` for each
+    objective, where ``window = max(range, abs(worst) * RELATIVE_TOLERANCE,
+    MIN_OBJECTIVE_RANGE)``. The three-way max keeps hypervolume well behaved
+    across the regimes that matter:
+
+    * **Normal range, normal scale.** ``window = range``: recovers the
+      legacy ``worst + margin * range`` formula.
+    * **Tiny range, non-tiny worst.** Without a relative floor a
+      large-magnitude objective with a narrow observed spread (e.g. yield
+      hovering between 0.998 and 1.000 around ``worst=1.0``) would receive a
+      reference offset of ``margin * 0.002`` — three orders of magnitude
+      smaller than the natural scale — distorting hypervolume relative to
+      other objectives. ``abs(worst) * RELATIVE_TOLERANCE`` clamps the
+      window to at least 1 % of the absolute scale by default.
+    * **Near-zero worst with collapsed range.** Both ``range`` and
+      ``abs(worst)`` underflow to zero; ``MIN_OBJECTIVE_RANGE`` then keeps the
+      reference offset numerically distinguishable from ``worst``.
+
+    For BoTorch, every objective is already in minimization form (lower is
+    better), so ``worst = train_y.max(dim=0)``.
 
     Args:
         train_y: Training outputs (assumed already negated for maximization)
@@ -172,12 +190,16 @@ def _compute_static_reference_point(
     worst = train_y.max(dim=0).values
     ranges = train_y.max(dim=0).values - train_y.min(dim=0).values
 
-    # For near-constant objectives, use absolute scale instead of unit range
-    # to avoid distorting hypervolume across objectives with different units.
-    abs_scale = worst.abs().clamp(min=MIN_OBJECTIVE_RANGE)
-    ranges = torch.where(ranges < MIN_OBJECTIVE_RANGE, abs_scale, ranges)
+    # Three-way floor: the per-objective margin window is the maximum of the
+    # observed range, a fraction of ``abs(worst)`` (so high-magnitude
+    # objectives keep proportional headroom), and an absolute floor (so
+    # zero-centred near-constant objectives still get a non-degenerate
+    # offset).
+    relative_floor = worst.abs() * REFERENCE_POINT_RELATIVE_TOLERANCE
+    absolute_floor = torch.full_like(ranges, MIN_OBJECTIVE_RANGE)
+    window = torch.maximum(torch.maximum(ranges, relative_floor), absolute_floor)
 
-    ref_point = worst + config.margin * ranges
+    ref_point = worst + config.margin * window
     return ref_point
 
 

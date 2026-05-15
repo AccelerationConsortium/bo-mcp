@@ -218,6 +218,7 @@ from bo_engine.outcome_constraints import (
     build_outcome_constraint_models,
     compute_constraint_probability,
     compute_expected_constraint_violation,
+    compute_outcome_constraint_calibration,
     create_constraint_callable_continuous,
 )
 from bo_engine.pending_points import (
@@ -619,6 +620,7 @@ __all__ = [
     "build_outcome_constraint_models",
     "compute_constraint_probability",
     "compute_expected_constraint_violation",
+    "compute_outcome_constraint_calibration",
     "create_constraint_callable_continuous",
     # Cross-Validation Optimization (v2.6 - Section 2.4)
     "CVConfig",

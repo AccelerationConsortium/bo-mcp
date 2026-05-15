@@ -332,14 +332,45 @@ class TurboConfig(BaseModel):
     """Configuration for TuRBO trust-region optimization.
 
     Present = use TuRBO, absent (None) = standard acquisition optimization.
+
+    Defaults follow the canonical paper (Eriksson et al., NeurIPS 2019); see
+    the bo-engine ``TurboState`` docstring for the unit-standardized-targets
+    scale assumption and the meaning of each tolerance. ``failure_tolerance``
+    defaults to ``None`` so the engine re-derives the dim/batch-size-aware
+    default at construction time — set an integer to override.
+
+    Invariants enforced at the schema boundary so garbage never reaches the
+    engine: every length is strictly positive, ``length_min < length_max``,
+    the initial trust region sits inside the operating band
+    (``length_min <= initial_length <= length_max``), and the success /
+    failure tolerances are at least one (the smallest value that still
+    counts a single batch toward expand/contract).
     """
 
     model_config = ConfigDict(frozen=True)
 
-    initial_length: float = 0.8
-    length_min: float = 0.5**7
-    length_max: float = 1.6
-    success_tolerance: int = 10
+    initial_length: float = Field(default=0.8, gt=0.0)
+    length_min: float = Field(default=0.5**7, gt=0.0)
+    length_max: float = Field(default=1.6, gt=0.0)
+    success_tolerance: int = Field(default=10, ge=1)
+    failure_tolerance: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _check_length_invariants(self) -> "TurboConfig":
+        if self.length_min >= self.length_max:
+            raise ValueError(
+                f"length_min ({self.length_min}) must be strictly less than "
+                f"length_max ({self.length_max}); without a gap the trust "
+                "region cannot expand or contract."
+            )
+        if not (self.length_min <= self.initial_length <= self.length_max):
+            raise ValueError(
+                f"initial_length ({self.initial_length}) must lie in "
+                f"[length_min, length_max] = [{self.length_min}, "
+                f"{self.length_max}]; otherwise the trust region either "
+                "triggers an immediate restart or starts above the cap."
+            )
+        return self
 
 
 class SaasboConfig(BaseModel):

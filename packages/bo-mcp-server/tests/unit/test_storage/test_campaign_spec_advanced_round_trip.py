@@ -50,14 +50,14 @@ async def session() -> AsyncGenerator[AsyncSession]:
 
 def _base_spec(**overrides: object) -> CampaignSpec:
     """Build a minimal valid :class:`CampaignSpec` with optional overrides."""
-    parameters = [
+    parameters = (
         InputParameter(
             name="x",
             type=ParameterType.CONTINUOUS,
             bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
         ),
-    ]
-    objectives = [Objective(name="y", direction="minimize")]
+    )
+    objectives = (Objective(name="y", direction="minimize"),)
     return CampaignSpec(
         name="Round Trip",
         parameters=parameters,
@@ -129,21 +129,23 @@ class TestAdvancedFieldRoundTrip:
     async def test_transfer_learning_round_trip(self, session: AsyncSession) -> None:
         spec = _base_spec(
             transfer_learning=TransferLearningConfig(
-                prior_campaign_ids=["abc-123"],
+                prior_campaign_ids=("abc-123",),
                 num_ranking_samples=128,
             ),
         )
         reloaded = await _save_and_reload(session, spec)
         assert reloaded.transfer_learning is not None
-        assert reloaded.transfer_learning.prior_campaign_ids == ["abc-123"]
+        # ``prior_campaign_ids`` is a tuple on the domain model (TODO 1.22 follow-up
+        # for deep immutability); the round-trip preserves order and contents.
+        assert reloaded.transfer_learning.prior_campaign_ids == ("abc-123",)
         assert reloaded.transfer_learning.num_ranking_samples == 128
 
     @pytest.mark.asyncio
     async def test_outcome_constraints_round_trip(self, session: AsyncSession) -> None:
         spec = _base_spec(
-            outcome_constraints=[
+            outcome_constraints=(
                 OutcomeConstraint(objective_name="y", threshold=0.5, greater_than=False),
-            ],
+            ),
         )
         reloaded = await _save_and_reload(session, spec)
         assert len(reloaded.outcome_constraints) == 1
@@ -159,9 +161,7 @@ class TestAdvancedFieldRoundTrip:
             use_cost_aware=True,
             turbo_config=TurboConfig(),
             saasbo_config=SaasboConfig(warmup_steps=8, num_samples=8, thinning=2),
-            outcome_constraints=[
-                OutcomeConstraint(objective_name="y", threshold=0.0),
-            ],
+            outcome_constraints=(OutcomeConstraint(objective_name="y", threshold=0.0),),
             backend_options={"botorch": {"acquisition_optimizer": "lbfgsb"}},
         )
         reloaded = await _save_and_reload(session, spec)
@@ -172,6 +172,76 @@ class TestAdvancedFieldRoundTrip:
         assert reloaded.saasbo_config is not None
         assert len(reloaded.outcome_constraints) == 1
         assert reloaded.backend_options == {"botorch": {"acquisition_optimizer": "lbfgsb"}}
+
+    @pytest.mark.asyncio
+    async def test_objective_log_transform_round_trip(self, session: AsyncSession) -> None:
+        """``Objective.log_transform`` survives save → reload.
+
+        Reference: BoTorch documents the ``Log → Standardize`` outcome
+        stack for multi-decade objectives —
+        https://botorch.readthedocs.io/en/stable/models.html#botorch.models.transforms.outcome.Log.
+        If the flag is dropped on load, suggestion generation runs
+        against a plain Standardize model whenever a campaign is
+        revisited after a process restart, silently regressing the
+        scale-invariance the flag was supposed to provide.
+        """
+        spec = CampaignSpec(
+            name="Log Transform Round Trip",
+            parameters=(
+                InputParameter(
+                    name="x",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
+                ),
+            ),
+            objectives=(Objective(name="rate", direction="minimize", log_transform=True),),
+        )
+        reloaded = await _save_and_reload(session, spec)
+        assert reloaded.objectives[0].log_transform is True
+
+    @pytest.mark.asyncio
+    async def test_objective_log_transform_defaults_to_false_for_legacy_rows(
+        self, session: AsyncSession
+    ) -> None:
+        """Rows persisted before the field existed still load cleanly.
+
+        Simulates a legacy row by writing the objective JSON without
+        ``log_transform`` and asserting the reload normalizes to
+        ``False`` rather than raising on the missing key.
+        """
+        from sqlalchemy import update
+
+        from bo_mcp_server.storage.models import CampaignSpecModel
+        from bo_mcp_server.storage.repositories import CampaignSpecRepository
+
+        spec = _base_spec()
+        repo = CampaignSpecRepository(session)
+        spec_id = uuid4()
+        await repo.save(spec, spec_id)
+        await session.commit()
+
+        # Strip the ``log_transform`` key to emulate a legacy row.
+        import json
+
+        legacy = json.dumps(
+            [
+                {
+                    "name": "y",
+                    "direction": "minimize",
+                    "unit": "",
+                    "target": None,
+                }
+            ]
+        )
+        await session.execute(
+            update(CampaignSpecModel)
+            .where(CampaignSpecModel.id == str(spec_id))
+            .values(objectives_json=legacy)
+        )
+        await session.commit()
+        reloaded = await repo.get(spec_id)
+        assert reloaded is not None
+        assert reloaded.objectives[0].log_transform is False
 
     @pytest.mark.asyncio
     async def test_default_spec_keeps_blob_null(self, session: AsyncSession) -> None:

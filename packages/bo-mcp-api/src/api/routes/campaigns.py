@@ -1,18 +1,24 @@
 """Campaign routes."""
 
-from bo_mcp_server.domain import CampaignIntakeInput
-from bo_mcp_server.operations.batch_status import batch_get_status_operation
-from bo_mcp_server.operations.campaign_lifecycle import manage_campaign_lifecycle_operation
-from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
-from bo_mcp_server.operations.create_campaign import create_campaign_operation
-from bo_mcp_server.operations.export_campaign import export_campaign_operation
-from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
-from bo_mcp_server.operations.transfer_candidates import (
+from bo_mcp_server.client import (
+    CampaignIntakeInput,
+    InvalidIdentifierError,
+    NotAuthorizedError,
+    NotFoundError,
+    VerbosityLevel,
+    batch_get_status_operation,
+    compare_campaigns_operation,
+    create_campaign_operation,
     discover_transfer_candidates_operation,
+    export_campaign_operation,
+    format_validate_intake_response,
+    get_campaign_spec_by_id,
+    get_campaign_with_spec,
+    list_campaigns_operation,
+    list_owner_campaigns_with_specs,
+    manage_campaign_lifecycle_operation,
+    validate_intake_operation,
 )
-from bo_mcp_server.operations.validate_intake import validate_intake_operation
-from bo_mcp_server.response_formatter import VerbosityLevel, format_validate_intake_response
-from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
@@ -41,24 +47,52 @@ from api.schemas.campaign import (
     ValidateIntakeRequest,
     ValidateIntakeResponse,
 )
+from api.schemas.intake import IntakeData
 
 router = APIRouter()
 
 
-def _coerce_intake(request: CampaignCreate) -> CampaignIntakeInput:
-    """Re-validate the loose REST intake into the strict domain model.
+def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
+    """Build a strict domain intake from the validated REST payload.
 
-    REST keeps the advanced spec knobs (``turbo_config``,
-    ``saasbo_config``, ``fidelity_parameter``, …) as untyped dicts so the
-    REST schema stays decoupled from the bo-engine/bo-mcp-server Pydantic
-    models. Strict validation happens once we pass the payload to the
-    domain ``CampaignIntakeInput``. Any inner-shape error must surface as
-    a 422 (unprocessable entity) — same status FastAPI uses for body
+    ``IntakeData`` already validates the shared field shape: parameters,
+    objectives, and constraints are parsed into the canonical domain
+    types, so they can be forwarded by reference. The advanced
+    cross-backend knobs (``turbo_config``, ``saasbo_config``,
+    ``fidelity_parameter``, …) stay typed as plain dict on REST so the
+    schema does not couple to backend-specific Pydantic models;
+    ``CampaignIntakeInput`` validates their inner shape here.
+
+    Any validation error on the advanced knobs must surface as a 422
+    (unprocessable entity) — the same status FastAPI uses for stock body
     validation failures — instead of bubbling up as an unhandled
     ``ValidationError`` 500.
     """
     try:
-        return CampaignIntakeInput.model_validate(request.intake.model_dump())
+        return CampaignIntakeInput(
+            name=intake.name,
+            description=intake.description,
+            parameters=intake.parameters,
+            objectives=intake.objectives,
+            constraints=intake.constraints,
+            batch_size=intake.batch_size,
+            max_iterations=intake.max_iterations,
+            max_observations=intake.max_observations,
+            convergence_tolerance=intake.convergence_tolerance,
+            initial_design_size=intake.initial_design_size,
+            random_seed=intake.random_seed,
+            acquisition_optimization=intake.acquisition_optimization,  # ty: ignore[invalid-argument-type]
+            backend=intake.backend,
+            backend_options=intake.backend_options,
+            acquisition_method=intake.acquisition_method,  # ty: ignore[invalid-argument-type]
+            use_input_warping=intake.use_input_warping,
+            use_cost_aware=intake.use_cost_aware,
+            turbo_config=intake.turbo_config,  # ty: ignore[invalid-argument-type]
+            saasbo_config=intake.saasbo_config,  # ty: ignore[invalid-argument-type]
+            fidelity_parameter=intake.fidelity_parameter,  # ty: ignore[invalid-argument-type]
+            transfer_learning=intake.transfer_learning,  # ty: ignore[invalid-argument-type]
+            outcome_constraints=intake.outcome_constraints,  # ty: ignore[invalid-argument-type]
+        )
     except ValidationError as exc:
         # Prefix locations with ("body", "intake") so the error shape
         # matches FastAPI's stock request-validation envelope.
@@ -82,7 +116,7 @@ async def create_new_campaign(
     current_user: CurrentUser,
 ) -> CampaignCreateResponse:
     """Create a new optimization campaign."""
-    intake = _coerce_intake(request)
+    intake = _coerce_intake(request.intake)
     result = await create_campaign_operation(
         intake_data=intake,
         owner_id=str(current_user.id),
@@ -100,44 +134,27 @@ async def create_new_campaign(
 async def list_campaigns(current_user: CurrentUser) -> CampaignListResponse:
     """List campaigns for the current user.
 
-    Uses batch loading to avoid N+1 query problem: fetches all campaigns
-    in one query, then fetches all needed specs in a second query.
+    The facade helper batches the spec lookup in a single query, so the
+    historical N+1 issue stays fixed without the route reaching into
+    repositories itself.
     """
-    async with get_session() as session:
-        campaign_repo = CampaignRepository(session)
-        spec_repo = CampaignSpecRepository(session)
-
-        # Query 1: Get all campaigns for the user
-        campaigns = await campaign_repo.list_by_owner(current_user.id)
-
-        if not campaigns:
-            return CampaignListResponse(campaigns=[], total=0)
-
-        # Query 2: Batch fetch all specs in a single query (fixes N+1)
-        spec_ids = [campaign.spec_id for campaign in campaigns]
-        specs_by_id = await spec_repo.get_by_ids(spec_ids)
-
-        # Build responses using the prefetched specs
-        responses = []
-        for campaign in campaigns:
-            spec = specs_by_id.get(campaign.spec_id)
-            if spec:
-                responses.append(
-                    CampaignResponse(
-                        id=str(campaign.id),
-                        spec_id=str(campaign.spec_id),
-                        name=spec.name,
-                        description=spec.description,
-                        status=campaign.status.value,
-                        iteration=campaign.iteration,
-                        created_at=campaign.created_at,
-                        updated_at=campaign.updated_at,
-                        n_parameters=spec.n_parameters,
-                        n_objectives=spec.n_objectives,
-                    )
-                )
-
-        return CampaignListResponse(campaigns=responses, total=len(responses))
+    pairs = await list_owner_campaigns_with_specs(current_user.id)
+    responses = [
+        CampaignResponse(
+            id=str(campaign.id),
+            spec_id=str(campaign.spec_id),
+            name=spec.name,
+            description=spec.description,
+            status=campaign.status.value,
+            iteration=campaign.iteration,
+            created_at=campaign.created_at,
+            updated_at=campaign.updated_at,
+            n_parameters=spec.n_parameters,
+            n_objectives=spec.n_objectives,
+        )
+        for campaign, spec in pairs
+    ]
+    return CampaignListResponse(campaigns=responses, total=len(responses))
 
 
 @router.post("/validate", response_model=ValidateIntakeResponse)
@@ -145,8 +162,16 @@ async def validate_campaign_intake(
     request: ValidateIntakeRequest,
     current_user: CurrentUser,
 ) -> ValidateIntakeResponse:
-    """Validate a campaign specification without creating a campaign (dry-run)."""
-    full_result = validate_intake_operation(request.intake.model_dump())
+    """Validate a campaign specification without creating a campaign (dry-run).
+
+    Builds the domain intake from the validated REST payload (without a
+    dump/validate round-trip; see :func:`_coerce_intake`) so any
+    validation error on the advanced cross-backend knobs surfaces as a
+    422 instead of a 500. ``validate_intake_operation`` accepts the typed
+    ``CampaignIntakeInput`` directly.
+    """
+    intake = _coerce_intake(request.intake)
+    full_result = validate_intake_operation(intake)
     formatted = format_validate_intake_response(full_result, VerbosityLevel.STANDARD)
 
     return ValidateIntakeResponse(
@@ -239,6 +264,7 @@ async def discover_campaign_transfer_candidates(
         similarity_threshold=request.similarity_threshold,
         max_candidates=request.max_candidates,
         verbosity=request.verbosity.value,
+        parameter_aliases=request.parameter_aliases,
     )
     return TransferCandidatesResponse(**result)
 
@@ -283,53 +309,63 @@ async def export_campaign(
 @router.get("/spec/{spec_id}")
 async def get_campaign_spec(spec_id: str, current_user: CurrentUser) -> dict:
     """Get campaign spec details."""
-    spec_uuid = validate_uuid(spec_id, "spec_id")
+    # validate_uuid raises a 400 directly; preserve that behavior.
+    validate_uuid(spec_id, "spec_id")
+    try:
+        spec = await get_campaign_spec_by_id(spec_id)
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Spec {spec_id} not found",
+        ) from None
 
-    async with get_session() as session:
-        spec_repo = CampaignSpecRepository(session)
-        spec = await spec_repo.get(spec_uuid)
-
-        if spec is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Spec {spec_id} not found",
-            )
-
-        return {
-            "id": spec_id,
-            "name": spec.name,
-            "description": spec.description,
-            "parameters": [p.model_dump() for p in spec.parameters],
-            "objectives": [o.model_dump() for o in spec.objectives],
-            "constraints": [c.model_dump() for c in spec.constraints] if spec.constraints else [],
-            "batch_size": spec.batch_size,
-            "created_at": "",  # Spec doesn't have created_at, use empty string
-        }
+    return {
+        "id": spec_id,
+        "name": spec.name,
+        "description": spec.description,
+        "parameters": [p.model_dump() for p in spec.parameters],
+        "objectives": [o.model_dump() for o in spec.objectives],
+        "constraints": [c.model_dump() for c in spec.constraints] if spec.constraints else [],
+        "batch_size": spec.batch_size,
+        "created_at": "",  # Spec doesn't have created_at, use empty string
+    }
 
 
 @router.get("/{campaign_id}", response_model=CampaignResponse)
 async def get_campaign(campaign_id: str, current_user: CurrentUser) -> CampaignResponse:
     """Get campaign details."""
-    campaign = await get_authorized_campaign(campaign_id, current_user)
-
-    async with get_session() as session:
-        spec_repo = CampaignSpecRepository(session)
-        spec = await spec_repo.get(campaign.spec_id)
-        if spec is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Campaign spec not found",
-            )
-
-        return CampaignResponse(
-            id=str(campaign.id),
-            spec_id=str(campaign.spec_id),
-            name=spec.name,
-            description=spec.description,
-            status=campaign.status.value,
-            iteration=campaign.iteration,
-            created_at=campaign.created_at,
-            updated_at=campaign.updated_at,
-            n_parameters=spec.n_parameters,
-            n_objectives=spec.n_objectives,
+    try:
+        campaign, spec = await get_campaign_with_spec(campaign_id, current_user.id)
+    except InvalidIdentifierError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid campaign_id format",
+        ) from None
+    except NotAuthorizedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this campaign",
+        ) from None
+    except NotFoundError as exc:
+        detail = (
+            "Campaign spec not found"
+            if exc.resource == "Campaign spec"
+            else f"Campaign {campaign_id} not found"
         )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=detail,
+        ) from None
+
+    return CampaignResponse(
+        id=str(campaign.id),
+        spec_id=str(campaign.spec_id),
+        name=spec.name,
+        description=spec.description,
+        status=campaign.status.value,
+        iteration=campaign.iteration,
+        created_at=campaign.created_at,
+        updated_at=campaign.updated_at,
+        n_parameters=spec.n_parameters,
+        n_objectives=spec.n_objectives,
+    )

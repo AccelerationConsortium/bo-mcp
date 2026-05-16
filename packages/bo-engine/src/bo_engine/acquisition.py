@@ -34,7 +34,11 @@ from botorch.optim import optimize_acqf
 from botorch.optim.optimize import optimize_acqf_discrete, optimize_acqf_mixed
 from torch import Tensor
 
-from bo_engine.constants import MIXED_CATEGORICAL_COMBO_THRESHOLD
+from bo_engine.constants import (
+    MIXED_CATEGORICAL_COMBO_THRESHOLD,
+    NUMERICAL_EPSILON,
+    RESTART_WARN_TOLERANCE,
+)
 from bo_engine.device import ensure_device, to_device
 from bo_engine.transforms import (
     SearchSpaceType,
@@ -586,6 +590,58 @@ class EIpuAcquisition(AcquisitionFunction):
         return eipu
 
 
+def _validate_linear_constraint_entry(
+    entry: tuple[Tensor, Tensor, float],
+    n_dims: int,
+    label: str,
+) -> None:
+    """Validate a single ``(indices, coefficients, rhs)`` tuple.
+
+    Encapsulates the per-entry shape checks so the outer driver can
+    iterate without exceeding cognitive-complexity limits.
+    """
+    if not isinstance(entry, tuple) or len(entry) != 3:
+        raise ValueError(f"{label} must be a (indices, coefficients, rhs) tuple")
+    indices, coefficients, rhs = entry
+    if not isinstance(indices, Tensor) or indices.dim() != 1:
+        raise ValueError(f"{label}.indices must be a 1-D tensor")
+    if not isinstance(coefficients, Tensor) or coefficients.dim() != 1:
+        raise ValueError(f"{label}.coefficients must be a 1-D tensor")
+    if indices.numel() != coefficients.numel():
+        raise ValueError(
+            f"{label} indices ({indices.numel()}) and "
+            f"coefficients ({coefficients.numel()}) must have the same length"
+        )
+    if indices.numel() == 0:
+        raise ValueError(f"{label} must reference at least one parameter")
+    if not torch.isfinite(torch.as_tensor(rhs, dtype=torch.float64)).item():
+        raise ValueError(f"{label}.rhs must be finite, got {rhs!r}")
+    index_min = int(indices.min().item())
+    index_max = int(indices.max().item())
+    if index_min < 0 or index_max >= n_dims:
+        raise ValueError(
+            f"{label} references parameter index out of range "
+            f"[0, {n_dims}); got min={index_min}, max={index_max}"
+        )
+
+
+def _validate_linear_constraints(
+    constraints: list[tuple[Tensor, Tensor, float]] | None,
+    n_dims: int,
+    kind: str,
+) -> None:
+    """Shape-validate BoTorch linear constraints before they reach ``optimize_acqf``.
+
+    BoTorch surfaces shape mismatches deep inside its inner loops with messages
+    that don't name the offending tuple, so we check the contract here while we
+    still know which constraint failed.
+    """
+    if not constraints:
+        return
+    for position, entry in enumerate(constraints):
+        _validate_linear_constraint_entry(entry, n_dims, f"{kind}_constraints[{position}]")
+
+
 def _resolve_restart_budget(
     spec: OptimizationSpec | None,
     bounds: Tensor,
@@ -665,6 +721,9 @@ def optimize_acquisition(
         - acquisition_values has shape (batch_size,)
     """
     bounds = to_device(bounds)
+    n_dims = int(bounds.shape[-1])
+    _validate_linear_constraints(inequality_constraints, n_dims, "inequality")
+    _validate_linear_constraints(equality_constraints, n_dims, "equality")
 
     if X_pending is not None:
         X_pending = to_device(X_pending)
@@ -787,14 +846,23 @@ def _optimize_continuous(
 
     Returns:
         Tuple of (candidates, acquisition_values)
+
+    Diagnostics: when ``batch_size == 1`` we ask BoTorch for the full set of
+    per-restart results (``return_best_only=False``) and route them through
+    :func:`_log_restart_diagnostics` before collapsing to the best restart.
+    For ``batch_size > 1`` we keep the existing sequential greedy path —
+    BoTorch does not support ``return_best_only=False`` together with
+    sequential greedy optimization, so diagnostics are skipped there.
     """
+    capture_restarts = batch_size == 1
     kwargs: dict = {
         "acq_function": acqf,
         "bounds": bounds,
         "q": batch_size,
         "num_restarts": num_restarts,
         "raw_samples": raw_samples,
-        "sequential": True,
+        "sequential": not capture_restarts,
+        "return_best_only": not capture_restarts,
         "options": {
             "batch_limit": 5,
             "maxiter": 200,
@@ -806,7 +874,72 @@ def _optimize_continuous(
         kwargs["equality_constraints"] = equality_constraints
 
     candidates, acq_values = optimize_acqf(**kwargs)
+
+    if capture_restarts:
+        _log_restart_diagnostics(acq_values, candidates)
+        best_idx = int(acq_values.argmax().item())
+        candidates = candidates[best_idx]
+        acq_values = acq_values[best_idx : best_idx + 1]
     return candidates, acq_values
+
+
+def _log_restart_diagnostics(acq_values: Tensor, candidates: Tensor) -> None:
+    """Log per-restart acquisition diagnostics for ``optimize_acqf``.
+
+    Captures the dispersion across the multi-start optimization so the
+    practitioner can tell whether the restarts are exploring distinct basins
+    or whether they all collapsed into the same neighbourhood — a hallmark of
+    pervasive local minima or a near-uniform acquisition landscape.
+
+    The top-3 (acquisition value, candidate) pairs are emitted at DEBUG; a
+    WARNING is emitted when the relative gap between the best and median
+    restart is below :data:`RESTART_WARN_TOLERANCE`, i.e.
+
+    ``(best - median) / max(|best|, |median|, ε) < RESTART_WARN_TOLERANCE``.
+
+    Args:
+        acq_values: Per-restart acquisition values of shape
+            ``(num_restarts,)`` from ``optimize_acqf(return_best_only=False)``.
+        candidates: Per-restart candidate solutions of shape
+            ``(num_restarts, q, d)``. Only used for the DEBUG dump.
+    """
+    if acq_values.numel() == 0:
+        return
+
+    values = acq_values.detach().reshape(-1)
+    n_restarts = int(values.numel())
+
+    sorted_vals, sorted_idx = torch.sort(values, descending=True)
+    top_n = min(3, n_restarts)
+    if logger.isEnabledFor(logging.DEBUG):
+        for rank in range(top_n):
+            idx = int(sorted_idx[rank].item())
+            value = float(sorted_vals[rank].item())
+            candidate = candidates[idx].detach().cpu().tolist()
+            logger.debug(
+                "Acquisition restart rank %d: value=%.6g candidate=%s",
+                rank + 1,
+                value,
+                candidate,
+            )
+
+    if n_restarts < 2:
+        return
+
+    best = float(sorted_vals[0].item())
+    median = float(values.median().item())
+    denom = max(abs(best), abs(median), NUMERICAL_EPSILON)
+    relative_gap = (best - median) / denom
+    if relative_gap < RESTART_WARN_TOLERANCE:
+        logger.warning(
+            "Acquisition restart dispersion is tight: best=%.6g median=%.6g "
+            "relative_gap=%.3g < %.3g. Restarts may be trapped in widespread "
+            "local minima or the acquisition surface may be near-uniform.",
+            best,
+            median,
+            relative_gap,
+            RESTART_WARN_TOLERANCE,
+        )
 
 
 def _optimize_discrete(

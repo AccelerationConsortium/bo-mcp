@@ -31,9 +31,43 @@ from bo_mcp_server.storage import (
 logger = logging.getLogger(__name__)
 
 
-def _compute_parameter_similarity(source_spec: CampaignSpec, target_spec: CampaignSpec) -> float:
-    source_params = {(parameter.name, parameter.type.value) for parameter in source_spec.parameters}
-    target_params = {(parameter.name, parameter.type.value) for parameter in target_spec.parameters}
+def _build_alias_index(
+    parameter_aliases: dict[str, list[str]] | None,
+) -> dict[str, str]:
+    """Flatten ``{canonical: [synonym, ...]}`` into a synonym → canonical map.
+
+    Includes the canonical name itself as a self-mapping so the lookup is
+    total: both ``"temperature"`` and ``"temp_c"`` resolve to ``"temperature"``
+    when the user supplies ``{"temperature": ["temp_c"]}``.
+    """
+    if not parameter_aliases:
+        return {}
+    flat: dict[str, str] = {}
+    for canonical, synonyms in parameter_aliases.items():
+        flat[canonical] = canonical
+        for synonym in synonyms:
+            flat[synonym] = canonical
+    return flat
+
+
+def _canonical_name(name: str, alias_index: dict[str, str]) -> str:
+    """Return the canonical parameter name (alias-aware, falling back to ``name``)."""
+    return alias_index.get(name, name)
+
+
+def _compute_parameter_similarity(
+    source_spec: CampaignSpec,
+    target_spec: CampaignSpec,
+    alias_index: dict[str, str],
+) -> float:
+    source_params = {
+        (_canonical_name(parameter.name, alias_index), parameter.type.value)
+        for parameter in source_spec.parameters
+    }
+    target_params = {
+        (_canonical_name(parameter.name, alias_index), parameter.type.value)
+        for parameter in target_spec.parameters
+    }
     if not source_params or not target_params:
         return 0.0
     return len(source_params & target_params) / len(source_params | target_params)
@@ -51,9 +85,19 @@ def _compute_objective_similarity(source_spec: CampaignSpec, target_spec: Campai
     return len(source_objectives & target_objectives) / len(source_objectives | target_objectives)
 
 
-def _compute_bounds_overlap(source_spec: CampaignSpec, target_spec: CampaignSpec) -> float:
-    source_params = {parameter.name: parameter for parameter in source_spec.parameters}
-    target_params = {parameter.name: parameter for parameter in target_spec.parameters}
+def _compute_bounds_overlap(
+    source_spec: CampaignSpec,
+    target_spec: CampaignSpec,
+    alias_index: dict[str, str],
+) -> float:
+    source_params = {
+        _canonical_name(parameter.name, alias_index): parameter
+        for parameter in source_spec.parameters
+    }
+    target_params = {
+        _canonical_name(parameter.name, alias_index): parameter
+        for parameter in target_spec.parameters
+    }
 
     common_params = set(source_params) & set(target_params)
     if not common_params:
@@ -86,10 +130,11 @@ def _compute_overall_similarity(
     source_spec: CampaignSpec,
     target_spec: CampaignSpec,
     n_results: int,
+    alias_index: dict[str, str],
 ) -> tuple[float, dict[str, float]]:
-    parameter_similarity = _compute_parameter_similarity(source_spec, target_spec)
+    parameter_similarity = _compute_parameter_similarity(source_spec, target_spec, alias_index)
     objective_similarity = _compute_objective_similarity(source_spec, target_spec)
-    bounds_overlap = _compute_bounds_overlap(source_spec, target_spec)
+    bounds_overlap = _compute_bounds_overlap(source_spec, target_spec, alias_index)
 
     # Scale data richness threshold with source problem dimensionality:
     # more parameters need more data to be considered "rich"
@@ -181,6 +226,7 @@ async def _evaluate_candidates(
     target_spec: CampaignSpec,
     similarity_threshold: float,
     max_candidates: int,
+    alias_index: dict[str, str],
 ) -> list[dict[str, Any]]:
     """Evaluate all campaigns for transfer learning similarity.
 
@@ -216,6 +262,7 @@ async def _evaluate_candidates(
             candidate_spec,
             target_spec,
             n_results,
+            alias_index,
         )
         if overall_similarity < similarity_threshold:
             continue
@@ -269,8 +316,16 @@ async def discover_transfer_candidates_operation(
     similarity_threshold: float = 0.5,
     max_candidates: int = 5,
     verbosity: str = "standard",
+    parameter_aliases: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
-    """Discover campaigns suitable for transfer learning."""
+    """Discover campaigns suitable for transfer learning.
+
+    ``parameter_aliases`` lets callers bridge parameter-name drift across
+    related campaigns. The mapping uses ``{canonical: [synonym, ...]}``
+    semantics so e.g. ``{"temperature": ["temp_c", "temp_celsius"]}``
+    treats all three names as the same physical parameter when computing
+    parameter-set overlap and bounds overlap.
+    """
     logger.info(
         "Discovering transfer candidates for campaign %s (threshold=%.2f, verbosity=%s)",
         campaign_id,
@@ -282,6 +337,8 @@ async def discover_transfer_candidates_operation(
     if isinstance(validated, dict):
         return validated
     verbosity_level, target_uuid = validated
+
+    alias_index = _build_alias_index(parameter_aliases)
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
@@ -323,6 +380,7 @@ async def discover_transfer_candidates_operation(
             target_spec,
             similarity_threshold,
             max_candidates,
+            alias_index,
         )
 
         full_response = {

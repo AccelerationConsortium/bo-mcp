@@ -1,4 +1,22 @@
-"""SQLAlchemy ORM models."""
+"""SQLAlchemy ORM models.
+
+Immutability contract for the ``parsed_*`` cached properties
+============================================================
+
+Every ``@functools.cached_property`` on these ORM models deserializes a
+JSON text column once per instance and caches the parsed Python object.
+The cache is correct **only** while the backing JSON column and the
+parsed value remain logically immutable. To enforce that:
+
+1. Domain value objects emitted from these models (``InputParameter``,
+   ``Objective``, ``Constraint``, ``CampaignSpec``, ...) are Pydantic
+   models with ``model_config = ConfigDict(frozen=True)`` (see TODO 1.22).
+2. Callers must never assign back into ``*_json`` columns or mutate the
+   list/dict returned by a ``parsed_*`` property in place. Producing a
+   new ORM instance via ``session.merge`` is the only supported edit
+   path. Mutating the cached value would return stale reads on the
+   next access with no error.
+"""
 
 import functools
 import json
@@ -97,19 +115,31 @@ class CampaignSpecModel(Base):
 
     @functools.cached_property
     def parsed_parameters(self) -> list[dict[str, Any]]:
-        """Deserialize parameters JSON (cached per instance)."""
+        """Deserialize parameters JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``parameters_json`` and the returned list as read-only.
+        """
         ctx = f"CampaignSpec({self.id}).parameters"
         return _safe_json_loads(self.parameters_json, default=[], context=ctx)
 
     @functools.cached_property
     def parsed_objectives(self) -> list[dict[str, Any]]:
-        """Deserialize objectives JSON (cached per instance)."""
+        """Deserialize objectives JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``objectives_json`` and the returned list as read-only.
+        """
         ctx = f"CampaignSpec({self.id}).objectives"
         return _safe_json_loads(self.objectives_json, default=[], context=ctx)
 
     @functools.cached_property
     def parsed_constraints(self) -> list[dict[str, Any]]:
-        """Deserialize constraints JSON (cached per instance)."""
+        """Deserialize constraints JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``constraints_json`` and the returned list as read-only.
+        """
         ctx = f"CampaignSpec({self.id}).constraints"
         return _safe_json_loads(self.constraints_json, default=[], context=ctx)
 
@@ -157,7 +187,11 @@ class CampaignModel(Base):
 
     @functools.cached_property
     def parsed_turbo_state(self) -> dict[str, Any] | None:
-        """Deserialize TuRBO state JSON (cached per instance)."""
+        """Deserialize TuRBO state JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``turbo_state_json`` and the returned dict as read-only.
+        """
         if self.turbo_state_json is None:
             return None
         ctx = f"Campaign({self.id}).turbo_state"
@@ -165,7 +199,11 @@ class CampaignModel(Base):
 
     @functools.cached_property
     def parsed_hypervolume_history(self) -> list[float]:
-        """Deserialize hypervolume history JSON (cached per instance)."""
+        """Deserialize hypervolume history JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``hypervolume_history_json`` and the returned list as read-only.
+        """
         if not self.hypervolume_history_json:
             return []
         ctx = f"Campaign({self.id}).hypervolume_history"
@@ -201,11 +239,21 @@ class SuggestionModel(Base):
 
     @functools.cached_property
     def parsed_parameter_values(self) -> dict[str, Any]:
+        """Deserialize parameter values JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``parameter_values_json`` and the returned dict as read-only.
+        """
         ctx = f"Suggestion({self.id}).parameter_values"
         return _safe_json_loads(self.parameter_values_json, default={}, context=ctx)
 
     @functools.cached_property
     def parsed_provenance(self) -> dict[str, Any]:
+        """Deserialize provenance JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``provenance_json`` and the returned dict as read-only.
+        """
         ctx = f"Suggestion({self.id}).provenance"
         return _safe_json_loads(self.provenance_json, default={}, context=ctx)
 
@@ -258,16 +306,31 @@ class ResultModel(Base):
 
     @functools.cached_property
     def parsed_parameter_values(self) -> dict[str, Any]:
+        """Deserialize parameter values JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``parameter_values_json`` and the returned dict as read-only.
+        """
         ctx = f"Result({self.id}).parameter_values"
         return _safe_json_loads(self.parameter_values_json, default={}, context=ctx)
 
     @functools.cached_property
     def parsed_objective_values(self) -> dict[str, float]:
+        """Deserialize objective values JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``objective_values_json`` and the returned dict as read-only.
+        """
         ctx = f"Result({self.id}).objective_values"
         return _safe_json_loads(self.objective_values_json, default={}, context=ctx)
 
     @functools.cached_property
     def parsed_metadata(self) -> dict[str, Any]:
+        """Deserialize metadata JSON (cached per instance).
+
+        Immutability contract: see the module docstring. Treat both
+        ``metadata_json`` and the returned dict as read-only.
+        """
         ctx = f"Result({self.id}).metadata"
         return _safe_json_loads(self.metadata_json, default={}, context=ctx)
 
@@ -296,3 +359,34 @@ class EventModel(Base):
     output_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class IdempotencyCacheModel(Base):
+    """Persisted ``(tool_name, idempotency_key) -> response`` cache.
+
+    Backs the ``idempotency_key`` argument added to state-mutating MCP
+    tools in TODO 1.46. The cache is shared across processes (rows live
+    in the campaign DB) so retries that land on a different worker still
+    short-circuit. Stale rows are pruned on read by
+    :class:`bo_mcp_server.idempotency.IdempotencyStore`.
+
+    ``reservation_token`` is set when the row is first inserted (during
+    reservation) and re-matched on finalize/drop so a slow operation
+    whose reservation expired cannot accidentally overwrite or delete
+    a newer reservation taken by a concurrent retry.
+    """
+
+    __tablename__ = "idempotency_cache"
+
+    tool_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    # SHA256 of the canonical request payload so a re-used key paired
+    # with a different payload is surfaced as a conflict rather than
+    # silently masking a client bug.
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Per-reservation UUID. Nullable for migration compatibility with
+    # rows written before TODO 1.46 follow-up.
+    reservation_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    response_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

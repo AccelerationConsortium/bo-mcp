@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from bo_engine.progress import ProgressCallback
 from bo_engine.types import ObservationData, OptimizationSpec
 
 if TYPE_CHECKING:
@@ -182,6 +183,7 @@ class BOBackend(Protocol):
         iteration: int,
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
         """Generate model-guided suggestions.
 
@@ -196,6 +198,11 @@ class BOBackend(Protocol):
                 batch / parallel acquisition (e.g. BoTorch) should forward
                 these to the acquisition optimizer as ``X_pending`` so new
                 candidates do not cluster around the pending batch.
+            progress_callback: Optional synchronous hook invoked at coarse
+                milestones (GP fit start, acquisition start/done, etc.).
+                See :class:`bo_engine.progress.ProgressEvent` for the
+                contract. Backends are free to ignore the callback —
+                ``None`` is the default and recovers the silent behavior.
 
         Returns:
             SuggestionBatch with suggestions and updated state.
@@ -258,6 +265,7 @@ class BOBackend(Protocol):
         spec: OptimizationSpec,
         observations: list[ObservationData],
         sections: frozenset[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Compute model-based diagnostics for a campaign.
 
@@ -274,6 +282,10 @@ class BOBackend(Protocol):
             sections: Which diagnostic sections to compute.  When *None*,
                 compute all.  Valid values are defined in
                 :class:`DiagnosticSection`.
+            progress_callback: Optional synchronous hook for coarse
+                milestone reporting (see
+                :class:`bo_engine.progress.ProgressEvent`). Backends may
+                ignore it.
 
         Returns:
             Dictionary with computed diagnostics.  Keys depend on

@@ -71,6 +71,14 @@ def create_mcp_server() -> FastMCP:
     """
     logger.info("Creating MCP server...")
 
+    # Wire the enum-aware ``completion/complete`` handler so agents
+    # discover valid values for ``status`` / ``acquisition_method`` /
+    # ``backend`` / ``action`` / etc. without resorting to trial-and-
+    # error retries. Lazy import keeps the dependency graph clean for
+    # tests that only exercise tools.
+    from bo_mcp_server.completion import (  # noqa: PLC0415
+        register_completion_handler,
+    )
     from bo_mcp_server.resources import (  # noqa: F401, PLC0415
         campaign_resource,
         events_resource,
@@ -95,6 +103,31 @@ def create_mcp_server() -> FastMCP:
         upload_results_file,
         validate_intake,
     )
+
+    register_completion_handler(mcp)
+
+    # Wire ``resources/subscribe`` + ``resources/unsubscribe`` so
+    # long-running agents can stop polling ``campaign://{id}`` for
+    # state transitions. Notifications are emitted by the lifecycle
+    # operations themselves (see :mod:`bo_mcp_server.subscriptions`).
+    from bo_mcp_server.subscriptions import (  # noqa: PLC0415
+        register_subscription_handlers,
+    )
+
+    register_subscription_handlers(mcp)
+
+    # Convert FastMCP's argument-validation ``ToolError`` (raised when
+    # callers send missing / wrongly-typed scalars like ``owner_id``,
+    # ``campaign_id``, ``submitted_by``, or boolean flags) into our
+    # structured ``field_errors`` envelope. Without this, FastMCP
+    # would intercept those failures before the tool body runs and
+    # agents would see opaque ToolError text instead of an
+    # addressable per-field response.
+    from bo_mcp_server.tool_boundary import (  # noqa: PLC0415
+        install_validation_envelope_wrapper,
+    )
+
+    install_validation_envelope_wrapper(mcp)
 
     n_tools = len(mcp._tool_manager._tools)
     logger.info("MCP server created with %d tools and 3 resources", n_tools)

@@ -206,6 +206,76 @@ class TestCampaignParityRoutes:
         assert data["candidates"]
         assert data["candidates"][0]["name"] == "Source Transfer Campaign"
 
+    @pytest.mark.asyncio
+    async def test_transfer_candidates_route_honors_parameter_aliases(
+        self,
+        api_client,
+        auth_headers,
+        persisted_user,
+    ):
+        """The REST transfer endpoint passes ``parameter_aliases`` through to the operation.
+
+        Without the alias map, ``temperature`` vs ``temp_c`` look like
+        disjoint parameter sets and the Jaccard intersection collapses
+        to zero. With the alias, the canonical name unifies the two
+        and the source surfaces as a candidate.
+        """
+        owner_id = str(persisted_user.id)
+        source = await create_campaign(
+            {
+                "name": "Aliased REST Source",
+                "parameters": [
+                    {"name": "temperature", "type": "continuous", "bounds": [20.0, 100.0]},
+                ],
+                "objectives": [{"name": "yield", "direction": "maximize"}],
+            },
+            owner_id,
+        )
+        await generate_suggestions(source["campaign_id"])
+        await submit_results(
+            source["campaign_id"],
+            _to_result_inputs(
+                [
+                    {"parameter_values": {"temperature": 25.0}, "objective_values": {"yield": 0.5}},
+                    {"parameter_values": {"temperature": 50.0}, "objective_values": {"yield": 0.7}},
+                    {"parameter_values": {"temperature": 75.0}, "objective_values": {"yield": 0.6}},
+                ]
+            ),
+            owner_id,
+        )
+        target = await create_campaign(
+            {
+                "name": "Aliased REST Target",
+                "parameters": [
+                    {"name": "temp_c", "type": "continuous", "bounds": [30.0, 90.0]},
+                ],
+                "objectives": [{"name": "yield", "direction": "maximize"}],
+            },
+            owner_id,
+        )
+
+        response = await api_client.post(
+            f"/api/campaigns/{target['campaign_id']}/transfer-candidates",
+            json={
+                "similarity_threshold": 0.0,
+                "max_candidates": 5,
+                "verbosity": "detailed",
+                "parameter_aliases": {"temperature": ["temp_c"]},
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        candidates = data["candidates"]
+        assert candidates, "aliases must reveal the renamed source campaign"
+        top = candidates[0]
+        assert top["name"] == "Aliased REST Source"
+        # ``parameter_similarity`` is part of ``component_scores`` at detailed verbosity.
+        if "component_scores" in top:
+            assert top["component_scores"]["parameter_similarity"] > 0.0
+
 
 class TestSuggestionParityRoutes:
     @pytest.mark.asyncio

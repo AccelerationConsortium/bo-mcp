@@ -10,6 +10,7 @@ from bo_mcp_server.operations.diagnostics.actions import (
 )
 from bo_mcp_server.operations.diagnostics.constraints import (
     compute_constraint_satisfaction_metrics,
+    compute_outcome_constraint_calibration_metrics,
 )
 from bo_mcp_server.operations.diagnostics.convergence import (
     compute_convergence_diagnostics,
@@ -36,6 +37,7 @@ __all__ = [
     "compute_health_and_progress",
     "compute_next_action_recommendation",
     "compute_objective_ranges",
+    "compute_outcome_constraint_calibration_metrics",
     "compute_suggestion_diversity_metrics",
     "compute_uncertainty_trends",
     "enrich_diagnostics",

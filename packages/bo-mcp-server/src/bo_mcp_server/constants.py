@@ -3,16 +3,29 @@
 Centralizes magic numbers and thresholds used in operations so they are
 documented, tunable, and consistent. Engine-level constants live in
 ``bo_engine.constants``; this module is for the MCP/API server layer.
+
+Health-status thresholds (``HYPERVOLUME_STABILITY_THRESHOLD``,
+``FALLBACK_HYPERVOLUME_IMPROVEMENT``) live in :mod:`bo_engine.constants`
+so engine and server agree on what "stable" / "fallback improvement"
+mean. They are re-exported below for callers that historically imported
+them from this module.
 """
 
-# =============================================================================
-# Hypervolume Convergence (batch_status, diagnostics health)
-# =============================================================================
+from bo_engine.constants import (
+    FALLBACK_HYPERVOLUME_IMPROVEMENT,
+    HYPERVOLUME_STABILITY_THRESHOLD,
+)
 
-# Relative threshold for hypervolume stability detection.
-# If max - min of recent HV values is below this fraction of the latest HV,
-# convergence is considered likely.
-HYPERVOLUME_STABILITY_THRESHOLD = 0.001
+__all__ = [
+    "CONCURRENT_MODIFICATION_RETRY_AFTER_SECONDS",
+    "DIVERSITY_HIGH_THRESHOLD",
+    "DIVERSITY_MODERATE_THRESHOLD",
+    "FALLBACK_HYPERVOLUME_IMPROVEMENT",
+    "HYPERVOLUME_STABILITY_THRESHOLD",
+    "TRANSFER_SIMILARITY_GOOD",
+    "TRANSFER_SIMILARITY_MODERATE",
+    "TRANSFER_SIMILARITY_STRONG",
+]
 
 # =============================================================================
 # Diversity Interpretation (diagnostics suggestions analysis)
@@ -36,13 +49,6 @@ TRANSFER_SIMILARITY_GOOD = 0.6
 
 # Score above which a candidate is "possible"
 TRANSFER_SIMILARITY_MODERATE = 0.4
-
-# =============================================================================
-# Diagnostics Health (hypervolume analysis fallback)
-# =============================================================================
-
-# Assumed HV improvement when only 2 results exist and HV > 0
-FALLBACK_HYPERVOLUME_IMPROVEMENT = 0.1
 
 # =============================================================================
 # Concurrency / Optimistic Locking (submit_results, campaign_lifecycle,

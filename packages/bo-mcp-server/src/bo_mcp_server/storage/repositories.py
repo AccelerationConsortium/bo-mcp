@@ -1,10 +1,11 @@
 """Repository implementations."""
 
 import json
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain import (
@@ -169,7 +170,14 @@ class CampaignSpecRepository:
     async def save(self, spec: CampaignSpec, spec_id: UUID) -> CampaignSpec:
         """Save campaign spec with explicit ID (specs are immutable)."""
         acq_opt = spec.acquisition_optimization
-        backend_options_json = json.dumps(spec.backend_options) if spec.backend_options else None
+        # ``backend_options`` is wrapped in nested ``MappingProxyType`` views
+        # by the domain validator; ``json.dumps`` cannot serialize those
+        # directly, so materialize a plain nested dict at the boundary.
+        backend_options_json = (
+            json.dumps({k: dict(v) for k, v in spec.backend_options.items()})
+            if spec.backend_options
+            else None
+        )
         advanced_options_json = _serialize_advanced_options(spec)
         model = CampaignSpecModel(
             id=str(spec_id),
@@ -248,6 +256,10 @@ class CampaignSpecRepository:
                 direction=o["direction"],
                 unit=o.get("unit", ""),
                 target=o.get("target"),
+                # ``log_transform`` was added after some rows were
+                # already persisted; default to ``False`` for legacy
+                # JSON blobs that pre-date the field.
+                log_transform=o.get("log_transform", False),
             )
             for o in model.get_objectives()
         ]
@@ -282,9 +294,9 @@ class CampaignSpecRepository:
         return CampaignSpec(
             name=model.name,
             description=model.description,
-            parameters=parameters,
-            objectives=objectives,
-            constraints=constraints,
+            parameters=tuple(parameters),
+            objectives=tuple(objectives),
+            constraints=tuple(constraints),
             batch_size=model.batch_size,
             max_iterations=model.max_iterations,
             max_observations=getattr(model, "max_observations", None),
@@ -368,6 +380,54 @@ class CampaignRepository:
             query = query.offset(offset)
         if limit is not None:
             query = query.limit(limit)
+
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
+
+    async def list_keyset(
+        self,
+        owner_id: UUID | None = None,
+        status: CampaignStatus | None = None,
+        cursor_created_at: datetime | None = None,
+        cursor_id: str | None = None,
+        limit: int = 20,
+    ) -> tuple[list[Campaign], int]:
+        """List campaigns via keyset pagination on ``(created_at, id)``.
+
+        The ordering is ascending so the cursor advances forward in
+        time. Under concurrent inserts, this gives a stable window:
+        rows the agent has already paged past will never re-appear, and
+        new rows always show up after the current cursor position.
+
+        ``total_count`` is still reported so the agent can show "X of N"
+        when desired; under concurrency the totals can drift, which is
+        why the cursor (not the offset) is the load-bearing contract.
+        """
+        base_filters: list[Any] = []
+        if owner_id is not None:
+            base_filters.append(CampaignModel.owner_id == str(owner_id))
+        if status is not None:
+            base_filters.append(CampaignModel.status == status)
+
+        count_query = select(func.count()).select_from(CampaignModel)
+        if base_filters:
+            count_query = count_query.where(*base_filters)
+        total_count = (await self.session.execute(count_query)).scalar_one()
+
+        query = select(CampaignModel)
+        if base_filters:
+            query = query.where(*base_filters)
+        if cursor_created_at is not None and cursor_id is not None:
+            query = query.where(
+                or_(
+                    CampaignModel.created_at > cursor_created_at,
+                    and_(
+                        CampaignModel.created_at == cursor_created_at,
+                        CampaignModel.id > cursor_id,
+                    ),
+                )
+            )
+        query = query.order_by(CampaignModel.created_at.asc(), CampaignModel.id.asc()).limit(limit)
 
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
@@ -543,6 +603,47 @@ class SuggestionRepository:
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
+    async def list_by_campaign_keyset(
+        self,
+        campaign_id: UUID,
+        status: SuggestionStatus | None = None,
+        cursor_created_at: datetime | None = None,
+        cursor_id: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[Suggestion], int]:
+        """List suggestions via keyset pagination on ``(created_at, id)``.
+
+        Ascending order keeps the page sequence stable while the
+        backend issues new suggestions concurrently (a common pattern
+        in live agent workflows that interleave generation and review).
+        """
+        base_filters: list[Any] = [SuggestionModel.campaign_id == str(campaign_id)]
+        if status is not None:
+            base_filters.append(SuggestionModel.status == status)
+
+        total_count = (
+            await self.session.execute(
+                select(func.count()).select_from(SuggestionModel).where(*base_filters)
+            )
+        ).scalar_one()
+
+        query = select(SuggestionModel).where(*base_filters)
+        if cursor_created_at is not None and cursor_id is not None:
+            query = query.where(
+                or_(
+                    SuggestionModel.created_at > cursor_created_at,
+                    and_(
+                        SuggestionModel.created_at == cursor_created_at,
+                        SuggestionModel.id > cursor_id,
+                    ),
+                )
+            )
+        query = query.order_by(SuggestionModel.created_at.asc(), SuggestionModel.id.asc()).limit(
+            limit
+        )
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
+
     async def save(self, suggestion: Suggestion) -> Suggestion:
         """Save suggestion."""
         model = SuggestionModel(
@@ -715,6 +816,43 @@ class ResultRepository:
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
+    async def list_by_campaign_keyset(
+        self,
+        campaign_id: UUID,
+        cursor_created_at: datetime | None = None,
+        cursor_id: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[Result], int]:
+        """List results via keyset pagination on ``(created_at, id)``.
+
+        Ascending order matches the canonical insertion order already
+        used by ``list_by_campaign`` (convergence trajectory) so callers
+        paginating through results see them in submission order, never
+        skipping or duplicating under concurrent writes.
+        """
+        base_where = ResultModel.campaign_id == str(campaign_id)
+        total_count = (
+            await self.session.execute(
+                select(func.count()).select_from(ResultModel).where(base_where)
+            )
+        ).scalar_one()
+
+        query = select(ResultModel).where(base_where)
+        if cursor_created_at is not None and cursor_id is not None:
+            query = query.where(
+                or_(
+                    ResultModel.created_at > cursor_created_at,
+                    and_(
+                        ResultModel.created_at == cursor_created_at,
+                        ResultModel.id > cursor_id,
+                    ),
+                )
+            )
+        query = query.order_by(ResultModel.created_at.asc(), ResultModel.id.asc()).limit(limit)
+
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()], total_count
+
     async def list_by_campaigns(self, campaign_ids: list[UUID]) -> dict[UUID, list[Result]]:
         """List results for multiple campaigns in a single query.
 
@@ -855,13 +993,26 @@ class EventRepository:
         self.session = session
 
     async def save(self, event: Event) -> Event:
-        """Save an audit event."""
+        """Save an audit event.
+
+        The active workflow ``trace_id`` (if any) is spliced into
+        ``input_summary`` so every event-emitting path — the
+        ``audit.log_tool_call`` helper, lifecycle / status operations
+        that write Events directly — picks it up uniformly. Centralizing
+        the splice here means future callers cannot forget it.
+        """
+        from bo_mcp_server.trace_context import get_trace_id  # noqa: PLC0415
+
+        enriched_input = dict(event.input_summary)
+        trace_id = get_trace_id()
+        if trace_id is not None and "trace_id" not in enriched_input:
+            enriched_input["trace_id"] = trace_id
         model = EventModel(
             id=str(event.id),
             campaign_id=str(event.campaign_id) if event.campaign_id else None,
             event_type=event.event_type,
             tool_name=event.tool_name,
-            input_summary_json=json.dumps(event.input_summary),
+            input_summary_json=json.dumps(enriched_input),
             output_summary_json=json.dumps(event.output_summary),
             actor_id=event.actor_id,
             created_at=event.created_at,

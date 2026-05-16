@@ -5,69 +5,47 @@ same payload can drive either transport. Unknown extras are rejected
 with ``model_config={"extra": "forbid"}`` so misspelled or
 not-yet-supported keys fail loudly instead of disappearing silently —
 that was the pre-1.66 behavior and it produced confused agents.
+
+Parameter, objective, and constraint nested models are the canonical
+domain types from :mod:`bo_mcp_server.domain`. This lets the REST handler
+hand the validated nested instances straight to ``CampaignIntakeInput``
+without a ``model_dump() -> model_validate()`` round-trip (TODO 1.24).
 """
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
-
-
-class ParameterInput(BaseModel):
-    """Parameter definition input.
-
-    ``parameter_options`` is a per-backend metadata dict keyed by backend
-    name (BayBE encoding choice, task-parameter active values, etc.). It
-    flows through to ``CampaignSpec.parameters[*].parameter_options``.
-    """
-
-    name: str = Field(..., min_length=1)
-    type: str = Field(..., pattern="^(continuous|discrete|categorical)$")
-    bounds: list[float] | None = None
-    values: list[float] | None = None
-    categories: list[str] | None = None
-    description: str = ""
-    parameter_options: dict[str, dict[str, Any]] | None = None
-
-    model_config = {"extra": "forbid"}
-
-
-class ObjectiveInput(BaseModel):
-    """Objective definition input."""
-
-    name: str = Field(..., min_length=1)
-    direction: str = Field(..., pattern="^(minimize|maximize)$")
-    unit: str = ""
-    target: float | None = None
-
-    model_config = {"extra": "forbid"}
-
-
-class ConstraintInput(BaseModel):
-    """Constraint definition input."""
-
-    type: str = Field(..., pattern="^(sum_equals|sum_less_than|sum_greater_than|linear)$")
-    parameters: list[str]
-    value: float
-    coefficients: list[float] | None = None
-
-    model_config = {"extra": "forbid"}
+from bo_mcp_server.client import (
+    Constraint,
+    InputParameter,
+    Objective,
+)
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IntakeData(BaseModel):
     """Campaign intake data schema for the REST API.
 
     Field set mirrors ``bo_mcp_server.domain.CampaignIntakeInput`` so the
-    same JSON payload works on either transport. Field-level validation
-    (constraint references, backend_options key matching, ...) happens
-    when the dict is passed to ``CampaignIntakeInput.model_validate(...)``
-    in the route handler.
+    same JSON payload works on either transport. The ``parameters``,
+    ``objectives``, and ``constraints`` fields use the canonical domain
+    types directly — when the REST handler forwards a validated
+    ``IntakeData`` to ``CampaignIntakeInput`` it can pass the already-
+    parsed nested instances through without re-dumping to a dict.
+
+    The advanced cross-backend knobs (``turbo_config``, ``saasbo_config``,
+    ``fidelity_parameter``, ``transfer_learning``,
+    ``outcome_constraints``, ``acquisition_optimization``) stay typed as
+    plain ``dict`` here so the REST schema does not couple to the
+    backend-specific Pydantic configs; ``CampaignIntakeInput`` /
+    ``CampaignSpec`` re-validate the inner shape and raise 422 on
+    malformed payloads.
     """
 
     name: str = Field(..., min_length=1)
     description: str = ""
-    parameters: list[ParameterInput]
-    objectives: list[ObjectiveInput]
-    constraints: list[ConstraintInput] = Field(default_factory=list)
+    parameters: tuple[InputParameter, ...]
+    objectives: tuple[Objective, ...]
+    constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
     batch_size: int = Field(default=1, ge=1)
     max_iterations: int | None = None
     max_observations: int | None = Field(default=None, ge=1)
@@ -75,12 +53,12 @@ class IntakeData(BaseModel):
     initial_design_size: int | None = None
     random_seed: int | None = None
     acquisition_optimization: dict[str, Any] | None = None
-    backend: str = Field(default="auto", pattern="^(auto|botorch|baybe)$")
+    # ``Literal`` mirrors :class:`bo_mcp_server.domain.CampaignIntakeInput`
+    # so the REST OpenAPI schema advertises an explicit ``enum`` constraint
+    # and the route handler can pass the value straight through without a
+    # ``ty: ignore`` widening cast.
+    backend: Literal["auto", "botorch", "baybe"] = "auto"
     backend_options: dict[str, dict[str, Any]] | None = None
-    # Advanced spec knobs — typed as ``dict`` at the REST boundary so the
-    # REST schema does not couple to backend-specific Pydantic models.
-    # ``CampaignIntakeInput`` / ``CampaignSpec`` re-validate the inner
-    # shape, raising 422 on malformed payloads.
     # Default ``"auto"`` matches the MCP ``CampaignIntakeInput`` default
     # so an omitted field produces identical behavior on both transports.
     acquisition_method: str = "auto"
@@ -92,4 +70,4 @@ class IntakeData(BaseModel):
     transfer_learning: dict[str, Any] | None = None
     outcome_constraints: list[dict[str, Any]] = Field(default_factory=list)
 
-    model_config = {"extra": "forbid"}
+    model_config = ConfigDict(extra="forbid")

@@ -109,6 +109,18 @@ TURBO_EXPANSION_FACTOR = 2.0
 # Trust region contraction factor (divide by this on failure)
 TURBO_CONTRACTION_FACTOR = 2.0
 
+# TuRBO's expand/contract logic compares improvement against
+# ``IMPROVEMENT_TOLERANCE_RELATIVE * abs(best_value)`` (see
+# ``update_turbo_state``). That cadence is calibrated to unit-standardized
+# targets — ``Standardize(m=1)`` keeps ``train_Y`` at mean≈0, std≈1, so the
+# improvement tolerance lands in the noise floor rather than at a fraction of
+# the natural objective scale. ``TURBO_UNIT_SCALE_*`` bound the *unstandardized*
+# training targets we accept without warning: ``|mean| > MAX`` or ``std`` outside
+# ``[MIN, MAX]`` triggers a warning recommending an outcome transform.
+TURBO_UNIT_SCALE_MEAN_ABS_MAX = 10.0
+TURBO_UNIT_SCALE_STD_MIN = 0.05
+TURBO_UNIT_SCALE_STD_MAX = 20.0
+
 # =============================================================================
 # Acquisition Optimization
 # =============================================================================
@@ -133,6 +145,13 @@ RAW_SAMPLES_PER_DIM = 32
 # so the cap only bites well beyond the typical campaign size.
 NUM_RESTARTS_MAX = 200
 RAW_SAMPLES_MAX = 8192
+
+# Relative gap between the best and the median restart acquisition value
+# below which ``optimize_acquisition`` emits a "widespread local minima"
+# warning. The check guards against silent restart collapse — when most
+# restarts converge to acquisition values close to the best, multi-start is
+# no longer probing distinct basins and the BO algorithm is likely trapped.
+RESTART_WARN_TOLERANCE = 0.05
 
 # Legacy compatibility aliases. Existing callers still reference these names;
 # they resolve to the base counts used by the dimension-adaptive formula.
@@ -171,6 +190,15 @@ REFERENCE_POINT_PADDING = 0.1
 # Minimum range to avoid numerical issues
 MIN_OBJECTIVE_RANGE = 1e-6
 
+# Floor for the per-objective margin window expressed as a fraction of
+# ``abs(worst)``. The static reference point uses
+# ``ref = worst + margin * max(range, abs(worst) * RELATIVE_TOLERANCE)`` so that
+# objectives whose observed range collapses near zero still keep a margin
+# proportional to their absolute scale; without it large-magnitude objectives
+# with a tiny spread would receive an effectively zero offset and degenerate
+# hypervolume.
+REFERENCE_POINT_RELATIVE_TOLERANCE = 0.01
+
 # =============================================================================
 # Numerical Stability
 # =============================================================================
@@ -178,6 +206,17 @@ MIN_OBJECTIVE_RANGE = 1e-6
 # General-purpose epsilon for division guards and near-zero checks.
 # Use for denominators, range checks, and absolute-value comparisons.
 NUMERICAL_EPSILON = 1e-10
+
+
+def is_zero(value: float, tol: float = NUMERICAL_EPSILON) -> bool:
+    """Return ``True`` when ``value`` is within ``tol`` of zero.
+
+    Use in place of bare ``x == 0`` / ``x != 0`` checks on computed
+    floats so finite-precision artifacts (a result of order 1e-16
+    instead of an exact zero) do not flip the branch.
+    """
+    return abs(value) <= tol
+
 
 # Epsilon for clamping standard deviations and values before log().
 # Slightly larger than NUMERICAL_EPSILON to avoid log-space underflow
@@ -249,6 +288,20 @@ PROGRESS_IMPROVING_MULTIPLIER = 1.01
 
 # Multiplier for recent value comparison (considered regressing if < 0.99)
 PROGRESS_REGRESSING_MULTIPLIER = 0.99
+
+# =============================================================================
+# Hypervolume Trajectory Thresholds (analyze_hypervolume_history)
+# =============================================================================
+
+# Relative change below this counts as a "no-improvement" step when scanning
+# the tail of the hypervolume history for stagnation.
+HYPERVOLUME_STABILITY_THRESHOLD = 0.001
+
+# Synthetic improvement value used when only a single hypervolume reading is
+# available but a non-zero hypervolume has been observed. Keeps single-step
+# multi-objective campaigns out of "critical" while genuine stagnation is
+# still detectable once a second sample arrives.
+FALLBACK_HYPERVOLUME_IMPROVEMENT = 0.1
 
 # =============================================================================
 # Random Seeds
@@ -377,6 +430,19 @@ CONSTRAINT_PROBABILITY_THRESHOLD = 0.5
 # Weight for expected constraint violation in acquisition
 CONSTRAINT_VIOLATION_WEIGHT = 1.0
 
+# Calibration error (mean absolute deviation between predicted feasibility
+# probability and realized binary feasibility) above which the outcome
+# constraint model is considered miscalibrated. Surfaced by
+# ``assess_constraint_model_quality`` and lifted into ``get_diagnostics`` so
+# agents can react to overconfident feasibility predictions before scheduling
+# expensive experiments.
+CONSTRAINT_CALIBRATION_WARN_THRESHOLD = 0.1
+
+# Number of equal-width probability bins used to compute the expected
+# calibration error (ECE) for outcome constraint models. Ten bins is the
+# textbook default (Guo et al., 2017; Naeini et al., 2015).
+CONSTRAINT_CALIBRATION_N_BINS = 10
+
 # =============================================================================
 # Cross-Validation Optimization (Section 2.4)
 # =============================================================================
@@ -414,11 +480,19 @@ SENSITIVITY_HIGH_THRESHOLD = 0.5
 SENSITIVITY_MEDIUM_THRESHOLD = 0.2
 
 # =============================================================================
+# Shared Confidence Levels
+# =============================================================================
+
+# Canonical confidence levels used by prediction-interval and calibration
+# diagnostics.  Defined once so the two consumers cannot drift apart silently.
+COMMON_CONFIDENCE_LEVELS = [0.5, 0.9, 0.95]
+
+# =============================================================================
 # Prediction Intervals (Section 3.2)
 # =============================================================================
 
 # Default confidence levels for prediction intervals
-PREDICTION_INTERVAL_DEFAULT_LEVELS = [0.5, 0.9, 0.95]
+PREDICTION_INTERVAL_DEFAULT_LEVELS = COMMON_CONFIDENCE_LEVELS
 
 # Epsilon for numerical stability in PI computations
 PREDICTION_INTERVAL_EPSILON = 1e-8
@@ -428,7 +502,7 @@ PREDICTION_INTERVAL_EPSILON = 1e-8
 # =============================================================================
 
 # Confidence levels to check for calibration
-CALIBRATION_CONFIDENCE_LEVELS = [0.5, 0.9, 0.95]
+CALIBRATION_CONFIDENCE_LEVELS = COMMON_CONFIDENCE_LEVELS
 
 # Threshold for "good" calibration (mean error below this)
 CALIBRATION_GOOD_THRESHOLD = 0.1

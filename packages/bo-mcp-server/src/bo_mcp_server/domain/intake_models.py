@@ -1,8 +1,8 @@
 """Pydantic input models for MCP tool payloads."""
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from bo_mcp_server.domain.campaign_spec import (
     AcquisitionMethod,
@@ -16,6 +16,7 @@ from bo_mcp_server.domain.campaign_spec import (
     TransferLearningConfig,
     TurboConfig,
 )
+from bo_mcp_server.domain.result import ResultMetadata
 
 
 class CampaignIntakeInput(BaseModel):
@@ -30,9 +31,9 @@ class CampaignIntakeInput(BaseModel):
 
     name: str = Field(..., min_length=1)
     description: str = ""
-    parameters: list[InputParameter] = Field(..., min_length=1)
-    objectives: list[Objective] = Field(..., min_length=1)
-    constraints: list[Constraint] = Field(default_factory=list)
+    parameters: tuple[InputParameter, ...] = Field(..., min_length=1)
+    objectives: tuple[Objective, ...] = Field(..., min_length=1)
+    constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
     batch_size: int = Field(default=1, ge=1)
     max_iterations: int | None = None
     # Budget / convergence-based stopping (optional). Mirrors the fields on
@@ -48,7 +49,10 @@ class CampaignIntakeInput(BaseModel):
     # Per-campaign override for L-BFGS-B restart count / raw-sample budget.
     # Leave None to use the dimension-adaptive defaults in bo-engine.
     acquisition_optimization: AcquisitionOptimizationConfig | None = None
-    backend: str = Field(default="auto", pattern="^(auto|botorch|baybe)$")
+    # ``Literal`` produces an explicit ``enum`` constraint in the
+    # generated MCP tool schema, so agents discover the valid backend
+    # selectors directly from the schema instead of by failing requests.
+    backend: Literal["auto", "botorch", "baybe"] = "auto"
     # Typed backend-native option surface; see ``CampaignSpec.backend_options``.
     # Validation rejects options addressed to an explicit non-matching backend
     # so misrouted knobs surface at intake instead of silently disappearing.
@@ -63,7 +67,7 @@ class CampaignIntakeInput(BaseModel):
     saasbo_config: SaasboConfig | None = None
     fidelity_parameter: FidelityParameter | None = None
     transfer_learning: TransferLearningConfig | None = None
-    outcome_constraints: list[OutcomeConstraint] = Field(default_factory=list)
+    outcome_constraints: tuple[OutcomeConstraint, ...] = Field(default_factory=tuple)
 
     model_config = {"extra": "forbid"}
 
@@ -113,13 +117,106 @@ class CampaignIntakeInput(BaseModel):
         return self
 
 
+_DEFS_KEY = "$defs"
+_REF_KEY = "$ref"
+_REF_PREFIX = f"#/{_DEFS_KEY}/"
+
+
+def inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline ``$ref`` pointers so the schema stands alone.
+
+    Pydantic emits nested models as ``$defs`` references rooted at the
+    outer schema. When we splice a sub-schema into another model's
+    ``json_schema_extra`` those references dangle, so we walk the tree
+    and substitute the referenced definitions in place. This keeps the
+    spliced schema self-contained.
+    """
+    defs = schema.get(_DEFS_KEY, {})
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            ref = node.get(_REF_KEY)
+            if isinstance(ref, str) and ref.startswith(_REF_PREFIX):
+                target = ref[len(_REF_PREFIX) :]
+                if target in defs:
+                    return walk(defs[target])
+            return {k: walk(v) for k, v in node.items() if k != _DEFS_KEY}
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    return walk(schema)
+
+
+# Back-compat private alias retained for any callers that imported the
+# pre-rename symbol; new code should use :func:`inline_defs`.
+_inline_defs = inline_defs
+
+
+# Projected JSON schemas re-used by tools that accept the corresponding
+# payload as a raw ``dict`` / ``list[dict]`` at the MCP boundary
+# (TODO 1.53 follow-up). Keeping the runtime type loose lets the
+# operation layer convert ``ValidationError`` into our
+# ``field_errors`` envelope instead of letting FastMCP's pre-call
+# validation raise an opaque ``ToolError``. ``json_schema_extra``
+# splices the rich nested schema back into the tool definition so
+# agent introspection still sees the documented fields.
+_METADATA_SCHEMA = inline_defs(ResultMetadata.model_json_schema())
+INTAKE_INPUT_JSON_SCHEMA = inline_defs(CampaignIntakeInput.model_json_schema())
+RESULT_SUBMISSION_JSON_SCHEMA: dict[str, Any] = {}  # populated after ResultSubmissionInput
+
+
 class ResultSubmissionInput(BaseModel):
-    """Validated input payload for each submitted result."""
+    """Validated input payload for each submitted result.
+
+    The ``metadata`` blob is validated against :class:`ResultMetadata`
+    so unknown keys fail at intake with a 422 / structured error envelope
+    rather than being silently dropped on the way to storage. The
+    consumed key set is documented on ``ResultMetadata``; submit a
+    no-metadata batch by omitting the field or passing ``{}``.
+    """
 
     parameter_values: dict[str, Any]
     objective_values: dict[str, float]
     suggestion_id: str | None = None
     measurement_uncertainty: dict[str, float] | None = None  # Per-objective noise std
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    # Runtime type is dict[str, Any] for backward-compat with persisted
+    # rows; the JSON schema is overridden to reference the
+    # ResultMetadata key set so agents introspect the documented schema.
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Optional per-result metadata. Validated against the "
+            "ResultMetadata schema (see properties below); unknown keys "
+            "are rejected at intake."
+        ),
+        json_schema_extra={
+            "properties": _METADATA_SCHEMA.get("properties", {}),
+            "$defs": _METADATA_SCHEMA.get("$defs", {}),
+            "additionalProperties": False,
+        },
+    )
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("metadata")
+    @classmethod
+    def _validate_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Reject unknown metadata keys at intake time.
+
+        Round-trips through :class:`ResultMetadata` so the schema lives
+        in one place. We re-dump (excluding unset fields) so the stored
+        blob keeps its original shape — callers do not get
+        ``{"cost": null, "operator": null, ...}`` filled in for keys
+        they never sent.
+        """
+        if not value:
+            return value
+        typed = ResultMetadata.model_validate(value)
+        return typed.model_dump(exclude_unset=True, mode="json")
+
+
+# Populate the projected ``ResultSubmissionInput`` schema once the
+# class above is fully defined. We re-inline so a refactor that adds a
+# new nested model to the submission payload picks up automatically.
+RESULT_SUBMISSION_JSON_SCHEMA = inline_defs(ResultSubmissionInput.model_json_schema())

@@ -25,6 +25,15 @@ from baybe.parameters import (
 )
 from baybe.searchspace import SearchSpace
 from baybe.targets import NumericalTarget
+from bo_engine.spec_ir import (
+    ConstraintTargetClass,
+    NormalizedConstraint,
+    NormalizedSpec,
+    normalize_spec,
+)
+from bo_engine.spec_ir import (
+    classify_constraint_target as _classify_constraint_target,
+)
 from bo_engine.types import (
     ConstraintSpec,
     ConstraintType,
@@ -93,16 +102,14 @@ def _build_categorical_parameter(
 
     ``role=task`` produces a :class:`TaskParameter`; ``role=substance``
     produces a :class:`SubstanceParameter` with the user-provided SMILES
-    map; otherwise a vanilla :class:`CategoricalParameter` is returned with
-    the requested encoding. Constructor calls go through BayBE's attrs
-    ``alias="values"`` convention, which the type checker cannot follow —
-    the explicit ``ty: ignore`` keeps the cast localized.
+    map; otherwise a vanilla :class:`CategoricalParameter` is returned
+    with the requested encoding.
     """
     assert p.categories is not None
     categories = tuple(p.categories)
     if opts.role == BayBEParameterRole.TASK:
         active = tuple(opts.active_values) if opts.active_values else categories
-        return TaskParameter(p.name, categories, active_values=active)  # ty: ignore[unknown-argument]
+        return TaskParameter(p.name, categories, active_values=active)
     if opts.role == BayBEParameterRole.SUBSTANCE:
         if not opts.substance_data:
             msg = (
@@ -116,7 +123,7 @@ def _build_categorical_parameter(
         return SubstanceParameter(
             name=p.name,
             data=dict(opts.substance_data),
-            encoding=substance_encoding,  # ty: ignore[invalid-argument-type]
+            encoding=substance_encoding,
         )
     encoding = (
         opts.encoding.value if opts.encoding is not None else BayBEParameterEncoding.OHE.value
@@ -124,7 +131,7 @@ def _build_categorical_parameter(
     return CategoricalParameter(
         p.name,
         categories,
-        encoding=encoding,  # ty: ignore[parameter-already-assigned, invalid-argument-type]
+        encoding=encoding,  # ty: ignore[parameter-already-assigned]
     )
 
 
@@ -143,11 +150,19 @@ def spec_to_parameters(
 
 
 def spec_to_searchspace(spec: OptimizationSpec) -> SearchSpace:
-    """Convert OptimizationSpec to BayBE SearchSpace."""
+    """Convert OptimizationSpec to BayBE SearchSpace.
+
+    The BayBE constraint dispatch (continuous vs. discrete vs. unsupported)
+    runs once via :func:`bo_engine.spec_ir.normalize_spec`; the normalized
+    bundle is then handed to :func:`spec_to_constraints` so capability
+    reporting and construction share a single classification result.
+    """
     parameters = spec_to_parameters(spec)
-    constraints = (
-        spec_to_constraints(spec.constraints, spec.parameters) if spec.constraints else None
-    )
+    if spec.constraints:
+        normalized = normalize_spec(spec)
+        constraints = spec_to_constraints(normalized)
+    else:
+        constraints = None
     return SearchSpace.from_product(parameters=parameters, constraints=constraints)
 
 
@@ -169,30 +184,17 @@ def spec_to_objective(
 def classify_constraint_target(
     constraint: ConstraintSpec,
     parameters: list[ParameterSpec],
-) -> str:
+) -> ConstraintTargetClass:
     """Classify a constraint as ``continuous`` / ``discrete`` / ``hybrid``.
 
-    Used by both the BayBE converter and ``validate_capabilities`` so the
-    selection logic and the construction logic agree on what BayBE can
-    express. Returns ``"unknown"`` whenever **any** referenced parameter
-    is missing from ``parameters`` — a mix of known and unknown names is
-    just as fatal during ``SearchSpace.from_product`` as an entirely
-    unknown reference, so both must surface the same way.
+    Thin wrapper around :func:`bo_engine.spec_ir.classify_constraint_target`
+    so capability reporting and converter construction share a single
+    dispatch implementation. The return value is a
+    :class:`~bo_engine.spec_ir.ConstraintTargetClass` (a :class:`StrEnum`),
+    so callers comparing against bare strings (``"continuous"`` etc.) keep
+    working.
     """
-    by_name = {p.name: p for p in parameters}
-    missing = [name for name in constraint.parameters if name not in by_name]
-    if missing:
-        return "unknown"
-    types = {by_name[name].type for name in constraint.parameters}
-    if not types:
-        return "unknown"
-    if ParameterType.CATEGORICAL in types:
-        return "categorical"
-    if types == {ParameterType.CONTINUOUS}:
-        return "continuous"
-    if types == {ParameterType.DISCRETE}:
-        return "discrete"
-    return "hybrid"
+    return _classify_constraint_target(constraint, parameters)
 
 
 def baybe_constraint_support(
@@ -216,30 +218,30 @@ def baybe_constraint_support(
     * Categorical-targeted arithmetic: not supported by BayBE.
     """
     target_class = classify_constraint_target(constraint, parameters)
-    if target_class == "continuous":
+    if target_class == ConstraintTargetClass.CONTINUOUS:
         return True, None
-    if target_class == "discrete" and constraint.type in _DISCRETE_OPERATOR_MAP:
+    if target_class == ConstraintTargetClass.DISCRETE and constraint.type in _DISCRETE_OPERATOR_MAP:
         return True, None
     return False, _constraint_unsupported_reason(target_class, constraint, parameters)
 
 
 def _constraint_unsupported_reason(
-    target_class: str,
+    target_class: ConstraintTargetClass,
     constraint: ConstraintSpec,
     parameters: list[ParameterSpec],
 ) -> str:
     """Build the user-facing rejection reason for an unsupported constraint."""
-    if target_class == "discrete":
+    if target_class == ConstraintTargetClass.DISCRETE:
         return (
             f"BayBE has no native discrete equivalent for {constraint.type.value} over "
             f"numerical-discrete parameters {sorted(constraint.parameters)}"
         )
-    if target_class == "hybrid":
+    if target_class == ConstraintTargetClass.HYBRID:
         return (
             f"BayBE cannot express constraint over mixed continuous/discrete "
             f"parameters {sorted(constraint.parameters)}"
         )
-    if target_class == "categorical":
+    if target_class == ConstraintTargetClass.CATEGORICAL:
         return (
             f"BayBE cannot express arithmetic constraint over categorical "
             f"parameters {sorted(constraint.parameters)}"
@@ -252,10 +254,20 @@ def _constraint_unsupported_reason(
 
 
 def spec_to_constraints(
-    constraints: list[ConstraintSpec],
+    constraints: list[ConstraintSpec] | NormalizedSpec,
     parameters: list[ParameterSpec] | None = None,
 ) -> list[Any] | None:
     """Convert bo-engine ConstraintSpecs to BayBE constraints.
+
+    Two call shapes are accepted to keep the public surface stable while
+    letting backend converters consume the shared IR directly:
+
+    * ``spec_to_constraints(normalized_spec)`` — preferred. The
+      :class:`~bo_engine.spec_ir.NormalizedSpec` carries the per-constraint
+      classification already, so no dispatch re-runs.
+    * ``spec_to_constraints(constraints, parameters)`` — legacy. The
+      function normalizes internally; equivalent to the above and kept
+      for direct callers.
 
     Continuous linear constraints (over only continuous parameters) map to
     :class:`ContinuousLinearConstraint`. Numerical-discrete sum/product
@@ -268,23 +280,58 @@ def spec_to_constraints(
     would let an "auto" selection produce a SearchSpace BayBE cannot
     construct.
     """
-    if parameters is None:
-        parameters = []
+    normalized_pairs, declared_params = _resolve_normalized(constraints, parameters)
+    if not normalized_pairs:
+        return None
+
     baybe_constraints: list[Any] = []
-    for c in constraints:
-        if not parameters:
+    for nc in normalized_pairs:
+        c = nc.spec
+        if not declared_params:
+            # Parameter list unknown to the caller — fall back to the
+            # continuous mapping, mirroring historical behavior.
             baybe_constraints.append(_build_continuous_constraint(c))
             continue
-        ok, reason = baybe_constraint_support(c, parameters)
+        ok, reason = _support_from_normalized(nc)
         if not ok:
-            raise ValueError(reason or "BayBE cannot express constraint")
-        target_class = classify_constraint_target(c, parameters)
-        if target_class == "discrete":
+            raise ValueError(
+                reason or _constraint_unsupported_reason(nc.target_class, c, declared_params)
+            )
+        if nc.target_class == ConstraintTargetClass.DISCRETE:
             baybe_constraints.append(_build_discrete_constraint(c))
         else:
             baybe_constraints.append(_build_continuous_constraint(c))
 
     return baybe_constraints if baybe_constraints else None
+
+
+def _resolve_normalized(
+    constraints: list[ConstraintSpec] | NormalizedSpec,
+    parameters: list[ParameterSpec] | None,
+) -> tuple[tuple[NormalizedConstraint, ...], list[ParameterSpec]]:
+    """Coerce either call shape into ``(normalized_constraints, parameters)``."""
+    if isinstance(constraints, NormalizedSpec):
+        return constraints.constraints, list(constraints.spec.parameters)
+    declared = parameters if parameters is not None else []
+    normalized = tuple(
+        NormalizedConstraint(spec=c, target_class=_classify_constraint_target(c, declared))
+        for c in constraints
+    )
+    return normalized, declared
+
+
+def _support_from_normalized(nc: NormalizedConstraint) -> tuple[bool, str | None]:
+    """``baybe_constraint_support`` answer derived from a normalized constraint.
+
+    Avoids re-running classification when the caller already has a
+    :class:`NormalizedConstraint`. Kept private — public callers should
+    use :func:`baybe_constraint_support`.
+    """
+    if nc.target_class == ConstraintTargetClass.CONTINUOUS:
+        return True, None
+    if nc.target_class == ConstraintTargetClass.DISCRETE and nc.spec.type in _DISCRETE_OPERATOR_MAP:
+        return True, None
+    return False, None
 
 
 def _build_continuous_constraint(c: ConstraintSpec) -> ContinuousLinearConstraint:

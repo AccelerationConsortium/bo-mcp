@@ -87,8 +87,9 @@ class _FakeBackend(BaseBackend):
         iteration: int,
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
+        progress_callback=None,
     ) -> SuggestionBatch:
-        _ = observations, backend_state, pending_points
+        _ = observations, backend_state, pending_points, progress_callback
         return SuggestionBatch(
             suggestions=[
                 {
@@ -137,8 +138,9 @@ class _ProtocolOnlyBackend:
         iteration: int,
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
+        progress_callback=None,
     ) -> SuggestionBatch:
-        _ = observations, backend_state, pending_points
+        _ = observations, backend_state, pending_points, progress_callback
         return SuggestionBatch(
             suggestions=[
                 {
@@ -170,8 +172,8 @@ class _ProtocolOnlyBackend:
         _ = spec, n_observations
         return {"backend": "protocol-only"}
 
-    def compute_diagnostics(self, spec, observations, sections=None):  # type: ignore[no-untyped-def]
-        _ = spec, observations, sections
+    def compute_diagnostics(self, spec, observations, sections=None, progress_callback=None):  # type: ignore[no-untyped-def]
+        _ = spec, observations, sections, progress_callback
         return {}
 
 

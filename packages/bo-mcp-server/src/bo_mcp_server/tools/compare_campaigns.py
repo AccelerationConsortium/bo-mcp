@@ -1,14 +1,32 @@
 """Campaign comparison tool wrapper for MCP."""
 
-from typing import Any
+from typing import Annotated, Any
 
-from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
+from pydantic import Field
+
+from bo_mcp_server.operations.compare_campaigns import (
+    MAX_COMPARE_CAMPAIGNS,
+    MIN_COMPARE_CAMPAIGNS,
+    compare_campaigns_operation,
+)
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import READ_ONLY
 
 
-@mcp.tool(name="bo_compare_campaigns")
+@mcp.tool(name="bo_compare_campaigns", annotations=READ_ONLY)
 async def compare_campaigns(
-    campaign_ids: list[str],
+    campaign_ids: Annotated[
+        list[str],
+        Field(
+            min_length=MIN_COMPARE_CAMPAIGNS,
+            max_length=MAX_COMPARE_CAMPAIGNS,
+            description=(
+                f"{MIN_COMPARE_CAMPAIGNS}-{MAX_COMPARE_CAMPAIGNS} campaign "
+                "UUIDs to compare. The upper bound is enforced in the JSON "
+                "schema so agents see it without first failing a request."
+            ),
+        ),
+    ],
     verbosity: str = "standard",
 ) -> dict[str, Any]:
     """Compare multiple optimization campaigns side by side.

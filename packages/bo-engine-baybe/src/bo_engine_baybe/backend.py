@@ -57,6 +57,7 @@ from bo_engine.diagnostics import (
 from bo_engine.diagnostics import (
     compute_pareto_front as engine_compute_pareto_front,
 )
+from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reference_point import get_reference_point
 from bo_engine.result_validation import (
     detect_outliers,
@@ -931,7 +932,21 @@ class BayBEBackend(BaseBackend):
         iteration: int,
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
+        # BayBE's campaign loop is internally segmented but does not yet
+        # expose intermediate hooks; emit start/done milestones so the
+        # MCP client at least sees a heartbeat.
+        emit(
+            progress_callback,
+            ProgressEvent(
+                phase="generate_suggestions_start",
+                message=(
+                    f"BayBE: recommending {batch_size} suggestion(s) on "
+                    f"{len(observations)} observation(s)"
+                ),
+            ),
+        )
         inner_state = self.unwrap_state(backend_state)
         campaign = _restore_or_build_campaign(spec, inner_state)
 
@@ -972,6 +987,16 @@ class BayBEBackend(BaseBackend):
             if warning is None:
                 continue
             warnings_out.append(f"BayBE introspection incomplete: {warning}")
+
+        emit(
+            progress_callback,
+            ProgressEvent(
+                phase="generate_suggestions_done",
+                message=f"BayBE: produced {len(suggestions)} suggestion(s)",
+                progress=float(len(suggestions)),
+                total=float(batch_size),
+            ),
+        )
 
         return SuggestionBatch(
             suggestions=suggestions,
@@ -1113,9 +1138,11 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
         sections: frozenset[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         all_sections = frozenset(["objectives", "model", "outliers", "suggestions_tensor"])
         requested = all_sections if sections is None else sections
+        _ = progress_callback  # BayBE diagnostics phases are not granular yet
         result: dict[str, Any] = {}
 
         if "objectives" in requested:

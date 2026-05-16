@@ -1,8 +1,10 @@
-"""Tests that verify type parity between bo-mcp-server domain and bo-engine.
+"""Tests that verify type identity between bo-mcp-server domain and bo-engine.
 
-Step 7, item 1.10: Both packages define ParameterType, ConstraintType, and
-AcquisitionMethod enums. These tests ensure the enum values stay in sync
-so that the converter in converters.py never hits a KeyError.
+``ParameterType``, ``ConstraintType``, and ``AcquisitionMethod`` are declared
+once in :mod:`bo_engine.types` (the lower-dependency package) and re-exported
+through :mod:`bo_mcp_server.domain`. Both import paths must resolve to the
+*same* enum object so the converter in :mod:`bo_mcp_server.converters` does
+not need a manual mapping layer.
 
 Reference: https://docs.python.org/3/library/enum.html
 """
@@ -18,44 +20,17 @@ from bo_mcp_server.domain import (
 )
 
 
-class TestEnumParity:
-    """Verify enum values match between server domain and bo-engine."""
+class TestEnumIdentity:
+    """Verify domain enums are the bo-engine enums (not separate copies)."""
 
-    def test_parameter_type_values_match(self) -> None:
-        """Server ParameterType values must be a subset of bo-engine values."""
-        server_values = {m.value for m in ParameterType}
-        engine_values = {m.value for m in BOParameterType}
-        missing = server_values - engine_values
-        assert not missing, f"Server ParameterType has values not in bo-engine: {missing}"
+    def test_parameter_type_is_engine_enum(self) -> None:
+        """``bo_mcp_server.domain.ParameterType`` is the bo-engine enum."""
+        assert ParameterType is BOParameterType
 
-    def test_constraint_type_values_match(self) -> None:
-        """Server ConstraintType values must be a subset of bo-engine values."""
-        server_values = {m.value for m in ConstraintType}
-        engine_values = {m.value for m in BOConstraintType}
-        missing = server_values - engine_values
-        assert not missing, f"Server ConstraintType has values not in bo-engine: {missing}"
+    def test_constraint_type_is_engine_enum(self) -> None:
+        """``bo_mcp_server.domain.ConstraintType`` is the bo-engine enum."""
+        assert ConstraintType is BOConstraintType
 
-    def test_acquisition_method_values_match(self) -> None:
-        """Server AcquisitionMethod values must be a subset of bo-engine."""
-        server_values = {m.value for m in AcquisitionMethod}
-        engine_values = {m.value for m in BOAcquisitionMethod}
-        missing = server_values - engine_values
-        assert not missing, f"Server AcquisitionMethod has values not in bo-engine: {missing}"
-
-    def test_parameter_type_bidirectional(self) -> None:
-        """Both packages should have the same ParameterType values."""
-        server_values = {m.value for m in ParameterType}
-        engine_values = {m.value for m in BOParameterType}
-        assert server_values == engine_values
-
-    def test_constraint_type_bidirectional(self) -> None:
-        """Both packages should have the same ConstraintType values."""
-        server_values = {m.value for m in ConstraintType}
-        engine_values = {m.value for m in BOConstraintType}
-        assert server_values == engine_values
-
-    def test_acquisition_method_bidirectional(self) -> None:
-        """Both packages should have the same AcquisitionMethod values."""
-        server_values = {m.value for m in AcquisitionMethod}
-        engine_values = {m.value for m in BOAcquisitionMethod}
-        assert server_values == engine_values
+    def test_acquisition_method_is_engine_enum(self) -> None:
+        """``bo_mcp_server.domain.AcquisitionMethod`` is the bo-engine enum."""
+        assert AcquisitionMethod is BOAcquisitionMethod

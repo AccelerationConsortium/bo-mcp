@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 import numpy as np
 import torch
 from torch import Tensor
-from torch.quasirandom import SobolEngine
 
 from bo_engine.acquisition import (
     create_acquisition,
@@ -34,15 +33,11 @@ from bo_engine.acquisition import (
 from bo_engine.constants import (
     CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD,
     CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD,
-    DUPLICATE_DETECTION_TOLERANCE,
-    INITIAL_DESIGN_MULTIPLIER,
     MAX_RANDOM_SEED,
     MIN_OBSERVATIONS_FOR_MODEL,
     SEED_ITERATION_OFFSET,
 )
 from bo_engine.constraints import (
-    _get_parameter_indices,
-    apply_sum_constraint,
     build_botorch_linear_constraints,
 )
 from bo_engine.device import get_device, get_dtype
@@ -56,17 +51,14 @@ from bo_engine.reference_point import (
     get_reference_point_dynamic,
 )
 from bo_engine.transforms import (
-    SearchSpaceType,
-    classify_search_space,
-    count_categorical_combinations,
     decode_categorical,
     encode_categorical,
     get_bounds_tensor,
-    get_n_dims,
     stack_encoded_values,
 )
 from bo_engine.turbo import (
     TurboState,
+    assert_unit_scale_targets,
     create_turbo_state,
     get_turbo_bounds,
     should_use_turbo,
@@ -74,382 +66,26 @@ from bo_engine.turbo import (
 )
 from bo_engine.types import (
     AcquisitionMethod,
-    ConstraintType,
     GenerationContext,
     ObservationData,
     OptimizationSpec,
-    ParameterType,
     SuggestionResult,
 )
 
 logger = logging.getLogger(__name__)
 
-# Oversampling factor used when filtering Sobol draws against a non-empty
-# exclusion set — draw ~OVERSAMPLE_FACTOR * n_points candidates so the
-# post-filter still leaves enough unique designs for the requested batch.
-SOBOL_EXCLUSION_OVERSAMPLE_FACTOR = 4
 
+# ---------------------------------------------------------------------------
+# Re-exports: initial-design helpers live in :mod:`bo_engine.initial_design`
+# after the suggestions god-module split. Imports from this module continue
+# to resolve here so external callers do not need to change.
+# ---------------------------------------------------------------------------
 
-class SearchSpaceExhaustedError(RuntimeError):
-    """Raised when the finite search space cannot yield more unique points.
-
-    Triggered when the caller asks for ``n_points`` initial-design draws
-    but every candidate is already in the supplied exclusion set *and*
-    the space is small/finite enough that no further fresh combinations
-    exist.  Only applicable to purely-categorical spaces today; continuous
-    spaces have effectively infinite cardinality and fall back to Sobol
-    continuation instead.
-    """
-
-    def __init__(
-        self,
-        *,
-        n_requested: int,
-        n_available: int,
-        n_total_combinations: int | None = None,
-    ) -> None:
-        msg = (
-            f"Cannot generate {n_requested} unique initial-design points: "
-            f"only {n_available} unseen combinations remain"
-        )
-        if n_total_combinations is not None:
-            msg += f" ({n_available}/{n_total_combinations} total)"
-        msg += "."
-        super().__init__(msg)
-        self.n_requested = n_requested
-        self.n_available = n_available
-        self.n_total_combinations = n_total_combinations
-
-
-def _values_match(
-    a: Any,
-    b: Any,
-    is_continuous: bool,
-    tolerance: float,
-) -> bool:
-    """Compare a single pair of parameter values by type semantics."""
-    if not is_continuous:
-        return a == b
-    try:
-        return abs(float(a) - float(b)) <= tolerance
-    except (TypeError, ValueError):
-        return False
-
-
-def _design_matches(
-    design: dict[str, Any],
-    other: dict[str, Any],
-    spec: OptimizationSpec,
-    tolerance: float,
-) -> bool:
-    """Check whether two decoded parameter dicts describe the same point.
-
-    Categorical / discrete params must match exactly; continuous params
-    must match within ``tolerance`` (absolute).  Missing keys in either
-    side are treated as non-matching so we never silently accept partial
-    candidates.
-    """
-    for param in spec.parameters:
-        name = param.name
-        if name not in design or name not in other:
-            return False
-        is_continuous = param.type == ParameterType.CONTINUOUS
-        if not _values_match(design[name], other[name], is_continuous, tolerance):
-            return False
-    return True
-
-
-def _exclude_known_designs(
-    designs: list[dict[str, Any]],
-    excluded: list[dict[str, Any]],
-    spec: OptimizationSpec,
-    tolerance: float,
-) -> list[dict[str, Any]]:
-    """Return ``designs`` with entries that match any ``excluded`` dropped.
-
-    The comparison uses :func:`_design_matches`, so categorical equality
-    is exact and continuous equality is within ``tolerance``.  Relative
-    ordering is preserved so the caller still sees the first-N behaviour
-    of the Sobol sequence.
-    """
-    if not excluded:
-        return list(designs)
-    result: list[dict[str, Any]] = []
-    for d in designs:
-        if not any(_design_matches(d, other, spec, tolerance) for other in excluded):
-            result.append(d)
-    return result
-
-
-def _deduplicate_designs(
-    designs: list[dict[str, Any]],
-    spec: OptimizationSpec,
-    tolerance: float,
-) -> list[dict[str, Any]]:
-    """Drop within-batch duplicates while preserving order."""
-    kept: list[dict[str, Any]] = []
-    for d in designs:
-        if not any(_design_matches(d, k, spec, tolerance) for k in kept):
-            kept.append(d)
-    return kept
-
-
-def _guard_categorical_space_exhaustion(
-    spec: OptimizationSpec,
-    observations: list[ObservationData],
-    batch_size: int,
-) -> None:
-    """Raise if every unique combination of a purely-categorical space is observed.
-
-    This short-circuits before the BO and initial-design paths so callers
-    get a clean ``SearchSpaceExhaustedError`` instead of an opaque failure
-    from ``optimize_acqf_discrete`` (which raises when ``X_avoid`` covers
-    the entire choice set) or a warning-return from
-    :func:`generate_initial_design`.
-    """
-    if classify_search_space(spec) != SearchSpaceType.PURELY_CATEGORICAL:
-        return
-    n_total = count_categorical_combinations(spec)
-    if n_total <= 0:
-        return
-    observed_params = [obs.parameter_values for obs in observations]
-    unique_observed = _deduplicate_designs(observed_params, spec, DUPLICATE_DETECTION_TOLERANCE)
-    if len(unique_observed) >= n_total:
-        raise SearchSpaceExhaustedError(
-            n_requested=batch_size,
-            n_available=0,
-            n_total_combinations=n_total,
-        )
-
-
-def _enumerate_unobserved_categorical_combinations(
-    spec: OptimizationSpec,
-    excluded: list[dict[str, Any]],
-    tolerance: float,
-) -> list[dict[str, Any]]:
-    """Enumerate categorical combinations not present in ``excluded``.
-
-    Only valid for purely-categorical spaces.  Used as a deterministic
-    fallback when Sobol continuation cannot supply enough unseen points.
-    """
-    import itertools
-
-    cat_axes: list[list[str]] = []
-    for param in spec.parameters:
-        if param.type != ParameterType.CATEGORICAL or param.categories is None:
-            raise ValueError("Enumeration fallback requires a purely-categorical space.")
-        cat_axes.append(list(param.categories))
-
-    param_names = [p.name for p in spec.parameters]
-    unseen: list[dict[str, Any]] = []
-    for combo in itertools.product(*cat_axes):
-        candidate = dict(zip(param_names, combo, strict=True))
-        if not any(_design_matches(candidate, e, spec, tolerance) for e in excluded):
-            unseen.append(candidate)
-    return unseen
-
-
-def generate_initial_design(
-    spec: OptimizationSpec,
-    n_points: int | None = None,
-    *,
-    n_drawn: int = 0,
-    excluded_points: list[dict[str, Any]] | None = None,
-    dedup_tolerance: float = 1e-6,
-) -> list[dict[str, Any]]:
-    """Generate initial design using Sobol sequence.
-
-    Applies constraints (sum_equals, sum_less_than, sum_greater_than) to
-    project samples onto the constraint surface.
-
-    Consecutive calls on the same campaign should pass ``n_drawn`` equal
-    to the number of points already produced for that campaign so the
-    low-discrepancy Sobol sequence continues where it left off instead of
-    restarting with a fresh scramble.  Determinism requires
-    ``spec.random_seed`` to be set; otherwise ``SobolEngine`` uses an
-    OS-level scramble that changes on every construction.
-
-    When ``excluded_points`` is supplied, any candidate that matches one
-    of them (exactly for categorical/discrete, within ``dedup_tolerance``
-    for continuous) is dropped.  For purely-categorical spaces the
-    function falls back to enumerating the remaining combinations if
-    Sobol continuation cannot supply enough fresh designs, and raises
-    :class:`SearchSpaceExhaustedError` only when the space is truly
-    exhausted.
-
-    Args:
-        spec: Campaign specification.
-        n_points: Number of points to generate (default: 2 * n_dims + 1).
-        n_drawn: Number of prior Sobol draws to skip (fast-forward).
-        excluded_points: Points that must not appear in the output.
-        dedup_tolerance: Absolute tolerance for continuous equality.
-
-    Returns:
-        List of parameter value dictionaries of length ``n_points``.
-
-    Raises:
-        SearchSpaceExhaustedError: Purely-categorical space whose remaining
-            unseen combinations are fewer than ``n_points``.
-    """
-    n_dims = get_n_dims(spec)
-
-    if n_points is None:
-        n_points = spec.initial_design_size or (INITIAL_DESIGN_MULTIPLIER * spec.n_parameters + 1)
-
-    excluded: list[dict[str, Any]] = list(excluded_points) if excluded_points else []
-
-    # Fast-forward only makes sense when the Sobol sequence is stable across
-    # calls (i.e. ``spec.random_seed`` is set).  With ``seed=None`` every
-    # construction of ``SobolEngine`` picks a fresh OS-level scramble, so
-    # continuing from position ``n_drawn`` of a different sequence buys us
-    # nothing and changes user-visible output for existing unseeded tests.
-    effective_n_drawn = n_drawn if spec.random_seed is not None else 0
-
-    # Oversample Sobol draws only when we actually need to filter — for
-    # continuous campaigns with no exclusion the extra draws would be wasted
-    # and (worse) would shift the position-0 point, regressing deterministic
-    # tutorial-style tests that pin specific Sobol outputs.
-    space_type = classify_search_space(spec)
-    is_finite_space = space_type != SearchSpaceType.CONTINUOUS
-    need_filter = bool(excluded) and is_finite_space
-    draw_count = (
-        max(n_points, n_points * SOBOL_EXCLUSION_OVERSAMPLE_FACTOR) if need_filter else n_points
-    )
-    designs = _draw_sobol_designs(spec, n_dims, draw_count, n_drawn=effective_n_drawn)
-
-    if excluded:
-        designs = _exclude_known_designs(designs, excluded, spec, dedup_tolerance)
-    if is_finite_space:
-        designs = _deduplicate_designs(designs, spec, dedup_tolerance)
-
-    if len(designs) >= n_points:
-        return designs[:n_points]
-
-    # Sobol alone could not supply enough unique designs.  For purely
-    # categorical spaces, fall back to deterministic enumeration — this
-    # is the only way to certify exhaustion.
-    space_type = classify_search_space(spec)
-    if space_type == SearchSpaceType.PURELY_CATEGORICAL:
-        already_selected = list(excluded) + list(designs)
-        extra = _enumerate_unobserved_categorical_combinations(
-            spec, already_selected, dedup_tolerance
-        )
-        designs = designs + extra
-        designs = _deduplicate_designs(designs, spec, dedup_tolerance)
-        if len(designs) < n_points:
-            total = count_categorical_combinations(spec) or None
-            raise SearchSpaceExhaustedError(
-                n_requested=n_points,
-                n_available=len(designs),
-                n_total_combinations=total,
-            )
-        return designs[:n_points]
-
-    # Continuous / mixed spaces are effectively infinite; surface a warning
-    # but return what we have so downstream callers can decide.
-    logger.warning(
-        "Sobol continuation produced %d unique designs for a batch of %d "
-        "after filtering against %d excluded points; returning the smaller batch.",
-        len(designs),
-        n_points,
-        len(excluded),
-    )
-    return designs
-
-
-def _draw_sobol_designs(
-    spec: OptimizationSpec,
-    n_dims: int,
-    draw_count: int,
-    *,
-    n_drawn: int,
-) -> list[dict[str, Any]]:
-    """Sample ``draw_count`` Sobol points and decode them to parameter dicts.
-
-    Honours ``spec.random_seed`` (when non-None) so consecutive calls with
-    the same seed produce the same low-discrepancy sequence, and advances
-    past ``n_drawn`` prior draws via ``fast_forward``.
-    """
-    sobol = SobolEngine(dimension=n_dims, scramble=True, seed=spec.random_seed)
-    if n_drawn > 0:
-        sobol.fast_forward(n_drawn)
-    samples = sobol.draw(draw_count).to(device=get_device(), dtype=get_dtype())
-
-    bounds = get_bounds_tensor(spec)
-    lower = bounds[0]
-    upper = bounds[1]
-    scaled_samples = samples * (upper - lower) + lower
-    scaled_samples = _apply_constraints_to_samples(scaled_samples, spec, bounds)
-
-    return [decode_categorical(scaled_samples[i], spec) for i in range(draw_count)]
-
-
-def _apply_constraints_to_samples(
-    samples: Tensor,
-    spec: OptimizationSpec,
-    bounds: Tensor,
-) -> Tensor:
-    """Apply constraints to projected samples.
-
-    For sum_equals constraints, normalizes parameters to satisfy the constraint.
-    For inequality constraints, clips values as needed.
-
-    Args:
-        samples: Tensor of shape (n_samples, n_dims)
-        spec: Optimization specification with constraints
-        bounds: Tensor of shape (2, n_dims) with lower and upper bounds
-
-    Returns:
-        Samples with constraints applied
-    """
-    result = samples.clone()
-
-    for constraint in spec.constraints:
-        param_indices = _get_parameter_indices(constraint.parameters, spec)
-
-        if constraint.type == ConstraintType.SUM_EQUALS:
-            # Project onto sum = value constraint surface
-            result = apply_sum_constraint(result, param_indices, constraint.value)
-            # Clip to bounds after normalization
-            result = torch.clamp(result, bounds[0], bounds[1])
-            # Re-apply constraint after clipping (may need iteration for tight bounds)
-            result = apply_sum_constraint(result, param_indices, constraint.value)
-
-        elif constraint.type == ConstraintType.SUM_LESS_THAN:
-            # Scale down if sum exceeds limit
-            selected = result[..., param_indices]
-            current_sum = selected.sum(dim=-1, keepdim=True)
-            excess_mask = current_sum > constraint.value
-            if excess_mask.any():
-                scale = torch.where(
-                    excess_mask,
-                    constraint.value / current_sum,
-                    torch.ones_like(current_sum),
-                )
-                result[..., param_indices] = selected * scale
-
-        elif constraint.type == ConstraintType.SUM_GREATER_THAN:
-            # Scale up if sum is below minimum
-            selected = result[..., param_indices]
-            current_sum = selected.sum(dim=-1, keepdim=True)
-            deficit_mask = current_sum < constraint.value
-            if deficit_mask.any():
-                # Avoid division by zero
-                safe_sum = torch.where(
-                    current_sum.abs() < 1e-10,
-                    torch.ones_like(current_sum),
-                    current_sum,
-                )
-                scale = torch.where(
-                    deficit_mask,
-                    constraint.value / safe_sum,
-                    torch.ones_like(current_sum),
-                )
-                result[..., param_indices] = selected * scale
-            # Clip to bounds
-            result = torch.clamp(result, bounds[0], bounds[1])
-
-    return result
+from bo_engine.initial_design import (  # noqa: E402
+    _apply_constraints_to_samples,
+    _guard_categorical_space_exhaustion,
+    generate_initial_design,
+)
 
 
 def _resolve_acquisition_seed(
@@ -679,6 +315,11 @@ def _initialize_turbo_state(
 ) -> TurboState | None:
     """Initialize TuRBO state if applicable.
 
+    Forwards ``spec.turbo_config`` overrides (or paper defaults when unset)
+    into :func:`bo_engine.turbo.create_turbo_state` and asserts that the
+    training targets sit close to unit scale before construction — see
+    :class:`bo_engine.turbo.TurboState` for the scale assumption.
+
     Args:
         spec: Optimization specification
         train_y_bo: Training outputs (BoTorch convention - minimization)
@@ -690,12 +331,26 @@ def _initialize_turbo_state(
     """
     use_turbo = spec.use_turbo or (turbo_state is not None) or should_use_turbo(spec.n_parameters)
     if use_turbo and turbo_state is None:
+        assert_unit_scale_targets(train_y_bo)
         best_y = train_y_bo.min().item()
-        turbo_state = create_turbo_state(
-            dim=spec.n_parameters,
-            batch_size=batch_size,
-            initial_best_value=-best_y,
-        )
+        config = spec.turbo_config
+        if config is None:
+            turbo_state = create_turbo_state(
+                dim=spec.n_parameters,
+                batch_size=batch_size,
+                initial_best_value=-best_y,
+            )
+        else:
+            turbo_state = create_turbo_state(
+                dim=spec.n_parameters,
+                batch_size=batch_size,
+                initial_best_value=-best_y,
+                initial_length=config.initial_length,
+                length_min=config.length_min,
+                length_max=config.length_max,
+                success_tolerance=config.success_tolerance,
+                failure_tolerance=config.failure_tolerance,
+            )
     return turbo_state
 
 
@@ -927,6 +582,20 @@ def _generate_single_objective_batch(
     train_yvar = ctx.train_yvar
 
     minimize = spec.objectives[0].minimize
+    log_transform = spec.objectives[0].log_transform
+    if log_transform and not minimize:
+        # BoTorch's ``Log`` outcome transform requires strictly positive
+        # targets and is applied inside the GP after we negate ``train_y``
+        # to enforce minimization. For a maximize objective negation flips
+        # the sign of every positive observation to negative, which makes
+        # the log step ill-defined. Surface this at the boundary instead of
+        # letting BoTorch raise a less actionable error during fit.
+        raise ValueError(
+            "ObjectiveSpec.log_transform=True is only supported for "
+            "minimize=True objectives. For a maximize objective with a "
+            "multi-decade target, either flip the objective definition "
+            "(minimize the negative log) or pre-transform the data."
+        )
 
     # Negate if maximizing (BoTorch assumes minimization). Variance is
     # sign-invariant -- ``Var(-Y) == Var(Y)`` -- so ``train_yvar`` flows
@@ -943,6 +612,7 @@ def _generate_single_objective_batch(
         bounds,
         use_input_warping=spec.use_input_warping,
         train_yvar=train_yvar,
+        log_transform=log_transform,
     )
 
     # Outcome constraint models (constraints on OUTPUT space)
@@ -1180,6 +850,21 @@ def _generate_multi_objective_batch(
     # Get minimize mask for objectives
     minimize_mask = torch.tensor([obj.minimize for obj in spec.objectives], dtype=torch.bool)
 
+    # ``log_transform`` is incompatible with a maximize objective on this
+    # path: BoTorch's ``Log`` outcome transform fires *after* we negate the
+    # column to enforce minimization, so a positive raw target becomes
+    # negative and ``log`` is undefined. Surface this at the boundary
+    # rather than letting BoTorch fail deep inside model fit.
+    log_flags = [obj.log_transform for obj in spec.objectives]
+    for idx, (flag, mini) in enumerate(zip(log_flags, minimize_mask.tolist(), strict=True)):
+        if flag and not mini:
+            raise ValueError(
+                f"ObjectiveSpec.log_transform=True is only supported for "
+                f"minimize=True objectives (objective[{idx}] "
+                f"'{spec.objectives[idx].name}' is maximize). Flip the "
+                "objective definition or pre-transform the data."
+            )
+
     # Negate maximization objectives (BoTorch assumes minimization). Variance
     # is sign-invariant, so ``train_yvar`` flows through unchanged.
     train_y_bo = train_y.clone()
@@ -1193,6 +878,7 @@ def _generate_multi_objective_batch(
         bounds,
         use_input_warping=spec.use_input_warping,
         train_yvar=ctx.train_yvar,
+        log_transform=log_flags,
     )
 
     # Get reference point (using STATIC strategy for backward compatibility;

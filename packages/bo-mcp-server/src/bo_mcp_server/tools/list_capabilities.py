@@ -8,9 +8,10 @@ from typing import Any
 
 from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import READ_ONLY
 
 
-@mcp.tool(name="bo_list_capabilities")
+@mcp.tool(name="bo_list_capabilities", annotations=READ_ONLY)
 async def list_capabilities() -> dict[str, Any]:
     """List the capabilities of the active BO backend.
 

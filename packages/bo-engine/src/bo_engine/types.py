@@ -95,10 +95,31 @@ class ParameterSpec:
 
 @dataclass(frozen=True)
 class ObjectiveSpec:
-    """Specification for a single objective."""
+    """Specification for a single objective.
+
+    ``log_transform`` opts the objective into a ``Log → Standardize``
+    outcome stack inside :mod:`bo_engine.models`. Enable it for
+    multi-decade objectives (e.g. reaction rates spanning 10⁻³ … 10²)
+    whose raw scale would otherwise dominate the GP's lengthscale
+    fit; the model un-applies both stages on the posterior so callers
+    still see results in the user's original scale.
+
+    **Constraints (enforced at model-fit time):**
+
+    * Requires strictly positive ``train_y`` for this objective.
+      Zero or negative observations raise ``ValueError`` from the
+      model factory; pre-shift the target (or drop the row) if
+      non-positive outcomes can occur.
+    * Requires ``minimize=True``. The maximize path negates targets
+      to enforce BoTorch's internal minimization convention, which
+      flips positive raw values to negative and makes the subsequent
+      ``Log`` step ill-defined. Suggestion generation raises a
+      ``ValueError`` for ``log_transform=True`` + ``minimize=False``.
+    """
 
     name: str
     minimize: bool = True
+    log_transform: bool = False
 
 
 @dataclass(frozen=True)
@@ -187,12 +208,36 @@ class TurboConfig:
     """Configuration for TuRBO trust-region optimization.
 
     Present = use TuRBO, absent (None) = standard acquisition optimization.
+
+    All defaults match the canonical TuRBO paper (Eriksson et al., NeurIPS
+    2019) under the assumption of unit-standardized objectives — see
+    :class:`bo_engine.turbo.TurboState` for the scale assumption and the
+    meaning of each tolerance.
+
+    Attributes:
+        initial_length: Initial trust region edge in normalized [0,1] input
+            space (paper Algorithm 1: ``L_init = 0.8``).
+        length_min: Minimum trust region edge before a restart is triggered
+            (paper §3.2: ``L_min = 0.5**7 ≈ 7.8e-3``).
+        length_max: Maximum trust region edge after expansion (paper §3.2:
+            ``L_max = 1.6``). Larger than 1.0 lets the trust region cover the
+            entire normalized input box once expanded.
+        success_tolerance: Consecutive improving batches before the trust
+            region doubles (paper Algorithm 1: ``tau_s = 10``).
+        failure_tolerance: Consecutive non-improving batches before the trust
+            region halves. ``None`` (the default) re-derives the value at
+            ``TurboState`` construction time as
+            ``ceil(max(4/batch, dim/batch))`` capped at
+            ``TURBO_MAX_FAILURE_TOLERANCE`` so high-dimensional campaigns get
+            proportionally more rope before contracting; set an explicit
+            integer to override.
     """
 
     initial_length: float = 0.8
     length_min: float = 0.5**7
     length_max: float = 1.6
     success_tolerance: int = 10
+    failure_tolerance: int | None = None
 
 
 @dataclass(frozen=True)

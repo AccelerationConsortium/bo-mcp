@@ -10,6 +10,10 @@ from bo_mcp_server.domain import (
     CampaignSpec,
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.field_errors import (
+    field_error_messages,
+    validation_errors_to_field_errors,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +33,13 @@ def validate_intake_operation(
     Returns:
         Dictionary with:
             - valid: Whether validation passed
-            - errors: List of validation error messages
-            - warnings: List of warning messages
-            - spec: Full CampaignSpec as dict (if valid), or None
+            - errors: List of ``path: message`` validation strings (for
+              backward-compatible callers).
+            - field_errors: Dotted-path map ``dict[str, list[str]]`` so
+              agents can target the offending field without re-parsing
+              the flat ``errors`` list. Empty on success.
+            - warnings: List of warning messages.
+            - spec: Full CampaignSpec as dict (if valid), or None.
     """
     intake_name = intake_data.name if isinstance(intake_data, CampaignIntakeInput) else "<no name>"
     logger.debug("Validating intake data: %s", intake_name)
@@ -44,14 +52,19 @@ def validate_intake_operation(
         )
         spec = CampaignSpec(**intake.model_dump())
     except ValidationError as e:
-        errors: list[str] = [f"{error['loc']}: {error['msg']}" for error in e.errors()]
+        field_errors = validation_errors_to_field_errors(e)
+        errors = list(field_error_messages(field_errors))
         response = make_error_response(
             ErrorCode.VALIDATION_FAILED,
             message="Intake validation failed",
-            details={"validation_errors": errors},
+            details={
+                "validation_errors": errors,
+                "field_errors": field_errors,
+            },
         )
         response["valid"] = False
         response["errors"] = errors
+        response["field_errors"] = field_errors
         response["warnings"] = []
         response["spec"] = None
         return response
@@ -77,6 +90,7 @@ def validate_intake_operation(
     return {
         "valid": True,
         "errors": [],
+        "field_errors": {},
         "warnings": warnings,
         "spec": spec.to_dict(),
     }

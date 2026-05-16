@@ -3,7 +3,13 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+# ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
+# keys raise 422 instead of being silently dropped. Response schemas remain
+# permissive because the MCP response formatter splices a ``_metadata``
+# envelope into every payload before it reaches the response model.
+_FORBID_EXTRA: ConfigDict = ConfigDict(extra="forbid")
 
 
 class SuggestionProvenance(BaseModel):
@@ -46,6 +52,8 @@ class SuggestionsGenerateResponse(BaseModel):
 class SuggestionStatusUpdateRequest(BaseModel):
     """Request to update a suggestion's status."""
 
+    model_config = _FORBID_EXTRA
+
     status: str = Field(pattern="^(accepted|rejected|expired)$")
 
 
@@ -61,6 +69,8 @@ class SuggestionStatusUpdateResponse(BaseModel):
 
 class SuggestionQueryRequest(BaseModel):
     """Suggestion query request with filtering and pagination."""
+
+    model_config = _FORBID_EXTRA
 
     status_filter: str | None = None
     limit: int = Field(default=50, ge=1, le=500)

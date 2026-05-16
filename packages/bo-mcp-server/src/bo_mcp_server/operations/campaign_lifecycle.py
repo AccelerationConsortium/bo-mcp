@@ -10,11 +10,13 @@ from bo_mcp_server.errors import (
     make_concurrent_modification_response,
     make_error_response,
 )
+from bo_mcp_server.response_formatter import with_response_metadata
 from bo_mcp_server.storage import (
     CampaignRepository,
     ConcurrentModificationError,
     get_session,
 )
+from bo_mcp_server.subscriptions import notify_campaign_updated_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +32,40 @@ _ACTION_MAPPING: dict[LifecycleAction, tuple[CampaignStatus, list[CampaignStatus
 }
 
 
-async def manage_campaign_lifecycle_operation(
+def _build_dry_run_preview(
     campaign_id: str,
+    previous_status: str,
+    target_status: CampaignStatus,
     action: LifecycleAction,
 ) -> dict[str, Any]:
-    """Manage campaign lifecycle transitions."""
-    logger.info("Managing campaign lifecycle: campaign_id=%s, action=%s", campaign_id, action)
+    """Compose the dry-run response envelope shared across actions."""
+    return {
+        "success": True,
+        "dry_run": True,
+        "campaign_id": campaign_id,
+        "status": previous_status,
+        "previous_status": previous_status,
+        "preview": {
+            "action": action,
+            "from_status": previous_status,
+            "to_status": target_status.value,
+        },
+        "errors": [],
+    }
 
+
+def _validate_request(
+    campaign_id: str,
+    action: LifecycleAction,
+) -> tuple[UUID, CampaignStatus, list[CampaignStatus]] | dict[str, Any]:
+    """Parse the action + campaign id pair before touching the database.
+
+    Returns the tuple of resolved values on success, or a structured
+    error response that already carries the lifecycle-specific keys
+    (``campaign_id``, ``status``, ``previous_status``) on failure.
+    Pulling these two early-return paths out of the operation body
+    keeps the function below ruff's 6-return ceiling.
+    """
     if action not in _ACTION_MAPPING:
         valid_actions = list(_ACTION_MAPPING.keys())
         return make_error_response(
@@ -57,6 +86,35 @@ async def manage_campaign_lifecycle_operation(
         )
         response.update({"campaign_id": campaign_id, "status": None, "previous_status": None})
         return response
+
+    return campaign_uuid, target_status, valid_from_statuses
+
+
+@with_response_metadata
+async def manage_campaign_lifecycle_operation(
+    campaign_id: str,
+    action: LifecycleAction,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Manage campaign lifecycle transitions.
+
+    When ``dry_run`` is true the operation runs every validation
+    step but skips the commit and notification — the response
+    carries a ``dry_run`` flag plus a ``preview`` describing what
+    *would* change (current vs. proposed status, action label).
+    """
+    logger.info(
+        "Managing campaign lifecycle: campaign_id=%s, action=%s, dry_run=%s",
+        campaign_id,
+        action,
+        dry_run,
+    )
+
+    validated = _validate_request(campaign_id, action)
+    if isinstance(validated, dict):
+        return validated
+    campaign_uuid, target_status, valid_from_statuses = validated
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
@@ -95,6 +153,16 @@ async def manage_campaign_lifecycle_operation(
             )
             return response
 
+        if dry_run:
+            logger.info(
+                "Campaign %s lifecycle action %s (dry-run): %s -> %s",
+                campaign_id,
+                action,
+                previous_status,
+                target_status.value,
+            )
+            return _build_dry_run_preview(campaign_id, previous_status, target_status, action)
+
         updated = campaign.with_status(target_status)
         try:
             await campaign_repo.save(updated, expected_version=campaign.version)
@@ -117,6 +185,13 @@ async def manage_campaign_lifecycle_operation(
             )
             return response
 
+        # Arm the notification as a post-commit hook so subscribers
+        # never see a transition that the surrounding transaction
+        # later rolls back (and so a future caller that wires an
+        # external session through ``apply_idempotency`` cannot
+        # accidentally publish a pre-commit notification).
+        notify_campaign_updated_after_commit(session, campaign_uuid)
+
         logger.info(
             "Campaign %s lifecycle action %s: %s -> %s",
             campaign_id,
@@ -124,10 +199,11 @@ async def manage_campaign_lifecycle_operation(
             previous_status,
             target_status.value,
         )
-        return {
-            "success": True,
-            "campaign_id": campaign_id,
-            "status": target_status.value,
-            "previous_status": previous_status,
-            "errors": [],
-        }
+
+    return {
+        "success": True,
+        "campaign_id": campaign_id,
+        "status": target_status.value,
+        "previous_status": previous_status,
+        "errors": [],
+    }

@@ -1,17 +1,31 @@
-"""FastAPI dependencies."""
+"""FastAPI dependencies.
+
+The REST transport layer authorizes requests using the helpers exposed
+on :mod:`bo_mcp_server.client`. Storage / repository access is **not**
+imported here directly; the facade owns that translation.
+"""
 
 from typing import Annotated
 from uuid import UUID
 
-from bo_mcp_server.domain import Campaign, Suggestion, User
-from bo_mcp_server.storage import (
-    CampaignRepository,
-    SuggestionRepository,
-    get_session,
+from bo_mcp_server.client import (
+    Campaign,
+    InvalidIdentifierError,
+    NotAuthorizedError,
+    NotFoundError,
+    Suggestion,
+    User,
+    authorize_campaign,
+    authorize_suggestion,
+    parse_uuid,
+)
+from bo_mcp_server.client import (
+    ensure_dev_user as _ensure_dev_user,
+)
+from bo_mcp_server.client import (
+    ensure_owned_campaigns as _ensure_owned_campaigns,
 )
 from fastapi import Depends, Header, HTTPException, status
-
-from api.dev_auth import ensure_dev_user
 
 
 async def get_current_user(
@@ -24,35 +38,8 @@ async def get_current_user(
     continue to use a concrete ``current_user`` without enforcing real auth.
     This is not a sustainable production configuration.
     """
-    # Revert reference: restore the original API-key behavior by re-adding the
-    # imports below at module scope and replacing this function body with the
-    # commented block that follows.
-    #
-    # from bo_mcp_server.storage import UserRepository
-    # import hashlib
-    #
-    # Original implementation:
-    # api_key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
-    #
-    # async with get_session() as session:
-    #     user_repo = UserRepository(session)
-    #     user = await user_repo.get_by_api_key_hash(api_key_hash)
-    #
-    #     if user is None:
-    #         raise HTTPException(
-    #             status_code=status.HTTP_401_UNAUTHORIZED,
-    #             detail="Invalid API key",
-    #         )
-    #
-    #     if not user.is_active:
-    #         raise HTTPException(
-    #             status_code=status.HTTP_403_FORBIDDEN,
-    #             detail="User account is deactivated",
-    #         )
-    #
-    #     return user
     _ = x_api_key
-    return await ensure_dev_user()
+    return await _ensure_dev_user()
 
 
 # Type alias for dependency injection
@@ -92,11 +79,11 @@ def validate_uuid(value: str, name: str = "id") -> UUID:
         HTTPException: If the string is not a valid UUID format
     """
     try:
-        return UUID(value)
-    except ValueError:
+        return parse_uuid(value, name)
+    except InvalidIdentifierError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid {name} format",
+            detail=f"Invalid {exc.name} format",
         ) from None
 
 
@@ -116,25 +103,23 @@ async def get_authorized_campaign(
     Raises:
         HTTPException: 400 if invalid UUID, 404 if not found, 403 if not authorized
     """
-    campaign_uuid = validate_uuid(campaign_id, "campaign_id")
-
-    async with get_session() as session:
-        campaign_repo = CampaignRepository(session)
-        campaign = await campaign_repo.get(campaign_uuid)
-
-        if campaign is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Campaign {campaign_id} not found",
-            )
-
-        if campaign.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to access this campaign",
-            )
-
-        return campaign
+    try:
+        return await authorize_campaign(campaign_id, current_user.id)
+    except InvalidIdentifierError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid campaign_id format",
+        ) from None
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Campaign {exc.identifier} not found",
+        ) from None
+    except NotAuthorizedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this campaign",
+        ) from None
 
 
 async def get_authorized_suggestion(
@@ -142,33 +127,31 @@ async def get_authorized_suggestion(
     current_user: User,
 ) -> Suggestion:
     """Fetch and authorize a suggestion via its owning campaign."""
-    suggestion_uuid = validate_uuid(suggestion_id, "suggestion_id")
-
-    async with get_session() as session:
-        suggestion_repo = SuggestionRepository(session)
-        campaign_repo = CampaignRepository(session)
-
-        suggestion = await suggestion_repo.get(suggestion_uuid)
-        if suggestion is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Suggestion {suggestion_id} not found",
-            )
-
-        campaign = await campaign_repo.get(suggestion.campaign_id)
-        if campaign is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Campaign {suggestion.campaign_id} not found",
-            )
-
-        if campaign.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to access this suggestion",
-            )
-
-        return suggestion
+    try:
+        return await authorize_suggestion(suggestion_id, current_user.id)
+    except InvalidIdentifierError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid suggestion_id format",
+        ) from None
+    except NotFoundError as exc:
+        # Distinguish suggestion-not-found from owning-campaign-not-found by
+        # the resource label the facade set, so the message matches what the
+        # repository-direct version returned.
+        detail = (
+            f"Suggestion {exc.identifier} not found"
+            if exc.resource == "Suggestion"
+            else f"Campaign {exc.identifier} not found"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=detail,
+        ) from None
+    except NotAuthorizedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this suggestion",
+        ) from None
 
 
 async def ensure_owned_campaigns(
@@ -180,21 +163,10 @@ async def ensure_owned_campaigns(
     Invalid or missing campaign IDs are intentionally ignored here so the shared
     operation can surface them in the MCP-aligned response payload.
     """
-    async with get_session() as session:
-        campaign_repo = CampaignRepository(session)
-
-        for campaign_id in campaign_ids:
-            try:
-                campaign_uuid = UUID(campaign_id)
-            except ValueError:
-                continue
-
-            campaign = await campaign_repo.get(campaign_uuid)
-            if campaign is None:
-                continue
-
-            if campaign.owner_id != current_user.id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Not authorized to access campaign {campaign_id}",
-                )
+    try:
+        await _ensure_owned_campaigns(campaign_ids, current_user.id)
+    except NotAuthorizedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Not authorized to access campaign {exc.identifier}",
+        ) from None

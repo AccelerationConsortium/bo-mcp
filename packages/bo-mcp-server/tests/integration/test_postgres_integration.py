@@ -17,7 +17,7 @@ Run with: pytest -m postgres
 Skip with: pytest -m "not postgres"
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -202,16 +202,14 @@ class TestPostgresCampaignLifecycle:
         spec = CampaignSpec(
             name="Test Spec",
             description="Integration test specification",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="x",
                     type=ParameterType.CONTINUOUS,
                     bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
-                )
-            ],
-            objectives=[
-                Objective(name="y", direction="minimize"),
-            ],
+                ),
+            ),
+            objectives=(Objective(name="y", direction="minimize"),),
             batch_size=2,
         )
         await spec_repo.save(spec, spec_id)
@@ -244,7 +242,7 @@ class TestPostgresCampaignLifecycle:
             name="Test",
             email=f"cascade_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -253,7 +251,7 @@ class TestPostgresCampaignLifecycle:
             name="Cascade Test",
             parameters_json='[{"name":"x","type":"continuous","bounds":[0,1]}]',
             objectives_json='[{"name":"y","direction":"minimize"}]',
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -262,8 +260,8 @@ class TestPostgresCampaignLifecycle:
             spec_id=spec.id,
             owner_id=user.id,
             status=CampaignStatus.RUNNING,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
 
@@ -273,8 +271,8 @@ class TestPostgresCampaignLifecycle:
             campaign_id=campaign.id,
             parameter_values_json='{"x": 0.5}',
             provenance_json='{"iteration": 1, "batch_index": 0}',
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(suggestion)
         await postgres_session.flush()
@@ -311,7 +309,7 @@ class TestPostgresJsonSerialization:
             ),
             objectives_json='[{"name":"y","direction":"minimize","unit":"USD"}]',
             constraints_json='[{"type":"linear","coefficients":{"x":1.0},"bound":0.5}]',
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
         await postgres_session.flush()
@@ -354,7 +352,7 @@ class TestPostgresJsonSerialization:
             name="JSON Test User",
             email=f"json_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -363,7 +361,7 @@ class TestPostgresJsonSerialization:
             name="Nested JSON Test",
             parameters_json='[{"name":"x","type":"continuous","bounds":[0,1]}]',
             objectives_json='[{"name":"y","direction":"minimize"}]',
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -372,8 +370,8 @@ class TestPostgresJsonSerialization:
             spec_id=spec_id,
             owner_id=user_id,
             status=CampaignStatus.RUNNING,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
 
@@ -400,7 +398,7 @@ class TestPostgresJsonSerialization:
             source=ResultSource.API,
             submitted_by=user_id,
             metadata_json=json.dumps(complex_metadata),
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(result)
         await postgres_session.flush()
@@ -429,7 +427,7 @@ class TestPostgresEnumHandling:
             name="Enum Test",
             email=f"enum_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -438,7 +436,7 @@ class TestPostgresEnumHandling:
             name="Enum Test",
             parameters_json="[]",
             objectives_json="[]",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -447,8 +445,8 @@ class TestPostgresEnumHandling:
             spec_id=spec_id,
             owner_id=user_id,
             status=CampaignStatus.RUNNING,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
         await postgres_session.flush()
@@ -487,7 +485,7 @@ class TestPostgresConcurrency:
             name="Lock Test",
             email=f"lock_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -496,7 +494,7 @@ class TestPostgresConcurrency:
             name="Lock Test",
             parameters_json="[]",
             objectives_json="[]",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -506,8 +504,8 @@ class TestPostgresConcurrency:
             owner_id=user_id,
             version=1,
             iteration=0,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
         await postgres_session.flush()
@@ -540,7 +538,7 @@ class TestPostgresBulkOperations:
             name="Bulk Test",
             email=f"bulk_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -549,7 +547,7 @@ class TestPostgresBulkOperations:
             name="Bulk Test",
             parameters_json='[{"name":"x","type":"continuous","bounds":[0,1]}]',
             objectives_json='[{"name":"y","direction":"minimize"}]',
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -558,8 +556,8 @@ class TestPostgresBulkOperations:
             spec_id=spec_id,
             owner_id=user_id,
             status=CampaignStatus.RUNNING,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
         await postgres_session.flush()
@@ -587,3 +585,119 @@ class TestPostgresBulkOperations:
         )
         count = result.scalar()
         assert count == 100
+
+
+class TestPostgresSavepointIsolation:
+    """Verify the savepoint-based ``postgres_session`` fixture isolates tests.
+
+    The two tests below intentionally share an email so a leak across the
+    transaction boundary would surface as an ``IntegrityError`` on the
+    unique-email constraint. They are ordered alphabetically by pytest's
+    default collection — ``test_a_*`` writes, ``test_b_*`` re-writes — and
+    both must pass. Under outer-transaction-only isolation, a test that
+    issued an explicit ``commit`` would persist data into the next test
+    and break this invariant; the savepoint + ``after_transaction_end``
+    restart pattern keeps the outer transaction rollback-effective even
+    in that case.
+    """
+
+    _SHARED_EMAIL = "savepoint_isolation@example.com"
+
+    @pytest.mark.asyncio
+    async def test_a_write_then_commit_inside_savepoint(
+        self, postgres_session: AsyncSession
+    ) -> None:
+        repo = UserRepository(postgres_session)
+        await repo.save(
+            User(
+                name="Isolation A",
+                email=self._SHARED_EMAIL,
+                api_key_hash="iso_hash_a",
+            )
+        )
+        # Application-side commit — the savepoint completes, but the outer
+        # transaction stays open and will be rolled back at teardown.
+        await postgres_session.commit()
+
+        # The row is visible within this test
+        found = await repo.get_by_email(self._SHARED_EMAIL)
+        assert found is not None
+
+    @pytest.mark.asyncio
+    async def test_b_writes_same_email_after_rollback(self, postgres_session: AsyncSession) -> None:
+        """If isolation held, the prior test's row is gone and this insert succeeds.
+
+        Without savepoint isolation (just plain ``BEGIN ... ROLLBACK`` around
+        the test), the explicit ``commit`` in ``test_a_*`` would persist the
+        row and this insert would fail with ``UniqueViolation``.
+        """
+        repo = UserRepository(postgres_session)
+        await repo.save(
+            User(
+                name="Isolation B",
+                email=self._SHARED_EMAIL,
+                api_key_hash="iso_hash_b",
+            )
+        )
+        await postgres_session.flush()
+
+        found = await repo.get_by_email(self._SHARED_EMAIL)
+        assert found is not None
+        assert found.api_key_hash == "iso_hash_b"
+
+    @pytest.mark.asyncio
+    async def test_savepoint_restarts_after_commit_within_single_test(
+        self, postgres_session: AsyncSession
+    ) -> None:
+        """Repeated commit/write cycles in a single test stay session-managed.
+
+        The cross-test isolation tests above only exercise one commit per
+        test. This test pins the inner invariant directly: after the
+        application code commits, the ``after_transaction_end`` listener
+        must immediately restart the SAVEPOINT so the next ``save`` still
+        executes inside a nested transaction. Three commit-then-write
+        cycles followed by a final read prove the loop is stable and that
+        all writes remain visible to the same session while still being
+        contained in the outer transaction (rolled back at teardown).
+
+        If the savepoint restart were missing, the second ``save`` would
+        execute against an "implicit autocommit" connection state and
+        either raise an InvalidRequestError or silently persist past the
+        outer rollback — both visible as a follow-up regression.
+        """
+        repo = UserRepository(postgres_session)
+        emails = [f"restart_{i}_{uuid4().hex[:8]}@example.com" for i in range(3)]
+
+        for i, email in enumerate(emails):
+            await repo.save(
+                User(
+                    name=f"Restart {i}",
+                    email=email,
+                    api_key_hash=f"restart_hash_{i}",
+                )
+            )
+            # Application-side commit at the end of each write cycle. The
+            # savepoint must restart so the next iteration's save executes
+            # in a nested transaction (not autocommit).
+            await postgres_session.commit()
+
+        # All three users are visible within this session — proves writes
+        # survived their respective savepoints and the session is still
+        # operable after multiple restart cycles.
+        for i, email in enumerate(emails):
+            found = await repo.get_by_email(email)
+            assert found is not None, f"User {i} ({email}) not visible after commit"
+            assert found.api_key_hash == f"restart_hash_{i}"
+
+        # Final sanity check: the session is still in a usable transactional
+        # state — a flush of one more write should succeed, not raise.
+        final_email = f"restart_final_{uuid4().hex[:8]}@example.com"
+        await repo.save(
+            User(
+                name="Restart final",
+                email=final_email,
+                api_key_hash="restart_hash_final",
+            )
+        )
+        await postgres_session.flush()
+        assert (await repo.get_by_email(final_email)) is not None

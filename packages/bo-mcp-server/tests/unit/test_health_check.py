@@ -72,6 +72,28 @@ class TestHealthCheckResponse:
         assert isinstance(result["uptime_seconds"], int)
         assert result["uptime_seconds"] >= 0
 
+    @pytest.mark.asyncio
+    async def test_health_check_reports_discovered_backends(self, setup_database: None) -> None:
+        """Health check exposes the cached backend discovery surface.
+
+        Agents need to know which optimization backends are installed
+        before they pick one in the ``backend`` field of a campaign
+        intake. Without this, a typo or missing optional dependency only
+        surfaces deep inside the first suggestion call.
+        """
+        result = await health_check()
+
+        backends = result["backends"]
+        assert isinstance(backends, dict)
+        assert backends, "At least one backend must be discovered in the test env"
+        # The default ``botorch`` backend is registered via the bo-engine
+        # package's entry point and must always be loadable in the test
+        # environment.
+        botorch = backends.get("botorch")
+        assert botorch is not None
+        assert botorch["loaded"] is True
+        assert isinstance(botorch["features"], list)
+
 
 class TestHealthCheckDatabaseError:
     """Tests for health_check behavior when database is unavailable."""
@@ -131,17 +153,25 @@ class TestServerStartTime:
         assert before <= start_time <= after
 
     def test_get_server_start_time_returns_same_value(self) -> None:
-        """Verify start time is consistent across calls."""
-        # Reset for testing
+        """Verify start time is consistent across calls.
+
+        The invariant under test is the cache, not wall-clock progression: a
+        second call must return the same cached value even when ``time.time()``
+        has advanced between the calls. To prove the cache is in play without
+        relying on ``time.sleep``, ``time.time`` is monkey-patched to return
+        two distinct values; if the second call were not cached, it would
+        return the second mocked timestamp and the assertion would fail.
+        """
         import bo_mcp_server.tools.health_check as hc_module
 
         hc_module._server_start_time = None
 
-        first_call = _get_server_start_time()
-        time.sleep(0.01)  # Small delay
-        second_call = _get_server_start_time()
+        with patch.object(hc_module.time, "time", side_effect=[1000.0, 2000.0]):
+            first_call = _get_server_start_time()
+            second_call = _get_server_start_time()
 
-        assert first_call == second_call
+        assert first_call == 1000.0
+        assert second_call == first_call
 
 
 class TestHealthCheckIntegration:

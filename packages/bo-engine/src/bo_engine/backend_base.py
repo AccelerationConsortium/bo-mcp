@@ -41,6 +41,7 @@ from bo_engine.backend import (
 )
 from bo_engine.batch_diversity import compute_batch_diversity
 from bo_engine.device import get_device, get_dtype
+from bo_engine.progress import ProgressCallback
 from bo_engine.result_validation import detect_duplicates as engine_detect_duplicates
 from bo_engine.suggestions import generate_initial_design as engine_generate_initial_design
 from bo_engine.transforms import get_bounds_tensor
@@ -432,6 +433,7 @@ class BaseBackend(ABC):
         iteration: int,
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
         """Concrete backends must implement model-guided suggestion generation."""
 
@@ -536,6 +538,7 @@ class BaseBackend(ABC):
         spec: OptimizationSpec,
         observations: list[ObservationData],
         sections: frozenset[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Partial default: empty model/outlier/hyperparameter sections.
 
@@ -543,7 +546,7 @@ class BaseBackend(ABC):
         keeps callers from crashing when a custom backend has no model
         diagnostics yet — they see ``None`` for the missing sections.
         """
-        _ = spec, observations, sections
+        _ = spec, observations, sections, progress_callback
         return {
             "feature_importance": None,
             "loo_cv_metrics": None,

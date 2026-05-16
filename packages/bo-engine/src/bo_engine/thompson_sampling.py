@@ -18,6 +18,7 @@ References:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,7 @@ from botorch.models import ModelListGP, SingleTaskGP
 from torch import Tensor
 
 from bo_engine.constants import (
+    NUMERICAL_EPSILON,
     THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE,
     THOMPSON_NUM_CANDIDATES,
     THOMPSON_NUM_POSTERIOR_SAMPLES,
@@ -35,6 +37,8 @@ from bo_engine.device import get_device, get_dtype
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -169,7 +173,20 @@ def generate_thompson_samples(
             with torch.no_grad():
                 posterior = model.posterior(x)
                 mean = posterior.mean.item()
-                std = posterior.variance.sqrt().item()
+                # Clamp posterior variance to NUMERICAL_EPSILON so finite-
+                # precision GP fits that drift into negative variance
+                # surface as a near-zero std instead of NaN; warn once
+                # per call if the clamp fires so silently broken posteriors
+                # are still visible in logs.
+                raw_variance = posterior.variance.item()
+                if raw_variance < NUMERICAL_EPSILON:
+                    logger.warning(
+                        "Posterior variance %.3e below NUMERICAL_EPSILON; "
+                        "clamping before sqrt to avoid NaN std",
+                        raw_variance,
+                    )
+                clamped_variance = max(raw_variance, NUMERICAL_EPSILON)
+                std = clamped_variance**0.5
                 # Get a sampled value for this point
                 sampled = posterior.rsample().item()
 

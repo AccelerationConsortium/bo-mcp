@@ -6,9 +6,10 @@ from bo_mcp_server.operations.suggestion_explanation import (
     get_suggestion_explanation_operation,
 )
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tools.annotations import READ_ONLY
 
 
-@mcp.tool(name="bo_get_suggestion_explanation")
+@mcp.tool(name="bo_get_suggestion_explanation", annotations=READ_ONLY)
 async def get_suggestion_explanation(suggestion_id: str) -> dict[str, Any]:
     """Get detailed explanation for why a suggestion was generated.
 

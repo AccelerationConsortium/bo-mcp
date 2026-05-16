@@ -873,10 +873,17 @@ Example error response:
 
 - Added Agent Efficiency improvements:
   - `bo_list_campaigns` - Tool-based campaign listing with filters
-  - `bo_batch_get_status` - Multi-campaign status in one call
+  - `bo_batch_get_status` - Multi-campaign status in one call (now also carries
+    `next_action_recommendation` at `verbosity="minimal"`)
   - `bo_pause_campaign`, `bo_resume_campaign`, `bo_terminate_campaign` - Individual lifecycle tools
   - Verbosity parameter added to `bo_create_campaign` and `bo_submit_results`
   - `next_action_recommendation` added to `bo_get_diagnostics`
+  - `dry_run` parameter on every state-mutating tool returns a `preview`
+    of the planned change without persisting it
+  - `parameter_aliases` on `bo_discover_transfer_candidates` bridges
+    parameter-name drift across related campaigns
+  - Workflow `trace_id` propagation: REST middleware honors `X-Trace-Id`
+    and echoes it on every audit event + `_metadata` envelope
 - **v3.1**: Added `bo_health_check` tool, response verbosity parameter, structured error codes with recovery actions, and AGENT_COOKBOOK.md reference
 - **v2.5**: Added batch diversity metrics, pending points tracking, outlier detection, convergence analysis, duplicate detection with `force` override, and agent quick reference
 - **v2.4**: Added agent usability tools (`bo_compare_campaigns`, `bo_discover_transfer_candidates`) and enhanced diagnostics

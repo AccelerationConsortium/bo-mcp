@@ -242,7 +242,16 @@ class InputParameter(BaseModel):
 
 
 class Objective(BaseModel):
-    """Optimization objective definition."""
+    """Optimization objective definition.
+
+    ``log_transform`` opts a minimize objective into a ``Log → Standardize``
+    outcome stack so multi-decade targets (e.g. concentrations or rates
+    spanning several orders of magnitude) train against a roughly
+    homoskedastic scale. Currently only valid for ``direction="minimize"``;
+    enabling it on a maximize objective raises at the suggestion-generation
+    boundary because BoTorch's ``Log`` transform requires strictly
+    positive targets and negation flips positive raw values to negative.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -250,6 +259,7 @@ class Objective(BaseModel):
     direction: str = Field(..., pattern="^(minimize|maximize)$")
     unit: str = ""
     target: float | None = None  # Optional target value
+    log_transform: bool = False
 
     @property
     def is_minimize(self) -> bool:

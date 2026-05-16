@@ -480,11 +480,19 @@ SENSITIVITY_HIGH_THRESHOLD = 0.5
 SENSITIVITY_MEDIUM_THRESHOLD = 0.2
 
 # =============================================================================
+# Shared Confidence Levels
+# =============================================================================
+
+# Canonical confidence levels used by prediction-interval and calibration
+# diagnostics.  Defined once so the two consumers cannot drift apart silently.
+COMMON_CONFIDENCE_LEVELS = [0.5, 0.9, 0.95]
+
+# =============================================================================
 # Prediction Intervals (Section 3.2)
 # =============================================================================
 
 # Default confidence levels for prediction intervals
-PREDICTION_INTERVAL_DEFAULT_LEVELS = [0.5, 0.9, 0.95]
+PREDICTION_INTERVAL_DEFAULT_LEVELS = COMMON_CONFIDENCE_LEVELS
 
 # Epsilon for numerical stability in PI computations
 PREDICTION_INTERVAL_EPSILON = 1e-8
@@ -494,7 +502,7 @@ PREDICTION_INTERVAL_EPSILON = 1e-8
 # =============================================================================
 
 # Confidence levels to check for calibration
-CALIBRATION_CONFIDENCE_LEVELS = [0.5, 0.9, 0.95]
+CALIBRATION_CONFIDENCE_LEVELS = COMMON_CONFIDENCE_LEVELS
 
 # Threshold for "good" calibration (mean error below this)
 CALIBRATION_GOOD_THRESHOLD = 0.1

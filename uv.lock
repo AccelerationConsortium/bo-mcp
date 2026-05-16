@@ -235,6 +235,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "openpyxl" },
     { name = "pandas" },
+    { name = "prometheus-client" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -255,6 +256,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.0" },
+    { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
@@ -275,7 +277,9 @@ dependencies = [
     { name = "bo-engine" },
     { name = "fastmcp" },
     { name = "mcp" },
+    { name = "prometheus-client" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
@@ -300,7 +304,9 @@ requires-dist = [
     { name = "bo-engine", editable = "packages/bo-engine" },
     { name = "fastmcp", specifier = ">=0.4" },
     { name = "mcp", specifier = ">=1.0" },
+    { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },

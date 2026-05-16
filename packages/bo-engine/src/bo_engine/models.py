@@ -37,7 +37,12 @@ from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.models.transforms.input import ChainedInputTransform, Normalize, Warp
-from botorch.models.transforms.outcome import Standardize
+from botorch.models.transforms.outcome import (
+    ChainedOutcomeTransform,
+    Log,
+    OutcomeTransform,
+    Standardize,
+)
 from gpytorch.constraints import GreaterThan
 from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.mlls import ExactMarginalLogLikelihood
@@ -77,6 +82,54 @@ def _default_noise_prior() -> GammaPrior:
     ``Standardize(m=1)``.
     """
     return GammaPrior(NOISE_PRIOR_GAMMA_CONCENTRATION, NOISE_PRIOR_GAMMA_RATE)
+
+
+def _build_outcome_transform(log_transform: bool) -> OutcomeTransform:
+    """Build the outcome transform stack for a single objective.
+
+    By default the GP only standardizes targets (mean 0, unit variance).
+    When ``log_transform`` is enabled a :class:`~botorch.models.transforms.outcome.Log`
+    transform is applied first via :class:`ChainedOutcomeTransform`, which
+    makes the model behave reasonably on multi-decade objectives whose
+    raw scale spans several orders of magnitude (e.g. reaction rates or
+    contaminant concentrations). BoTorch un-applies both stages on the
+    posterior so callers still see results in the user's original scale.
+
+    **Positivity is required.** :class:`Log` operates on the raw target
+    values; passing a zero or negative target produces ``-inf`` / ``nan``
+    and breaks the downstream ``Standardize`` mean estimate. Callers
+    therefore must guarantee strictly positive ``train_Y`` for the
+    objective when ``log_transform=True``. The model factories
+    (:func:`create_single_task_model`, :func:`create_model`) enforce
+    this at construction time so the failure mode is a clear
+    ``ValueError`` instead of a numerical NaN cascade.
+    """
+    if log_transform:
+        return ChainedOutcomeTransform(log=Log(), standardize=Standardize(m=1))
+    return Standardize(m=1)
+
+
+def _assert_positive_for_log_transform(train_y: Tensor, objective_index: int) -> None:
+    """Raise ``ValueError`` if any target row is non-positive.
+
+    Enforced at construction time so the failure mode for a
+    misconfigured ``log_transform`` campaign is a clear envelope at the
+    boundary, not a NaN that propagates through the standardize step
+    and surfaces as an opaque BoTorch fit error.
+    """
+    if not bool(torch.isfinite(train_y).all()):
+        raise ValueError(
+            f"log_transform=True requires finite targets; objective[{objective_index}] "
+            "has NaN or inf values. Drop or impute those rows before fitting."
+        )
+    if not bool((train_y > 0).all()):
+        min_value = float(train_y.min().item())
+        raise ValueError(
+            f"log_transform=True requires strictly positive targets for "
+            f"objective[{objective_index}]; got min={min_value}. Either drop "
+            "non-positive observations, pre-shift the target, or disable "
+            "log_transform for this objective."
+        )
 
 
 def _build_likelihood(noise_prior: Prior | None) -> GaussianLikelihood:
@@ -174,6 +227,7 @@ def create_single_task_model(
     use_input_warping: bool = False,
     train_yvar: Tensor | None = None,
     noise_prior: Prior | None = None,
+    log_transform: bool = False,
 ) -> SingleTaskGP:
     """Create a SingleTaskGP for single-objective optimization.
 
@@ -197,6 +251,10 @@ def create_single_task_model(
             noise hyperparameter. Defaults to a mildly informative
             ``GammaPrior`` calibrated for standardized targets (see
             ``bo_engine.constants``). Only used when ``train_yvar`` is None.
+        log_transform: If True, apply ``Log`` before ``Standardize(m=1)`` so
+            objectives spanning several orders of magnitude (e.g. reaction
+            rates) train against a roughly homoskedastic scale. Requires
+            strictly positive targets.
 
     Returns:
         SingleTaskGP model (unfitted)
@@ -218,11 +276,14 @@ def create_single_task_model(
         use_input_warping=use_input_warping,
     )
 
+    if log_transform:
+        _assert_positive_for_log_transform(train_y, objective_index=0)
+
     kwargs: dict = {
         "train_X": train_x,
         "train_Y": train_y,
         "input_transform": input_transform,
-        "outcome_transform": Standardize(m=1),
+        "outcome_transform": _build_outcome_transform(log_transform),
     }
     if train_yvar is not None:
         # Heteroskedastic / known-uncertainty path. BoTorch routes Yvar
@@ -242,6 +303,7 @@ def create_model(
     use_input_warping: bool = False,
     train_yvar: Tensor | None = None,
     noise_prior: Prior | None = None,
+    log_transform: bool | list[bool] = False,
 ) -> ModelListGP:
     """Create a ModelListGP for multi-objective optimization.
 
@@ -263,6 +325,11 @@ def create_model(
         noise_prior: Optional GPyTorch ``Prior`` shared across sub-models.
             Defaults to a mildly informative ``GammaPrior`` for standardized
             targets. Only used when ``train_yvar`` is None.
+        log_transform: If True, applies ``Log`` before ``Standardize`` on
+            every sub-model. Pass a list aligned with the objective
+            dimension to enable it per-objective; objectives with
+            multi-decade magnitudes (e.g. concentrations) typically
+            benefit while bounded ones (yield in [0, 1]) do not.
 
     Returns:
         ModelListGP with one GP per objective
@@ -275,6 +342,16 @@ def create_model(
     n_objectives = train_y.shape[-1]
     n_dims = train_x.shape[-1]
 
+    if isinstance(log_transform, bool):
+        log_flags = [log_transform] * n_objectives
+    else:
+        if len(log_transform) != n_objectives:
+            raise ValueError(
+                "log_transform list length must match the number of objectives; "
+                f"got {len(log_transform)} flag(s) for {n_objectives} objective(s)."
+            )
+        log_flags = list(log_transform)
+
     models = []
     for i in range(n_objectives):
         # Create input transform (each model gets its own)
@@ -284,11 +361,14 @@ def create_model(
             use_input_warping=use_input_warping,
         )
 
+        if log_flags[i]:
+            _assert_positive_for_log_transform(train_y[:, i : i + 1], objective_index=i)
+
         kwargs: dict = {
             "train_X": train_x,
             "train_Y": train_y[:, i : i + 1],
             "input_transform": input_transform,
-            "outcome_transform": Standardize(m=1),
+            "outcome_transform": _build_outcome_transform(log_flags[i]),
         }
         if train_yvar is not None:
             kwargs["train_Yvar"] = train_yvar[:, i : i + 1]
@@ -376,6 +456,7 @@ def create_and_fit_single_task_model(
     use_input_warping: bool = False,
     train_yvar: Tensor | None = None,
     noise_prior: Prior | None = None,
+    log_transform: bool = False,
 ) -> SingleTaskGP:
     """Create and fit a SingleTaskGP.
 
@@ -390,6 +471,7 @@ def create_and_fit_single_task_model(
             :func:`create_single_task_model`.
         noise_prior: Optional GPyTorch prior on the trainable noise
             hyperparameter. See :func:`create_single_task_model`.
+        log_transform: Forwarded to :func:`create_single_task_model`.
 
     Returns:
         Fitted SingleTaskGP
@@ -401,6 +483,7 @@ def create_and_fit_single_task_model(
         use_input_warping=use_input_warping,
         train_yvar=train_yvar,
         noise_prior=noise_prior,
+        log_transform=log_transform,
     )
     return fit_single_task_model(model)
 
@@ -412,6 +495,7 @@ def create_and_fit_model(
     use_input_warping: bool = False,
     train_yvar: Tensor | None = None,
     noise_prior: Prior | None = None,
+    log_transform: bool | list[bool] = False,
 ) -> ModelListGP:
     """Create and fit a ModelListGP.
 
@@ -426,6 +510,8 @@ def create_and_fit_model(
             See :func:`create_model`.
         noise_prior: Optional GPyTorch prior shared across sub-models. See
             :func:`create_model`.
+        log_transform: Per-objective ``Log → Standardize`` opt-in.
+            Forwarded to :func:`create_model`.
 
     Returns:
         Fitted ModelListGP
@@ -437,6 +523,7 @@ def create_and_fit_model(
         use_input_warping=use_input_warping,
         train_yvar=train_yvar,
         noise_prior=noise_prior,
+        log_transform=log_transform,
     )
     return fit_model(model)
 

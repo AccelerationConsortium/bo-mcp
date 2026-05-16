@@ -76,6 +76,215 @@ async def test_apply_idempotency_caches_first_response_and_replays() -> None:
 
 
 @pytest.mark.asyncio
+async def test_replay_refreshes_metadata_trace_id() -> None:
+    """Cached replays must reattach the *current* trace_id, not the cached one.
+
+    Background: the cached payload was assembled during the first call
+    and its ``_metadata.trace_id`` reflects whichever workflow id was
+    bound then. A retry under a different workflow (or with no trace
+    at all) must see its own id — otherwise distributed-tracing tools
+    stitch the replay onto the original workflow and lose the actual
+    causal chain.
+
+    Reference: W3C trace-context recommends one trace id per logical
+    workflow; replays of a stored response are *not* part of the
+    original workflow. See https://www.w3.org/TR/trace-context/#trace-id.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from bo_mcp_server.trace_context import bind_trace_id
+
+    async def run(_session: AsyncSession) -> dict[str, Any]:
+        # Simulate an operation that goes through ``with_response_metadata``
+        # by attaching the metadata block directly. Real callers reach
+        # this through :func:`response_formatter.attach_response_metadata`.
+        from bo_mcp_server.response_formatter import attach_response_metadata
+
+        return attach_response_metadata({"success": True})
+
+    # First call: bind a workflow id so the cached payload carries it.
+    with bind_trace_id("workflow-original"):
+        first = await apply_idempotency(
+            tool_name="metadata_replay",
+            idempotency_key="meta-1",
+            request_payload={"k": "v"},
+            executor=run,
+        )
+    assert first["_metadata"]["trace_id"] == "workflow-original"
+
+    # Replay under a *different* workflow id must echo the new id.
+    with bind_trace_id("workflow-retry"):
+        replay_new = await apply_idempotency(
+            tool_name="metadata_replay",
+            idempotency_key="meta-1",
+            request_payload={"k": "v"},
+            executor=run,
+        )
+    assert replay_new["idempotency_replay"] is True
+    assert replay_new["_metadata"]["trace_id"] == "workflow-retry"
+
+    # Replay with NO workflow bound must drop the field entirely so the
+    # metadata envelope stays compact for one-off retries.
+    replay_unbound = await apply_idempotency(
+        tool_name="metadata_replay",
+        idempotency_key="meta-1",
+        request_payload={"k": "v"},
+        executor=run,
+    )
+    assert replay_unbound["idempotency_replay"] is True
+    assert "trace_id" not in replay_unbound["_metadata"]
+
+
+@pytest.mark.asyncio
+async def test_short_circuit_envelopes_carry_trace_metadata() -> None:
+    """Conflict / in-progress / stale envelopes also echo ``_metadata.trace_id``.
+
+    Cached successful replays already refresh the trace id via
+    :func:`_refresh_response_metadata_trace_id`; the error-path
+    short-circuits (payload conflict, in-flight reservation, stale
+    owner) are built locally inside the idempotency module and never
+    go through the operation-level
+    ``with_response_metadata`` decorator. Without an explicit attach
+    step those envelopes would be the only tool returns that drop the
+    trace echo a debugging operator needs most.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from bo_mcp_server.trace_context import bind_trace_id
+
+    async def run(_session: AsyncSession) -> dict[str, Any]:
+        return {"success": True}
+
+    # Seed the cache with one payload, then retry with a mismatched
+    # payload to trigger the conflict short-circuit.
+    await apply_idempotency(
+        tool_name="trace_short_circuit",
+        idempotency_key="meta-conflict",
+        request_payload={"k": "first"},
+        executor=run,
+    )
+    with bind_trace_id("trace-conflict"):
+        conflict = await apply_idempotency(
+            tool_name="trace_short_circuit",
+            idempotency_key="meta-conflict",
+            request_payload={"k": "second"},
+            executor=run,
+        )
+    # The envelope is an error response — under a bound trace it must
+    # still echo the id under ``_metadata``.
+    assert conflict.get("success") is False
+    assert conflict.get("_metadata", {}).get("trace_id") == "trace-conflict"
+
+
+@pytest.mark.asyncio
+async def test_in_progress_envelope_carries_trace_metadata() -> None:
+    """A second retry that hits the in-progress reservation echoes its own trace id.
+
+    The first call holds the reservation via an ``asyncio.Event``
+    barrier so the second call observes a pending row and gets the
+    ``IDEMPOTENCY_IN_PROGRESS`` envelope. Under a bound trace that
+    envelope must still echo ``_metadata.trace_id`` — without the
+    attach step inside ``_lookup_to_short_circuit`` the in-progress
+    short-circuit would be the only tool return that silently drops
+    the workflow id.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from bo_mcp_server.trace_context import bind_trace_id
+
+    barrier = asyncio.Event()
+    started = asyncio.Event()
+    first_run = False
+
+    async def run(_session: AsyncSession) -> dict[str, Any]:
+        nonlocal first_run
+        if not first_run:
+            first_run = True
+            started.set()
+            await barrier.wait()
+        return {"success": True}
+
+    async def winner() -> dict[str, Any]:
+        return await apply_idempotency(
+            tool_name="trace_in_progress",
+            idempotency_key="meta-inflight",
+            request_payload={"k": "v"},
+            executor=run,
+        )
+
+    async def retry_with_trace() -> dict[str, Any]:
+        await started.wait()
+        with bind_trace_id("trace-in-progress"):
+            result = await apply_idempotency(
+                tool_name="trace_in_progress",
+                idempotency_key="meta-inflight",
+                request_payload={"k": "v"},
+                executor=run,
+            )
+        barrier.set()
+        return result
+
+    _, retry_result = await asyncio.gather(winner(), retry_with_trace())
+
+    # The retry observed either the in-progress envelope (the load-
+    # bearing case for this test) or, if timing landed after
+    # finalize, the cached replay. Both code paths run the metadata
+    # attach / refresh, so either response must echo the bound id.
+    assert retry_result.get("_metadata", {}).get("trace_id") == "trace-in-progress"
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_envelope_carries_trace_metadata() -> None:
+    """The stale-owner short-circuit also echoes ``_metadata.trace_id``.
+
+    Mirrors ``test_stale_owner_session_aware_writes_roll_back`` but
+    binds a workflow trace around the call so the resulting
+    ``stale_owner`` envelope's metadata can be asserted. Without the
+    attach step inside ``_run_session_aware`` this envelope would be
+    the only path that silently drops the trace echo a debugging
+    operator needs most.
+    """
+    from uuid import uuid4
+
+    from sqlalchemy import update
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from bo_mcp_server.idempotency import apply_idempotency
+    from bo_mcp_server.storage.models import IdempotencyCacheModel
+    from bo_mcp_server.trace_context import bind_trace_id
+
+    tool = f"stale_owner_trace_{uuid4().hex[:8]}"
+    key = "stale-owner-trace-key"
+
+    async def slow_executor(db: AsyncSession) -> dict[str, Any]:
+        # Model a concurrent reclaim by overwriting the reservation
+        # token on the same session — finalize will see 0 affected
+        # rows and the stale-owner branch fires.
+        await db.execute(
+            update(IdempotencyCacheModel)
+            .where(
+                IdempotencyCacheModel.tool_name == tool,
+                IdempotencyCacheModel.idempotency_key == key,
+            )
+            # noqa S106: literal is a test fixture token, not a credential
+            .values(reservation_token="different-owner-token-32-chars-aa")  # noqa: S106
+        )
+        return {"success": True, "executed": True}
+
+    with bind_trace_id("trace-stale-owner"):
+        response = await apply_idempotency(
+            tool_name=tool,
+            idempotency_key=key,
+            request_payload={"v": 1},
+            executor=slow_executor,
+        )
+
+    assert response["success"] is False
+    assert response["error"]["details"]["stale_owner"] is True
+    assert response.get("_metadata", {}).get("trace_id") == "trace-stale-owner"
+
+
+@pytest.mark.asyncio
 async def test_apply_idempotency_conflict_on_payload_mismatch() -> None:
     """Reusing a key with a different payload returns a conflict envelope."""
     from sqlalchemy.ext.asyncio import AsyncSession

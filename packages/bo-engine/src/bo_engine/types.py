@@ -95,10 +95,31 @@ class ParameterSpec:
 
 @dataclass(frozen=True)
 class ObjectiveSpec:
-    """Specification for a single objective."""
+    """Specification for a single objective.
+
+    ``log_transform`` opts the objective into a ``Log → Standardize``
+    outcome stack inside :mod:`bo_engine.models`. Enable it for
+    multi-decade objectives (e.g. reaction rates spanning 10⁻³ … 10²)
+    whose raw scale would otherwise dominate the GP's lengthscale
+    fit; the model un-applies both stages on the posterior so callers
+    still see results in the user's original scale.
+
+    **Constraints (enforced at model-fit time):**
+
+    * Requires strictly positive ``train_y`` for this objective.
+      Zero or negative observations raise ``ValueError`` from the
+      model factory; pre-shift the target (or drop the row) if
+      non-positive outcomes can occur.
+    * Requires ``minimize=True``. The maximize path negates targets
+      to enforce BoTorch's internal minimization convention, which
+      flips positive raw values to negative and makes the subsequent
+      ``Log`` step ill-defined. Suggestion generation raises a
+      ``ValueError`` for ``log_transform=True`` + ``minimize=False``.
+    """
 
     name: str
     minimize: bool = True
+    log_transform: bool = False
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,6 @@ error deep inside the first suggestion call.
 """
 
 import logging
-import os
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
@@ -28,6 +27,7 @@ from bo_engine.backend_base import required_features
 
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec
+from bo_mcp_server.settings import get_default_backend_name
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,7 @@ def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
     if name != "auto":
         return name
 
-    env_default = os.getenv("BO_BACKEND", DEFAULT_BACKEND)
+    env_default = get_default_backend_name()
     full: list[str] = []
     degraded: list[str] = []
     for backend_name in _candidate_backends(env_default):
@@ -331,7 +331,7 @@ def get_backend(name: str | None = None) -> BOBackend:
         name: Backend name. If None, uses the ``BO_BACKEND`` env var
               (default ``"botorch"``).
     """
-    resolved = name or os.getenv("BO_BACKEND", DEFAULT_BACKEND)
+    resolved = name or get_default_backend_name()
     if resolved not in _backends:
         _backends[resolved] = _load_backend(resolved)
         logger.info("Backend initialized: %s", _backends[resolved].name)

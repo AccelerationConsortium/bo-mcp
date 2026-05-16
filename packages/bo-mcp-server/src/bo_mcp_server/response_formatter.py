@@ -31,7 +31,7 @@ Usage:
 """
 
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from enum import StrEnum
 from typing import Any
 
@@ -50,6 +50,10 @@ class ResponseMetadata(BaseModel):
     backend: str
     protocol: str
     server_version: str
+    # ``trace_id`` is echoed only when the caller bound one via
+    # :func:`bo_mcp_server.trace_context.bind_trace_id` so the metadata
+    # envelope stays compact for one-off calls.
+    trace_id: str | None = None
 
 
 def get_response_metadata(protocol: str = "mcp") -> ResponseMetadata:
@@ -62,13 +66,59 @@ def get_response_metadata(protocol: str = "mcp") -> ResponseMetadata:
         Metadata with backend, protocol, and server version.
     """
     from bo_mcp_server.backend import get_backend  # noqa: PLC0415 - lazy import
+    from bo_mcp_server.trace_context import get_trace_id  # noqa: PLC0415 - lazy import
 
     backend = get_backend()
     return ResponseMetadata(
         backend=backend.name,
         protocol=protocol,
         server_version=__version__,
+        trace_id=get_trace_id(),
     )
+
+
+def attach_response_metadata(response: dict[str, Any]) -> dict[str, Any]:
+    """Splice the ``_metadata`` envelope into a raw operation response.
+
+    Operations that bypass the per-verbosity Pydantic formatter
+    (lifecycle transitions, dry-run previews, suggestion-status
+    updates, error envelopes) still need to echo the workflow
+    ``trace_id`` under ``_metadata.trace_id`` so the contract the
+    cookbook documents holds uniformly across every tool return.
+
+    The function mutates ``response`` in place and returns it for
+    chaining; the metadata key is left out entirely when no trace is
+    bound, keeping the envelope compact for one-off calls (existing
+    snapshot tests assert the exact key set). If ``response`` already
+    carries a ``_metadata`` block — e.g. it was assembled by the
+    Pydantic per-verbosity formatter — the existing entry is left
+    untouched.
+    """
+    if _METADATA_FIELD in response:
+        return response
+    metadata_dump = get_response_metadata().model_dump()
+    if metadata_dump.get("trace_id") is None:
+        metadata_dump.pop("trace_id", None)
+    response[_METADATA_FIELD] = metadata_dump
+    return response
+
+
+def with_response_metadata(
+    fn: Callable[..., Coroutine[Any, Any, dict[str, Any]]],
+) -> Callable[..., Coroutine[Any, Any, dict[str, Any]]]:
+    """Async decorator that splices ``_metadata`` into every return.
+
+    Use on operation entry points whose body returns raw dicts (no
+    per-verbosity Pydantic formatter) so trace-id echo and other
+    response metadata reach the caller without each early-return
+    branch having to remember to call :func:`attach_response_metadata`.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return attach_response_metadata(await fn(*args, **kwargs))
+
+    return wrapper
 
 
 def _with_metadata(
@@ -84,7 +134,13 @@ def _with_metadata(
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
         result = fn(*args, **kwargs)
-        result[_METADATA_FIELD] = get_response_metadata().model_dump()
+        metadata_dump = get_response_metadata().model_dump()
+        # Strip ``trace_id`` when no workflow is active so the metadata
+        # envelope stays compact (existing snapshot tests assert the
+        # exact key set).
+        if metadata_dump.get("trace_id") is None:
+            metadata_dump.pop("trace_id", None)
+        result[_METADATA_FIELD] = metadata_dump
         return result
 
     return wrapper

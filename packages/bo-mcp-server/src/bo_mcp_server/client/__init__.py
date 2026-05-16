@@ -42,7 +42,12 @@ from bo_mcp_server.client.auth import (
     list_owner_campaigns_with_specs,
     parse_uuid,
 )
-from bo_mcp_server.client.lifecycle import init_database, ping_database
+from bo_mcp_server.client.lifecycle import (
+    DatabasePingResult,
+    init_database,
+    ping_database,
+    ping_database_detailed,
+)
 from bo_mcp_server.domain import (
     Campaign,
     CampaignIntakeInput,
@@ -65,6 +70,12 @@ from bo_mcp_server.errors import (
     ErrorCode,
     http_status_for_error,
     make_error_response,
+)
+from bo_mcp_server.metrics import (
+    observe_suggestion_latency,
+    record_campaign_created,
+    record_diagnostics_cache,
+    snapshot_db_pool,
 )
 from bo_mcp_server.operations.batch_status import batch_get_status_operation
 from bo_mcp_server.operations.campaign_lifecycle import (
@@ -160,6 +171,13 @@ __all__ = [
     # File parsing
     "parse_named_result_rows",
     # Lifecycle
+    "DatabasePingResult",
     "init_database",
     "ping_database",
+    "ping_database_detailed",
+    # Metrics
+    "observe_suggestion_latency",
+    "record_campaign_created",
+    "record_diagnostics_cache",
+    "snapshot_db_pool",
 ]

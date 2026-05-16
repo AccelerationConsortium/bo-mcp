@@ -3,7 +3,13 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+# ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
+# keys raise 422 instead of being silently dropped. Response schemas remain
+# permissive because the MCP response formatter splices a ``_metadata``
+# envelope into every payload before it reaches the response model.
+_FORBID_EXTRA: ConfigDict = ConfigDict(extra="forbid")
 
 
 class ResultCreate(BaseModel):
@@ -16,6 +22,8 @@ class ResultCreate(BaseModel):
     if the field had been left out at MCP intake.
     """
 
+    model_config = _FORBID_EXTRA
+
     parameter_values: dict[str, Any]
     objective_values: dict[str, float]
     suggestion_id: str | None = None
@@ -25,6 +33,8 @@ class ResultCreate(BaseModel):
 
 class ResultBatchCreate(BaseModel):
     """Batch result creation request."""
+
+    model_config = _FORBID_EXTRA
 
     results: list[ResultCreate]
     source: str = Field(default="api", pattern="^(gui|file_upload|api)$")
@@ -50,6 +60,8 @@ class ResultResponse(BaseModel):
 
 class ResultQueryRequest(BaseModel):
     """Result query request with pagination."""
+
+    model_config = _FORBID_EXTRA
 
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)

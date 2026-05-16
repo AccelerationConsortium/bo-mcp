@@ -57,7 +57,14 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         for p in spec.parameters
     ]
 
-    objectives = [ObjectiveSpec(name=o.name, minimize=o.is_minimize) for o in spec.objectives]
+    objectives = [
+        ObjectiveSpec(
+            name=o.name,
+            minimize=o.is_minimize,
+            log_transform=o.log_transform,
+        )
+        for o in spec.objectives
+    ]
 
     constraints = [
         ConstraintSpec(

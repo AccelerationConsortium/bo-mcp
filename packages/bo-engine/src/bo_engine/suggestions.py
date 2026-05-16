@@ -582,6 +582,20 @@ def _generate_single_objective_batch(
     train_yvar = ctx.train_yvar
 
     minimize = spec.objectives[0].minimize
+    log_transform = spec.objectives[0].log_transform
+    if log_transform and not minimize:
+        # BoTorch's ``Log`` outcome transform requires strictly positive
+        # targets and is applied inside the GP after we negate ``train_y``
+        # to enforce minimization. For a maximize objective negation flips
+        # the sign of every positive observation to negative, which makes
+        # the log step ill-defined. Surface this at the boundary instead of
+        # letting BoTorch raise a less actionable error during fit.
+        raise ValueError(
+            "ObjectiveSpec.log_transform=True is only supported for "
+            "minimize=True objectives. For a maximize objective with a "
+            "multi-decade target, either flip the objective definition "
+            "(minimize the negative log) or pre-transform the data."
+        )
 
     # Negate if maximizing (BoTorch assumes minimization). Variance is
     # sign-invariant -- ``Var(-Y) == Var(Y)`` -- so ``train_yvar`` flows
@@ -598,6 +612,7 @@ def _generate_single_objective_batch(
         bounds,
         use_input_warping=spec.use_input_warping,
         train_yvar=train_yvar,
+        log_transform=log_transform,
     )
 
     # Outcome constraint models (constraints on OUTPUT space)
@@ -835,6 +850,21 @@ def _generate_multi_objective_batch(
     # Get minimize mask for objectives
     minimize_mask = torch.tensor([obj.minimize for obj in spec.objectives], dtype=torch.bool)
 
+    # ``log_transform`` is incompatible with a maximize objective on this
+    # path: BoTorch's ``Log`` outcome transform fires *after* we negate the
+    # column to enforce minimization, so a positive raw target becomes
+    # negative and ``log`` is undefined. Surface this at the boundary
+    # rather than letting BoTorch fail deep inside model fit.
+    log_flags = [obj.log_transform for obj in spec.objectives]
+    for idx, (flag, mini) in enumerate(zip(log_flags, minimize_mask.tolist(), strict=True)):
+        if flag and not mini:
+            raise ValueError(
+                f"ObjectiveSpec.log_transform=True is only supported for "
+                f"minimize=True objectives (objective[{idx}] "
+                f"'{spec.objectives[idx].name}' is maximize). Flip the "
+                "objective definition or pre-transform the data."
+            )
+
     # Negate maximization objectives (BoTorch assumes minimization). Variance
     # is sign-invariant, so ``train_yvar`` flows through unchanged.
     train_y_bo = train_y.clone()
@@ -848,6 +878,7 @@ def _generate_multi_objective_batch(
         bounds,
         use_input_warping=spec.use_input_warping,
         train_yvar=ctx.train_yvar,
+        log_transform=log_flags,
     )
 
     # Get reference point (using STATIC strategy for backward compatibility;

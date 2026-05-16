@@ -264,6 +264,7 @@ async def discover_campaign_transfer_candidates(
         similarity_threshold=request.similarity_threshold,
         max_candidates=request.max_candidates,
         verbosity=request.verbosity.value,
+        parameter_aliases=request.parameter_aliases,
     )
     return TransferCandidatesResponse(**result)
 

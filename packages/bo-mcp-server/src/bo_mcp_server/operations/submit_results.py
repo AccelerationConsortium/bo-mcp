@@ -42,6 +42,7 @@ from bo_mcp_server.operations.helpers import (
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_submit_results_response,
+    with_response_metadata,
 )
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -73,6 +74,75 @@ def _make_submit_error(
         }
     )
     return response
+
+
+def _build_submit_dry_run_response(
+    campaign_id: str,
+    submitted_rows: int,
+    persisted_rows: int,
+    tracking: "_SubmitTracking",
+) -> dict[str, Any]:
+    """Compose the dry-run preview envelope for ``submit_results``."""
+    logger.info(
+        "Dry-run submit for campaign %s: %d row(s) would persist",
+        campaign_id,
+        persisted_rows,
+    )
+    return {
+        "success": True,
+        "dry_run": True,
+        "result_ids": [],
+        "errors": tracking.errors,
+        "field_errors": tracking.field_errors,
+        "warnings": tracking.warnings,
+        "duplicates_detected": tracking.duplicates_detected,
+        "preview": {
+            "rows_submitted": submitted_rows,
+            "rows_would_persist": persisted_rows,
+            "rows_filtered": submitted_rows - persisted_rows,
+        },
+    }
+
+
+def _short_circuit_submit(
+    campaign_id: str,
+    atomic: bool,
+    force: bool,
+    continue_on_error: bool,
+    dry_run: bool,
+    result_entities: list[Result],
+    submitted_rows: int,
+    tracking: "_SubmitTracking",
+) -> dict[str, Any] | None:
+    """Return the response envelope iff submit_results must exit before save.
+
+    Handles three short-circuit paths in one place so the parent operation
+    can stay below ruff's 6-return ceiling: atomic-batch validation
+    failure, an empty result set after filtering, and ``dry_run=True``.
+    """
+    atomic_error = _check_atomic_failures(atomic, force, continue_on_error, campaign_id, tracking)
+    if atomic_error is not None:
+        return atomic_error
+
+    if not result_entities:
+        response_data: dict[str, Any] = {
+            "success": False,
+            "result_ids": [],
+            "errors": (tracking.errors if tracking.errors else ["No valid results to submit"]),
+            "field_errors": tracking.field_errors,
+            "warnings": tracking.warnings,
+            "duplicates_detected": tracking.duplicates_detected,
+        }
+        if not atomic and continue_on_error:
+            response_data["partial_results"] = tracking.partial_results
+        return response_data
+
+    if dry_run:
+        return _build_submit_dry_run_response(
+            campaign_id, submitted_rows, len(result_entities), tracking
+        )
+
+    return None
 
 
 def _validate_submit_inputs(
@@ -245,8 +315,17 @@ async def _resolve_suggestion_id(
     campaign_uuid: UUID,
     suggestion_repo: SuggestionRepository,
     warnings: list[str],
+    *,
+    dry_run: bool = False,
 ) -> UUID | None:
-    """Resolve and validate a suggestion_id, marking it completed if valid."""
+    """Resolve and validate a suggestion_id, marking it completed if valid.
+
+    Setting ``dry_run=True`` skips the ``SuggestionStatus.COMPLETED``
+    write so the caller can preview a submission without mutating
+    suggestion state. The id is still returned (so the dry-run preview
+    reflects the row that *would* link to the suggestion); only the
+    persistence side-effect is suppressed.
+    """
     if not suggestion_id_str:
         return None
     try:
@@ -262,7 +341,8 @@ async def _resolve_suggestion_id(
     if suggestion.campaign_id != campaign_uuid:
         warnings.append(f"Result {index}: suggestion belongs to different campaign")
         return None
-    await suggestion_repo.save(suggestion.with_status(SuggestionStatus.COMPLETED))
+    if not dry_run:
+        await suggestion_repo.save(suggestion.with_status(SuggestionStatus.COMPLETED))
     return suggestion_id
 
 
@@ -642,6 +722,8 @@ async def _validate_and_create_results(
     atomic: bool,
     continue_on_error: bool,
     tracking: _SubmitTracking,
+    *,
+    dry_run: bool = False,
 ) -> tuple[list[Result], dict[int, int]]:
     """Validate inputs and materialize Result entities.
 
@@ -757,6 +839,7 @@ async def _validate_and_create_results(
             campaign_uuid,
             suggestion_repo,
             tracking.warnings,
+            dry_run=dry_run,
         )
 
         result = Result(
@@ -1122,6 +1205,7 @@ async def _handle_submit_results_cm_error(
     return response
 
 
+@with_response_metadata
 async def submit_results_operation(
     campaign_id: str,
     results: list[ResultSubmissionInput],
@@ -1133,6 +1217,7 @@ async def submit_results_operation(
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
     *,
     session: AsyncSession | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Submit experimental results for a campaign.
 
@@ -1147,6 +1232,13 @@ async def submit_results_operation(
     partial persistence is expected; callers MUST inspect
     ``partial_results`` to see which indices succeeded.
 
+    When ``dry_run`` is true the operation runs full validation
+    (parameter bounds, duplicate detection, suggestion-id resolution,
+    atomic-failure gates) but returns before persisting any row or
+    advancing campaign / backend state. The response carries
+    ``dry_run: True`` plus a ``preview`` block summarizing how many
+    rows would persist and how many were filtered.
+
     Args:
         campaign_id: UUID of the campaign
         results: List of result payloads
@@ -1158,6 +1250,8 @@ async def submit_results_operation(
             valid rows are persisted (subject to ``continue_on_error``).
         continue_on_error: If True, continue after errors (ignored if atomic)
         verbosity: Response detail level
+        dry_run: If True, perform full validation and return a preview
+            without persisting anything.
 
     Returns:
         Dictionary with success, result_ids, errors, warnings, duplicates_detected.
@@ -1211,28 +1305,21 @@ async def submit_results_operation(
                 atomic,
                 continue_on_error,
                 tracking,
+                dry_run=dry_run,
             )
 
-            atomic_error = _check_atomic_failures(
-                atomic, force, continue_on_error, campaign_id, tracking
+            short_circuit = _short_circuit_submit(
+                campaign_id,
+                atomic,
+                force,
+                continue_on_error,
+                dry_run,
+                result_entities,
+                len(results),
+                tracking,
             )
-            if atomic_error is not None:
-                return atomic_error
-
-            if not result_entities:
-                response_data: dict[str, Any] = {
-                    "success": False,
-                    "result_ids": [],
-                    "errors": (
-                        tracking.errors if tracking.errors else ["No valid results to submit"]
-                    ),
-                    "field_errors": tracking.field_errors,
-                    "warnings": tracking.warnings,
-                    "duplicates_detected": tracking.duplicates_detected,
-                }
-                if not atomic and continue_on_error:
-                    response_data["partial_results"] = tracking.partial_results
-                return response_data
+            if short_circuit is not None:
+                return short_circuit
 
             saved_results = await result_repo.save_batch(result_entities)
             result_ids = [str(r.id) for r in saved_results]

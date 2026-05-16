@@ -11,14 +11,59 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.idempotency import apply_idempotency, digest_large_field
 from bo_mcp_server.operations.submit_results import submit_results_operation
+from bo_mcp_server.response_formatter import with_response_metadata
 from bo_mcp_server.result_upload_parser import parse_prefixed_result_rows
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
+from bo_mcp_server.trace_context import bind_trace_id
 
 logger = logging.getLogger(__name__)
 
 # 10 MB — prevents memory exhaustion from arbitrarily large uploads.
 MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
+
+def _build_upload_response(
+    submit_result: dict[str, Any],
+    parse_errors: list[str],
+    *,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Compose the upload-results-file response envelope.
+
+    Splits the assembly out of the main pipeline so the inner runner
+    stays under ruff's cognitive-complexity ceiling. Carries the
+    inner submit-results preview verbatim when running in dry-run
+    mode so callers see both the parse-side and the submit-side view
+    of "what would happen".
+    """
+    result_ids = submit_result.get("result_ids", [])
+    errors = parse_errors + submit_result.get("errors", [])
+    warnings = submit_result.get("warnings", [])
+    duplicates_detected = submit_result.get("duplicates_detected", [])
+    response: dict[str, Any] = {
+        "success": submit_result.get("success", False) and not parse_errors,
+        "results_created": len(result_ids),
+        "errors": errors,
+    }
+    if warnings:
+        response["warnings"] = warnings
+    if duplicates_detected:
+        response["duplicates_detected"] = duplicates_detected
+    if dry_run:
+        response["dry_run"] = True
+        if "preview" in submit_result:
+            response["preview"] = submit_result["preview"]
+    # Inherit the inner ``submit_results`` envelope's metadata so the
+    # outer upload response also carries ``_metadata.trace_id`` /
+    # backend / server_version. The tool wrapper itself runs inside
+    # ``bind_trace_id``; ``_build_upload_response`` is the only place
+    # that rebuilds the envelope, so the inheritance has to happen
+    # here to survive the rebuild.
+    metadata = submit_result.get("_metadata")
+    if isinstance(metadata, dict):
+        response["_metadata"] = metadata
+    return response
 
 
 def _parse_uuids(campaign_id: str, submitted_by: str | None) -> dict[str, Any] | tuple[UUID, UUID]:
@@ -55,6 +100,8 @@ async def upload_results_file(
     file_format: str = "csv",
     submitted_by: str | None = None,
     idempotency_key: str | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """Upload experimental results from a CSV file.
 
@@ -74,6 +121,11 @@ async def upload_results_file(
             per logical upload). Replays the prior response with
             ``idempotency_replay: True`` if the same key + payload was
             seen in the last 24 hours instead of re-ingesting the file.
+        dry_run: If True, parse the CSV and fully validate every row
+            (parameter bounds, duplicates, suggestion linkage) but
+            persist nothing. Dry-runs bypass the idempotency cache so
+            the slot stays free for a real upload.
+        trace_id: Optional workflow trace id. See ``bo_create_campaign``.
 
     Returns:
         Dictionary with:
@@ -81,6 +133,40 @@ async def upload_results_file(
             - results_created: Number of results saved
             - errors: List of row-level errors
     """
+    with bind_trace_id(trace_id):
+        return await _upload_dispatch(
+            campaign_id=campaign_id,
+            file_content=file_content,
+            file_format=file_format,
+            submitted_by=submitted_by,
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
+        )
+
+
+async def _upload_dispatch(
+    campaign_id: str,
+    file_content: str,
+    file_format: str,
+    submitted_by: str | None,
+    idempotency_key: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Pick the dry-run vs idempotent code path for the upload tool.
+
+    Kept separate from ``upload_results_file`` so the public tool
+    function stays under ruff's cognitive-complexity ceiling while we
+    still wrap the call in :func:`bind_trace_id`.
+    """
+    if dry_run:
+        return await _upload_results_file_inner(
+            campaign_id=campaign_id,
+            file_content=file_content,
+            file_format=file_format,
+            submitted_by=submitted_by,
+            dry_run=True,
+        )
+
     # Pre-digest ``file_content`` so a multi-MB CSV upload does not
     # inflate the idempotency cache row. The digest is collision-safe
     # within this cache's lifetime, so a retry with the same bytes
@@ -110,6 +196,7 @@ async def upload_results_file(
     )
 
 
+@with_response_metadata
 async def _upload_results_file_inner(
     campaign_id: str,
     file_content: str,
@@ -117,8 +204,17 @@ async def _upload_results_file_inner(
     submitted_by: str | None,
     *,
     session: AsyncSession | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Core upload-file pipeline used by the public tool and the cache path."""
+    """Core upload-file pipeline used by the public tool and the cache path.
+
+    Decorated with ``with_response_metadata`` so every early validation
+    return (oversized file, unsupported format, invalid UUID, empty CSV,
+    parse error) carries ``_metadata.trace_id`` like the success path
+    already does via the inherited submit-results envelope. Without
+    this, traced uploads that failed validation were the only
+    upload-tool returns missing the trace echo.
+    """
     logger.info(
         "Uploading results file for campaign %s (format=%s, size=%d bytes)",
         campaign_id,
@@ -184,18 +280,16 @@ async def _upload_results_file_inner(
         atomic=False,
         continue_on_error=True,
         session=session,
+        dry_run=dry_run,
     )
 
     result_ids = submit_result.get("result_ids", [])
-    errors = parse_errors + submit_result.get("errors", [])
-    warnings = submit_result.get("warnings", [])
-    duplicates_detected = submit_result.get("duplicates_detected", [])
-
-    if errors:
+    n_errors = len(parse_errors) + len(submit_result.get("errors", []))
+    if n_errors:
         logger.warning(
             "File upload completed with errors: %d results created, %d errors",
             len(result_ids),
-            len(errors),
+            n_errors,
         )
     else:
         logger.info(
@@ -204,14 +298,4 @@ async def _upload_results_file_inner(
             campaign_id,
         )
 
-    response: dict[str, Any] = {
-        "success": submit_result.get("success", False) and not parse_errors,
-        "results_created": len(result_ids),
-        "errors": errors,
-    }
-    if warnings:
-        response["warnings"] = warnings
-    if duplicates_detected:
-        response["duplicates_detected"] = duplicates_detected
-
-    return response
+    return _build_upload_response(submit_result, parse_errors, dry_run=dry_run)

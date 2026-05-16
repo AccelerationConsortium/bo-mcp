@@ -10,6 +10,7 @@ from bo_mcp_server.operations.update_suggestion_status import (
 )
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
+from bo_mcp_server.trace_context import bind_trace_id
 
 # ``completed`` is intentionally excluded -- it is set automatically by
 # ``bo_submit_results`` (manual transitions live in
@@ -22,6 +23,8 @@ async def update_suggestion_status(
     suggestion_id: str,
     status: ManualSuggestionStatus,
     idempotency_key: str | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """Update the status of a suggestion.
 
@@ -45,6 +48,10 @@ async def update_suggestion_status(
             per logical transition). Replays the prior response with
             ``idempotency_replay: True`` if the same key + payload was
             seen in the last 24 hours.
+        dry_run: If True, validate the transition and return a preview
+            without committing. The response carries ``dry_run: True``
+            and a ``preview`` block. Dry-runs bypass the idempotency
+            cache so they never reserve a slot.
 
     Returns:
         Dictionary with:
@@ -54,21 +61,29 @@ async def update_suggestion_status(
             - previous_status: Status before the update
             - errors: List of error messages
     """
-    request_payload = {
-        "suggestion_id": suggestion_id,
-        "status": status,
-    }
+    with bind_trace_id(trace_id):
+        if dry_run:
+            return await update_suggestion_status_operation(
+                suggestion_id=suggestion_id,
+                status=status,
+                dry_run=True,
+            )
 
-    async def run(session: AsyncSession) -> dict[str, Any]:
-        return await update_suggestion_status_operation(
-            suggestion_id=suggestion_id,
-            status=status,
-            session=session,
+        request_payload = {
+            "suggestion_id": suggestion_id,
+            "status": status,
+        }
+
+        async def run(session: AsyncSession) -> dict[str, Any]:
+            return await update_suggestion_status_operation(
+                suggestion_id=suggestion_id,
+                status=status,
+                session=session,
+            )
+
+        return await apply_idempotency(
+            tool_name="bo_update_suggestion_status",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            executor=run,
         )
-
-    return await apply_idempotency(
-        tool_name="bo_update_suggestion_status",
-        idempotency_key=idempotency_key,
-        request_payload=request_payload,
-        executor=run,
-    )

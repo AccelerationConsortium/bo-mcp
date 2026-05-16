@@ -12,6 +12,7 @@ from bo_mcp_server.operations.generate_suggestions import (
 from bo_mcp_server.progress_bridge import make_progress_callback_from_context
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
+from bo_mcp_server.trace_context import bind_trace_id
 
 
 @mcp.tool(name="bo_generate_suggestions", annotations=NON_IDEMPOTENT_MUTATION)
@@ -21,6 +22,8 @@ async def generate_suggestions(
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
     idempotency_key: str | None = None,
     ctx: Context | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate next batch of experiment suggestions for a campaign.
 
@@ -37,30 +40,45 @@ async def generate_suggestions(
             with ``idempotency_replay: True`` if the same key + payload
             was seen in the last 24 hours, instead of producing a fresh
             batch of suggestions.
+        dry_run: If True, validate the campaign is generation-ready and
+            return a cheap preview (next iteration + planned batch
+            size) without running the BO algorithm or persisting any
+            suggestion. Dry-runs bypass the idempotency cache so the
+            slot stays free for a real generation request.
+        trace_id: Optional workflow trace id. See ``bo_create_campaign``.
 
     Returns:
         Dictionary with success, suggestions, iteration, errors.
     """
-    request_payload = {
-        "campaign_id": campaign_id,
-        "batch_size": batch_size,
-        "verbosity": verbosity,
-    }
+    with bind_trace_id(trace_id):
+        if dry_run:
+            return await generate_suggestions_operation(
+                campaign_id=campaign_id,
+                batch_size=batch_size,
+                verbosity=verbosity,
+                dry_run=True,
+            )
 
-    progress_callback = make_progress_callback_from_context(ctx)
+        request_payload = {
+            "campaign_id": campaign_id,
+            "batch_size": batch_size,
+            "verbosity": verbosity,
+        }
 
-    async def run(session: AsyncSession) -> dict[str, Any]:
-        return await generate_suggestions_operation(
-            campaign_id=campaign_id,
-            batch_size=batch_size,
-            verbosity=verbosity,
-            progress_callback=progress_callback,
-            session=session,
+        progress_callback = make_progress_callback_from_context(ctx)
+
+        async def run(session: AsyncSession) -> dict[str, Any]:
+            return await generate_suggestions_operation(
+                campaign_id=campaign_id,
+                batch_size=batch_size,
+                verbosity=verbosity,
+                progress_callback=progress_callback,
+                session=session,
+            )
+
+        return await apply_idempotency(
+            tool_name="bo_generate_suggestions",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            executor=run,
         )
-
-    return await apply_idempotency(
-        tool_name="bo_generate_suggestions",
-        idempotency_key=idempotency_key,
-        request_payload=request_payload,
-        executor=run,
-    )

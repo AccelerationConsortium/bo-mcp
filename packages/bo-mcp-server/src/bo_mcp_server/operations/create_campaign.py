@@ -21,6 +21,7 @@ from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_create_campaign_response,
+    with_response_metadata,
 )
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -104,12 +105,14 @@ def _capability_error_response(
     return response
 
 
+@with_response_metadata
 async def create_campaign_operation(
     intake_data: CampaignIntakeInput | dict[str, Any],
     owner_id: str,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
     *,
     session: AsyncSession | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a new campaign from validated intake data.
 
@@ -131,14 +134,20 @@ async def create_campaign_operation(
             session-aware path so the campaign write and the cache
             finalize commit atomically. Omit to keep the operation
             self-contained.
+        dry_run: If True, run validation + capability checks and return
+            a preview without persisting the campaign. ``campaign_id``
+            and ``spec_id`` are omitted from the preview because no
+            entity is created; the response carries ``dry_run: True``
+            and a ``preview`` block summarizing what *would* be written.
 
     Returns:
         Formatted response dictionary with campaign details.
     """
     logger.info(
-        "Creating campaign for owner_id=%s, verbosity=%s",
+        "Creating campaign for owner_id=%s, verbosity=%s, dry_run=%s",
         owner_id,
         verbosity,
+        dry_run,
     )
     logger.debug("Intake data: %s", intake_data)
 
@@ -199,6 +208,32 @@ async def create_campaign_operation(
         return _capability_error_response(spec, capabilities, warnings)
     warnings.extend(capabilities.warnings)
 
+    if dry_run:
+        logger.info(
+            "Campaign create dry-run validated: name=%s, params=%d, objectives=%d",
+            spec.name,
+            len(spec.parameters),
+            len(spec.objectives),
+        )
+        return {
+            "success": True,
+            "dry_run": True,
+            "campaign_id": None,
+            "spec_id": None,
+            "campaign_name": spec.name,
+            "warnings": warnings,
+            "errors": [],
+            "field_errors": {},
+            "preview": {
+                "name": spec.name,
+                "backend": spec.backend,
+                "n_parameters": len(spec.parameters),
+                "n_objectives": len(spec.objectives),
+                "n_constraints": (len(spec.constraints) if spec.constraints else 0),
+                "batch_size": spec.batch_size,
+            },
+        }
+
     # Generate IDs
     spec_id = uuid4()
     campaign_id = uuid4()
@@ -212,13 +247,21 @@ async def create_campaign_operation(
     )
 
     # Save to storage — re-use the caller's session if one was passed,
-    # otherwise open and commit our own.
+    # otherwise open and commit our own. Arming the counter as an
+    # ``after_commit`` hook (rather than calling it after the ``async
+    # with`` block) keeps the metric truthful for both the
+    # operation-owns-the-session path *and* the idempotency-owns-the-
+    # session path, where the outer caller commits and a downstream
+    # rollback would otherwise leave the counter inflated.
+    from bo_mcp_server.metrics import record_campaign_created_after_commit  # noqa: PLC0415
+
     async with session_scope(session) as db:
         spec_repo = CampaignSpecRepository(db)
         campaign_repo = CampaignRepository(db)
 
         await spec_repo.save(spec, spec_id)
         await campaign_repo.save(campaign)
+        record_campaign_created_after_commit(db, spec.backend)
 
     logger.info(
         "Campaign created successfully: campaign_id=%s, spec_id=%s, name=%s",

@@ -256,6 +256,10 @@ class CampaignSpecRepository:
                 direction=o["direction"],
                 unit=o.get("unit", ""),
                 target=o.get("target"),
+                # ``log_transform`` was added after some rows were
+                # already persisted; default to ``False`` for legacy
+                # JSON blobs that pre-date the field.
+                log_transform=o.get("log_transform", False),
             )
             for o in model.get_objectives()
         ]
@@ -989,13 +993,26 @@ class EventRepository:
         self.session = session
 
     async def save(self, event: Event) -> Event:
-        """Save an audit event."""
+        """Save an audit event.
+
+        The active workflow ``trace_id`` (if any) is spliced into
+        ``input_summary`` so every event-emitting path — the
+        ``audit.log_tool_call`` helper, lifecycle / status operations
+        that write Events directly — picks it up uniformly. Centralizing
+        the splice here means future callers cannot forget it.
+        """
+        from bo_mcp_server.trace_context import get_trace_id  # noqa: PLC0415
+
+        enriched_input = dict(event.input_summary)
+        trace_id = get_trace_id()
+        if trace_id is not None and "trace_id" not in enriched_input:
+            enriched_input["trace_id"] = trace_id
         model = EventModel(
             id=str(event.id),
             campaign_id=str(event.campaign_id) if event.campaign_id else None,
             event_type=event.event_type,
             tool_name=event.tool_name,
-            input_summary_json=json.dumps(event.input_summary),
+            input_summary_json=json.dumps(enriched_input),
             output_summary_json=json.dumps(event.output_summary),
             actor_id=event.actor_id,
             created_at=event.created_at,

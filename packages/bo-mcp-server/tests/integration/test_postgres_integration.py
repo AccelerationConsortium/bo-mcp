@@ -17,7 +17,7 @@ Run with: pytest -m postgres
 Skip with: pytest -m "not postgres"
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -242,7 +242,7 @@ class TestPostgresCampaignLifecycle:
             name="Test",
             email=f"cascade_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -251,7 +251,7 @@ class TestPostgresCampaignLifecycle:
             name="Cascade Test",
             parameters_json='[{"name":"x","type":"continuous","bounds":[0,1]}]',
             objectives_json='[{"name":"y","direction":"minimize"}]',
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -260,8 +260,8 @@ class TestPostgresCampaignLifecycle:
             spec_id=spec.id,
             owner_id=user.id,
             status=CampaignStatus.RUNNING,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
 
@@ -271,8 +271,8 @@ class TestPostgresCampaignLifecycle:
             campaign_id=campaign.id,
             parameter_values_json='{"x": 0.5}',
             provenance_json='{"iteration": 1, "batch_index": 0}',
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(suggestion)
         await postgres_session.flush()
@@ -309,7 +309,7 @@ class TestPostgresJsonSerialization:
             ),
             objectives_json='[{"name":"y","direction":"minimize","unit":"USD"}]',
             constraints_json='[{"type":"linear","coefficients":{"x":1.0},"bound":0.5}]',
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
         await postgres_session.flush()
@@ -352,7 +352,7 @@ class TestPostgresJsonSerialization:
             name="JSON Test User",
             email=f"json_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -361,7 +361,7 @@ class TestPostgresJsonSerialization:
             name="Nested JSON Test",
             parameters_json='[{"name":"x","type":"continuous","bounds":[0,1]}]',
             objectives_json='[{"name":"y","direction":"minimize"}]',
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -370,8 +370,8 @@ class TestPostgresJsonSerialization:
             spec_id=spec_id,
             owner_id=user_id,
             status=CampaignStatus.RUNNING,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
 
@@ -398,7 +398,7 @@ class TestPostgresJsonSerialization:
             source=ResultSource.API,
             submitted_by=user_id,
             metadata_json=json.dumps(complex_metadata),
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(result)
         await postgres_session.flush()
@@ -427,7 +427,7 @@ class TestPostgresEnumHandling:
             name="Enum Test",
             email=f"enum_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -436,7 +436,7 @@ class TestPostgresEnumHandling:
             name="Enum Test",
             parameters_json="[]",
             objectives_json="[]",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -445,8 +445,8 @@ class TestPostgresEnumHandling:
             spec_id=spec_id,
             owner_id=user_id,
             status=CampaignStatus.RUNNING,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
         await postgres_session.flush()
@@ -485,7 +485,7 @@ class TestPostgresConcurrency:
             name="Lock Test",
             email=f"lock_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -494,7 +494,7 @@ class TestPostgresConcurrency:
             name="Lock Test",
             parameters_json="[]",
             objectives_json="[]",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -504,8 +504,8 @@ class TestPostgresConcurrency:
             owner_id=user_id,
             version=1,
             iteration=0,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
         await postgres_session.flush()
@@ -538,7 +538,7 @@ class TestPostgresBulkOperations:
             name="Bulk Test",
             email=f"bulk_{uuid4().hex[:8]}@example.com",
             api_key_hash="hash",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(user)
 
@@ -547,7 +547,7 @@ class TestPostgresBulkOperations:
             name="Bulk Test",
             parameters_json='[{"name":"x","type":"continuous","bounds":[0,1]}]',
             objectives_json='[{"name":"y","direction":"minimize"}]',
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         postgres_session.add(spec)
 
@@ -556,8 +556,8 @@ class TestPostgresBulkOperations:
             spec_id=spec_id,
             owner_id=user_id,
             status=CampaignStatus.RUNNING,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         postgres_session.add(campaign)
         await postgres_session.flush()

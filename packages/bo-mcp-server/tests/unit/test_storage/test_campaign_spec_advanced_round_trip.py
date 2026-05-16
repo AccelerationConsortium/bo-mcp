@@ -174,6 +174,76 @@ class TestAdvancedFieldRoundTrip:
         assert reloaded.backend_options == {"botorch": {"acquisition_optimizer": "lbfgsb"}}
 
     @pytest.mark.asyncio
+    async def test_objective_log_transform_round_trip(self, session: AsyncSession) -> None:
+        """``Objective.log_transform`` survives save → reload.
+
+        Reference: BoTorch documents the ``Log → Standardize`` outcome
+        stack for multi-decade objectives —
+        https://botorch.readthedocs.io/en/stable/models.html#botorch.models.transforms.outcome.Log.
+        If the flag is dropped on load, suggestion generation runs
+        against a plain Standardize model whenever a campaign is
+        revisited after a process restart, silently regressing the
+        scale-invariance the flag was supposed to provide.
+        """
+        spec = CampaignSpec(
+            name="Log Transform Round Trip",
+            parameters=(
+                InputParameter(
+                    name="x",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
+                ),
+            ),
+            objectives=(Objective(name="rate", direction="minimize", log_transform=True),),
+        )
+        reloaded = await _save_and_reload(session, spec)
+        assert reloaded.objectives[0].log_transform is True
+
+    @pytest.mark.asyncio
+    async def test_objective_log_transform_defaults_to_false_for_legacy_rows(
+        self, session: AsyncSession
+    ) -> None:
+        """Rows persisted before the field existed still load cleanly.
+
+        Simulates a legacy row by writing the objective JSON without
+        ``log_transform`` and asserting the reload normalizes to
+        ``False`` rather than raising on the missing key.
+        """
+        from sqlalchemy import update
+
+        from bo_mcp_server.storage.models import CampaignSpecModel
+        from bo_mcp_server.storage.repositories import CampaignSpecRepository
+
+        spec = _base_spec()
+        repo = CampaignSpecRepository(session)
+        spec_id = uuid4()
+        await repo.save(spec, spec_id)
+        await session.commit()
+
+        # Strip the ``log_transform`` key to emulate a legacy row.
+        import json
+
+        legacy = json.dumps(
+            [
+                {
+                    "name": "y",
+                    "direction": "minimize",
+                    "unit": "",
+                    "target": None,
+                }
+            ]
+        )
+        await session.execute(
+            update(CampaignSpecModel)
+            .where(CampaignSpecModel.id == str(spec_id))
+            .values(objectives_json=legacy)
+        )
+        await session.commit()
+        reloaded = await repo.get(spec_id)
+        assert reloaded is not None
+        assert reloaded.objectives[0].log_transform is False
+
+    @pytest.mark.asyncio
     async def test_default_spec_keeps_blob_null(self, session: AsyncSession) -> None:
         """Specs with no advanced fields don't bloat storage with default JSON."""
         from sqlalchemy import select

@@ -32,6 +32,11 @@ async def log_tool_call(
     running. Truly unexpected exception types are allowed to surface so
     programming bugs are not silently buried.
 
+    Trace-id enrichment lives at the storage layer
+    (:meth:`EventRepository.save`) so every event-emitting path — this
+    helper, plus operations like ``update_suggestion_status`` that
+    write ``Event`` rows directly — picks it up uniformly.
+
     Args:
         tool_name: Name of the MCP tool (e.g., "bo_create_campaign")
         input_summary: Compact summary of input arguments (not the full payload)

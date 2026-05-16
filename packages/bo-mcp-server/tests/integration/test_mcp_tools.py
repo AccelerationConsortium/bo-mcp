@@ -1093,6 +1093,26 @@ class TestUploadResultsFile:
         assert any("unsupported" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
+    async def test_upload_early_validation_envelope_echoes_trace_id(self, setup_database):
+        """A traced upload that fails early validation still carries the trace id.
+
+        Before the inner pipeline was wrapped with ``with_response_metadata``
+        the unsupported-format / oversized-file / invalid-UUID exits emitted
+        raw envelopes with no ``_metadata`` block, so a traced upload that
+        failed validation was the only upload return that dropped the trace.
+        """
+        from bo_mcp_server.tools.upload_results_file import upload_results_file
+
+        result = await upload_results_file(
+            campaign_id=str(uuid4()),
+            file_content="",
+            file_format="xml",
+            trace_id="trace-upload-bad-format",
+        )
+        assert result["success"] is False
+        assert result.get("_metadata", {}).get("trace_id") == "trace-upload-bad-format"
+
+    @pytest.mark.asyncio
     async def test_upload_invalid_campaign_id(self, setup_database):
         """Fails with invalid campaign_id format."""
         from bo_mcp_server.tools.upload_results_file import upload_results_file
@@ -1783,6 +1803,90 @@ class TestDiscoverTransferCandidates:
             assert "similarity_score" in result["candidates"][0]
             assert "recommendation" in result["candidates"][0]
 
+    @pytest.mark.asyncio
+    async def test_transfer_candidates_uses_parameter_aliases(self, setup_database):
+        """``parameter_aliases`` bridges naming drift across related campaigns.
+
+        Without aliases, ``temperature`` and ``temp_c`` look like distinct
+        parameters and the Jaccard intersection collapses to zero. With the
+        alias map, the canonical name unifies the two so the parameter
+        similarity recovers the value it would have had under matching names.
+        """
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.discover_transfer_candidates import (
+            discover_transfer_candidates,
+        )
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        owner_id = str(uuid4())
+
+        source_intake = {
+            "name": "Aliased Source",
+            "parameters": [
+                {"name": "temperature", "type": "continuous", "bounds": [20.0, 100.0]},
+            ],
+            "objectives": [{"name": "yield", "direction": "maximize"}],
+        }
+        source = await create_campaign(source_intake, owner_id)
+        await generate_suggestions(source["campaign_id"])
+        await submit_results(
+            source["campaign_id"],
+            _to_result_inputs(
+                [
+                    {
+                        "parameter_values": {"temperature": 25},
+                        "objective_values": {"yield": 0.5},
+                    },
+                    {
+                        "parameter_values": {"temperature": 50},
+                        "objective_values": {"yield": 0.7},
+                    },
+                    {
+                        "parameter_values": {"temperature": 75},
+                        "objective_values": {"yield": 0.6},
+                    },
+                ]
+            ),
+            owner_id,
+        )
+
+        target_intake = {
+            "name": "Aliased Target",
+            "parameters": [
+                {"name": "temp_c", "type": "continuous", "bounds": [30.0, 90.0]},
+            ],
+            "objectives": [{"name": "yield", "direction": "maximize"}],
+        }
+        target = await create_campaign(target_intake, owner_id)
+
+        without_aliases = await discover_transfer_candidates(
+            target["campaign_id"],
+            similarity_threshold=0.0,
+            verbosity="detailed",
+        )
+        with_aliases = await discover_transfer_candidates(
+            target["campaign_id"],
+            similarity_threshold=0.0,
+            verbosity="detailed",
+            parameter_aliases={"temperature": ["temp_c"]},
+        )
+
+        # Find the source candidate scores; if not present, the aliases must at
+        # least surface a non-empty candidate set.
+        aliased_candidates = with_aliases["candidates"]
+        assert aliased_candidates, "aliases must reveal the aliased source"
+        aliased_top = aliased_candidates[0]
+        baseline_top = next(
+            (c for c in without_aliases["candidates"] if c["name"] == aliased_top["name"]),
+            None,
+        )
+        if baseline_top is not None:
+            assert (
+                aliased_top["component_scores"]["parameter_similarity"]
+                > baseline_top["component_scores"]["parameter_similarity"]
+            )
+
 
 # =============================================================================
 # v3.3 Agent Efficiency Tools Tests
@@ -2084,10 +2188,12 @@ class TestBatchGetStatus:
         create_result = await create_campaign(intake, owner_id)
         campaign_ids = [create_result["campaign_id"]]
 
-        # Minimal - basic fields only
+        # Minimal - basic fields only, plus a lightweight next-action hint
         minimal = await batch_get_status(campaign_ids, verbosity="minimal")
         campaign_info = minimal["campaigns"][create_result["campaign_id"]]
         assert "health" not in campaign_info
+        assert "next_action_recommendation" in campaign_info
+        assert campaign_info["next_action_recommendation"]["action"] == "bo_generate_suggestions"
 
         # Detailed - includes all fields
         detailed = await batch_get_status(campaign_ids, verbosity="detailed")

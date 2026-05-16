@@ -23,6 +23,7 @@ from bo_mcp_server.cache import diagnostics_cache
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import Campaign, CampaignSpec, Result, Suggestion, SuggestionStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.metrics import record_diagnostics_cache
 from bo_mcp_server.operations.diagnostics import (
     compute_constraint_satisfaction_metrics,
     compute_convergence_diagnostics,
@@ -268,8 +269,15 @@ async def get_diagnostics_operation(
         if use_cache and is_full:
             cached = await diagnostics_cache.get(cache_key)
             if cached is not None:
+                record_diagnostics_cache("hit")
                 logger.debug("Returning cached diagnostics for campaign %s", campaign_id)
                 return format_diagnostics_response(cached, verbosity_level)
+            record_diagnostics_cache("miss")
+        elif use_cache:
+            # Partial-section reads cannot use the cached envelope but
+            # still touch the cache subsystem; track them under a
+            # ``partial`` label so the hit rate stays meaningful.
+            record_diagnostics_cache("partial")
 
         spec = await spec_repo.get(campaign.spec_id)
         if spec is None:

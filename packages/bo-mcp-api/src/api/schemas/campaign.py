@@ -3,14 +3,24 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.schemas.common import VerbosityLevel
 from api.schemas.intake import IntakeData
 
+# ``extra="forbid"`` is applied to every request schema in this module so
+# an unknown field — typically a typo or a not-yet-supported key — raises
+# 422 at the transport boundary instead of being silently dropped. Response
+# schemas remain permissive because the MCP response formatter splices a
+# ``_metadata`` envelope into every payload before it reaches the
+# response model.
+_FORBID_EXTRA: ConfigDict = ConfigDict(extra="forbid")
+
 
 class CampaignCreate(BaseModel):
     """Campaign creation request."""
+
+    model_config = _FORBID_EXTRA
 
     intake: IntakeData
 
@@ -50,6 +60,8 @@ class CampaignListResponse(BaseModel):
 class ValidateIntakeRequest(BaseModel):
     """Intake validation request (dry-run, no campaign created)."""
 
+    model_config = _FORBID_EXTRA
+
     intake: IntakeData
 
 
@@ -73,6 +85,8 @@ class CapabilitiesResponse(BaseModel):
 class CampaignQueryRequest(BaseModel):
     """Campaign query request with filtering and pagination."""
 
+    model_config = _FORBID_EXTRA
+
     status: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
@@ -93,6 +107,8 @@ class CampaignQueryResponse(BaseModel):
 class CampaignLifecycleRequest(BaseModel):
     """Lifecycle action request."""
 
+    model_config = _FORBID_EXTRA
+
     action: str = Field(pattern="^(pause|resume|terminate)$")
 
 
@@ -109,6 +125,8 @@ class CampaignLifecycleResponse(BaseModel):
 class BatchStatusRequest(BaseModel):
     """Batch status request."""
 
+    model_config = _FORBID_EXTRA
+
     campaign_ids: list[str]
     verbosity: VerbosityLevel = VerbosityLevel.MINIMAL
 
@@ -124,6 +142,8 @@ class BatchStatusResponse(BaseModel):
 
 class CompareCampaignsRequest(BaseModel):
     """Campaign comparison request."""
+
+    model_config = _FORBID_EXTRA
 
     campaign_ids: list[str]
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD
@@ -142,11 +162,20 @@ class CompareCampaignsResponse(BaseModel):
 
 
 class TransferCandidatesRequest(BaseModel):
-    """Transfer candidate discovery request."""
+    """Transfer candidate discovery request.
+
+    ``parameter_aliases`` mirrors the MCP tool's optional alias map so
+    REST callers can bridge parameter-name drift across campaigns
+    (e.g. ``{"temperature": ["temp_c", "temp_celsius"]}`` unifies all
+    three names when computing parameter-set and bounds overlap).
+    """
+
+    model_config = _FORBID_EXTRA
 
     similarity_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     max_candidates: int = Field(default=5, ge=1)
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD
+    parameter_aliases: dict[str, list[str]] | None = None
 
 
 class TransferCandidatesResponse(BaseModel):

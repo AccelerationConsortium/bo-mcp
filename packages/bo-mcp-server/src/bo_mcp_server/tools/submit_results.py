@@ -11,8 +11,10 @@ from bo_mcp_server.domain.intake_models import RESULT_SUBMISSION_JSON_SCHEMA
 from bo_mcp_server.field_errors import shape_envelope, validation_envelope
 from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.submit_results import submit_results_operation
+from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
+from bo_mcp_server.trace_context import bind_trace_id
 
 # Accept loose payloads at the MCP boundary and validate inside the
 # tool so payload-shape errors render as our structured envelope (with
@@ -152,6 +154,8 @@ async def submit_results(
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
     idempotency_key: str | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit experimental results for a campaign.
 
@@ -178,43 +182,70 @@ async def submit_results(
             of re-executing the submission. Re-using a key with a
             different payload returns a ``VALIDATION_FAILED`` envelope
             (``details.idempotency_conflict=True``).
+        dry_run: If True, fully validate the batch (parameter bounds,
+            duplicates, suggestion linkage) and return a preview without
+            persisting any row or advancing campaign state. The response
+            carries ``dry_run: True`` and a ``preview`` block; the
+            idempotency cache is bypassed so the slot stays free for a
+            real submission.
+        trace_id: Optional workflow trace id. See ``bo_create_campaign``.
 
     Returns:
         Dictionary with success, result_ids, errors, warnings.
     """
-    validated_results = _validate_result_rows(results)
-    if isinstance(validated_results, dict):
-        # Per-row payload validation failed -- short-circuit with the
-        # structured envelope before reserving any idempotency slot.
-        return validated_results
+    # ``bind_trace_id`` wraps the entire wrapper body — including the
+    # pre-operation row-shape validation — so a malformed payload still
+    # emits an envelope whose ``_metadata.trace_id`` echoes the bound
+    # workflow id. Otherwise validation envelopes would be the only
+    # tool returns that drop the trace, undermining the cookbook
+    # contract.
+    with bind_trace_id(trace_id):
+        validated_results = _validate_result_rows(results)
+        if isinstance(validated_results, dict):
+            # Per-row payload validation failed -- short-circuit with the
+            # structured envelope before reserving any idempotency slot.
+            return attach_response_metadata(validated_results)
 
-    request_payload = {
-        "campaign_id": campaign_id,
-        "results": [_payload_for_result(r) for r in validated_results],
-        "submitted_by": submitted_by,
-        "source": source,
-        "force": force,
-        "atomic": atomic,
-        "continue_on_error": continue_on_error,
-        "verbosity": verbosity,
-    }
+        if dry_run:
+            return await submit_results_operation(
+                campaign_id=campaign_id,
+                results=validated_results,
+                submitted_by=submitted_by,
+                source=source,
+                force=force,
+                atomic=atomic,
+                continue_on_error=continue_on_error,
+                verbosity=verbosity,
+                dry_run=True,
+            )
 
-    async def run(session: AsyncSession) -> dict[str, Any]:
-        return await submit_results_operation(
-            campaign_id=campaign_id,
-            results=validated_results,
-            submitted_by=submitted_by,
-            source=source,
-            force=force,
-            atomic=atomic,
-            continue_on_error=continue_on_error,
-            verbosity=verbosity,
-            session=session,
+        request_payload = {
+            "campaign_id": campaign_id,
+            "results": [_payload_for_result(r) for r in validated_results],
+            "submitted_by": submitted_by,
+            "source": source,
+            "force": force,
+            "atomic": atomic,
+            "continue_on_error": continue_on_error,
+            "verbosity": verbosity,
+        }
+
+        async def run(session: AsyncSession) -> dict[str, Any]:
+            return await submit_results_operation(
+                campaign_id=campaign_id,
+                results=validated_results,
+                submitted_by=submitted_by,
+                source=source,
+                force=force,
+                atomic=atomic,
+                continue_on_error=continue_on_error,
+                verbosity=verbosity,
+                session=session,
+            )
+
+        return await apply_idempotency(
+            tool_name="bo_submit_results",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            executor=run,
         )
-
-    return await apply_idempotency(
-        tool_name="bo_submit_results",
-        idempotency_key=idempotency_key,
-        request_payload=request_payload,
-        executor=run,
-    )

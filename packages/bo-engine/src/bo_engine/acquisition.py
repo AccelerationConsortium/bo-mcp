@@ -590,6 +590,58 @@ class EIpuAcquisition(AcquisitionFunction):
         return eipu
 
 
+def _validate_linear_constraint_entry(
+    entry: tuple[Tensor, Tensor, float],
+    n_dims: int,
+    label: str,
+) -> None:
+    """Validate a single ``(indices, coefficients, rhs)`` tuple.
+
+    Encapsulates the per-entry shape checks so the outer driver can
+    iterate without exceeding cognitive-complexity limits.
+    """
+    if not isinstance(entry, tuple) or len(entry) != 3:
+        raise ValueError(f"{label} must be a (indices, coefficients, rhs) tuple")
+    indices, coefficients, rhs = entry
+    if not isinstance(indices, Tensor) or indices.dim() != 1:
+        raise ValueError(f"{label}.indices must be a 1-D tensor")
+    if not isinstance(coefficients, Tensor) or coefficients.dim() != 1:
+        raise ValueError(f"{label}.coefficients must be a 1-D tensor")
+    if indices.numel() != coefficients.numel():
+        raise ValueError(
+            f"{label} indices ({indices.numel()}) and "
+            f"coefficients ({coefficients.numel()}) must have the same length"
+        )
+    if indices.numel() == 0:
+        raise ValueError(f"{label} must reference at least one parameter")
+    if not torch.isfinite(torch.as_tensor(rhs, dtype=torch.float64)).item():
+        raise ValueError(f"{label}.rhs must be finite, got {rhs!r}")
+    index_min = int(indices.min().item())
+    index_max = int(indices.max().item())
+    if index_min < 0 or index_max >= n_dims:
+        raise ValueError(
+            f"{label} references parameter index out of range "
+            f"[0, {n_dims}); got min={index_min}, max={index_max}"
+        )
+
+
+def _validate_linear_constraints(
+    constraints: list[tuple[Tensor, Tensor, float]] | None,
+    n_dims: int,
+    kind: str,
+) -> None:
+    """Shape-validate BoTorch linear constraints before they reach ``optimize_acqf``.
+
+    BoTorch surfaces shape mismatches deep inside its inner loops with messages
+    that don't name the offending tuple, so we check the contract here while we
+    still know which constraint failed.
+    """
+    if not constraints:
+        return
+    for position, entry in enumerate(constraints):
+        _validate_linear_constraint_entry(entry, n_dims, f"{kind}_constraints[{position}]")
+
+
 def _resolve_restart_budget(
     spec: OptimizationSpec | None,
     bounds: Tensor,
@@ -669,6 +721,9 @@ def optimize_acquisition(
         - acquisition_values has shape (batch_size,)
     """
     bounds = to_device(bounds)
+    n_dims = int(bounds.shape[-1])
+    _validate_linear_constraints(inequality_constraints, n_dims, "inequality")
+    _validate_linear_constraints(equality_constraints, n_dims, "equality")
 
     if X_pending is not None:
         X_pending = to_device(X_pending)

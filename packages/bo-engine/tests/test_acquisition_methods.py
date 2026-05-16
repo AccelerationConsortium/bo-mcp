@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 import torch
+from botorch.acquisition import AcquisitionFunction
 
 from bo_engine import (
     AcquisitionMethod,
@@ -252,6 +253,87 @@ class TestAcquisitionOptimization:
 
         assert candidates.shape == (3, 2)
         assert torch.all(candidates >= 0) and torch.all(candidates <= 1)
+
+
+class TestLinearConstraintValidation:
+    """Tests for the shape-validation guard on BoTorch linear constraints.
+
+    Reference: BoTorch ``optimize_acqf`` expects each linear constraint to be
+    ``(indices, coefficients, rhs)`` with 1-D index/coefficient tensors of
+    matching length and indices in ``[0, n_dims)``. See
+    https://botorch.readthedocs.io/en/stable/optim.html#botorch.optim.optimize.optimize_acqf
+    for the contract this helper enforces.
+    """
+
+    def _build_acqf(self) -> tuple[AcquisitionFunction, torch.Tensor]:
+        train_x = torch.rand(8, 2, dtype=torch.double)
+        train_y = torch.rand(8, 1, dtype=torch.double)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+        model = create_and_fit_single_task_model(train_x, train_y, bounds)
+        acqf = create_single_objective_acquisition(
+            model=model, train_x=train_x, train_y=train_y, minimize=True
+        )
+        return acqf, bounds
+
+    def test_rejects_mismatched_index_coefficient_length(self) -> None:
+        """Mismatched 1-D lengths are rejected with the offending position labelled."""
+        acqf, bounds = self._build_acqf()
+        bad = [
+            (
+                torch.tensor([0, 1], dtype=torch.long),
+                torch.tensor([1.0], dtype=torch.double),
+                0.0,
+            )
+        ]
+        with pytest.raises(ValueError, match="inequality_constraints\\[0\\]"):
+            optimize_acquisition(
+                acqf=acqf,
+                bounds=bounds,
+                batch_size=1,
+                num_restarts=2,
+                raw_samples=8,
+                inequality_constraints=bad,
+            )
+
+    def test_rejects_out_of_range_index(self) -> None:
+        """Indices outside ``[0, n_dims)`` are surfaced before BoTorch runs."""
+        acqf, bounds = self._build_acqf()
+        bad = [
+            (
+                torch.tensor([0, 5], dtype=torch.long),
+                torch.tensor([1.0, -1.0], dtype=torch.double),
+                0.0,
+            )
+        ]
+        with pytest.raises(ValueError, match="out of range"):
+            optimize_acquisition(
+                acqf=acqf,
+                bounds=bounds,
+                batch_size=1,
+                num_restarts=2,
+                raw_samples=8,
+                equality_constraints=bad,
+            )
+
+    def test_rejects_non_finite_rhs(self) -> None:
+        """Non-finite ``rhs`` values would silently blow up downstream."""
+        acqf, bounds = self._build_acqf()
+        bad = [
+            (
+                torch.tensor([0], dtype=torch.long),
+                torch.tensor([1.0], dtype=torch.double),
+                float("nan"),
+            )
+        ]
+        with pytest.raises(ValueError, match="rhs"):
+            optimize_acquisition(
+                acqf=acqf,
+                bounds=bounds,
+                batch_size=1,
+                num_restarts=2,
+                raw_samples=8,
+                inequality_constraints=bad,
+            )
 
 
 class TestAcquisitionInWorkflow:

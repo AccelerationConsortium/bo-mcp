@@ -492,12 +492,62 @@ def _lookup_to_short_circuit(
     should proceed to reserve.
     """
     if lookup.conflict_response is not None:
-        return lookup.conflict_response
+        return _attach_metadata(lookup.conflict_response)
     if lookup.cached_response is not None:
-        return {**lookup.cached_response, "idempotency_replay": True}
+        replay = {**lookup.cached_response, "idempotency_replay": True}
+        _refresh_response_metadata_trace_id(replay)
+        return replay
     if pending_short_circuits and lookup.in_progress:
-        return _in_progress_envelope(tool_name, idempotency_key)
+        return _attach_metadata(_in_progress_envelope(tool_name, idempotency_key))
     return None
+
+
+def _attach_metadata(response: dict[str, Any]) -> dict[str, Any]:
+    """Splice ``_metadata`` (including any active ``trace_id``) onto an envelope.
+
+    Idempotency short-circuit envelopes (conflict, in-progress,
+    stale-owner) are built locally by ``make_error_response`` and never
+    pass through the operation-level
+    :func:`bo_mcp_server.response_formatter.with_response_metadata`
+    decorator, so without an explicit attach step they drop the
+    ``_metadata.trace_id`` echo the cookbook promises for *every* tool
+    return. Lazy import avoids the
+    ``idempotency → response_formatter → idempotency`` cycle that the
+    heavy imports inside ``response_formatter`` would otherwise force.
+    """
+    from bo_mcp_server.response_formatter import (  # noqa: PLC0415
+        attach_response_metadata,
+    )
+
+    return attach_response_metadata(response)
+
+
+def _refresh_response_metadata_trace_id(response: dict[str, Any]) -> None:
+    """Reattach the current ``trace_id`` to a cached idempotency replay.
+
+    The cached payload was assembled during the FIRST call and the
+    ``_metadata.trace_id`` field reflects whatever workflow id was
+    bound *then*. A retry from a different workflow (or with no trace
+    at all) must see its own id — or the absence of the key — so
+    distributed-tracing tools don't stitch the replay back onto the
+    original workflow. Backend / protocol / server_version fields stay
+    cached because they are stable across the retry window.
+
+    Local imports avoid the
+    ``idempotency → response_formatter → idempotency`` import cycle
+    (response_formatter pulls in :mod:`bo_mcp_server.backend`, which
+    transitively imports operations that depend on this module).
+    """
+    from bo_mcp_server.trace_context import get_trace_id  # noqa: PLC0415
+
+    metadata = response.get("_metadata")
+    if not isinstance(metadata, dict):
+        return
+    trace_id = get_trace_id()
+    if trace_id is None:
+        metadata.pop("trace_id", None)
+    else:
+        metadata["trace_id"] = trace_id
 
 
 async def _reserve_or_short_circuit(
@@ -537,7 +587,7 @@ async def _reserve_or_short_circuit(
         lookup, tool_name, idempotency_key, pending_short_circuits=False
     )
     if short_circuit is None:
-        short_circuit = _in_progress_envelope(tool_name, idempotency_key)
+        short_circuit = _attach_metadata(_in_progress_envelope(tool_name, idempotency_key))
     return _ReservationOutcome(short_circuit=short_circuit)
 
 
@@ -758,7 +808,7 @@ async def _run_session_aware(
         # someone else now — do NOT drop the reservation (the
         # token-matched drop would no-op anyway, but skipping the call
         # makes the intent explicit). Return a retryable envelope.
-        return _stale_reservation_envelope(tool_name, idempotency_key)
+        return _attach_metadata(_stale_reservation_envelope(tool_name, idempotency_key))
     except Exception:
         # The async with already rolled back the session; drop our
         # reservation so a future retry can claim the slot.

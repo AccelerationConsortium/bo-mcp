@@ -28,6 +28,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from bo_mcp_server.settings import (
+    get_database_url,
+    get_sql_echo,
+    get_use_alembic_mode,
+)
 from bo_mcp_server.storage.models import Base
 
 logger = logging.getLogger(__name__)
@@ -35,16 +40,35 @@ logger = logging.getLogger(__name__)
 # Ensure .env values are available even when this module is imported directly.
 dotenv.load_dotenv()
 
-# Default to SQLite for local/stdio usage. Override via DATABASE_URL for production:
-#   DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bo_mcp.db")
-
-# Use Alembic for PostgreSQL, direct creation for SQLite (testing)
-USE_ALEMBIC = os.getenv("USE_ALEMBIC", "auto")  # "auto", "true", or "false"
-
-# Lazy-initialized engine and session factory
+# Lazy-initialized engine and session factory. The engine is created at
+# first use by ``_create_engine_with_options`` which reads the active
+# :mod:`bo_mcp_server.settings` values at call time; tests that mutate
+# ``os.environ`` via ``monkeypatch.setenv`` therefore only have to
+# discard ``_engine`` (e.g. via ``close_database()``) to pick up the
+# new URL on the next access.
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def _current_database_url() -> str:
+    """Resolve ``DATABASE_URL`` at call time from the active settings."""
+    return get_database_url()
+
+
+def _current_use_alembic_mode() -> str:
+    """Resolve ``USE_ALEMBIC`` at call time from the active settings."""
+    return get_use_alembic_mode()
+
+
+# Back-compat constants. These reflect the value at import time only.
+# Code paths that need the live setting (``_create_engine_with_options``,
+# ``init_database``, ``_run_alembic_migrations``, ``_should_use_alembic``)
+# now call :func:`_current_database_url` / :func:`_current_use_alembic_mode`
+# so test overrides applied via ``monkeypatch.setenv`` reach the engine
+# factory. External callers that import :data:`DATABASE_URL` directly
+# (rare) still see the import-time snapshot.
+DATABASE_URL = get_database_url()
+USE_ALEMBIC = get_use_alembic_mode()
 
 
 def _get_engine() -> AsyncEngine:
@@ -69,22 +93,30 @@ def _get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 def _create_engine_with_options() -> AsyncEngine:
     """Create async engine with database-specific options."""
+    database_url = _current_database_url()
     common_options = {
-        "echo": os.getenv("SQL_ECHO", "false").lower() == "true",
+        "echo": get_sql_echo(),
     }
 
-    if DATABASE_URL.startswith("postgresql"):
-        # PostgreSQL-specific connection pool settings
+    if database_url.startswith("postgresql"):
+        # PostgreSQL-specific connection pool settings. ``pool_recycle`` is
+        # set below the typical 1-hour PostgreSQL/PgBouncer idle timeout so
+        # SQLAlchemy proactively retires stale connections instead of
+        # surfacing "server closed the connection unexpectedly" errors on
+        # the next checkout. See
+        # https://docs.sqlalchemy.org/en/20/core/pooling.html#disconnect-handling-pessimistic
+        # for the recommended pool_pre_ping + pool_recycle combination.
         return create_async_engine(
-            DATABASE_URL,
+            database_url,
             pool_size=5,
             max_overflow=10,
             pool_pre_ping=True,
+            pool_recycle=600,
             **common_options,
         )
     else:
         # SQLite (used for testing)
-        return create_async_engine(DATABASE_URL, **common_options)
+        return create_async_engine(database_url, **common_options)
 
 
 def _should_use_alembic() -> bool:
@@ -93,12 +125,13 @@ def _should_use_alembic() -> bool:
     Returns True for PostgreSQL (production), False for SQLite (testing).
     Can be overridden via USE_ALEMBIC environment variable.
     """
-    if USE_ALEMBIC == "true":
+    mode = _current_use_alembic_mode()
+    if mode == "true":
         return True
-    if USE_ALEMBIC == "false":
+    if mode == "false":
         return False
     # Auto-detect: use Alembic for PostgreSQL, direct creation for SQLite
-    return DATABASE_URL.startswith("postgresql")
+    return _current_database_url().startswith("postgresql")
 
 
 def _run_alembic_migrations() -> None:
@@ -115,7 +148,7 @@ def _run_alembic_migrations() -> None:
         return
 
     alembic_cfg = Config(str(alembic_ini))
-    alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+    alembic_cfg.set_main_option("sqlalchemy.url", _current_database_url())
     alembic_cfg.set_main_option("script_location", str(package_root / "migrations"))
 
     logger.info("Running Alembic migrations...")
@@ -130,13 +163,14 @@ async def init_database() -> None:
     For SQLite: Uses direct Base.metadata.create_all() for fast test setup.
     """
     engine = _get_engine()
+    database_url = _current_database_url()
 
     # Log with credentials masked (only shows host:port/db)
-    logger.info("Initializing database: %s", DATABASE_URL.split("@")[-1])
+    logger.info("Initializing database: %s", database_url.split("@")[-1])
 
     # Ensure data directory exists for SQLite (testing only)
-    if DATABASE_URL.startswith("sqlite") and "memory" not in DATABASE_URL:
-        data_dir = os.path.dirname(DATABASE_URL.replace("sqlite+aiosqlite:///", ""))
+    if database_url.startswith("sqlite") and "memory" not in database_url:
+        data_dir = os.path.dirname(database_url.replace("sqlite+aiosqlite:///", ""))
         if data_dir and data_dir != ".":
             os.makedirs(data_dir, exist_ok=True)
 

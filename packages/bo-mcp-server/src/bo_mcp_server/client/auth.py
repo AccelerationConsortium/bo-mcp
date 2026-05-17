@@ -152,12 +152,49 @@ async def get_campaign_with_spec(campaign_id: str, user_id: UUID) -> tuple[Campa
 
 
 async def get_campaign_spec_by_id(spec_id: str) -> CampaignSpec:
-    """Fetch a campaign spec by id (no ownership check — specs are immutable)."""
+    """Fetch a campaign spec by id (no ownership check — specs are immutable).
+
+    .. warning::
+
+        This helper exists only for internal call sites (e.g. operations
+        that have already resolved ownership through the owning campaign).
+        Transport-layer routes must use :func:`get_spec_for_user`
+        instead — specs hold IP-sensitive parameter/objective/constraint
+        shape and are not a tenant-global lookup key.
+    """
     spec_uuid = parse_uuid(spec_id, "spec_id")
     async with get_session() as session:
         spec_repo = CampaignSpecRepository(session)
         spec = await spec_repo.get(spec_uuid)
     if spec is None:
+        raise NotFoundError("Spec", spec_id)
+    return spec
+
+
+async def get_spec_for_user(spec_id: str, user_id: UUID) -> CampaignSpec:
+    """Fetch a campaign spec only when ``user_id`` owns a campaign using it.
+
+    Resolves ownership through the owning campaign instead of treating
+    the spec UUID as a global key. Without this routing, anyone who knows
+    or guesses another tenant's spec UUID receives the full parameter,
+    objective, and constraint shape — likely IP-sensitive content for
+    chemistry / manufacturing users.
+
+    Raises ``NotFoundError`` both when the spec does not exist and when
+    no campaign owned by ``user_id`` references it; the response is
+    deliberately uniform so the route cannot leak spec existence to a
+    foreign tenant.
+    """
+    spec_uuid = parse_uuid(spec_id, "spec_id")
+    async with get_session() as session:
+        spec_repo = CampaignSpecRepository(session)
+        campaign_repo = CampaignRepository(session)
+        spec = await spec_repo.get(spec_uuid)
+        if spec is None:
+            raise NotFoundError("Spec", spec_id)
+        campaigns_for_owner, _ = await campaign_repo.list_filtered(owner_id=user_id)
+    owns_campaign_with_spec = any(c.spec_id == spec_uuid for c in campaigns_for_owner)
+    if not owns_campaign_with_spec:
         raise NotFoundError("Spec", spec_id)
     return spec
 
@@ -244,20 +281,64 @@ DEV_USER_NAME = "Test User"
 DEV_USER_EMAIL = "test@example.com"
 
 
-async def ensure_dev_user() -> User:
-    """Ensure the shared development user exists and return it.
+async def get_user_by_api_key(api_key: str) -> User | None:
+    """Resolve an active user from a raw API key string.
 
-    This is a temporary auth-bypass helper for local development; it lives
-    in the facade so transports do not have to instantiate
-    :class:`UserRepository` directly. Production deployments must replace
-    the caller of this helper with a real authentication path.
+    Hashes the key with SHA-256 — the same algorithm used to populate
+    :attr:`UserModel.api_key_hash` — and returns the matching user only
+    when their account is active. Deactivated users surface as ``None``
+    so callers convert them into the same generic 401 as an unknown
+    key, preventing an attacker (or a forgotten offboarding) from
+    extending access after the account was disabled.
+
+    Reference: storing API-key hashes (never plaintext) and refusing
+    credentials for deactivated accounts is the standard pattern
+    recommended by OWASP for service-to-service authentication — see
+    https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html.
+    """
+    if not api_key:
+        return None
+    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    async with get_session() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_api_key_hash(api_key_hash)
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
+async def ensure_dev_user() -> User:
+    """Ensure the shared development user exists, is active, and uses ``DEV_API_KEY``.
+
+    The new real-auth path resolves callers by API-key hash and active
+    status, so "a user named ``test@example.com`` exists" is no longer
+    sufficient: a stale record left over from a previous schema (wrong
+    hash, deactivated) would leave ``DEV_API_KEY`` unusable even though
+    the bootstrap appeared to succeed. This helper therefore repairs
+    those mismatches in place — local dev is the only context that ever
+    calls it, so the heuristic is safe — and re-issues the canonical
+    record otherwise.
+
+    This is a temporary auth-bypass helper for local development; it
+    lives in the facade so transports do not have to instantiate
+    :class:`UserRepository` directly. Production deployments must
+    replace the caller of this helper with a real authentication path.
     """
     api_key_hash = hashlib.sha256(DEV_API_KEY.encode()).hexdigest()
     async with get_session() as session:
         repo = UserRepository(session)
         existing = await repo.get_by_email(DEV_USER_EMAIL)
         if existing is not None:
-            return existing
+            if existing.api_key_hash == api_key_hash and existing.is_active:
+                return existing
+            repaired = existing.model_copy(update={"api_key_hash": api_key_hash, "is_active": True})
+            saved = await repo.save(repaired)
+            logger.warning(
+                "Repaired shared development user %s to match DEV_API_KEY and "
+                "is_active=True. This must not happen in production.",
+                saved.id,
+            )
+            return saved
         user = User(
             name=DEV_USER_NAME,
             email=DEV_USER_EMAIL,

@@ -12,8 +12,8 @@ from bo_mcp_server.client import (
     discover_transfer_candidates_operation,
     export_campaign_operation,
     format_validate_intake_response,
-    get_campaign_spec_by_id,
     get_campaign_with_spec,
+    get_spec_for_user,
     list_campaigns_operation,
     list_owner_campaigns_with_specs,
     manage_campaign_lifecycle_operation,
@@ -308,11 +308,18 @@ async def export_campaign(
 
 @router.get("/spec/{spec_id}")
 async def get_campaign_spec(spec_id: str, current_user: CurrentUser) -> dict:
-    """Get campaign spec details."""
+    """Get campaign spec details for a spec the caller owns via a campaign.
+
+    Specs hold parameter, objective, and constraint shape that is often
+    IP-sensitive. Resolving them through the owning campaign — rather
+    than treating the spec UUID as a global lookup key — closes the
+    cross-tenant IDOR that would otherwise expose every spec to anyone
+    who knows or guesses a spec id.
+    """
     # validate_uuid raises a 400 directly; preserve that behavior.
     validate_uuid(spec_id, "spec_id")
     try:
-        spec = await get_campaign_spec_by_id(spec_id)
+        spec = await get_spec_for_user(spec_id, current_user.id)
     except NotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -15,27 +15,66 @@ from fastapi.responses import RedirectResponse
 from api.metrics import install_metrics
 from api.request_context import install_request_id_log_filter, request_id_var
 from api.routes import campaigns, capabilities, diagnostics, results, suggestions
+from api.settings import WILDCARD_ORIGIN, ApiSettings, get_api_settings
 
 logger = logging.getLogger(__name__)
 _api_start_time = time.time()
 install_request_id_log_filter()
 
-# Revert reference: `ensure_dev_user` can stay in `api.dev_auth`. To restore
-# real API-key auth, revert `get_current_user()` in `api.deps`.
+
+def _assert_dev_auth_safe(settings: ApiSettings) -> None:
+    """Refuse to start when development auth is enabled in production.
+
+    The dev-auth bootstrap creates a shared user whose API key is
+    checked into source control; allowing it in production would amount
+    to publishing a master credential. We fail loudly at startup rather
+    than silently leaving the bypass in place.
+    """
+    if settings.dev_auth and settings.api_env == "production":
+        msg = (
+            "DEV_AUTH=1 is not allowed when API_ENV=production. "
+            "Provision real API keys before deploying to production."
+        )
+        raise RuntimeError(msg)
+
+
+def _assert_cors_safe(settings: ApiSettings) -> None:
+    """Refuse to start with the wildcard / credentials CORS footgun.
+
+    Per the Fetch spec, ``Access-Control-Allow-Origin: *`` cannot be
+    combined with ``Access-Control-Allow-Credentials: true``. Starlette
+    works around this by echoing the request origin when both are
+    requested, which silently re-introduces the original CSRF surface.
+    """
+    if WILDCARD_ORIGIN in settings.cors_allowed_origins and settings.cors_allow_credentials:
+        msg = (
+            "CORS_ALLOWED_ORIGINS='*' is unsafe with CORS_ALLOW_CREDENTIALS=true. "
+            "Pin an explicit origin list or disable credentialed responses."
+        )
+        raise RuntimeError(msg)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Application lifespan handler."""
-    # Initialize database on startup
+    settings = get_api_settings()
+    _assert_dev_auth_safe(settings)
     await init_database()
-    # Create dev user for testing
-    await ensure_dev_user()
+    if settings.dev_auth:
+        await ensure_dev_user()
+        logger.warning(
+            "DEV_AUTH is enabled; the shared development user is bootstrapped. "
+            "This must not be set in production environments."
+        )
     yield
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    settings = get_api_settings()
+    _assert_dev_auth_safe(settings)
+    _assert_cors_safe(settings)
+
     app = FastAPI(
         title="BO MCP API",
         description="REST API proxy for Bayesian Optimization MCP Service",
@@ -43,14 +82,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS middleware for frontend
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    if settings.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_allowed_origins),
+            allow_credentials=settings.cors_allow_credentials,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     # Prometheus instrumentation: registers ``/metrics`` and a per-request
     # latency/counter middleware. Mounted before the request-id middleware

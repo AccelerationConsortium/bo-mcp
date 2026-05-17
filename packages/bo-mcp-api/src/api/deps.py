@@ -17,10 +17,8 @@ from bo_mcp_server.client import (
     User,
     authorize_campaign,
     authorize_suggestion,
+    get_user_by_api_key,
     parse_uuid,
-)
-from bo_mcp_server.client import (
-    ensure_dev_user as _ensure_dev_user,
 )
 from bo_mcp_server.client import (
     ensure_owned_campaigns as _ensure_owned_campaigns,
@@ -31,15 +29,34 @@ from fastapi import Depends, Header, HTTPException, status
 async def get_current_user(
     x_api_key: Annotated[str | None, Header()] = None,
 ) -> User:
-    """Return the shared development user for every request.
+    """Resolve the caller from the ``X-API-Key`` header.
 
-    This is a temporary development-only bypass. It intentionally ignores the
-    incoming ``X-API-Key`` header so route ownership and submission logic can
-    continue to use a concrete ``current_user`` without enforcing real auth.
-    This is not a sustainable production configuration.
+    The header value is hashed (SHA-256) and looked up against the
+    persisted user table — the same algorithm
+    :func:`bo_mcp_server.client.ensure_dev_user` uses to populate
+    ``UserModel.api_key_hash``. Missing or unknown keys yield 401 so
+    multi-tenancy boundaries downstream (ownership checks,
+    audit attribution) always see a real principal.
+
+    The 401 challenge body is intentionally generic; we do not
+    distinguish "missing key" from "unknown key" so an attacker cannot
+    enumerate which keys are merely malformed.
     """
-    _ = x_api_key
-    return await _ensure_dev_user()
+    if x_api_key is None or not x_api_key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": 'ApiKey realm="bo-mcp-api"'},
+        )
+
+    user = await get_user_by_api_key(x_api_key)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+            headers={"WWW-Authenticate": 'ApiKey realm="bo-mcp-api"'},
+        )
+    return user
 
 
 # Type alias for dependency injection
@@ -49,17 +66,10 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 async def get_optional_user(
     x_api_key: Annotated[str | None, Header()] = None,
 ) -> User | None:
-    """Get current user if API key provided, None otherwise.
-
-    Used for endpoints that work with or without authentication.
-    """
-    if x_api_key is None:
+    """Get current user if API key provided and valid, None otherwise."""
+    if x_api_key is None or not x_api_key.strip():
         return None
-
-    try:
-        return await get_current_user(x_api_key)
-    except HTTPException:
-        return None
+    return await get_user_by_api_key(x_api_key)
 
 
 OptionalUser = Annotated[User | None, Depends(get_optional_user)]

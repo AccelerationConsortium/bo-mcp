@@ -65,6 +65,16 @@ class UserModel(Base):
 
     __tablename__ = "users"
 
+    # The hash must be globally unique: the auth path resolves a single
+    # user with ``scalar_one_or_none()``, so duplicate provisioning
+    # would surface as a 500 (``MultipleResultsFound``) on every login.
+    # The uniqueness is declared here (rather than via column-level
+    # ``unique=True``) so the ORM metadata names the index the same way
+    # the Alembic migration does. Without this, ``alembic --autogenerate``
+    # would propose dropping the migration's index and re-adding an
+    # auto-named UNIQUE constraint each time.
+    __table_args__ = (Index("ix_users_api_key_hash_unique", "api_key_hash", unique=True),)
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)

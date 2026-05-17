@@ -54,8 +54,16 @@ class ResultMetadata(BaseModel):
             ``operations.helpers.results_to_observations``).
         experiment_id, operator, batch_ref, notes: human-facing
             audit-trail fields surfaced in the GUI and reports.
-        source_row: CSV row number for file-upload results (set by
-            ``tools.upload_results_file``).
+        source_row: 1-based row number within a tabular upload (CSV or
+            XLSX). Set by both the MCP ``tools.upload_results_file``
+            path and the REST ``POST /api/results/{campaign_id}/upload``
+            route so file-derived rows carry per-row provenance
+            regardless of transport.
+        source_file: Original filename for tabular upload results. Set
+            by the REST ``POST /api/results/{campaign_id}/upload``
+            route. Semantically distinct from ``source_row``: a file
+            may contribute many rows, so each row carries the same
+            ``source_file`` alongside its own ``source_row``.
     """
 
     external_ref: ExternalRef | None = None
@@ -66,6 +74,7 @@ class ResultMetadata(BaseModel):
     batch_ref: str | None = Field(default=None, min_length=1)
     notes: str | None = None
     source_row: int | None = Field(default=None, ge=1)
+    source_file: str | None = Field(default=None, min_length=1)
 
     model_config = ConfigDict(extra="forbid")
 

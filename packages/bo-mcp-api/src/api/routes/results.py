@@ -134,7 +134,7 @@ async def upload_results_file(
         upload_rows,
         parameter_names=param_names,
         objective_names=objective_names,
-        metadata_factory=lambda _row_num: {"source_file": filename},
+        metadata_factory=lambda row_num: {"source_file": filename, "source_row": row_num},
     )
 
     if parse_errors:

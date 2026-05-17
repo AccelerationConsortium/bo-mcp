@@ -153,6 +153,7 @@ async def test_mcp_tool_schema_advertises_result_metadata_keys() -> None:
         "batch_ref",
         "notes",
         "source_row",
+        "source_file",
     }
     assert set(metadata_schema.get("properties", {}).keys()) == documented_keys
     assert metadata_schema.get("additionalProperties") is False

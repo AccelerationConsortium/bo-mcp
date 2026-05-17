@@ -88,6 +88,20 @@ from bo_engine.initial_design import (  # noqa: E402
 )
 
 
+class OutcomeConstraintConfigurationError(ValueError):
+    """Raised when an outcome constraint cannot be honored by the engine.
+
+    Outcome constraints reference an objective by name. The intake-layer
+    validator rejects unknown names at create time so this exception only
+    fires when a spec that was valid at intake later lost the named
+    objective (e.g. an in-place spec edit, a backend conversion that
+    dropped a column, or a stale persisted spec). Surfacing it as a typed
+    error keeps such regressions loud — the previous silent ``return
+    None`` quietly disabled the constraint and produced unconstrained
+    suggestions that looked feasible.
+    """
+
+
 def _resolve_acquisition_seed(
     spec: OptimizationSpec,
     iteration: int,
@@ -1009,18 +1023,26 @@ def _build_outcome_constraint_models(
     if not spec.outcome_constraints:
         return None
 
+    objective_names = {obj.name for obj in spec.objectives}
     constraint_models = []
     for oc in spec.outcome_constraints:
+        if oc.objective_name not in objective_names:
+            msg = (
+                f"Outcome constraint references objective '{oc.objective_name}', "
+                f"which is not declared on the spec (declared objectives: "
+                f"{sorted(objective_names)})."
+            )
+            raise OutcomeConstraintConfigurationError(msg)
         # Extract the objective values for this constraint
         obj_values = []
         for obs in observations:
             if oc.objective_name not in obs.objective_values:
-                logger.warning(
-                    "Outcome constraint on '%s' disabled: observation missing this objective. "
-                    "All observations must include the constrained objective.",
-                    oc.objective_name,
+                msg = (
+                    f"Outcome constraint on '{oc.objective_name}' cannot be honored: "
+                    f"at least one observation is missing this objective. Every "
+                    f"observation must record the constrained objective."
                 )
-                return None
+                raise OutcomeConstraintConfigurationError(msg)
             obj_values.append(obs.objective_values[oc.objective_name])
 
         obj_tensor = torch.tensor(obj_values, dtype=get_dtype(), device=get_device()).unsqueeze(-1)

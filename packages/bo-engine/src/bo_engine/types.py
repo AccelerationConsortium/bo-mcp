@@ -356,6 +356,15 @@ class OptimizationSpec:
     # and the per-backend converters; backends that do not recognize a key
     # must silently ignore it.
     backend_options: dict[str, dict[str, Any]] | None = None
+    # Explicit caller-side acknowledgement that the chosen backend may
+    # silently degrade these option fields. Backends classify
+    # semantically load-bearing options (e.g. ``outcome_constraints`` on
+    # BayBE) as UNSUPPORTED by default so misroutings fail loudly at
+    # intake; passing the corresponding field name here downgrades the
+    # report to IGNORED so the caller opts into the degraded run with a
+    # warning. ``backend="auto"`` continues to route around backends that
+    # require acknowledgement for active options.
+    acknowledge_degradations: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def use_turbo(self) -> bool:

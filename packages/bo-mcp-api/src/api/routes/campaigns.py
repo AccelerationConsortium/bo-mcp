@@ -92,6 +92,7 @@ def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
             fidelity_parameter=intake.fidelity_parameter,  # ty: ignore[invalid-argument-type]
             transfer_learning=intake.transfer_learning,  # ty: ignore[invalid-argument-type]
             outcome_constraints=intake.outcome_constraints,  # ty: ignore[invalid-argument-type]
+            acknowledge_degradations=tuple(intake.acknowledge_degradations),
         )
     except ValidationError as exc:
         # Prefix locations with ("body", "intake") so the error shape

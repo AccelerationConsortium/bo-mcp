@@ -47,6 +47,10 @@ from bo_mcp_server.errors import (
     make_error_response,
 )
 from bo_mcp_server.idempotency import session_scope
+from bo_mcp_server.operations.backend_output import (
+    BackendOutputError,
+    validate_backend_batch,
+)
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
     parse_verbosity,
@@ -411,14 +415,34 @@ async def generate_suggestions_operation(
                 time.perf_counter() - started,
             )
             return response
-    except ConcurrentModificationError as err:
-        # When a caller (typically ``apply_idempotency``'s session-aware
-        # path) supplied the session, ``session_scope`` only yields it
-        # — the partial writes that landed before the optimistic-lock
-        # conflict (e.g. new suggestion rows saved at
-        # ``_create_and_save_suggestions`` before the campaign-version
-        # save raised) would otherwise survive the outer commit. Roll
-        # back here so the conflict produces no observable state.
+    except (
+        ConcurrentModificationError,
+        SearchSpaceExhaustedError,
+        BackendOutputError,
+    ) as err:
+        return await _handle_generation_failure(err, campaign_id, session)
+
+
+async def _handle_generation_failure(
+    err: ConcurrentModificationError | SearchSpaceExhaustedError | BackendOutputError,
+    campaign_id: str,
+    session: AsyncSession | None,
+) -> dict[str, Any]:
+    """Map a generation-loop exception to a structured error envelope.
+
+    Extracted from :func:`generate_suggestions_operation` so the
+    function stays under the lint-enforced cyclomatic-complexity
+    budget (one ``except`` branch per failure mode would otherwise
+    blow the return-statement count).
+
+    When the caller supplied the session (e.g.
+    ``apply_idempotency``'s session-aware path), partial writes that
+    landed before the failure (new suggestion rows saved before the
+    campaign-version save raised) would otherwise survive the outer
+    commit. Roll back here so the failure produces no observable
+    state.
+    """
+    if isinstance(err, ConcurrentModificationError):
         if session is not None:
             await session.rollback()
         logger.warning(
@@ -431,7 +455,7 @@ async def generate_suggestions_operation(
         )
         response.update({"suggestions": [], "iteration": None})
         return response
-    except SearchSpaceExhaustedError as err:
+    if isinstance(err, SearchSpaceExhaustedError):
         logger.info(
             "Search space exhausted for campaign %s: %s",
             campaign_id,
@@ -448,6 +472,25 @@ async def generate_suggestions_operation(
                 "next_action_recommendation": "terminate_campaign",
             },
         )
+    # BackendOutputError: the backend returned a malformed
+    # SuggestionBatch. The fault is in the backend, not the caller,
+    # so this is not retryable — surface the structured Pydantic
+    # error list so an operator can identify the offending field.
+    if session is not None:
+        await session.rollback()
+    logger.exception(
+        "Backend returned malformed SuggestionBatch for campaign %s: %s",
+        campaign_id,
+        err.errors,
+    )
+    return _make_suggestions_error(
+        ErrorCode.ACQUISITION_OPTIMIZATION_FAILED,
+        message=str(err),
+        details={
+            "campaign_id": campaign_id,
+            "validation_errors": err.errors,
+        },
+    )
 
 
 def _init_repositories(session: AsyncSession) -> _Repositories:
@@ -929,6 +972,13 @@ async def _generate_via_backend(
         pending_points=pending_parameter_values,
         progress_callback=progress_callback,
     )
+    # Re-validate the batch shape against the documented contract.
+    # ``bo-engine`` is Pydantic-free for third-party backend plugins, so
+    # a misbehaving backend can hand us a partial dict that would otherwise
+    # surface downstream as an opaque ``KeyError`` or as a malformed
+    # provenance row in storage. Convert the contract violation to a
+    # typed :class:`BackendOutputError` here.
+    batch = validate_backend_batch(batch)
     suggestion_data = [(item["parameter_values"], item["provenance"]) for item in batch.suggestions]
     return (
         suggestion_data,

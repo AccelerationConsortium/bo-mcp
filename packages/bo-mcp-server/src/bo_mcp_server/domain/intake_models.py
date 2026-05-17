@@ -68,6 +68,13 @@ class CampaignIntakeInput(BaseModel):
     fidelity_parameter: FidelityParameter | None = None
     transfer_learning: TransferLearningConfig | None = None
     outcome_constraints: tuple[OutcomeConstraint, ...] = Field(default_factory=tuple)
+    # Per-spec opt-in to "this backend may silently drop these option
+    # fields". Semantically load-bearing options (outcome_constraints,
+    # turbo_config, …) are classified as UNSUPPORTED by default on
+    # backends that cannot honor them; naming the field here downgrades
+    # the rejection to an IGNORED warning so the caller accepts the
+    # degraded run knowingly.
+    acknowledge_degradations: tuple[str, ...] = Field(default_factory=tuple)
 
     model_config = {"extra": "forbid"}
 

@@ -272,6 +272,20 @@ class Constraint(BaseModel):
 
     ``parameters`` and ``coefficients`` are tuples so a frozen instance
     is deeply immutable. JSON round-trips preserve these as arrays.
+
+    Shape invariants per :attr:`type`:
+
+    * ``LINEAR``: ``coefficients`` must be supplied and align one-to-one
+      with ``parameters`` (same length, same order). The engine encodes
+      the constraint as ``coefficients @ x[parameters] <= value``;
+      missing coefficients used to be silently coerced into a sum
+      constraint at the engine boundary, which produced unrelated
+      semantics for a typo'd input. Reject the shape at intake so the
+      failure is loud.
+    * ``SUM_*``: ``coefficients`` must not be supplied (the constraint
+      is unweighted by definition); supplying coefficients here is a
+      sign the caller meant ``LINEAR`` and would otherwise be silently
+      dropped on the SUM_* path.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -280,6 +294,36 @@ class Constraint(BaseModel):
     parameters: tuple[str, ...]  # Parameter names involved
     value: float  # Constraint value (e.g., sum equals this value)
     coefficients: tuple[float, ...] | None = None  # For linear constraints
+
+    @model_validator(mode="after")
+    def validate_constraint_shape(self) -> "Constraint":
+        if not self.parameters:
+            msg = f"Constraint of type {self.type.value} must reference at least one parameter"
+            raise ValueError(msg)
+
+        if self.type == ConstraintType.LINEAR:
+            if self.coefficients is None:
+                msg = (
+                    f"Linear constraint requires coefficients (one per parameter); "
+                    f"got coefficients=None for parameters={list(self.parameters)}."
+                )
+                raise ValueError(msg)
+            if len(self.coefficients) != len(self.parameters):
+                msg = (
+                    f"Linear constraint requires one coefficient per parameter: "
+                    f"got {len(self.coefficients)} coefficient(s) for "
+                    f"{len(self.parameters)} parameter(s) "
+                    f"({list(self.parameters)})."
+                )
+                raise ValueError(msg)
+        elif self.coefficients is not None:
+            msg = (
+                f"Constraint of type {self.type.value} does not accept coefficients "
+                f"(the constraint is unweighted by definition). Did you mean "
+                f"type=linear?"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class OutcomeConstraint(BaseModel):
@@ -470,6 +514,14 @@ class CampaignSpec(BaseModel):
     # neutral cross-backend equivalent. Backends ignore options addressed
     # to other backends.
     backend_options: Mapping[str, Mapping[str, Any]] | None = None
+    # Caller-side acknowledgement that the chosen backend may silently
+    # drop these option fields. Backends classify semantically
+    # load-bearing options (e.g. ``outcome_constraints`` on BayBE) as
+    # UNSUPPORTED by default so a misrouted spec fails at intake instead
+    # of running the optimization without the requested semantics. Naming
+    # the field here downgrades the corresponding report to IGNORED,
+    # opting into a degraded run with a prominent warning.
+    acknowledge_degradations: tuple[str, ...] = Field(default_factory=tuple)
 
     model_config = ConfigDict(frozen=True)
 
@@ -517,6 +569,22 @@ class CampaignSpec(BaseModel):
                 if param_name not in param_names:
                     msg = f"Constraint references unknown parameter: {param_name}"
                     raise ValueError(msg)
+
+        # Outcome constraints reference an objective by name. A typo here
+        # used to slip through intake validation and was caught silently at
+        # the engine boundary (the constraint was disabled), so users got
+        # an "unconstrained" campaign they believed was constrained. Reject
+        # unknown ``objective_name`` values at intake so the failure mode is
+        # loud rather than a silent correctness bug.
+        objective_names = {o.name for o in self.objectives}
+        for outcome_constraint in self.outcome_constraints:
+            if outcome_constraint.objective_name not in objective_names:
+                msg = (
+                    f"Outcome constraint references unknown objective "
+                    f"'{outcome_constraint.objective_name}'. "
+                    f"Declared objectives: {sorted(objective_names)}."
+                )
+                raise ValueError(msg)
 
         # ``convergence_tolerance`` is wired to a single-objective running-best
         # trajectory. Hypervolume-based convergence for multi-objective specs
@@ -592,5 +660,6 @@ class CampaignSpec(BaseModel):
                 self.acquisition_optimization,
                 self.backend,
                 _hashable_backend_options(self.backend_options),
+                self.acknowledge_degradations,
             )
         )

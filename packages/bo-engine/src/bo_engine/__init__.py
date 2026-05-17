@@ -340,6 +340,7 @@ from bo_engine.spec_ir import (
     normalize_spec,
 )
 from bo_engine.suggestions import (
+    OutcomeConstraintConfigurationError,
     generate_initial_design,
     generate_next_batch,
     update_turbo_after_evaluation,
@@ -460,6 +461,7 @@ __all__ = [
     "compute_pareto_front",
     "compute_single_objective_improvement_rate",
     "ModelFittingError",
+    "OutcomeConstraintConfigurationError",
     "create_acquisition",
     "create_and_fit_model",
     "create_and_fit_single_task_model",

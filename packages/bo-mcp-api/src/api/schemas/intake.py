@@ -69,5 +69,9 @@ class IntakeData(BaseModel):
     fidelity_parameter: dict[str, Any] | None = None
     transfer_learning: dict[str, Any] | None = None
     outcome_constraints: list[dict[str, Any]] = Field(default_factory=list)
+    # Caller opt-in to "this backend may silently drop these option
+    # fields". Mirrors :class:`CampaignIntakeInput.acknowledge_degradations`
+    # so the REST and MCP transports accept the same shape.
+    acknowledge_degradations: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")

@@ -165,4 +165,5 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         max_observations=spec.max_observations,
         convergence_tolerance=spec.convergence_tolerance,
         backend_options=backend_options,
+        acknowledge_degradations=tuple(spec.acknowledge_degradations),
     )

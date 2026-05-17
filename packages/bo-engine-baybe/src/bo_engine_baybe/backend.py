@@ -123,18 +123,25 @@ _SUPPORTED_FEATURES = frozenset(
 )
 
 
-# BayBE silently ignores these BoTorch-only knobs at runtime. The map
-# associates each spec attribute with the abstract :class:`Feature`(s)
-# it activates via :func:`bo_engine.backend_base.required_features`.
-# Both the option report (BayBE knob, IGNORED) and the derived feature
-# report (e.g. ``Feature.HIGH_DIMENSIONAL`` from ``turbo_config``)
-# emit :class:`CapabilityStatus.IGNORED` rather than ``UNSUPPORTED``,
-# so create-time capability enforcement still accepts the campaign
-# with a warning instead of rejecting it. ``transfer_learning`` is
-# intentionally absent — its feature-level routing is decided by
-# :meth:`BayBEBackend._transfer_learning_report` (TaskParameter ⇒
-# SUPPORTED, RGPE config ⇒ UNSUPPORTED).
-_BAYBE_IGNORED_FEATURE_MAP: dict[str, tuple[Feature, ...]] = {
+# BayBE silently drops these BoTorch-only knobs at runtime. Each is
+# semantically load-bearing: dropping outcome_constraints changes the
+# feasibility region, dropping turbo_config disables the TuRBO trust
+# region, etc. Reporting them as plain ``IGNORED`` makes the campaign
+# accept silently and run with the wrong semantics, which is the worst
+# class of BO bug — wrong answers that look fine. We therefore classify
+# them as ``requires_acknowledgement``: by default the feature *and*
+# option reports emit ``UNSUPPORTED`` so create-time capability
+# enforcement rejects the spec. Callers that have weighed the trade-off
+# can opt in by listing the field name in
+# :attr:`OptimizationSpec.acknowledge_degradations`; the reports
+# downgrade to ``IGNORED`` for those entries and the campaign accepts
+# with a prominent warning. ``backend="auto"`` continues to prefer
+# backends that need no acknowledgement (``FULL`` tier in the selector
+# at :func:`bo_mcp_server.backend.resolve_backend_name`).
+# ``transfer_learning`` is intentionally absent — its feature-level
+# routing is decided by :meth:`BayBEBackend._transfer_learning_report`
+# (TaskParameter ⇒ SUPPORTED, RGPE config ⇒ UNSUPPORTED).
+_BAYBE_DEGRADABLE_FEATURE_MAP: dict[str, tuple[Feature, ...]] = {
     "turbo_config": (Feature.HIGH_DIMENSIONAL,),
     "saasbo_config": (Feature.HIGH_DIMENSIONAL,),
     "fidelity_parameter": (Feature.MULTI_FIDELITY,),
@@ -142,9 +149,32 @@ _BAYBE_IGNORED_FEATURE_MAP: dict[str, tuple[Feature, ...]] = {
     "use_input_warping": (Feature.INPUT_WARPING,),
     "outcome_constraints": (Feature.OUTCOME_CONSTRAINTS,),
 }
-_BAYBE_IGNORED_FEATURES: frozenset[Feature] = frozenset(
-    f for features in _BAYBE_IGNORED_FEATURE_MAP.values() for f in features
+_BAYBE_DEGRADABLE_FEATURES: frozenset[Feature] = frozenset(
+    f for features in _BAYBE_DEGRADABLE_FEATURE_MAP.values() for f in features
 )
+
+
+def _active_attrs_for_feature(spec: OptimizationSpec, feature: Feature) -> tuple[str, ...]:
+    """Return spec attribute(s) actually set on ``spec`` that activate ``feature``.
+
+    Several features in :data:`_BAYBE_DEGRADABLE_FEATURE_MAP` are
+    activated by more than one attribute — ``HIGH_DIMENSIONAL`` is
+    activated by both ``turbo_config`` and ``saasbo_config``. A naive
+    reverse lookup would always name the first entry, so a caller who
+    only set ``saasbo_config`` would be told to acknowledge
+    ``turbo_config`` instead. Filter the candidates by what is actually
+    set on the spec so the diagnostic targets the real culprit.
+    """
+    active: list[str] = []
+    for attr, features in _BAYBE_DEGRADABLE_FEATURE_MAP.items():
+        if feature not in features:
+            continue
+        value = getattr(spec, attr, None)
+        is_set = bool(value) if not isinstance(value, list) else len(value) > 0
+        if is_set:
+            active.append(attr)
+    return tuple(active)
+
 
 _MIN_OBSERVATIONS_FOR_CONFIDENCE = 5
 _MODEL_TYPE_SINGLE = "BayBE GP"
@@ -729,47 +759,39 @@ class BayBEBackend(BaseBackend):
         """Build the feature half of :meth:`validate_capabilities` output.
 
         Features whose source spec attribute is in
-        :data:`_BAYBE_IGNORED_FEATURE_MAP` (``turbo_config``,
+        :data:`_BAYBE_DEGRADABLE_FEATURE_MAP` (``turbo_config``,
         ``saasbo_config``, ``fidelity_parameter``, ``use_cost_aware``,
-        ``use_input_warping``, ``outcome_constraints``) emit
-        :class:`CapabilityStatus.IGNORED` so create-time capability
-        enforcement keeps accepting BayBE campaigns that carry
-        BoTorch-only knobs — the warning still surfaces via the
-        option-level IGNORED report. Genuinely incompatible items
+        ``use_input_warping``, ``outcome_constraints``) are
+        semantically load-bearing on BoTorch and would change the
+        produced suggestions; BayBE cannot honor them. The report
+        emits ``UNSUPPORTED`` by default so create-time capability
+        enforcement rejects ``backend="baybe"`` for such specs.
+        Listing the source attribute in
+        :attr:`OptimizationSpec.acknowledge_degradations` downgrades
+        the report to ``IGNORED`` — the caller has opted into the
+        degraded run with a prominent warning. Features activated by
+        more than one attribute (notably ``HIGH_DIMENSIONAL``, set by
+        both ``turbo_config`` and ``saasbo_config``) only downgrade
+        when *every* attribute actually set on the spec is
+        acknowledged; otherwise the unacknowledged attribute's
+        option-level report keeps the spec ``is_compatible == False``
+        and the feature report names the specific unacknowledged
+        attribute for the diagnostic. Genuinely incompatible items
         (hybrid constraints, RGPE transfer learning, malformed BayBE
-        typed options) stay :class:`CapabilityStatus.UNSUPPORTED`.
+        typed options) stay ``UNSUPPORTED`` regardless of
+        acknowledgement.
         """
         reports: list[CapabilityReport] = []
-        supported = self.supported_features
+        acknowledged_attrs = set(spec.acknowledge_degradations)
         transfer_handled = False
         for feature in sorted(required_features(spec)):
             if feature == Feature.CONSTRAINTS:
                 reports.extend(self._constraint_feature_reports(spec))
-                continue
-            if feature == Feature.TRANSFER_LEARNING:
+            elif feature == Feature.TRANSFER_LEARNING:
                 reports.append(self._transfer_learning_report(spec))
                 transfer_handled = True
-                continue
-            if feature in supported:
-                reports.append(
-                    CapabilityReport(key=str(feature), status=CapabilityStatus.SUPPORTED)
-                )
-            elif feature in _BAYBE_IGNORED_FEATURES:
-                reports.append(
-                    CapabilityReport(
-                        key=str(feature),
-                        status=CapabilityStatus.IGNORED,
-                        reason=f"{feature} is not honored by BayBE and will be ignored.",
-                    )
-                )
             else:
-                reports.append(
-                    CapabilityReport(
-                        key=str(feature),
-                        status=CapabilityStatus.UNSUPPORTED,
-                        reason=f"{feature} is not supported by BayBE",
-                    )
-                )
+                reports.append(self._classify_feature(spec, feature, acknowledged_attrs))
         # A BayBE-native TaskParameter is the supported transfer-learning path
         # even when the neutral spec did not flag transfer_learning itself.
         if not transfer_handled:
@@ -777,6 +799,45 @@ class BayBEBackend(BaseBackend):
             if task_report is not None:
                 reports.append(task_report)
         return reports
+
+    def _classify_feature(
+        self,
+        spec: OptimizationSpec,
+        feature: Feature,
+        acknowledged_attrs: set[str],
+    ) -> CapabilityReport:
+        """Classify a single non-constraint, non-transfer feature for BayBE."""
+        if feature in self.supported_features:
+            return CapabilityReport(key=str(feature), status=CapabilityStatus.SUPPORTED)
+        if feature not in _BAYBE_DEGRADABLE_FEATURES:
+            return CapabilityReport(
+                key=str(feature),
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=f"{feature} is not supported by BayBE",
+            )
+        active_attrs = _active_attrs_for_feature(spec, feature)
+        unacknowledged = tuple(a for a in active_attrs if a not in acknowledged_attrs)
+        if not unacknowledged:
+            return CapabilityReport(
+                key=str(feature),
+                status=CapabilityStatus.IGNORED,
+                reason=(
+                    f"{feature} is not honored by BayBE and will be ignored "
+                    "(degradation acknowledged)."
+                ),
+            )
+        attrs_label = ", ".join(f"'{a}'" for a in unacknowledged)
+        return CapabilityReport(
+            key=str(feature),
+            status=CapabilityStatus.UNSUPPORTED,
+            reason=(
+                f"{feature} is not honored by BayBE. The spec sets "
+                f"{attrs_label} which BayBE cannot apply. Either pin "
+                "backend='botorch' (or 'auto'), or list "
+                f"{attrs_label} in 'acknowledge_degradations' to run "
+                "on BayBE with this option silently dropped."
+            ),
+        )
 
     def _constraint_feature_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
         """One :class:`CapabilityReport` per constraint.
@@ -846,17 +907,62 @@ class BayBEBackend(BaseBackend):
         )
 
     def _option_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
-        """Option-half of validate_capabilities: ignored knobs + typed BayBE option validation."""
+        """Option-half of validate_capabilities: degradable knobs + typed BayBE option validation.
+
+        Each active option that BayBE cannot honor maps to an
+        ``UNSUPPORTED`` report by default. Listing the option's
+        attribute name in :attr:`OptimizationSpec.acknowledge_degradations`
+        downgrades that single entry to ``IGNORED`` — the caller has
+        explicitly opted into running on BayBE with that semantic
+        knob silently dropped. ``transfer_learning`` is exempt here
+        because its feature-level report already routes
+        ``TaskParameter``-style usage to ``SUPPORTED`` (option-level
+        IGNORED is correct only when the caller has already chosen to
+        run the spec on BayBE).
+        """
         reports: list[CapabilityReport] = []
+        acknowledged_attrs = set(spec.acknowledge_degradations)
         for attr, label in self._UNSUPPORTED_OPTIONS:
             value = getattr(spec, attr, None)
             is_set = bool(value) if not isinstance(value, list) else len(value) > 0
-            if is_set:
+            if not is_set:
+                continue
+            if attr == "transfer_learning":
+                # Transfer learning has its own routing — keep the
+                # legacy IGNORED option-level warning to mirror what
+                # callers grep for; the feature report decides
+                # SUPPORTED/UNSUPPORTED.
                 reports.append(
                     CapabilityReport(
                         key=attr,
                         status=CapabilityStatus.IGNORED,
                         reason=f"{label} is not supported by BayBE and will be ignored.",
+                    )
+                )
+                continue
+            if attr in acknowledged_attrs:
+                reports.append(
+                    CapabilityReport(
+                        key=attr,
+                        status=CapabilityStatus.IGNORED,
+                        reason=(
+                            f"{label} is not supported by BayBE and will be ignored "
+                            "(degradation acknowledged)."
+                        ),
+                    )
+                )
+            else:
+                reports.append(
+                    CapabilityReport(
+                        key=attr,
+                        status=CapabilityStatus.UNSUPPORTED,
+                        reason=(
+                            f"{label} is not supported by BayBE; running this spec "
+                            "on BayBE would silently drop the option. Pin "
+                            "backend='botorch' (or 'auto'), or list "
+                            f"'{attr}' in 'acknowledge_degradations' to accept "
+                            "the degraded run."
+                        ),
                     )
                 )
         reports.extend(self._parameter_option_reports(spec))

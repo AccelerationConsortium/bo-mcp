@@ -219,9 +219,20 @@ def build_botorch_linear_constraints(
             equality_constraints.append((idx_tensor, coeffs, constraint.value))
 
         elif constraint.type == ConstraintType.LINEAR:
+            # The intake-layer ``Constraint`` validator (bo_mcp_server.domain)
+            # rejects ``type=linear`` without coefficients, so a missing
+            # ``constraint.coefficients`` reaching this point indicates a
+            # third-party caller bypassing intake. Surface that as a hard
+            # error rather than silently rewriting the constraint into an
+            # unweighted sum.
             if constraint.coefficients is None:
-                projection_constraints.append(constraint)
-                continue
+                msg = (
+                    "Linear constraint reached the engine without "
+                    "coefficients. Intake validation should have rejected "
+                    "this; check that the caller is going through "
+                    "CampaignSpec / IntakeData."
+                )
+                raise ValueError(msg)
             # coefficients @ x[indices] <= value
             coeffs = torch.tensor(constraint.coefficients, dtype=torch.double)
             inequality_constraints.append((idx_tensor, coeffs, constraint.value))

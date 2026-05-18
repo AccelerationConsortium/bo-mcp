@@ -80,13 +80,25 @@ def _get_engine() -> AsyncEngine:
 
 
 def _get_session_factory() -> async_sessionmaker[AsyncSession]:
-    """Get or create the session factory (lazy initialization)."""
+    """Get or create the session factory (lazy initialization).
+
+    ``expire_on_commit=True`` is the SQLAlchemy default and is restored
+    here so any code that accidentally reads ORM attributes after a
+    commit fails loudly (``MissingGreenlet`` on async lazy refresh)
+    rather than silently returning stale field values. Repositories
+    convert ORM models to frozen Pydantic domain entities before
+    returning, so callers do not observe expired attributes. The
+    ``cached_property`` parsed_* helpers on the ORM models are *not*
+    cleared by ``expire_on_commit``; the immutability contract in
+    ``storage/models.py`` already forbids re-reading them after a
+    state mutation.
+    """
     global _session_factory  # noqa: PLW0603
     if _session_factory is None:
         _session_factory = async_sessionmaker(
             _get_engine(),
             class_=AsyncSession,
-            expire_on_commit=False,
+            expire_on_commit=True,
         )
     return _session_factory
 
@@ -115,7 +127,16 @@ def _create_engine_with_options() -> AsyncEngine:
             **common_options,
         )
     else:
-        # SQLite (used for testing)
+        # SQLite (used for testing). FK enforcement is intentionally
+        # *not* enabled engine-wide here: many pre-existing test
+        # fixtures construct campaigns with synthetic ``owner_id`` /
+        # ``spec_id`` UUIDs that have no matching parent row, and
+        # turning the pragma on globally would surface those as
+        # spurious failures unrelated to the change at hand. Tests
+        # that specifically exercise the ``ON DELETE RESTRICT``
+        # contract (see ``test_soft_delete_and_snapshot.py``) enable
+        # the pragma on their own engine. Production runs PostgreSQL,
+        # which enforces FKs unconditionally.
         return create_async_engine(database_url, **common_options)
 
 

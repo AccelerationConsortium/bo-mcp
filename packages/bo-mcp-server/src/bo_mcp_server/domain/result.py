@@ -87,6 +87,13 @@ class Result(BaseModel):
     preserve compatibility with rows persisted before the schema was
     introduced; new writes flow through ``ResultSubmissionInput`` which
     rejects unknown keys at the boundary.
+
+    ``suggestion_snapshot`` (TODO 8.11) carries the parameter values
+    and provenance of the originating suggestion at submission time.
+    The result-to-suggestion FK is ``ON DELETE SET NULL``; the snapshot
+    keeps the BO context reconstructable even after the suggestion row
+    is removed (soft- or hard-deleted). ``None`` for free-floating
+    rows and for legacy rows persisted before this column was added.
     """
 
     id: UUID = Field(default_factory=uuid4)
@@ -98,6 +105,7 @@ class Result(BaseModel):
     submitted_by: UUID  # User who submitted
     measurement_uncertainty: dict[str, float] | None = None  # Per-objective noise estimate (std)
     metadata: dict[str, Any] = Field(default_factory=dict)  # Validated via ResultMetadata at intake
+    suggestion_snapshot: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=utcnow)
 
     @property

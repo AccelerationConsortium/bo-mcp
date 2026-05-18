@@ -53,6 +53,12 @@ def _safe_json_loads(raw: str, *, default: Any, context: str = "") -> Any:
 CAMPAIGNS_ID_FK = "campaigns.id"
 SUGGESTIONS_ID_FK = "suggestions.id"
 
+# Partial-index predicate for soft-delete-aware "active row" indexes.
+# Centralized so the four ``ix_<table>_active`` declarations and the
+# corresponding ``WHERE`` clauses in :mod:`bo_mcp_server.storage.repositories`
+# cannot drift apart.
+_ACTIVE_ROW_PREDICATE = "deleted_at IS NULL"
+
 
 class Base(DeclarativeBase):
     """Base class for all ORM models."""
@@ -168,6 +174,18 @@ class CampaignModel(Base):
     """Campaign ORM model."""
 
     __tablename__ = "campaigns"
+    # ``ix_campaigns_active`` shadows the soft-delete partial filter
+    # used by every read query (``deleted_at IS NULL``). The index is
+    # also declared in migration ``013_soft_delete`` and mirrored here
+    # so ``alembic --autogenerate`` does not propose dropping it.
+    __table_args__ = (
+        Index(
+            "ix_campaigns_active",
+            "id",
+            sqlite_where=text(_ACTIVE_ROW_PREDICATE),
+            postgresql_where=text(_ACTIVE_ROW_PREDICATE),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     spec_id: Mapped[str] = mapped_column(
@@ -188,6 +206,9 @@ class CampaignModel(Base):
     turbo_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # v2.8: Hypervolume history for multi-objective convergence detection
     hypervolume_history_json: Mapped[str] = mapped_column(Text, default="[]")
+    # Soft-delete marker (TODO 8.11). ``NULL`` means active;
+    # repositories filter rows where this is non-null by default.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     spec: Mapped["CampaignSpecModel"] = relationship(back_populates="campaigns")
@@ -230,10 +251,23 @@ class SuggestionModel(Base):
     """Suggestion ORM model."""
 
     __tablename__ = "suggestions"
+    # See ``CampaignModel.__table_args__`` for the soft-delete index
+    # rationale; mirrored here so ``alembic --autogenerate`` is stable.
+    __table_args__ = (
+        Index(
+            "ix_suggestions_active",
+            "id",
+            sqlite_where=text(_ACTIVE_ROW_PREDICATE),
+            postgresql_where=text(_ACTIVE_ROW_PREDICATE),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     campaign_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=False, index=True
+        String(36),
+        ForeignKey(CAMPAIGNS_ID_FK, ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
     parameter_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     status: Mapped[SuggestionStatus] = mapped_column(
@@ -242,6 +276,8 @@ class SuggestionModel(Base):
     provenance_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Soft-delete marker (TODO 8.11). See :class:`CampaignModel.deleted_at`.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     campaign: Mapped["CampaignModel"] = relationship(back_populates="suggestions")
@@ -278,29 +314,52 @@ class ResultModel(Base):
     """Result ORM model."""
 
     __tablename__ = "results"
-    # Partial-unique index on ``suggestion_id``: at most one Result row can
-    # reference any given suggestion. NULL values (free-floating results)
-    # are intentionally excluded so manual/imported rows can coexist
-    # without forcing them to share a single global NULL slot. Postgres and
-    # SQLite both honour the ``WHERE`` clause; the server-side phase-1
-    # check (:func:`_validate_suggestion_references`) catches duplicates
+    # Partial-unique index on ``suggestion_id``: at most one *active*
+    # Result row can reference any given suggestion. NULL values
+    # (free-floating results) are excluded so manual/imported rows can
+    # coexist without forcing them to share a single global NULL slot.
+    # ``deleted_at IS NULL`` is part of the predicate so a soft-deleted
+    # result releases its suggestion back to the available pool — TODO
+    # 8.11 treats soft-deleted rows as logically gone for application
+    # reads, and the uniqueness contract follows the same semantics.
+    # Postgres and SQLite both honour the ``WHERE`` clause; the
+    # server-side phase-1 check
+    # (:func:`_validate_suggestion_references`) catches duplicates
     # within a single batch before they reach this constraint.
     __table_args__ = (
         Index(
             "ix_results_suggestion_id_unique",
             "suggestion_id",
             unique=True,
-            sqlite_where=text("suggestion_id IS NOT NULL"),
-            postgresql_where=text("suggestion_id IS NOT NULL"),
+            sqlite_where=text(f"suggestion_id IS NOT NULL AND {_ACTIVE_ROW_PREDICATE}"),
+            postgresql_where=text(f"suggestion_id IS NOT NULL AND {_ACTIVE_ROW_PREDICATE}"),
+        ),
+        # Soft-delete partial index; see :class:`CampaignModel`.
+        Index(
+            "ix_results_active",
+            "id",
+            sqlite_where=text(_ACTIVE_ROW_PREDICATE),
+            postgresql_where=text(_ACTIVE_ROW_PREDICATE),
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     campaign_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=False, index=True
+        String(36),
+        ForeignKey(CAMPAIGNS_ID_FK, ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
+    # ``ondelete=SET NULL`` is retained intentionally: when a suggestion
+    # is removed the result drops its pointer but
+    # ``suggestion_snapshot_json`` already carries the parameter values
+    # + provenance captured at submission time, so the audit trail
+    # survives the broken FK.
     suggestion_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey(SUGGESTIONS_ID_FK), nullable=True, index=True
+        String(36),
+        ForeignKey(SUGGESTIONS_ID_FK, ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     parameter_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     objective_values_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
@@ -308,7 +367,15 @@ class ResultModel(Base):
     submitted_by: Mapped[str] = mapped_column(String(36), nullable=False)
     measurement_uncertainty_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")  # JSON
+    # Snapshot of the originating suggestion at submission time (TODO 8.11).
+    # ``None`` for free-floating results (no suggestion_id). For
+    # suggestion-linked results this carries ``parameter_values`` and
+    # ``provenance`` so the result reconstructs the BO context even if
+    # the suggestion row is later removed.
+    suggestion_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Soft-delete marker (TODO 8.11). See :class:`CampaignModel.deleted_at`.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     campaign: Mapped["CampaignModel"] = relationship(back_populates="results")
@@ -344,6 +411,18 @@ class ResultModel(Base):
         ctx = f"Result({self.id}).metadata"
         return _safe_json_loads(self.metadata_json, default={}, context=ctx)
 
+    @functools.cached_property
+    def parsed_suggestion_snapshot(self) -> dict[str, Any] | None:
+        """Deserialize the suggestion-provenance snapshot (TODO 8.11).
+
+        ``None`` for free-floating rows (no suggestion_id at submission).
+        Immutability contract: see the module docstring.
+        """
+        if self.suggestion_snapshot_json is None:
+            return None
+        ctx = f"Result({self.id}).suggestion_snapshot"
+        return _safe_json_loads(self.suggestion_snapshot_json, default=None, context=ctx)
+
     def get_parameter_values(self) -> dict[str, Any]:
         return self.parsed_parameter_values
 
@@ -353,15 +432,30 @@ class ResultModel(Base):
     def get_metadata(self) -> dict[str, Any]:
         return self.parsed_metadata
 
+    def get_suggestion_snapshot(self) -> dict[str, Any] | None:
+        return self.parsed_suggestion_snapshot
+
 
 class EventModel(Base):
     """Audit event ORM model for MCP tool call logging."""
 
     __tablename__ = "events"
+    # See ``CampaignModel.__table_args__`` for the soft-delete index.
+    __table_args__ = (
+        Index(
+            "ix_events_active",
+            "id",
+            sqlite_where=text(_ACTIVE_ROW_PREDICATE),
+            postgresql_where=text(_ACTIVE_ROW_PREDICATE),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     campaign_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey(CAMPAIGNS_ID_FK), nullable=True, index=True
+        String(36),
+        ForeignKey(CAMPAIGNS_ID_FK, ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
     event_type: Mapped[EventType] = mapped_column(Enum(EventType), default=EventType.TOOL_CALL)
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -369,6 +463,11 @@ class EventModel(Base):
     output_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Soft-delete marker (TODO 8.11). See :class:`CampaignModel.deleted_at`.
+    # Events are append-only audit history; soft-delete should be reserved
+    # for explicit retention purges. Read paths filter ``deleted_at IS
+    # NULL`` for consistency.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class IdempotencyCacheModel(Base):

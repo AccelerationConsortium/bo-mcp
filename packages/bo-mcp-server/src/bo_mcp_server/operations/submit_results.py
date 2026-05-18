@@ -315,35 +315,93 @@ async def _resolve_suggestion_id(
     campaign_uuid: UUID,
     suggestion_repo: SuggestionRepository,
     warnings: list[str],
+    actionable_ids: set[str],
     *,
     dry_run: bool = False,
-) -> UUID | None:
-    """Resolve and validate a suggestion_id, marking it completed if valid.
+) -> tuple[UUID | None, dict[str, Any] | None]:
+    """Resolve a ``suggestion_id`` and return the snapshot to persist with the result.
+
+    The second tuple element is a JSON-safe snapshot of the originating
+    suggestion's parameter values and provenance (TODO 8.11). The
+    snapshot is copied onto the persisted ``Result`` row so the BO
+    context survives even if the suggestion is later removed —
+    ``results.suggestion_id`` is ``ON DELETE SET NULL`` and the
+    ORM-level model lets a future cleanup hard-delete the suggestion
+    without losing audit context.
 
     Setting ``dry_run=True`` skips the ``SuggestionStatus.COMPLETED``
     write so the caller can preview a submission without mutating
-    suggestion state. The id is still returned (so the dry-run preview
-    reflects the row that *would* link to the suggestion); only the
-    persistence side-effect is suppressed.
+    suggestion state. The id (and snapshot) is still returned so the
+    dry-run preview reflects the row that *would* link to the
+    suggestion; only the persistence side-effect is suppressed.
+
+    ``actionable_ids`` is the set of suggestion IDs that phase 1
+    classified as actionable (PENDING / ACCEPTED) for this campaign.
+    If the caller supplied an id that *was* in that set but the
+    re-read here finds the row missing (typically because an admin
+    soft-delete landed between phase 1 and phase 2),
+    :class:`ConcurrentModificationError` is raised so the phase-2
+    loop can route the conflict per submission mode. A
+    ``None``-from-``get`` for an id that was *never* in
+    ``actionable_ids`` is the historic "caller supplied a bad id"
+    path and still falls through to the warning-only free-floating
+    behaviour.
     """
     if not suggestion_id_str:
-        return None
+        return None, None
     try:
         suggestion_id = UUID(suggestion_id_str)
     except ValueError:
         warnings.append(f"Result {index}: invalid suggestion_id format")
-        return None
+        return None, None
 
     suggestion = await suggestion_repo.get(suggestion_id)
     if suggestion is None:
+        if suggestion_id_str in actionable_ids:
+            # Phase 1 saw this row as actionable, but the re-read
+            # found nothing — an admin soft-delete (the only path
+            # that can vanish a row under the `RESTRICT` FK) landed
+            # between phases. Treat it like the transition race:
+            # under ``atomic`` the whole batch aborts, under
+            # ``continue_on_error`` the row is skipped.
+            raise ConcurrentModificationError("Suggestion", suggestion_id, -1)
         warnings.append(f"Result {index}: suggestion {suggestion_id_str} not found")
-        return None
+        return None, None
     if suggestion.campaign_id != campaign_uuid:
         warnings.append(f"Result {index}: suggestion belongs to different campaign")
-        return None
+        return None, None
     if not dry_run:
-        await suggestion_repo.save(suggestion.with_status(SuggestionStatus.COMPLETED))
-    return suggestion_id
+        # Atomic ``UPDATE … WHERE status IN (PENDING, ACCEPTED) AND
+        # deleted_at IS NULL`` so a concurrent manual status update
+        # (PENDING → REJECTED / EXPIRED, ACCEPTED → REJECTED /
+        # EXPIRED), a competing ``submit_results`` already completing
+        # the same suggestion, or an admin soft-delete cannot be
+        # silently clobbered.
+        #
+        # ``False`` here means the suggestion is no longer actionable.
+        # We *cannot* silently link the new result to the now-stale
+        # suggestion: the uniqueness index would reject a duplicate
+        # COMPLETED→COMPLETED INSERT, and an EXPIRED/REJECTED/
+        # soft-deleted suggestion attached to a fresh active result
+        # makes the audit trail incoherent. Raising
+        # :class:`ConcurrentModificationError` lets the caller
+        # decide per submission mode: ``submit_results``'s phase-2
+        # loop maps it to a structured conflict envelope under
+        # ``atomic=True`` / ``continue_on_error=False``, and to a
+        # row-level skip-with-error under ``continue_on_error=True``.
+        if not await suggestion_repo.transition_status(
+            suggestion_id,
+            (SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED),
+            SuggestionStatus.COMPLETED,
+        ):
+            raise ConcurrentModificationError("Suggestion", suggestion_id, -1)
+    snapshot = {
+        "suggestion_id": str(suggestion.id),
+        "parameter_values": dict(suggestion.parameter_values),
+        "provenance": suggestion.provenance.model_dump(mode="json"),
+        "suggestion_created_at": suggestion.created_at.isoformat(),
+    }
+    return suggestion_id, snapshot
 
 
 @dataclass
@@ -826,21 +884,89 @@ async def _validate_and_create_results(
     if tracking.errors and not (not atomic and continue_on_error):
         return [], {}
 
-    # Phase 2 — mutate suggestion status and build result entities for the
-    # submissions that cleared validation. All writes happen in the same
-    # session and share a single commit/rollback boundary with save_batch
-    # and any downstream campaign-state update.
+    return await _phase2_build_results(
+        valid_submissions,
+        campaign_uuid,
+        submitter_uuid,
+        result_source,
+        suggestion_repo,
+        tracking,
+        actionable_ids=actionable_ids,
+        atomic=atomic,
+        continue_on_error=continue_on_error,
+        dry_run=dry_run,
+    )
+
+
+async def _phase2_build_results(
+    valid_submissions: list[tuple[int, ResultSubmissionInput]],
+    campaign_uuid: UUID,
+    submitter_uuid: UUID,
+    result_source: ResultSource,
+    suggestion_repo: SuggestionRepository,
+    tracking: _SubmitTracking,
+    *,
+    actionable_ids: set[str],
+    atomic: bool,
+    continue_on_error: bool,
+    dry_run: bool,
+) -> tuple[list[Result], dict[int, int]]:
+    """Phase 2 — build ``Result`` entities and atomically mark suggestions COMPLETED.
+
+    All writes share the caller's session so save_batch and any
+    downstream campaign-state update commit or roll back together.
+
+    ``actionable_ids`` is the phase-1 set of suggestion IDs that
+    were classified as actionable (PENDING / ACCEPTED) for this
+    campaign. It's threaded into :func:`_resolve_suggestion_id` so
+    a ``get()`` that returns ``None`` for an id phase 1 had
+    accepted (an admin soft-delete that landed between phases) is
+    raised as :class:`ConcurrentModificationError` instead of
+    silently degrading the row to free-floating.
+
+    ``_resolve_suggestion_id`` raises ``ConcurrentModificationError``
+    in two situations:
+
+    * The phase-1-actionable row disappeared between phases (the
+      ``get() -> None`` case above).
+    * The atomic ``transition_status`` lost a race — the suggestion
+      was concurrently completed by another submit, rejected /
+      expired by a status update, or soft-deleted after the re-read.
+
+    Under ``atomic=True`` / ``continue_on_error=False`` we re-raise
+    so the outer handler returns a structured
+    ``CONCURRENT_MODIFICATION`` envelope; under
+    ``continue_on_error=True`` we drop the row from the batch and
+    record a row-level error so the rest of the batch can still
+    commit. We never link a fresh active result to a suggestion that
+    is no longer actionable, and we never silently demote a
+    suggestion-linked submission to free-floating because of a
+    concurrent change.
+    """
     result_entities: list[Result] = []
     entity_to_input_index: dict[int, int] = {}
     for i, r in valid_submissions:
-        suggestion_id = await _resolve_suggestion_id(
-            r.suggestion_id,
-            i,
-            campaign_uuid,
-            suggestion_repo,
-            tracking.warnings,
-            dry_run=dry_run,
-        )
+        try:
+            suggestion_id, suggestion_snapshot = await _resolve_suggestion_id(
+                r.suggestion_id,
+                i,
+                campaign_uuid,
+                suggestion_repo,
+                tracking.warnings,
+                actionable_ids,
+                dry_run=dry_run,
+            )
+        except ConcurrentModificationError:
+            if atomic or not continue_on_error:
+                raise
+            conflict_msg = (
+                f"Result {i}: suggestion {r.suggestion_id} status changed "
+                "concurrently (rejected, expired, completed, or soft-deleted) "
+                "before this result could be linked; row skipped"
+            )
+            _record_row_error(tracking, i, "suggestion_id", conflict_msg)
+            tracking.partial_results[i] = {"error": conflict_msg}
+            continue
 
         result = Result(
             campaign_id=campaign_uuid,
@@ -851,6 +977,7 @@ async def _validate_and_create_results(
             submitted_by=submitter_uuid,
             measurement_uncertainty=r.measurement_uncertainty,
             metadata=r.metadata,
+            suggestion_snapshot=suggestion_snapshot,
         )
         entity_to_input_index[len(result_entities)] = i
         result_entities.append(result)

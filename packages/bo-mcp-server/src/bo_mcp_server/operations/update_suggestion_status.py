@@ -8,10 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain import SuggestionStatus
 from bo_mcp_server.domain.event import Event, EventType
-from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.errors import (
+    ErrorCode,
+    make_concurrent_modification_response,
+    make_error_response,
+)
 from bo_mcp_server.idempotency import session_scope
 from bo_mcp_server.response_formatter import with_response_metadata
-from bo_mcp_server.storage import EventRepository, SuggestionRepository
+from bo_mcp_server.storage import (
+    ConcurrentModificationError,
+    EventRepository,
+    SuggestionRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,8 +182,43 @@ async def update_suggestion_status_operation(
             )
             return _build_status_preview(suggestion_id, previous_status, target_status)
 
-        updated = suggestion.with_status(target_status)
-        await suggestion_repo.save(updated)
+        # Atomic ``UPDATE … WHERE status = previous_status AND
+        # deleted_at IS NULL`` so two concurrent transitions from
+        # the same ``previous_status`` (e.g. PENDING→ACCEPTED vs
+        # PENDING→REJECTED) cannot both succeed — last-writer-wins
+        # at the in-Python validation layer would have silently
+        # clobbered one of them. ``rowcount == 0`` means the row
+        # was either soft-deleted or transitioned by a competing
+        # caller between this operation's ``get`` and the UPDATE;
+        # either way the caller should retry, so we route through
+        # the existing CMR envelope.
+        if not await suggestion_repo.transition_status(
+            suggestion_uuid, previous_status, target_status
+        ):
+            logger.warning(
+                "Suggestion %s status transition %s -> %s lost to a "
+                "concurrent update (soft-delete or status change)",
+                suggestion_id,
+                previous_status.value,
+                target_status.value,
+            )
+            err = ConcurrentModificationError("Suggestion", suggestion_uuid, -1)
+            response = make_concurrent_modification_response(
+                err,
+                extra_details={
+                    "suggestion_id": suggestion_id,
+                    "expected_source_status": previous_status.value,
+                    "target_status": target_status.value,
+                },
+            )
+            response.update(
+                {
+                    "suggestion_id": suggestion_id,
+                    "status": previous_status.value,
+                    "previous_status": previous_status.value,
+                }
+            )
+            return response
 
         # Record audit event for traceability
         event_repo = EventRepository(db)

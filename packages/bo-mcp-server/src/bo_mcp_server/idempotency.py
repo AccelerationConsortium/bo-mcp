@@ -293,8 +293,11 @@ async def _read_existing(
             )
         )
         row = result.scalar_one_or_none()
-
-    return _project_row(row, tool_name, key, request_hash)
+        # Project inside the session: ``expire_on_commit=True`` expires
+        # every ORM attribute on the way out of this block, so reading
+        # ``row.expires_at`` after the ``async with`` would raise
+        # ``DetachedInstanceError``.
+        return _project_row(row, tool_name, key, request_hash)
 
 
 async def _try_reserve(

@@ -100,10 +100,15 @@ def get_backend_capabilities() -> dict[str, dict[str, Any]]:
         except (ValueError, ImportError) as exc:
             capabilities[name] = {"loaded": False, "error": str(exc)}
             continue
+        conditional = {
+            str(feature): reason
+            for feature, reason in (getattr(backend, "conditional_features", {}) or {}).items()
+        }
         capabilities[name] = {
             "loaded": True,
             "name": backend.name,
             "features": sorted(f.value for f in backend.supported_features),
+            "conditional_features": conditional,
         }
     return capabilities
 

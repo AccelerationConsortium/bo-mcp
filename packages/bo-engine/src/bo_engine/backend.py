@@ -122,7 +122,28 @@ class BOBackend(Protocol):
 
     @property
     def supported_features(self) -> frozenset[Feature]:
-        """Set of features this backend supports."""
+        """Features this backend supports **unconditionally**.
+
+        Features that depend on spec shape (e.g. transfer learning
+        keyed on a task parameter) must NOT appear here — they
+        belong in :attr:`conditional_features` so callers can plan
+        around the precondition instead of hitting a late rejection.
+        """
+        ...
+
+    @property
+    def conditional_features(self) -> dict[Feature, str]:
+        """Features the backend supports **only under a precondition**.
+
+        Maps each :class:`Feature` to a short human-readable
+        description of the precondition (e.g. "Requires a parameter
+        with role='task'"). Reported alongside :attr:`supported_features`
+        on the capability surface so discovery accurately reflects
+        runtime behaviour.
+
+        The default is an empty mapping; backends with no conditional
+        features can ignore this property.
+        """
         ...
 
     # ----- Validation -----

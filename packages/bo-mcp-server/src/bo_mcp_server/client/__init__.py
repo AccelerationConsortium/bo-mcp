@@ -90,6 +90,12 @@ from bo_mcp_server.operations.generate_suggestions import (
     generate_suggestions_operation,
 )
 from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
+from bo_mcp_server.operations.idempotency_wrapper import (
+    OperationExecutor,
+    canonical_create_campaign_payload,
+    canonical_submit_results_payload,
+    run_idempotent_operation,
+)
 from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
 from bo_mcp_server.operations.list_results import list_results_operation
@@ -152,6 +158,11 @@ __all__ = [
     "submit_results_operation",
     "update_suggestion_status_operation",
     "validate_intake_operation",
+    # Idempotency (transport-neutral)
+    "OperationExecutor",
+    "canonical_create_campaign_payload",
+    "canonical_submit_results_payload",
+    "run_idempotent_operation",
     # Auth helpers / exceptions
     "ClientError",
     "DEV_API_KEY",

@@ -41,13 +41,22 @@ class CampaignResponse(BaseModel):
 
 
 class CampaignCreateResponse(BaseModel):
-    """Campaign creation response."""
+    """Campaign creation response.
+
+    ``idempotency_replay`` is ``True`` when the response was served
+    from the idempotency cache instead of executing a fresh
+    mutation — same marker the MCP tool exposes. REST clients can
+    distinguish a network retry's replayed response from a brand-new
+    create and surface the distinction to their users (e.g. "Already
+    created earlier, here's the same id").
+    """
 
     success: bool
     campaign_id: str | None = None
     spec_id: str | None = None
     warnings: list[str] = []
     errors: list[str]
+    idempotency_replay: bool = False
 
 
 class CampaignListResponse(BaseModel):
@@ -75,10 +84,20 @@ class ValidateIntakeResponse(BaseModel):
 
 
 class CapabilitiesResponse(BaseModel):
-    """Backend capabilities response."""
+    """Backend capabilities response.
+
+    ``supported_features`` lists features the backend can honour for
+    *any* well-formed spec; ``conditional_features`` maps each
+    feature that depends on spec shape to a short description of the
+    precondition (e.g. BayBE's TRANSFER_LEARNING requires a
+    TaskParameter). Together the two surfaces match the runtime
+    contract so callers can plan ahead instead of hitting late
+    rejections.
+    """
 
     backend: str
     supported_features: list[str]
+    conditional_features: dict[str, str] = {}
     server_version: str
 
 

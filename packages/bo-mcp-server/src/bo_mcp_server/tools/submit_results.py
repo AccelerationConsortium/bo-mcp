@@ -3,13 +3,16 @@
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain import ResultSubmissionInput
 from bo_mcp_server.domain.intake_models import RESULT_SUBMISSION_JSON_SCHEMA
 from bo_mcp_server.field_errors import shape_envelope, validation_envelope
 from bo_mcp_server.idempotency import apply_idempotency
+from bo_mcp_server.operations.idempotency_wrapper import (
+    canonical_submit_results_payload,
+)
 from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.server import mcp
@@ -54,13 +57,6 @@ _RESULTS_BOUNDARY_DEFAULTS: dict[str, Any] = {
     "warnings": [],
     "duplicates_detected": [],
 }
-
-
-def _payload_for_result(result: ResultSubmissionInput | dict[str, Any]) -> dict[str, Any]:
-    """Return a JSON-safe dict representation of a single result payload."""
-    if isinstance(result, BaseModel):
-        return result.model_dump()
-    return dict(result)
 
 
 def _validate_result_rows(
@@ -219,16 +215,19 @@ async def submit_results(
                 dry_run=True,
             )
 
-        request_payload = {
-            "campaign_id": campaign_id,
-            "results": [_payload_for_result(r) for r in validated_results],
-            "submitted_by": submitted_by,
-            "source": source,
-            "force": force,
-            "atomic": atomic,
-            "continue_on_error": continue_on_error,
-            "verbosity": verbosity,
-        }
+        # Canonical builder produces the same shape REST emits so a
+        # retry on either transport replays the cached response from
+        # the original mutation.
+        request_payload = canonical_submit_results_payload(
+            campaign_id=campaign_id,
+            results=validated_results,
+            submitted_by=submitted_by,
+            source=source,
+            force=force,
+            atomic=atomic,
+            continue_on_error=continue_on_error,
+            verbosity=verbosity,
+        )
 
         async def run(session: AsyncSession) -> dict[str, Any]:
             return await submit_results_operation(

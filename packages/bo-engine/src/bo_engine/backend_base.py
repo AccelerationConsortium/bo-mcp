@@ -51,6 +51,126 @@ CURRENT_STATE_ENVELOPE_VERSION = 1
 """Schema version embedded in :class:`BackendStateEnvelope` payloads."""
 
 
+class BackendError(Exception):
+    """Root of the backend-agnostic exception hierarchy.
+
+    Backends MUST translate every library-specific exception they
+    catch into one of the four subclasses below before letting it
+    cross the backend boundary. The server-layer can then dispatch
+    on a stable type — retry policy, error envelope code, and user-
+    facing message all key off the subclass — without having to
+    grep through library-specific exception strings.
+
+    ``retryable`` is the load-bearing flag: the MCP error mapper
+    promotes transient failures to a structured envelope with
+    ``retryable=True`` so clients can back off and retry, while
+    terminal failures are surfaced verbatim so the caller fixes
+    the input instead of retrying forever.
+    """
+
+    retryable: bool = False
+
+    def __init__(self, message: str = "", *, cause: BaseException | None = None) -> None:
+        super().__init__(message)
+        if cause is not None:
+            self.__cause__ = cause
+
+
+class BackendIncompatibilityError(BackendError):
+    """The backend cannot run this spec — wrong shape, missing feature.
+
+    Raise when the spec asks for something the backend has explicitly
+    declared unsupported (hybrid constraint on BayBE, multi-fidelity
+    spec on a single-fidelity backend, etc.). Distinct from
+    :class:`BackendInputError` because the offender is the *backend
+    selection*, not the input values — the caller's recovery is to
+    pick a different backend (or relax the spec), not to fix a value.
+    """
+
+    retryable: bool = False
+
+
+class BackendInputError(BackendError):
+    """The caller-supplied data is invalid for this backend.
+
+    Bad bounds, NaN observations, malformed pending points, etc.
+    The MCP layer maps this to a 400-class error envelope; the
+    caller's recovery is to fix the input and resubmit. Always
+    terminal — retrying with the same input will fail the same way.
+    """
+
+    retryable: bool = False
+
+
+class BackendTransientError(BackendError):
+    """A retryable failure during backend work.
+
+    Numerical hiccup during GP fit, optimizer convergence flake on a
+    given seed, transient resource pressure (CUDA OOM that may clear),
+    etc. The MCP layer marks the envelope as ``retryable=True`` so
+    clients can back off and retry. The caller does not have to
+    change the input — the same call has a real chance of succeeding
+    on retry. Use sparingly: misclassifying a deterministic failure
+    as transient produces retry storms.
+    """
+
+    retryable: bool = True
+
+
+class BackendInternalError(BackendError):
+    """An unexpected backend / library bug.
+
+    Catch-all for exceptions the backend did not anticipate — they
+    indicate a bug in the backend integration or its underlying
+    library, not in the caller's input. Always terminal; the MCP
+    layer surfaces the original message so operators can triage.
+    """
+
+    retryable: bool = False
+
+
+# Library-exception types that always indicate a caller-input bug.
+# Sub-classes of these still map to :class:`BackendInputError` unless
+# the caller has already wrapped them in a :class:`BackendError` (in
+# which case the wrap helper passes them through unchanged).
+_INPUT_ERROR_TYPES: tuple[type[BaseException], ...] = (ValueError, TypeError)
+
+
+def wrap_backend_exception(
+    exc: BaseException,
+    *,
+    backend_name: str,
+) -> BackendError:
+    """Translate a library exception into the typed backend hierarchy.
+
+    Pass-through for anything already in :class:`BackendError` so a
+    backend that classified its own error keeps the original
+    sub-type. :class:`ValueError` and :class:`TypeError` always
+    indicate a caller-input bug, so they map to
+    :class:`BackendInputError`. Other unexpected exceptions surface
+    as :class:`BackendInternalError` — the catch-all that operators
+    triage on. Backends that want a finer mapping (e.g. classifying
+    a specific :class:`RuntimeError` as transient) should catch it
+    themselves and raise the matching :class:`BackendError` subclass
+    before reaching this helper.
+
+    The ``backend_name`` is woven into the diagnostic so a
+    multi-backend deployment can attribute the failure without
+    parsing the message format.
+    """
+    if isinstance(exc, BackendError):
+        return exc
+    if isinstance(exc, _INPUT_ERROR_TYPES):
+        return BackendInputError(
+            f"Backend '{backend_name}' rejected the spec/observations: {exc}",
+            cause=exc,
+        )
+    return BackendInternalError(
+        f"Backend '{backend_name}' raised an unexpected {type(exc).__name__}: {exc}",
+        cause=exc,
+    )
+
+
 class CapabilityStatus(StrEnum):
     """Per-feature/per-option capability status reported by a backend.
 
@@ -354,8 +474,28 @@ class BaseBackend(ABC):
 
     @property
     def supported_features(self) -> frozenset[Feature]:
-        """Default: empty set. Concrete backends override to advertise features."""
+        """Features the backend supports **unconditionally**.
+
+        Must list only features the backend can honour for *any* well-
+        formed spec — no spec-shape preconditions, no installation
+        gates. Features that depend on spec shape (BayBE's
+        TRANSFER_LEARNING needing a TaskParameter, etc.) belong in
+        :attr:`conditional_features`; the static set lies to
+        ``list_capabilities`` if it includes them.
+        """
         return frozenset()
+
+    @property
+    def conditional_features(self) -> dict[Feature, str]:
+        """Features the backend supports **only when the spec meets a precondition**.
+
+        Maps the :class:`Feature` value to a short human-readable
+        description of the precondition. Reported by
+        ``list_capabilities`` alongside :attr:`supported_features`
+        so callers can plan around the conditional surface instead
+        of hitting late rejections.
+        """
+        return {}
 
     # -- Capability validation --------------------------------------------
 

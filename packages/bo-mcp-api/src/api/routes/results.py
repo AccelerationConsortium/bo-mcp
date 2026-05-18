@@ -9,15 +9,19 @@ from bo_mcp_server.client import (
     NotAuthorizedError,
     NotFoundError,
     ResultSubmissionInput,
+    canonical_submit_results_payload,
     get_campaign_with_spec,
+    http_status_for_error,
     list_campaign_results,
     list_results_operation,
     parse_named_result_rows,
+    run_idempotent_operation,
     submit_results_operation,
 )
 from fastapi import APIRouter, HTTPException, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import CurrentUser, get_authorized_campaign
+from api.deps import CurrentUser, IdempotencyKey, get_authorized_campaign
 from api.schemas.result import (
     ResultBatchCreate,
     ResultQueryRequest,
@@ -34,8 +38,15 @@ async def submit_campaign_results(
     campaign_id: str,
     request: ResultBatchCreate,
     current_user: CurrentUser,
+    idempotency_key: IdempotencyKey,
 ) -> ResultSubmitResponse:
-    """Submit results for a campaign."""
+    """Submit results for a campaign.
+
+    Honours the ``Idempotency-Key`` request header (same cache
+    namespace as the MCP ``bo_submit_results`` tool) so a retry
+    replays the cached response instead of persisting the batch
+    twice.
+    """
     await get_authorized_campaign(campaign_id, current_user)
 
     results_data = [
@@ -48,13 +59,39 @@ async def submit_campaign_results(
         )
         for r in request.results
     ]
+    submitted_by = str(current_user.id)
 
-    result = await submit_results_operation(
-        campaign_id=campaign_id,
-        results=results_data,
-        submitted_by=str(current_user.id),
-        source=request.source,
+    async def run(session: AsyncSession) -> dict:
+        return await submit_results_operation(
+            campaign_id=campaign_id,
+            results=results_data,
+            submitted_by=submitted_by,
+            source=request.source,
+            session=session,
+        )
+
+    # Shared canonical builder so REST and MCP hash the same shape for
+    # semantically identical batches — the precondition for the
+    # audit's "same cache namespace" promise.
+    result = await run_idempotent_operation(
+        operation_name="bo_submit_results",
+        idempotency_key=idempotency_key,
+        request_payload=canonical_submit_results_payload(
+            campaign_id=campaign_id,
+            results=results_data,
+            submitted_by=submitted_by,
+            source=request.source,
+        ),
+        executor=run,
     )
+    # Idempotency-layer envelopes lack the operation's success-shape
+    # fields (``result_ids`` here); promote them to a typed HTTPException
+    # rather than letting the unpacking below trigger a KeyError 500.
+    if "result_ids" not in result:
+        raise HTTPException(
+            status_code=http_status_for_error(result),
+            detail=result.get("error", {"message": "Idempotency error"}),
+        )
 
     return ResultSubmitResponse(
         success=result["success"],
@@ -62,6 +99,9 @@ async def submit_campaign_results(
         errors=result["errors"],
         warnings=result["warnings"],
         field_errors=result.get("field_errors", {}),
+        # Forward the wrapper's replay marker so REST clients can
+        # distinguish a cached batch from a fresh insert.
+        idempotency_replay=bool(result.get("idempotency_replay", False)),
     )
 
 

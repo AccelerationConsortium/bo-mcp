@@ -75,6 +75,31 @@ async def get_optional_user(
 OptionalUser = Annotated[User | None, Depends(get_optional_user)]
 
 
+def get_idempotency_key(
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> str | None:
+    """Extract the ``Idempotency-Key`` header for at-most-once REST mutations.
+
+    Mirrors the MCP tool's ``idempotency_key`` parameter so the
+    same retry semantics apply to either transport — see
+    :func:`bo_mcp_server.client.run_idempotent_operation`. The header
+    name follows the IETF draft (``draft-ietf-httpapi-idempotency-key-
+    header``) so HTTP retry middleware recognises it without
+    additional configuration.
+
+    Empty values are coerced to ``None`` so a header sent with no
+    value behaves the same as a missing header: the operation runs
+    without caching.
+    """
+    if idempotency_key is None:
+        return None
+    stripped = idempotency_key.strip()
+    return stripped or None
+
+
+IdempotencyKey = Annotated[str | None, Depends(get_idempotency_key)]
+
+
 def validate_uuid(value: str, name: str = "id") -> UUID:
     """Validate and parse a UUID string.
 

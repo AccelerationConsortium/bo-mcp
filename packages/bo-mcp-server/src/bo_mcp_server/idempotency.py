@@ -67,7 +67,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain.utils import utcnow
-from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.errors import ErrorCode, make_error_response, retry_hint_for
 from bo_mcp_server.storage import get_session
 from bo_mcp_server.storage.models import IdempotencyCacheModel
 
@@ -203,8 +203,16 @@ def _in_progress_envelope(tool_name: str, key: str) -> dict[str, Any]:
 
 
 def _conflict_envelope(tool_name: str, key: str) -> dict[str, Any]:
+    """Build the structured envelope for an idempotency-key collision.
+
+    Uses :class:`ErrorCode.IDEMPOTENCY_CONFLICT` so callers can
+    programmatically distinguish the key-reuse case from generic
+    validation failures. ``details.idempotency_conflict=True`` is
+    retained for backward compatibility with existing clients that
+    grep the details field.
+    """
     return make_error_response(
-        ErrorCode.VALIDATION_FAILED,
+        ErrorCode.IDEMPOTENCY_CONFLICT,
         message=(
             f"idempotency_key {key!r} was previously used by "
             f"{tool_name} with a different payload; refusing to "
@@ -686,23 +694,41 @@ async def apply_idempotency(
 def _is_transient_error(response: dict[str, Any]) -> bool:
     """Whether the executor returned a retryable-error envelope.
 
-    Currently only :class:`ErrorCode.CONCURRENT_MODIFICATION` is treated
-    as transient: the optimistic-lock race resolves on retry, so we
-    must *not* cache the error response — caching it would block all
-    future retries until TTL even though a successful outcome is
-    possible immediately.
+    Any envelope whose error is marked ``retryable=True`` must not be
+    cached: caching it would block all future retries until the 24h
+    TTL elapsed even though a successful outcome is possible
+    immediately. This covers the historical ``CONCURRENT_MODIFICATION``
+    case and every newer addition to the typed backend hierarchy
+    (notably ``BACKEND_TRANSIENT_ERROR``) introduced in TODO 8.13/8.14
+    without having to re-list each code here.
 
     Other operation errors (validation failures, missing campaign,
-    etc.) are deterministic given the same payload, so caching them is
-    correct and avoids re-running an operation that will always fail
-    the same way.
+    incompatible backend, etc.) are deterministic given the same
+    payload, so caching them is correct and avoids re-running an
+    operation that will always fail the same way.
+
+    The lookup first consults the envelope's own ``retryable`` flag
+    (always populated by :func:`make_error_response` since 8.14) so
+    custom envelopes that set the flag are honoured; falls back to
+    the central :data:`ERROR_CODE_RETRY_HINTS` table when the field
+    is missing (legacy callers that built the envelope by hand).
     """
     if response.get("success") is not False:
         return False
     error = response.get("error")
     if not isinstance(error, dict):
         return False
-    return error.get("code") == ErrorCode.CONCURRENT_MODIFICATION.value
+    if "retryable" in error:
+        return bool(error["retryable"])
+    code_value = error.get("code")
+    if not code_value:
+        return False
+    try:
+        code = ErrorCode(code_value)
+    except ValueError:
+        return False
+    retryable, _ = retry_hint_for(code)
+    return retryable
 
 
 class _StaleReservationError(Exception):

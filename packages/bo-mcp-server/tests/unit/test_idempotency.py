@@ -306,8 +306,13 @@ async def test_apply_idempotency_conflict_on_payload_mismatch() -> None:
     )
 
     assert conflict["success"] is False
-    assert conflict["error"]["code"] == "E005"
+    # IDEMPOTENCY_CONFLICT (E015) is distinct from generic VALIDATION_FAILED
+    # so clients can programmatically detect the key-reuse case.
+    assert conflict["error"]["code"] == "E015"
     assert conflict["error"]["details"]["idempotency_conflict"] is True
+    # Conflict envelopes must not be marked retryable — retrying the same
+    # call with the same payload will keep colliding.
+    assert conflict["error"]["retryable"] is False
 
 
 @pytest.mark.asyncio
@@ -851,3 +856,59 @@ async def test_concurrent_retries_execute_once() -> None:
     )
     assert third["idempotency_replay"] is True
     assert execute_count == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_idempotency_does_not_cache_retryable_error_envelopes() -> None:
+    """Retryable error envelopes (any code, not just CONCURRENT_MODIFICATION)
+    must not be cached — caching would block retries for the full 24h TTL.
+
+    Pre-fix: ``_is_transient_error`` only special-cased
+    ``CONCURRENT_MODIFICATION`` (E010). A ``BACKEND_TRANSIENT_ERROR``
+    (E105, introduced in TODO 8.13/8.14) would therefore be finalized
+    into the cache and every retry would replay the failure instead
+    of re-executing the operation against the (now-recovered) backend.
+
+    Post-fix: the cache consults the envelope's ``retryable`` flag
+    (set by ``make_error_response`` from the central
+    ``ERROR_CODE_RETRY_HINTS`` table) so every newly-added retryable
+    code automatically skips finalization without re-editing
+    ``idempotency.py``.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from bo_mcp_server.errors import ErrorCode, make_error_response
+
+    execute_count = 0
+
+    async def flaky(_session: AsyncSession) -> dict[str, Any]:
+        nonlocal execute_count
+        execute_count += 1
+        # First call: transient backend flake. Second call: success.
+        if execute_count == 1:
+            return make_error_response(
+                ErrorCode.BACKEND_TRANSIENT_ERROR,
+                message="optimizer flake (run 1)",
+            )
+        return {"success": True, "executed": execute_count}
+
+    first = await apply_idempotency(
+        tool_name="flaky_tool",
+        idempotency_key="flaky-key",
+        request_payload={"v": 1},
+        executor=flaky,
+    )
+    assert first["success"] is False
+    assert first["error"]["code"] == ErrorCode.BACKEND_TRANSIENT_ERROR.value
+    assert first["error"]["retryable"] is True
+
+    # The retry must re-execute (not replay the cached failure).
+    second = await apply_idempotency(
+        tool_name="flaky_tool",
+        idempotency_key="flaky-key",
+        request_payload={"v": 1},
+        executor=flaky,
+    )
+    assert second["success"] is True
+    assert second["executed"] == 2, "executor must run again on retry, not replay"
+    assert execute_count == 2

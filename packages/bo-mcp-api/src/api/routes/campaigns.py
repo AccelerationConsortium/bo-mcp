@@ -7,6 +7,7 @@ from bo_mcp_server.client import (
     NotFoundError,
     VerbosityLevel,
     batch_get_status_operation,
+    canonical_create_campaign_payload,
     compare_campaigns_operation,
     create_campaign_operation,
     discover_transfer_candidates_operation,
@@ -14,17 +15,21 @@ from bo_mcp_server.client import (
     format_validate_intake_response,
     get_campaign_with_spec,
     get_spec_for_user,
+    http_status_for_error,
     list_campaigns_operation,
     list_owner_campaigns_with_specs,
     manage_campaign_lifecycle_operation,
+    run_idempotent_operation,
     validate_intake_operation,
 )
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import (
     CurrentUser,
+    IdempotencyKey,
     ensure_owned_campaigns,
     get_authorized_campaign,
     validate_uuid,
@@ -115,19 +120,74 @@ def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
 async def create_new_campaign(
     request: CampaignCreate,
     current_user: CurrentUser,
+    idempotency_key: IdempotencyKey,
 ) -> CampaignCreateResponse:
-    """Create a new optimization campaign."""
+    """Create a new optimization campaign.
+
+    Honours the ``Idempotency-Key`` request header so retries
+    against this endpoint replay the cached response instead of
+    creating a duplicate campaign — same semantics as the MCP
+    ``bo_create_campaign`` tool's ``idempotency_key`` parameter,
+    sharing the same cache namespace so a retry on either transport
+    sees the other's prior response.
+    """
     intake = _coerce_intake(request.intake)
-    result = await create_campaign_operation(
-        intake_data=intake,
-        owner_id=str(current_user.id),
+    owner_id = str(current_user.id)
+
+    async def run(session: AsyncSession) -> dict:
+        return await create_campaign_operation(
+            intake_data=intake,
+            owner_id=owner_id,
+            session=session,
+        )
+
+    # Shared canonical builder — same shape the MCP wrapper feeds to
+    # the cache — so a retry against either transport replays the
+    # cached response from the original mutation.
+    result = await run_idempotent_operation(
+        operation_name="bo_create_campaign",
+        idempotency_key=idempotency_key,
+        request_payload=canonical_create_campaign_payload(
+            intake_data=intake,
+            owner_id=owner_id,
+        ),
+        executor=run,
     )
+    # Idempotency-layer envelopes (conflict / in-progress / stale-owner)
+    # do not carry the operation's success-shape fields, so we cannot
+    # construct a ``CampaignCreateResponse`` from them. Detect the
+    # missing field and promote them to an HTTPException with the
+    # status code derived from the error code (409 for both conflict
+    # and in-progress today).
+    if "campaign_id" not in result:
+        _raise_idempotency_envelope(result)
     return CampaignCreateResponse(
         success=result["success"],
         campaign_id=result["campaign_id"],
         spec_id=result["spec_id"],
         warnings=result.get("warnings", []),
         errors=result["errors"],
+        # Forward the wrapper's replay marker so REST clients can
+        # distinguish a cached replay from a fresh mutation. The
+        # marker is added by ``apply_idempotency`` on the cached
+        # response and is absent on the original write.
+        idempotency_replay=bool(result.get("idempotency_replay", False)),
+    )
+
+
+def _raise_idempotency_envelope(result: dict) -> None:
+    """Promote an idempotency-layer error envelope into an HTTPException.
+
+    The idempotency wrapper short-circuits with conflict / in-progress
+    / stale-owner envelopes that lack the operation's success-shape
+    fields. Surface them as a typed HTTP error (409 by default for
+    both ``IDEMPOTENCY_CONFLICT`` and ``IDEMPOTENCY_IN_PROGRESS``) so
+    clients see the structured ``error`` payload instead of a 500
+    triggered by an unpacking ``KeyError``.
+    """
+    raise HTTPException(
+        status_code=http_status_for_error(result),
+        detail=result.get("error", {"message": "Idempotency error"}),
     )
 
 

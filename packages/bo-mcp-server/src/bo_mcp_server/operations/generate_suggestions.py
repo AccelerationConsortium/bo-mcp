@@ -20,6 +20,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from bo_engine.backend import BOBackend
+from bo_engine.backend_base import BackendError
 from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
 from bo_engine.convergence import (
     StoppingDecision,
@@ -44,6 +45,7 @@ from bo_mcp_server.domain import (
 )
 from bo_mcp_server.errors import (
     ErrorCode,
+    make_backend_error_response,
     make_concurrent_modification_response,
     make_error_response,
 )
@@ -331,6 +333,7 @@ async def generate_suggestions_operation(
         ConcurrentModificationError,
         SearchSpaceExhaustedError,
         BackendOutputError,
+        BackendError,
     ) as err:
         return await _handle_generation_failure(err, campaign_id, session)
 
@@ -398,7 +401,10 @@ async def _run_three_phase_generation(
 
 
 async def _handle_generation_failure(
-    err: ConcurrentModificationError | SearchSpaceExhaustedError | BackendOutputError,
+    err: ConcurrentModificationError
+    | SearchSpaceExhaustedError
+    | BackendOutputError
+    | BackendError,
     campaign_id: str,
     session: AsyncSession | None,
 ) -> dict[str, Any]:
@@ -446,6 +452,26 @@ async def _handle_generation_failure(
                 "next_action_recommendation": "terminate_campaign",
             },
         )
+    if isinstance(err, BackendError):
+        # The backend (BoTorch / BayBE) raised one of the typed
+        # :class:`BackendError` subclasses defined in
+        # ``bo_engine.backend_base``. Route it through
+        # :func:`make_backend_error_response` so the envelope carries
+        # the right ``retryable`` flag and ``retry_after`` hint without
+        # this layer having to know the per-subclass mapping.
+        if session is not None:
+            await session.rollback()
+        logger.warning(
+            "Backend failure during suggestion generation for campaign %s: %s",
+            campaign_id,
+            err,
+        )
+        response = make_backend_error_response(
+            err,
+            extra_details={"campaign_id": campaign_id},
+        )
+        response.update({"suggestions": [], "iteration": None})
+        return response
     # BackendOutputError: the backend returned a malformed
     # SuggestionBatch. The fault is in the backend, not the caller,
     # so this is not retryable — surface the structured Pydantic

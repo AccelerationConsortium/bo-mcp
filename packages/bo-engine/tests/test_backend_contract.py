@@ -114,6 +114,11 @@ class _ProtocolOnlyBackend:
 
     name = "protocol-only"
     supported_features = frozenset({Feature.MULTI_OBJECTIVE})
+    # ``conditional_features`` is part of the protocol surface (TODO
+    # 8.15) so static and runtime discovery stay aligned. A backend
+    # with no conditional features still has to declare the empty
+    # mapping to satisfy the Protocol's ``isinstance`` check.
+    conditional_features: dict[Feature, str] = {}
 
     def validate_spec(self, spec: OptimizationSpec) -> list[str]:
         _ = spec

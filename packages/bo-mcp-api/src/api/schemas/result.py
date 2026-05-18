@@ -85,6 +85,13 @@ class ResultSubmitResponse(BaseModel):
     ``field_errors`` mirrors the MCP envelope so REST callers can
     target the offending field by dotted path
     (e.g. ``results[5].objective_values``).
+
+    ``idempotency_replay`` is ``True`` when the response was served
+    from the idempotency cache instead of persisting a fresh batch —
+    same marker the MCP tool exposes. Without it, REST clients that
+    used an Idempotency-Key on a retry could not tell the cached
+    reply from a brand-new insert and would have no way to surface
+    that distinction to their users.
     """
 
     success: bool
@@ -92,3 +99,4 @@ class ResultSubmitResponse(BaseModel):
     errors: list[str]
     warnings: list[str]
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
+    idempotency_replay: bool = False

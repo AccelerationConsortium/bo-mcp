@@ -43,6 +43,7 @@ from bo_engine.backend_base import (
     CapabilityReport,
     CapabilityStatus,
     required_features,
+    wrap_backend_exception,
 )
 from bo_engine.device import get_device, get_dtype
 from bo_engine.diagnostics import (
@@ -112,15 +113,35 @@ def _detect_chemistry_extras() -> tuple[bool, str | None]:
 
 _CHEMISTRY_AVAILABLE, _CHEMISTRY_UNAVAILABLE_REASON = _detect_chemistry_extras()
 
+# Features BayBE supports *unconditionally* — independent of spec
+# shape. ``Feature.TRANSFER_LEARNING`` is intentionally absent because
+# BayBE only honours transfer learning when the spec declares a
+# ``TaskParameter`` via ``parameter_options['baybe'].role == 'task'``;
+# advertising it here would lie to ``list_capabilities`` callers that
+# do not know the precondition. ``_feature_reports`` and
+# ``_task_parameter_feature_report`` continue to flip TRANSFER_LEARNING
+# to ``SUPPORTED`` when a TaskParameter is actually present, so a spec
+# that exercises the feature still resolves correctly through
+# :meth:`validate_capabilities`.
 _SUPPORTED_FEATURES = frozenset(
     {
         Feature.MULTI_OBJECTIVE,
         Feature.CONSTRAINTS,
         Feature.CATEGORICAL,
         Feature.MIXED_SEARCH_SPACE,
-        Feature.TRANSFER_LEARNING,
     }
 )
+
+# Conditional features BayBE can support — only on specs that satisfy
+# the documented precondition. Used by ``list_capabilities`` to annotate
+# the static surface so LLM clients and humans can see what activates
+# each conditional feature.
+_CONDITIONAL_FEATURES: dict[Feature, str] = {
+    Feature.TRANSFER_LEARNING: (
+        "Requires a parameter with parameter_options['baybe'].role == 'task' "
+        "(BayBE-native TaskParameter)."
+    ),
+}
 
 
 # BayBE silently drops these BoTorch-only knobs at runtime. Each is
@@ -722,6 +743,10 @@ class BayBEBackend(BaseBackend):
     def supported_features(self) -> frozenset[Feature]:
         return _SUPPORTED_FEATURES
 
+    @property
+    def conditional_features(self) -> dict[Feature, str]:
+        return dict(_CONDITIONAL_FEATURES)
+
     # -- Spec features that BayBE does NOT support --------------------------
     _UNSUPPORTED_OPTIONS: list[tuple[str, str]] = [
         ("turbo_config", "TuRBO trust-region optimization"),
@@ -1039,6 +1064,34 @@ class BayBEBackend(BaseBackend):
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
+    ) -> SuggestionBatch:
+        try:
+            return self._generate_suggestions_unwrapped(
+                spec=spec,
+                observations=observations,
+                batch_size=batch_size,
+                iteration=iteration,
+                backend_state=backend_state,
+                pending_points=pending_points,
+                progress_callback=progress_callback,
+            )
+        except (*_BAYBE_SAFE_EXCEPTIONS,) as exc:
+            # Translate every library-level exception that escapes
+            # BayBE/BoTorch/GPyTorch into the typed backend hierarchy
+            # so the server layer dispatches on a stable type rather
+            # than parsing exception strings.
+            raise wrap_backend_exception(exc, backend_name=self.name) from exc
+
+    def _generate_suggestions_unwrapped(
+        self,
+        *,
+        spec: OptimizationSpec,
+        observations: list[ObservationData],
+        batch_size: int,
+        iteration: int,
+        backend_state: dict[str, Any] | None,
+        pending_points: list[dict[str, Any]] | None,
+        progress_callback: ProgressCallback | None,
     ) -> SuggestionBatch:
         # BayBE's campaign loop is internally segmented but does not yet
         # expose intermediate hooks; emit start/done milestones so the

@@ -22,6 +22,7 @@ from bo_engine.backend_base import (
     CapabilityStatus,
     option_is_active,
     required_features,
+    wrap_backend_exception,
 )
 from bo_engine.diagnostics import (
     LOOCVMetrics,
@@ -36,6 +37,7 @@ from bo_engine.diagnostics import (
     summarize_pareto_front,
 )
 from bo_engine.feature_importance import compute_feature_importance
+from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.method_selector import select_methods
 from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
@@ -152,14 +154,25 @@ class BoTorchBackend(BaseBackend):
             ),
         )
 
-        results, new_turbo = generate_next_batch(
-            spec=spec,
-            observations=observations,
-            batch_size=batch_size,
-            iteration=iteration,
-            turbo_state=turbo_state,
-            pending_points=pending_points,
-        )
+        # SearchSpaceExhaustedError is a domain signal interpreted by the
+        # operations layer; it is not a backend bug, so let it propagate
+        # untouched. All other library-level exceptions are wrapped via
+        # ``wrap_backend_exception`` so the MCP error mapper sees a
+        # typed :class:`BackendError` rather than a leaky torch/gpytorch
+        # exception class.
+        try:
+            results, new_turbo = generate_next_batch(
+                spec=spec,
+                observations=observations,
+                batch_size=batch_size,
+                iteration=iteration,
+                turbo_state=turbo_state,
+                pending_points=pending_points,
+            )
+        except SearchSpaceExhaustedError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — re-raised after typed wrap
+            raise wrap_backend_exception(exc, backend_name=self.name) from exc
 
         emit(
             progress_callback,

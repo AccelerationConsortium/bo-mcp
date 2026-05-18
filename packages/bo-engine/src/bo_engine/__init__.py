@@ -44,7 +44,12 @@ from bo_engine.backend import (
 )
 from bo_engine.backend_base import (
     CURRENT_STATE_ENVELOPE_VERSION,
+    BackendError,
+    BackendIncompatibilityError,
+    BackendInputError,
+    BackendInternalError,
     BackendStateEnvelope,
+    BackendTransientError,
     BackendValidationResult,
     BaseBackend,
     CapabilityReport,
@@ -56,6 +61,7 @@ from bo_engine.backend_base import (
     is_state_envelope,
     required_features,
     unwrap_state,
+    wrap_backend_exception,
     wrap_state,
 )
 
@@ -729,7 +735,12 @@ __all__ = [
     "Feature",
     "SuggestionBatch",
     # Backend extensibility (TODO 1.69)
+    "BackendError",
+    "BackendIncompatibilityError",
+    "BackendInputError",
+    "BackendInternalError",
     "BackendStateEnvelope",
+    "BackendTransientError",
     "BackendValidationResult",
     "BaseBackend",
     "CapabilityReport",
@@ -742,5 +753,6 @@ __all__ = [
     "is_state_envelope",
     "required_features",
     "unwrap_state",
+    "wrap_backend_exception",
     "wrap_state",
 ]

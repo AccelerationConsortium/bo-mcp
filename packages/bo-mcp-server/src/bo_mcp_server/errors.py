@@ -117,6 +117,11 @@ class ErrorCode(StrEnum):
     BACKEND_TRANSIENT_ERROR = "E105"
     BACKEND_INCOMPATIBILITY = "E106"
     BACKEND_INTERNAL_ERROR = "E107"
+    # Catch-all for unexpected transport-layer errors. The REST global
+    # exception handler maps any exception not already classified by an
+    # operation into this code so the client always sees the same
+    # structured envelope shape — never a raw exception string.
+    INTERNAL_ERROR = "E199"
 
 
 @dataclass
@@ -258,6 +263,12 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "in details, retry once to confirm reproducibility, and report "
         "persistent failures to the operator."
     ),
+    ErrorCode.INTERNAL_ERROR: (
+        "Retry the request once to confirm the failure is reproducible. "
+        "If it persists, report the issue and quote the request_id "
+        "from details — the server log records the full exception "
+        "under that id."
+    ),
 }
 
 
@@ -289,6 +300,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.BACKEND_TRANSIENT_ERROR: "Backend reported a transient failure",
     ErrorCode.BACKEND_INCOMPATIBILITY: "Backend cannot handle this spec",
     ErrorCode.BACKEND_INTERNAL_ERROR: "Backend raised an unexpected internal error",
+    ErrorCode.INTERNAL_ERROR: "An internal server error occurred",
 }
 
 
@@ -372,6 +384,7 @@ ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.BACKEND_TRANSIENT_ERROR: 503,
     ErrorCode.BACKEND_INCOMPATIBILITY: 400,
     ErrorCode.BACKEND_INTERNAL_ERROR: 500,
+    ErrorCode.INTERNAL_ERROR: 500,
 }
 
 
@@ -423,6 +436,12 @@ ERROR_CODE_RETRY_HINTS: dict[ErrorCode, tuple[bool, float | None]] = {
     ErrorCode.BACKEND_TRANSIENT_ERROR: (True, BACKEND_TRANSIENT_RETRY_AFTER_SECONDS),
     ErrorCode.BACKEND_INCOMPATIBILITY: (False, None),
     ErrorCode.BACKEND_INTERNAL_ERROR: (False, None),
+    # Catch-all for unhandled transport-layer exceptions. Without a
+    # known cause we cannot promise that a retry will succeed, so we
+    # report ``retryable=False`` rather than risk a retry storm. A
+    # client that can investigate the request_id can resubmit on its
+    # own once the operator has confirmed the underlying issue.
+    ErrorCode.INTERNAL_ERROR: (False, None),
 }
 
 

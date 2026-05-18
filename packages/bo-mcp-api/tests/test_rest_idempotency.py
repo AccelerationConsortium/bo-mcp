@@ -87,12 +87,14 @@ async def test_create_campaign_idempotency_key_replays_response(
     payload = {"intake": _intake_payload("idempotency-replay")}
 
     first = await api_client.post("/api/campaigns", json=payload, headers=headers)
-    assert first.status_code == 200, first.text
+    # 8.19: fresh create returns 201; the replay re-emits the
+    # original status so clients see the same response shape.
+    assert first.status_code == 201, first.text
     first_body = first.json()
     assert first_body["success"] is True
 
     second = await api_client.post("/api/campaigns", json=payload, headers=headers)
-    assert second.status_code == 200, second.text
+    assert second.status_code == 201, second.text
     second_body = second.json()
 
     # The campaign_id must match — same logical mutation, replayed.
@@ -115,8 +117,8 @@ async def test_create_campaign_without_idempotency_key_creates_fresh_each_call(
     first = await api_client.post("/api/campaigns", json=payload, headers=auth_headers)
     second = await api_client.post("/api/campaigns", json=payload, headers=auth_headers)
 
-    assert first.status_code == 200, first.text
-    assert second.status_code == 200, second.text
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
     # Two distinct campaigns are created when no key is supplied.
     assert first.json()["campaign_id"] != second.json()["campaign_id"]
 
@@ -142,7 +144,9 @@ async def test_submit_results_idempotency_key_replays_response(
         json=body,
         headers=headers,
     )
-    assert first.status_code == 200, first.text
+    # 8.19: synchronous batch create returns 201; the replay re-emits
+    # the same status the original mutation carried.
+    assert first.status_code == 201, first.text
     first_body = first.json()
     assert first_body["success"] is True, first_body
     first_ids = first_body["result_ids"]
@@ -153,7 +157,7 @@ async def test_submit_results_idempotency_key_replays_response(
         json=body,
         headers=headers,
     )
-    assert second.status_code == 200, second.text
+    assert second.status_code == 201, second.text
     second_body = second.json()
     # The result IDs must match — replay, not a duplicate insert.
     assert second_body["result_ids"] == first_ids
@@ -167,16 +171,27 @@ async def test_submit_results_without_idempotency_key_persists_each_call(
 
     Mirrors the create-campaign no-header test: idempotency is opt-in,
     so legacy clients keep the previous semantics.
+
+    The two bodies carry distinct parameter values so neither call
+    trips the operation's exact-duplicate detector — that detector
+    is a separate concern from the idempotency-replay contract this
+    test is pinning, and would otherwise mask the no-replay path
+    with an operation-level rejection.
     """
     owner_id = str(persisted_user.id)
     campaign_id = await _create_campaign_for_owner(owner_id, "submit-no-key")
-    body = {"results": [_result_row(0.5, 1.0)], "source": "api"}
+    first_body = {"results": [_result_row(0.4, 1.0)], "source": "api"}
+    second_body = {"results": [_result_row(0.6, 2.0)], "source": "api"}
 
-    first = await api_client.post(f"/api/results/{campaign_id}", json=body, headers=auth_headers)
-    second = await api_client.post(f"/api/results/{campaign_id}", json=body, headers=auth_headers)
+    first = await api_client.post(
+        f"/api/results/{campaign_id}", json=first_body, headers=auth_headers
+    )
+    second = await api_client.post(
+        f"/api/results/{campaign_id}", json=second_body, headers=auth_headers
+    )
 
-    assert first.status_code == 200, first.text
-    assert second.status_code == 200, second.text
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
     assert first.json()["result_ids"] != second.json()["result_ids"]
 
 
@@ -207,7 +222,7 @@ async def test_create_campaign_idempotency_conflict_returns_409(
         json={"intake": _intake_payload("conflict-original")},
         headers=headers,
     )
-    assert first.status_code == 200, first.text
+    assert first.status_code == 201, first.text
 
     # Same key, different payload → IDEMPOTENCY_CONFLICT (409).
     second = await api_client.post(
@@ -236,7 +251,7 @@ async def test_submit_results_idempotency_conflict_returns_409(
         json={"results": [_result_row(0.5, 1.0)], "source": "api"},
         headers=headers,
     )
-    assert first.status_code == 200, first.text
+    assert first.status_code == 201, first.text
 
     second = await api_client.post(
         f"/api/results/{campaign_id}",
@@ -290,7 +305,10 @@ async def test_mcp_then_rest_create_campaign_replays_across_transports(
         json={"intake": intake},
         headers=headers,
     )
-    assert rest_response.status_code == 200, rest_response.text
+    # Cross-transport replay: the cached MCP response is replayed
+    # through the REST route and the route applies its own create
+    # status (201).
+    assert rest_response.status_code == 201, rest_response.text
     body = rest_response.json()
     assert body["campaign_id"] == mcp_campaign_id
     # F6 regression: the REST schema now forwards the wrapper's
@@ -320,12 +338,12 @@ async def test_create_campaign_replay_sets_idempotency_replay_flag(
     payload = {"intake": _intake_payload("replay-marker")}
 
     first = await api_client.post("/api/campaigns", json=payload, headers=headers)
-    assert first.status_code == 200, first.text
+    assert first.status_code == 201, first.text
     first_body = first.json()
     assert first_body["idempotency_replay"] is False
 
     second = await api_client.post("/api/campaigns", json=payload, headers=headers)
-    assert second.status_code == 200, second.text
+    assert second.status_code == 201, second.text
     second_body = second.json()
     assert second_body["campaign_id"] == first_body["campaign_id"]
     assert second_body["idempotency_replay"] is True
@@ -342,11 +360,11 @@ async def test_submit_results_replay_sets_idempotency_replay_flag(
     body = {"results": [_result_row(0.5, 1.0)], "source": "api"}
 
     first = await api_client.post(f"/api/results/{campaign_id}", json=body, headers=headers)
-    assert first.status_code == 200, first.text
+    assert first.status_code == 201, first.text
     assert first.json()["idempotency_replay"] is False
 
     second = await api_client.post(f"/api/results/{campaign_id}", json=body, headers=headers)
-    assert second.status_code == 200, second.text
+    assert second.status_code == 201, second.text
     second_body = second.json()
     assert second_body["result_ids"] == first.json()["result_ids"]
     assert second_body["idempotency_replay"] is True

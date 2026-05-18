@@ -101,3 +101,42 @@ async def test_unknown_field_returns_422(api_client, auth_headers, persisted_use
     }
     response = await api_client.post("/api/campaigns", json=payload, headers=auth_headers)
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_inverted_parameter_bounds_returns_422(api_client, auth_headers, persisted_user):
+    """Inverted ``bounds=[upper, lower]`` on a parameter returns 422, not 500.
+
+    The bounds validator on the domain :class:`Bounds` model raises
+    ``ValueError("Lower bound must be less than upper bound")``.
+    Pydantic 2 captures the underlying exception in the per-error
+    ``ctx`` payload, which is not JSON-serializable by the standard
+    ``json.dumps`` that :class:`fastapi.responses.JSONResponse` uses.
+
+    Pre-fix the custom :func:`handle_request_validation_error`
+    serialized ``exc.errors()`` directly, the encoder crashed on the
+    embedded :class:`ValueError`, and the catch-all handler relabelled
+    the failure as a sanitized ``500 E199``. Post-fix the handler
+    runs the payload through :func:`fastapi.encoders.jsonable_encoder`
+    — mirroring FastAPI's default behaviour — so the validation
+    error reaches the client as the proper 422 with a structured
+    detail.
+    """
+    _ = persisted_user
+    payload = {
+        "intake": {
+            "name": "Inverted parameter bounds",
+            "parameters": [
+                {"name": "x", "type": "continuous", "bounds": [1.0, 0.0]},
+            ],
+            "objectives": [{"name": "y", "direction": "minimize"}],
+        }
+    }
+    response = await api_client.post("/api/campaigns", json=payload, headers=auth_headers)
+    assert response.status_code == 422, response.text
+    body = response.json()
+    # Structured FastAPI-style detail with the offending location
+    # surfaced so the client can highlight the bad field.
+    assert isinstance(body.get("detail"), list)
+    paths = [tuple(err.get("loc", ())) for err in body["detail"]]
+    assert any("bounds" in path for path in paths), paths

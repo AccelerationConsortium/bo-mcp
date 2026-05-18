@@ -22,7 +22,7 @@ from bo_mcp_server.client import (
     run_idempotent_operation,
     validate_intake_operation,
 )
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,13 +116,25 @@ def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
         ) from exc
 
 
-@router.post("", response_model=CampaignCreateResponse)
+@router.post(
+    "",
+    response_model=CampaignCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_new_campaign(
     request: CampaignCreate,
     current_user: CurrentUser,
     idempotency_key: IdempotencyKey,
+    response: Response,
 ) -> CampaignCreateResponse:
     """Create a new optimization campaign.
+
+    Returns ``201 Created`` with a ``Location`` header pointing at
+    :func:`get_campaign` on success. Operation-level rejections —
+    the ``success=False`` envelope produced when intake / capability
+    validation fails — keep the historical ``200 OK`` shape so
+    existing tests for that contract still receive the envelope
+    rather than a redirected HTTP error.
 
     Honours the ``Idempotency-Key`` request header so retries
     against this endpoint replay the cached response instead of
@@ -161,6 +173,15 @@ async def create_new_campaign(
     # and in-progress today).
     if "campaign_id" not in result:
         _raise_idempotency_envelope(result)
+
+    if result.get("success") and result.get("campaign_id"):
+        response.headers["Location"] = f"/api/v1/campaigns/{result['campaign_id']}"
+    else:
+        # Operation-level rejection: the campaign was not persisted,
+        # so a 201 would mislead clients. Fall back to 200 with the
+        # ``success=False`` envelope intact.
+        response.status_code = status.HTTP_200_OK
+
     return CampaignCreateResponse(
         success=result["success"],
         campaign_id=result["campaign_id"],

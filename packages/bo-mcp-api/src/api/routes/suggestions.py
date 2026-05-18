@@ -11,7 +11,7 @@ from bo_mcp_server.client import (
     list_suggestions_operation,
     update_suggestion_status_operation,
 )
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from api.deps import (
     CurrentUser,
@@ -34,13 +34,26 @@ from api.schemas.suggestion import (
 router = APIRouter()
 
 
-@router.post("/{campaign_id}/generate", response_model=SuggestionsGenerateResponse)
+@router.post(
+    "/{campaign_id}/generate",
+    response_model=SuggestionsGenerateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def generate_campaign_suggestions(
     campaign_id: str,
     current_user: CurrentUser,
+    response: Response,
     batch_size: int | None = Query(default=None, ge=1),
 ) -> SuggestionsGenerateResponse:
-    """Generate new suggestions for a campaign."""
+    """Generate new suggestions for a campaign.
+
+    Returns ``201 Created`` with a ``Location`` header pointing at
+    :func:`list_campaign_suggestions_route` for the freshly-created
+    batch. Operation-level rejections (stopping criteria triggered,
+    backend failure, etc.) keep the historical ``200 OK`` shape so
+    existing tests that inspect the ``success=False`` envelope still
+    see it rather than a redirected HTTP error.
+    """
     await get_authorized_campaign(campaign_id, current_user)
 
     result = await generate_suggestions_operation(
@@ -49,6 +62,10 @@ async def generate_campaign_suggestions(
     )
 
     if not result["success"]:
+        # Operation-level rejection: no suggestions were persisted,
+        # so 201 would mislead clients. Drop back to 200 with the
+        # structured envelope.
+        response.status_code = status.HTTP_200_OK
         return SuggestionsGenerateResponse(
             success=False,
             suggestions=[],
@@ -69,6 +86,7 @@ async def generate_campaign_suggestions(
         for s in result["suggestions"]
     ]
 
+    response.headers["Location"] = f"/api/v1/suggestions/{campaign_id}"
     return SuggestionsGenerateResponse(
         success=True,
         suggestions=suggestions,

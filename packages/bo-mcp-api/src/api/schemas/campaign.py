@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.limits import MAX_BATCH_CAMPAIGN_IDS, MAX_COMPARE_CAMPAIGN_IDS
 from api.schemas.common import VerbosityLevel
 from api.schemas.intake import IntakeData
 
@@ -142,11 +143,16 @@ class CampaignLifecycleResponse(BaseModel):
 
 
 class BatchStatusRequest(BaseModel):
-    """Batch status request."""
+    """Batch status request.
+
+    ``campaign_ids`` is bounded by
+    :data:`api.limits.MAX_BATCH_CAMPAIGN_IDS` to keep the read-only
+    fan-out from being weaponised into a memory-heavy lookup storm.
+    """
 
     model_config = _FORBID_EXTRA
 
-    campaign_ids: list[str]
+    campaign_ids: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_CAMPAIGN_IDS)
     verbosity: VerbosityLevel = VerbosityLevel.MINIMAL
 
 
@@ -160,11 +166,17 @@ class BatchStatusResponse(BaseModel):
 
 
 class CompareCampaignsRequest(BaseModel):
-    """Campaign comparison request."""
+    """Campaign comparison request.
+
+    ``campaign_ids`` is bounded by
+    :data:`api.limits.MAX_COMPARE_CAMPAIGN_IDS` because pairwise
+    trajectory joins inside the comparison operation are quadratic
+    in the number of supplied campaigns.
+    """
 
     model_config = _FORBID_EXTRA
 
-    campaign_ids: list[str]
+    campaign_ids: list[str] = Field(..., min_length=1, max_length=MAX_COMPARE_CAMPAIGN_IDS)
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD
 
 

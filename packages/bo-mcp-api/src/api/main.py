@@ -12,10 +12,19 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
+from api.body_size_middleware import BodySizeLimitMiddleware
+from api.error_handlers import handle_unhandled_exception, install_exception_handlers
+from api.limits import MAX_JSON_REQUEST_BODY_BYTES
 from api.metrics import install_metrics
 from api.request_context import install_request_id_log_filter, request_id_var
 from api.routes import campaigns, capabilities, diagnostics, results, suggestions
 from api.settings import WILDCARD_ORIGIN, ApiSettings, get_api_settings
+
+# Suffixes the body-size middleware exempts because they apply their
+# own per-route streaming reader. Listed as suffixes so both the
+# versioned ``/api/v1/results/{id}/upload`` and the legacy
+# ``/api/results/{id}/upload`` alias are matched.
+_UPLOAD_PATH_SUFFIXES: tuple[str, ...] = ("/upload",)
 
 logger = logging.getLogger(__name__)
 _api_start_time = time.time()
@@ -52,6 +61,17 @@ def _assert_cors_safe(settings: ApiSettings) -> None:
             "Pin an explicit origin list or disable credentialed responses."
         )
         raise RuntimeError(msg)
+
+
+def _include_versioned_router(app: FastAPI, router, *, name: str, prefix: str) -> None:
+    """Mount a router at both the versioned and the legacy alias path.
+
+    The legacy alias keeps existing frontends working while clients
+    migrate to ``/api/v1/...``; it is excluded from the OpenAPI schema
+    so the public spec advertises only the supported prefix.
+    """
+    app.include_router(router, prefix=f"{prefix}/{name}", tags=[name])
+    app.include_router(router, prefix=f"/api/{name}", include_in_schema=False)
 
 
 @asynccontextmanager
@@ -91,10 +111,23 @@ def create_app() -> FastAPI:
             allow_headers=["*"],
         )
 
+    # Body-size cap. Pure ASGI middleware so the streaming receive
+    # wrapper sees the actual bytes regardless of the advertised
+    # ``Content-Length`` or transfer encoding. The upload route is
+    # exempted because it applies its own per-route streaming cap;
+    # every other route — JSON or not — is bounded here.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_body_size=MAX_JSON_REQUEST_BODY_BYTES,
+        upload_paths=_UPLOAD_PATH_SUFFIXES,
+    )
+
     # Prometheus instrumentation: registers ``/metrics`` and a per-request
     # latency/counter middleware. Mounted before the request-id middleware
     # so duration measurements cover the full handler invocation.
     install_metrics(app)
+
+    install_exception_handlers(app)
 
     @app.middleware("http")
     async def add_request_id(
@@ -111,13 +144,27 @@ def create_app() -> FastAPI:
           duration of the request via
           :func:`bo_mcp_server.trace_context.bind_trace_id` so audit
           events and response metadata echo it.
+
+        Unhandled exceptions raised below this middleware are caught
+        here and routed through :func:`handle_unhandled_exception`.
+        Starlette's :class:`BaseHTTPMiddleware` does not propagate
+        exceptions to ``app.add_exception_handler(Exception, ...)``
+        cleanly (`encode/starlette#1591`_), so catching at the
+        outermost user middleware is the only reliable way to keep
+        the sanitization contract for routes that raise after their
+        request body is parsed.
+
+        .. _encode/starlette#1591: https://github.com/encode/starlette/issues/1591
         """
         request_id = request.headers.get("X-Request-ID", str(_uuid.uuid4()))
         trace_id = request.headers.get("X-Trace-Id") or None
         token = request_id_var.set(request_id)
         try:
             with bind_trace_id(trace_id):
-                response = await call_next(request)
+                try:
+                    response = await call_next(request)
+                except Exception as exc:  # noqa: BLE001 - intentional catch-all
+                    response = await handle_unhandled_exception(request, exc)
         finally:
             request_id_var.reset(token)
         response.headers["X-Request-ID"] = request_id
@@ -125,23 +172,14 @@ def create_app() -> FastAPI:
             response.headers["X-Trace-Id"] = trace_id
         return response
 
-    # Include routers — versioned prefix for forward compatibility.
-    # Legacy /api/* paths are kept as aliases so existing frontends don't break.
+    # Mount routers on the versioned prefix and keep legacy aliases
+    # for clients still on /api/* (excluded from the OpenAPI schema).
     api_prefix = "/api/v1"
-    app.include_router(campaigns.router, prefix=f"{api_prefix}/campaigns", tags=["campaigns"])
-    app.include_router(suggestions.router, prefix=f"{api_prefix}/suggestions", tags=["suggestions"])
-    app.include_router(results.router, prefix=f"{api_prefix}/results", tags=["results"])
-    app.include_router(diagnostics.router, prefix=f"{api_prefix}/diagnostics", tags=["diagnostics"])
-    app.include_router(
-        capabilities.router, prefix=f"{api_prefix}/capabilities", tags=["capabilities"]
-    )
-
-    # Backward-compat aliases at /api/* (no version) for existing clients
-    app.include_router(campaigns.router, prefix="/api/campaigns", include_in_schema=False)
-    app.include_router(suggestions.router, prefix="/api/suggestions", include_in_schema=False)
-    app.include_router(results.router, prefix="/api/results", include_in_schema=False)
-    app.include_router(diagnostics.router, prefix="/api/diagnostics", include_in_schema=False)
-    app.include_router(capabilities.router, prefix="/api/capabilities", include_in_schema=False)
+    _include_versioned_router(app, campaigns.router, name="campaigns", prefix=api_prefix)
+    _include_versioned_router(app, suggestions.router, name="suggestions", prefix=api_prefix)
+    _include_versioned_router(app, results.router, name="results", prefix=api_prefix)
+    _include_versioned_router(app, diagnostics.router, name="diagnostics", prefix=api_prefix)
+    _include_versioned_router(app, capabilities.router, name="capabilities", prefix=api_prefix)
 
     @app.get("/health")
     async def health_check() -> dict[str, str | bool | int | None]:

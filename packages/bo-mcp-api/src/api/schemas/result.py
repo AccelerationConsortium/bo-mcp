@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.limits import MAX_BATCH_RESULTS
+
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
 # permissive because the MCP response formatter splices a ``_metadata``
@@ -32,11 +34,16 @@ class ResultCreate(BaseModel):
 
 
 class ResultBatchCreate(BaseModel):
-    """Batch result creation request."""
+    """Batch result creation request.
+
+    ``results`` is bounded by :data:`api.limits.MAX_BATCH_RESULTS` so a
+    single POST cannot pin a worker behind validating tens of
+    thousands of rows.
+    """
 
     model_config = _FORBID_EXTRA
 
-    results: list[ResultCreate]
+    results: list[ResultCreate] = Field(..., min_length=1, max_length=MAX_BATCH_RESULTS)
     source: str = Field(default="api", pattern="^(gui|file_upload|api)$")
 
 

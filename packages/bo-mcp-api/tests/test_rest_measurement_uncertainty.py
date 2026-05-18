@@ -60,7 +60,8 @@ class TestMeasurementUncertaintyRoundTrip:
             },
             headers=auth_headers,
         )
-        assert response.status_code == 200, response.text
+        # 8.19: successful batch submit returns 201.
+        assert response.status_code == 201, response.text
         data = response.json()
         assert data["success"] is True
         assert len(data["result_ids"]) == 1
@@ -201,7 +202,9 @@ class TestMeasurementUncertaintyValidation:
             },
             headers=auth_headers,
         )
-        assert response.status_code == 200, response.text
+        # 8.19: row still commits with a warning, so the batch is a
+        # successful create — 201.
+        assert response.status_code == 201, response.text
         data = response.json()
         assert data["success"] is True
         assert any("unknown" in w.lower() for w in data["warnings"])

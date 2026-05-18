@@ -90,7 +90,10 @@ class TestCsvUploadPersistsSourceFile:
             headers=auth_headers,
         )
 
-        assert response.status_code == 200, response.text
+        # 8.19: successful upload returns 201 + Location pointing at
+        # the collection that contains the new rows.
+        assert response.status_code == 201, response.text
+        assert response.headers["Location"] == f"/api/v1/results/{campaign_id}"
         body = response.json()
         assert body["success"] is True, body
         assert len(body["result_ids"]) == 2
@@ -125,7 +128,8 @@ class TestCsvUploadPersistsSourceFile:
             headers=auth_headers,
         )
 
-        assert response.status_code == 200, response.text
+        assert response.status_code == 201, response.text
+        assert response.headers["Location"] == f"/api/v1/results/{campaign_id}"
         body = response.json()
         assert body["success"] is True, body
         assert len(body["result_ids"]) == 1

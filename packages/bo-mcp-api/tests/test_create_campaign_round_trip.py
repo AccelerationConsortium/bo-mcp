@@ -51,10 +51,13 @@ async def test_rest_create_campaign_persists_advanced_fields(
         headers=auth_headers,
     )
 
-    assert response.status_code == 200, response.text
+    # 8.19: successful create returns 201 + Location pointing at the
+    # new resource's canonical GET.
+    assert response.status_code == 201, response.text
     body = response.json()
     assert body["success"] is True, body
     campaign_id = body["campaign_id"]
+    assert response.headers["Location"] == f"/api/v1/campaigns/{campaign_id}"
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
@@ -109,7 +112,9 @@ async def test_rest_create_campaign_accepts_acknowledged_baybe_degradation(
         json={"intake": _baybe_acknowledged_intake()},
         headers=auth_headers,
     )
-    assert response.status_code == 200, response.text
+    # 8.19: successful create returns 201 even with acknowledged
+    # degradations (the campaign is still persisted).
+    assert response.status_code == 201, response.text
     body = response.json()
     assert body["success"] is True, body
     warnings = body.get("warnings") or []

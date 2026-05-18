@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from bo_mcp_server.client import ensure_dev_user, init_database, ping_database_detailed
+from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan
 from bo_mcp_server.trace_context import bind_trace_id
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,7 +87,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             "DEV_AUTH is enabled; the shared development user is bootstrapped. "
             "This must not be set in production environments."
         )
-    yield
+    async with idempotency_gc_lifespan():
+        yield
 
 
 def create_app() -> FastAPI:

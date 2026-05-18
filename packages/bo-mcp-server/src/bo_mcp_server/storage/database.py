@@ -13,13 +13,14 @@ so importing this module does not require DATABASE_URL to be set.
 import asyncio
 import logging
 import os
+import subprocess
+import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import dotenv
-from alembic import command
-from alembic.config import Config
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -29,11 +30,37 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from bo_mcp_server.settings import (
+    get_database_init_connect_timeout_seconds,
+    get_database_init_timeout_seconds,
     get_database_url,
     get_sql_echo,
     get_use_alembic_mode,
 )
 from bo_mcp_server.storage.models import Base
+
+
+class DatabaseInitializationError(RuntimeError):
+    """Raised when ``init_database`` cannot bring the schema up to head.
+
+    Three failure shapes collapse into one typed exception so the
+    orchestrator (k8s, systemd) sees a single ``ExitCode != 0`` signal
+    regardless of cause:
+
+    * connectivity probe failed before Alembic ran (DNS, credentials,
+      firewall, server down)
+    * Alembic ``command.upgrade`` exceeded the configured timeout
+    * Alembic itself raised (bad migration script, schema clash)
+
+    ``cause`` is the original exception. ``stage`` is a short tag —
+    ``connect`` / ``timeout`` / ``alembic`` — so the readiness probe
+    can emit a structured error_class without inspecting the exception
+    chain.
+    """
+
+    def __init__(self, stage: str, message: str) -> None:
+        super().__init__(message)
+        self.stage = stage
+
 
 logger = logging.getLogger(__name__)
 
@@ -155,12 +182,31 @@ def _should_use_alembic() -> bool:
     return _current_database_url().startswith("postgresql")
 
 
-def _run_alembic_migrations() -> None:
-    """Run Alembic migrations to upgrade database to latest version.
+def _run_alembic_in_subprocess(timeout_seconds: float) -> None:
+    """Run ``python -m alembic upgrade head`` in a subprocess with a SIGKILL on timeout.
 
-    This is a synchronous operation that runs in a subprocess-safe manner.
+    Real wall-clock kill switch (TODO 8.22 third review pass). The
+    earlier ``asyncio.to_thread(in_process_command.upgrade)`` could
+    only abort the *await* — the worker thread kept running, and a
+    migration made of many short individually-bounded statements with
+    long Python work between them could outlive the orchestrator's
+    declared timeout. :func:`subprocess.run` with ``timeout=N`` is
+    the canonical Python kill switch: when the budget elapses the
+    subprocess receives ``SIGKILL`` from the OS and ``run`` raises
+    :class:`subprocess.TimeoutExpired`. The child cannot continue.
+
+    Layering with the DB-side caps in :mod:`migrations.env`
+    (statement / lock / idle_in_transaction) gives a belt-and-
+    suspenders kill: PostgreSQL aborts individual statements / locks
+    that hang, the process-level SIGKILL bounds the whole upgrade.
+
+    The subprocess inherits ``DATABASE_URL`` (and any ``.env`` values
+    loaded by the parent) so env.py resolves the same connection
+    string. Stderr is captured and embedded in the raised
+    :class:`RuntimeError` on non-zero exit so the typed envelope
+    surfaces a useful triage hint without leaking the full Alembic
+    traceback into client responses.
     """
-    # Find alembic.ini relative to this file
     package_root = Path(__file__).parent.parent.parent.parent
     alembic_ini = package_root / "alembic.ini"
 
@@ -168,20 +214,108 @@ def _run_alembic_migrations() -> None:
         logger.warning("alembic.ini not found at %s, skipping migrations", alembic_ini)
         return
 
-    alembic_cfg = Config(str(alembic_ini))
-    alembic_cfg.set_main_option("sqlalchemy.url", _current_database_url())
-    alembic_cfg.set_main_option("script_location", str(package_root / "migrations"))
+    cmd = [
+        sys.executable,
+        "-m",
+        "alembic",
+        "-c",
+        str(alembic_ini),
+        "upgrade",
+        "head",
+    ]
 
-    logger.info("Running Alembic migrations...")
-    command.upgrade(alembic_cfg, "head")
+    logger.info("Running Alembic migrations in subprocess (timeout=%.1fs)", timeout_seconds)
+    try:
+        result = subprocess.run(  # noqa: S603 - args are derived from trusted package layout
+            cmd,
+            timeout=timeout_seconds,
+            check=False,
+            capture_output=True,
+            cwd=str(package_root),
+        )
+    except subprocess.TimeoutExpired as exc:
+        # The subprocess has been SIGKILLed by subprocess.run; surface
+        # a uniform TimeoutError so the caller's existing exception
+        # routing maps it to ``stage='timeout'``.
+        raise TimeoutError(
+            f"Alembic upgrade exceeded {timeout_seconds:.1f}s and was SIGKILLed"
+        ) from exc
+
+    if result.returncode != 0:
+        stderr_excerpt = result.stderr.decode("utf-8", errors="replace")[:2000]
+        raise RuntimeError(f"Alembic exited with code {result.returncode}: {stderr_excerpt}")
     logger.info("Alembic migrations completed")
+
+
+async def _preflight_connectivity(engine: AsyncEngine, timeout_seconds: float) -> None:
+    """Verify the configured DB is reachable before kicking off Alembic.
+
+    A bad ``DATABASE_URL`` (wrong host, expired credentials, firewall
+    block) would otherwise burn the full migration timeout on a
+    connection that can never succeed. The probe is a single
+    ``SELECT 1`` round-trip wrapped in :func:`asyncio.wait_for` so a
+    hung TCP handshake cannot stall startup past
+    ``DATABASE_INIT_CONNECT_TIMEOUT_SECONDS``.
+
+    Skipped for SQLite — the in-memory / file-backed driver does not
+    open a real socket and any "connectivity" failure there is really
+    a permission / path issue that surfaces from the actual
+    ``create_all`` step anyway.
+    """
+    if _current_database_url().startswith("sqlite"):
+        return
+
+    async def _probe() -> None:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+
+    try:
+        await asyncio.wait_for(_probe(), timeout=timeout_seconds)
+    except TimeoutError as exc:
+        raise DatabaseInitializationError(
+            "connect",
+            f"Database connectivity probe timed out after {timeout_seconds:.1f}s; "
+            "check DATABASE_URL host/port and network reachability.",
+        ) from exc
+    except (SQLAlchemyError, OSError) as exc:
+        # ``OSError`` covers the asyncpg connect path (``ConnectionRefusedError``,
+        # ``socket.gaierror``) which SQLAlchemy does not always wrap into
+        # ``SQLAlchemyError`` before raising. Both shapes are "DB unreachable"
+        # to the operator.
+        raise DatabaseInitializationError(
+            "connect",
+            f"Database connectivity probe failed ({type(exc).__name__}); "
+            "verify DATABASE_URL credentials and that the server is up.",
+        ) from exc
 
 
 async def init_database() -> None:
     """Initialize database schema.
 
-    For PostgreSQL: Uses Alembic migrations for versioned schema management.
-    For SQLite: Uses direct Base.metadata.create_all() for fast test setup.
+    For PostgreSQL: pre-flight ``SELECT 1`` connectivity check, then
+    Alembic upgrade wrapped in :func:`asyncio.wait_for` so a hung
+    migration script cannot stall lifespan indefinitely.
+    For SQLite: direct ``Base.metadata.create_all()`` for fast test
+    setup; no timeout because the in-process driver returns
+    synchronously.
+
+    Worker-thread caveat (TODO 8.22 review pass): ``asyncio.wait_for``
+    aborts the coroutine it wraps, but Python cannot interrupt a
+    worker thread spawned via :func:`asyncio.to_thread`. The Alembic
+    upgrade runs in such a thread, so the timeout here is *advisory*
+    for the orchestrator (we surface ``DatabaseInitializationError``
+    fast) but does not guarantee the migration thread itself has
+    stopped. The matching *real* abort happens DB-side: the migration
+    connection sets ``statement_timeout`` and ``lock_timeout`` (see
+    ``migrations/env.py``) to the same window, so a runaway statement
+    is rolled back by PostgreSQL when the budget is exhausted.
+
+    Raises:
+        DatabaseInitializationError: when any of the three startup
+            phases (connect probe, Alembic upgrade timeout, Alembic
+            upgrade itself) fails. The exception carries a short
+            ``stage`` tag so readiness probes can emit a structured
+            error_class.
     """
     engine = _get_engine()
     database_url = _current_database_url()
@@ -196,10 +330,44 @@ async def init_database() -> None:
             os.makedirs(data_dir, exist_ok=True)
 
     if _should_use_alembic():
-        # Use Alembic for PostgreSQL (production).
-        # Run in a worker thread to avoid conflict with the running event loop —
-        # Alembic's env.py uses asyncio.run() which requires no active loop.
-        await asyncio.to_thread(_run_alembic_migrations)
+        connect_timeout = get_database_init_connect_timeout_seconds()
+        upgrade_timeout = get_database_init_timeout_seconds()
+        await _preflight_connectivity(engine, connect_timeout)
+        # Wall-clock kill switch (TODO 8.22 third review pass): run
+        # the migration as a child process so subprocess.run(timeout=N)
+        # can SIGKILL it. ``asyncio.to_thread`` parks the blocking
+        # call on the worker pool — the subprocess.run inside it
+        # enforces the real kill, the wrapper just bridges back to
+        # async. Layered with the DB-side timeouts in
+        # ``migrations/env.py`` so individual statements / locks /
+        # idle-in-transaction stalls all hit their own caps too.
+        try:
+            await asyncio.to_thread(_run_alembic_in_subprocess, upgrade_timeout)
+        except TimeoutError as exc:
+            raise DatabaseInitializationError(
+                "timeout",
+                f"Alembic schema upgrade exceeded the configured "
+                f"{upgrade_timeout:.1f}s timeout; the subprocess was "
+                "SIGKILLed. Check for a long-running migration or "
+                "DB-side lock.",
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - intentional translation boundary
+            # Alembic raises a wide and undocumented set of exception
+            # types: ``CommandError`` for CLI-level failures (missing
+            # revision, ambiguous head), ``RuntimeError`` and
+            # ``ValueError`` from env.py / script bodies, plus
+            # ``SQLAlchemyError`` for DB-side faults. With the
+            # subprocess wrapper a non-zero exit code surfaces as
+            # ``RuntimeError`` carrying the captured stderr — the
+            # catch stays broad so any future shape of failure still
+            # maps cleanly to ``stage='alembic'``. ``TimeoutError``
+            # has its own branch above; ``BaseException`` subclasses
+            # (``KeyboardInterrupt``, ``SystemExit``) are unaffected.
+            raise DatabaseInitializationError(
+                "alembic",
+                f"Alembic schema upgrade failed ({type(exc).__name__}); "
+                "inspect the migration log for the offending revision.",
+            ) from exc
     else:
         # Use direct creation for SQLite (testing)
         async with engine.begin() as conn:

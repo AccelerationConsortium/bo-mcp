@@ -1,7 +1,13 @@
 """Storage layer for the BO MCP service."""
 
 from bo_mcp_server.storage.base import ConcurrentModificationError
-from bo_mcp_server.storage.database import close_database, get_session, init_database, lifespan
+from bo_mcp_server.storage.database import (
+    DatabaseInitializationError,
+    close_database,
+    get_session,
+    init_database,
+    lifespan,
+)
 from bo_mcp_server.storage.models import IdempotencyCacheModel
 from bo_mcp_server.storage.repositories import (
     CampaignRepository,
@@ -16,6 +22,7 @@ __all__ = [
     "CampaignRepository",
     "CampaignSpecRepository",
     "ConcurrentModificationError",
+    "DatabaseInitializationError",
     "EventRepository",
     "IdempotencyCacheModel",
     "ResultRepository",

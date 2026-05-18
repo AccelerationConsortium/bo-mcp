@@ -25,6 +25,17 @@ Usage:
     # Compute and cache
     result = compute_expensive_diagnostics()
     await diagnostics_cache.set(cache_key, result)
+
+Rollback safety
+---------------
+
+The cache is only *written* by ``get_diagnostics_operation``; mutation
+paths never touch it. ``campaign.version`` is bumped in the same
+transaction as the underlying mutation, so a rolled-back mutation
+leaves the version unchanged and the existing cache entry stays
+semantically correct (it still represents the committed state).
+Regression coverage:
+``tests/unit/test_diagnostics_cache_rollback_safety.py``.
 """
 
 import asyncio

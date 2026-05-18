@@ -49,7 +49,7 @@ from bo_mcp_server.errors import (
     make_concurrent_modification_response,
     make_error_response,
 )
-from bo_mcp_server.idempotency import session_scope
+from bo_mcp_server.idempotency import reservation_heartbeat, session_scope
 from bo_mcp_server.operations.backend_output import (
     BackendOutputError,
     validate_backend_batch,
@@ -1169,16 +1169,23 @@ async def _generate_via_backend(
 
     Returns (suggestion_data, backend_state, warnings).
     """
-    batch = await asyncio.to_thread(
-        backend.generate_suggestions,
-        spec=opt_spec,
-        observations=observations,
-        batch_size=batch_size,
-        iteration=iteration,
-        backend_state=prior_backend_state,
-        pending_points=pending_parameter_values,
-        progress_callback=progress_callback,
-    )
+    # The heartbeat is a no-op when there is no active idempotency
+    # reservation (the typical direct-call path). When invoked inside
+    # ``apply_idempotency``'s session-aware branch it keeps the
+    # ``pending`` row alive past the default 10-min reservation TTL so
+    # legitimately-slow runs (SAASBO MCMC, large batches) finish
+    # without surrendering their slot to a concurrent retry storm.
+    async with reservation_heartbeat():
+        batch = await asyncio.to_thread(
+            backend.generate_suggestions,
+            spec=opt_spec,
+            observations=observations,
+            batch_size=batch_size,
+            iteration=iteration,
+            backend_state=prior_backend_state,
+            pending_points=pending_parameter_values,
+            progress_callback=progress_callback,
+        )
     # Re-validate the batch shape against the documented contract.
     # ``bo-engine`` is Pydantic-free for third-party backend plugins, so
     # a misbehaving backend can hand us a partial dict that would otherwise

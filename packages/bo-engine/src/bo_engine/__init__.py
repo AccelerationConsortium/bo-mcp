@@ -198,7 +198,9 @@ from bo_engine.models import (
     extract_lengthscales,
     fit_model,
     fit_single_task_model,
+    floor_standardize_stdvs,
     get_warping_parameters,
+    post_fit_verification,
     verify_standardization,
 )
 from bo_engine.multifidelity import (
@@ -303,6 +305,7 @@ from bo_engine.reproducibility import (
     SeedState,
     compute_suggestions_hash,
     create_reproducible_sobol,
+    derive_seed,
     get_reproducibility_summary,
     verify_reproducibility,
 )
@@ -712,7 +715,10 @@ __all__ = [
     "SeedState",
     "compute_suggestions_hash",
     "create_reproducible_sobol",
+    "derive_seed",
+    "floor_standardize_stdvs",
     "get_reproducibility_summary",
+    "post_fit_verification",
     "verify_reproducibility",
     "verify_standardization",
     # What-If Analysis (v2.7 - Section 3.8)

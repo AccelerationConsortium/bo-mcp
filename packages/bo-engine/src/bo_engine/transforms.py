@@ -252,6 +252,33 @@ def get_bounds_tensor(spec: OptimizationSpec) -> Tensor:
     return torch.tensor([lower, upper], dtype=get_dtype(), device=get_device())
 
 
+def get_categorical_dim_indices(spec: OptimizationSpec) -> list[int]:
+    """Return the encoded-space column indices belonging to one-hot blocks.
+
+    The encoded feature space puts each continuous / discrete parameter
+    into a single column and each categorical parameter into a block of
+    ``len(categories)`` one-hot columns. This helper returns the indices
+    of the categorical columns so callers (e.g.
+    :func:`bo_engine.models.build_mixed_kernel`) can apply a
+    Hamming-style kernel to those dimensions and an RBF kernel to the
+    remaining (continuous + discrete) dimensions.
+
+    Empty list when ``spec`` has no categorical parameters.
+    """
+    indices: list[int] = []
+    dim_idx = 0
+    for param in spec.parameters:
+        if param.type == ParameterType.CATEGORICAL:
+            if param.categories is None:
+                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+            n_cats = len(param.categories)
+            indices.extend(range(dim_idx, dim_idx + n_cats))
+            dim_idx += n_cats
+        else:
+            dim_idx += 1
+    return indices
+
+
 def _encode_param_value(param: ParameterSpec, value: int | float | str) -> list[float]:
     """Encode a single parameter value into its tensor representation.
 

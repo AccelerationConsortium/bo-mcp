@@ -89,6 +89,10 @@ async def create_campaign(
 
     Args:
         intake_data: Campaign intake payload validated via CampaignIntakeInput.
+            ``intake_data.random_seed`` makes suggestions deterministic only
+            within a fixed torch version, device, and
+            ``torch.use_deterministic_algorithms`` setting; it is not a
+            cross-version reproducibility guarantee.
         owner_id: UUID of the user creating the campaign.
         verbosity: Response verbosity level (minimal, standard, detailed).
         idempotency_key: Optional client-supplied key (recommended: UUIDv7

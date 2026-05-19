@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import torch
 from botorch.acquisition.logei import qLogExpectedImprovement
 from botorch.fit import fit_fully_bayesian_model_nuts
 from botorch.models.fully_bayesian import SaasFullyBayesianSingleTaskGP
@@ -19,7 +20,10 @@ from botorch.models.transforms.outcome import Standardize
 from botorch.optim import optimize_acqf
 from torch import Tensor
 
-from bo_engine.constants import SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD
+from bo_engine.constants import (
+    SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD,
+    SAASBO_WIDE_INTERVAL_LOG10_THRESHOLD,
+)
 from bo_engine.device import ensure_device
 from bo_engine.types import AcquisitionOptimizationConfig
 
@@ -156,6 +160,35 @@ def get_saasbo_lengthscales(
     return lengthscales.median(dim=0).values.reshape(-1)
 
 
+def get_saasbo_lengthscale_quantiles(
+    model: SaasFullyBayesianSingleTaskGP,
+    quantiles: tuple[float, ...] = (0.25, 0.5, 0.75),
+) -> Tensor:
+    """Extract per-dimension lengthscale posterior quantiles from SAASBO.
+
+    The MCMC sample dimension is reduced via :func:`torch.quantile` so the
+    return is a ``(len(quantiles), n_dims)`` tensor — one row per
+    requested quantile. Pair with :func:`get_saasbo_lengthscales` (which
+    is preserved for backward compatibility on the median-only path).
+
+    Args:
+        model: Fitted SAASBO model.
+        quantiles: Quantile levels in ``[0, 1]``. Defaults to ``(0.25,
+            0.5, 0.75)`` — the standard IQR triple Eriksson & Jankowiak
+            recommend for inspecting per-dimension lengthscale spread.
+
+    Returns:
+        Tensor of shape ``(len(quantiles), n_dims)``.
+    """
+    model.eval()
+    raw = model.covar_module.base_kernel.lengthscale  # ty: ignore[unresolved-attribute]
+    # ``raw`` has the MCMC samples as the leading batch dimension; flatten
+    # any trailing singleton dims so we end up with ``(n_samples, n_dims)``.
+    flat = raw.reshape(raw.shape[0], -1)
+    q_tensor = torch.tensor(list(quantiles), dtype=flat.dtype, device=flat.device)
+    return torch.quantile(flat, q_tensor, dim=0)
+
+
 @dataclass(frozen=True)
 class SAASBOImportance:
     """Per-dimension SAASBO importance summary.
@@ -163,12 +196,17 @@ class SAASBOImportance:
     The normalized ``importance`` reciprocal makes "small contribution" and
     "provably inactive" look identical (both are close to zero), which is
     exactly the distinction SAASBO is designed to expose. We therefore also
-    surface the raw median ``lengthscale`` per dimension and a boolean
-    ``active`` flag derived from
-    :data:`bo_engine.constants.SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD` so
-    downstream consumers (feature-importance UI, dimensionality-reduction
-    heuristics) can act on "inactive" rather than guessing where to place a
-    soft cut-off.
+    surface the raw median ``lengthscale`` per dimension, posterior interval
+    bounds (``lengthscale_q25`` / ``lengthscale_q75``), the resulting
+    ``log10_interval_width``, and a boolean ``active`` flag derived from
+    :data:`bo_engine.constants.SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD`.
+
+    ``confident`` is False when the 25–75 % credible interval spans more
+    than :data:`SAASBO_WIDE_INTERVAL_LOG10_THRESHOLD` orders of magnitude.
+    Early in a campaign the half-Cauchy posterior is wide and the median
+    importance alone is unreliable for pruning decisions; consumers
+    (feature-importance UI, dimensionality-reduction heuristics) should
+    refuse to act on a dimension whose interval is wide.
 
     Reference:
         Eriksson & Jankowiak, "High-Dimensional Bayesian Optimization with
@@ -176,13 +214,18 @@ class SAASBOImportance:
         (https://arxiv.org/abs/2103.00349), §3.3 & Appendix B: under the
         SAAS prior, truly inactive lengthscales converge to large values
         (>= 1e2-1e3) so the boolean mask is robust against the post-hoc
-        normalization step.
+        normalization step. The same paper recommends inspecting posterior
+        spread alongside the point estimate before pruning dimensions.
     """
 
     name: str
     lengthscale: float
     importance: float
     active: bool
+    lengthscale_q25: float = 0.0
+    lengthscale_q75: float = 0.0
+    log10_interval_width: float = 0.0
+    confident: bool = True
 
 
 def compute_saasbo_importance(
@@ -216,8 +259,9 @@ def compute_saasbo_importance_report(
     model: SaasFullyBayesianSingleTaskGP,
     parameter_names: list[str] | None = None,
     inactive_threshold: float = SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD,
+    wide_interval_threshold: float = SAASBO_WIDE_INTERVAL_LOG10_THRESHOLD,
 ) -> list[SAASBOImportance]:
-    """Return per-parameter SAASBO importance with the raw lengthscale + mask.
+    """Return per-parameter SAASBO importance with credible intervals and confidence flags.
 
     Args:
         model: Fitted SAASBO model
@@ -226,23 +270,35 @@ def compute_saasbo_importance_report(
         inactive_threshold: Median per-dimension lengthscale above which a
             dimension is flagged ``active=False``. Defaults to the
             calibration recommended by Eriksson & Jankowiak 2021.
+        wide_interval_threshold: Order-of-magnitude width (in log10 units)
+            above which a dimension's posterior interval is considered
+            "wide" and the entry is flagged ``confident=False``. Defaults
+            to 1 (spanning one order of magnitude or more).
 
     Returns:
-        List of :class:`SAASBOImportance` entries in input-parameter order.
+        List of :class:`SAASBOImportance` entries in input-parameter order,
+        each including the median lengthscale, the 25 % / 75 % posterior
+        quantiles, the log10 width of the interval, and a ``confident``
+        flag callers should use to gate pruning decisions.
 
     Raises:
         ValueError: If ``parameter_names`` is provided but its length does
             not match the number of dimensions in the model.
     """
-    # ``get_saasbo_lengthscales`` returns a 1-D tensor in the production
-    # path, but custom extractors (or older monkey-patched tests) may hand
-    # back a 0-D / N-D tensor — flatten defensively so the rest of this
-    # function can rely on ``shape[0]`` as the parameter count.
-    lengthscales = get_saasbo_lengthscales(model).reshape(-1)
-    n_params = int(lengthscales.shape[0])
+    # ``get_saasbo_lengthscales`` is kept as the median entry point — it's
+    # the canonical extractor and is monkey-patched by tests / external
+    # adapters. The quantile band is best-effort: when the underlying
+    # ``covar_module`` does not expose per-sample lengthscales (or the
+    # extractor is patched without quantile data) we fall back to the
+    # median-only path and report ``confident=True`` (single-point
+    # estimate is treated as collapsed-interval data).
+    medians = get_saasbo_lengthscales(model).reshape(-1)
+    n_params = int(medians.shape[0])
 
-    # Importance is the inverse of lengthscale (normalized to sum to 1).
-    importance = 1.0 / (lengthscales + 1e-6)
+    q25, q75 = _try_extract_quantile_band(model, n_params)
+
+    # Importance is the inverse of the median lengthscale (normalized).
+    importance = 1.0 / (medians + 1e-6)
     importance = importance / importance.sum()
 
     if parameter_names is None:
@@ -253,15 +309,54 @@ def compute_saasbo_importance_report(
             f"the model's input dimensionality ({n_params})."
         )
 
+    if q25 is None or q75 is None:
+        # No posterior spread available — surface medians as the singleton
+        # interval so consumers see consistent fields and treat the
+        # dimension as confident (no spread to be uncertain about).
+        q25_vals = medians
+        q75_vals = medians
+        log10_widths = torch.zeros_like(medians)
+    else:
+        eps = 1e-12
+        q25_vals = q25
+        q75_vals = q75
+        log10_widths = (q75.clamp(min=eps).log10() - q25.clamp(min=eps).log10()).abs()
+
     return [
         SAASBOImportance(
             name=parameter_names[i],
-            lengthscale=float(lengthscales[i].item()),
+            lengthscale=float(medians[i].item()),
             importance=float(importance[i].item()),
-            active=float(lengthscales[i].item()) <= inactive_threshold,
+            active=float(medians[i].item()) <= inactive_threshold,
+            lengthscale_q25=float(q25_vals[i].item()),
+            lengthscale_q75=float(q75_vals[i].item()),
+            log10_interval_width=float(log10_widths[i].item()),
+            confident=float(log10_widths[i].item()) <= wide_interval_threshold,
         )
         for i in range(n_params)
     ]
+
+
+def _try_extract_quantile_band(
+    model: SaasFullyBayesianSingleTaskGP, expected_n_params: int
+) -> tuple[Tensor | None, Tensor | None]:
+    """Best-effort extraction of the 25/75 % lengthscale bands.
+
+    Returns ``(None, None)`` when the model does not expose per-sample
+    lengthscales (e.g. monkey-patched stubs in tests that only know how to
+    return the median).
+    """
+    try:
+        quantile_table = get_saasbo_lengthscale_quantiles(model, quantiles=(0.25, 0.5, 0.75))
+    except (AttributeError, RuntimeError, ValueError):
+        return None, None
+    if quantile_table.dim() != 2 or quantile_table.shape[0] != 3:
+        return None, None
+    q25 = quantile_table[0].reshape(-1)
+    q75 = quantile_table[2].reshape(-1)
+    if q25.shape[0] != expected_n_params or q75.shape[0] != expected_n_params:
+        return None, None
+    return q25, q75
 
 
 def should_use_saasbo(

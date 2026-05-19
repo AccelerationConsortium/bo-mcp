@@ -84,7 +84,10 @@ async def validate_intake(
         intake_data: Campaign intake payload validated via CampaignIntakeInput.
             Includes campaign metadata, parameters, objectives, constraints,
             and optional execution settings (batch_size, max_iterations,
-            initial_design_size, random_seed).
+            initial_design_size, random_seed). ``random_seed`` makes
+            suggestions deterministic only within a fixed torch version,
+            device, and ``torch.use_deterministic_algorithms`` setting; it is
+            not a cross-version reproducibility guarantee.
         verbosity: Response verbosity level. Options:
             - "minimal": ~20 tokens - valid/errors only
             - "standard": ~100 tokens - includes warnings and spec summary

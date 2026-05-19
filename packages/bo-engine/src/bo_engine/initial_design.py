@@ -36,6 +36,7 @@ from bo_engine.constraints import (
     apply_sum_constraint,
 )
 from bo_engine.device import get_device, get_dtype
+from bo_engine.reproducibility import derive_seed
 from bo_engine.transforms import (
     SearchSpaceType,
     classify_search_space,
@@ -336,8 +337,19 @@ def _draw_sobol_designs(
     Honours ``spec.random_seed`` (when non-None) so consecutive calls with
     the same seed produce the same low-discrepancy sequence, and advances
     past ``n_drawn`` prior draws via ``fast_forward``.
+
+    The Sobol seed is routed through
+    :func:`bo_engine.reproducibility.derive_seed` with role tag
+    ``"sobol:initial_design"`` so it shares the single source of truth for
+    per-phase seed derivation. ``spec.random_seed=None`` is preserved as
+    "OS-level scramble" (Sobol's documented behavior) — the helper only
+    fires when a master seed exists.
     """
-    sobol = SobolEngine(dimension=n_dims, scramble=True, seed=spec.random_seed)
+    if spec.random_seed is None:
+        sobol_seed: int | None = None
+    else:
+        sobol_seed = derive_seed(spec.random_seed, "sobol:initial_design")
+    sobol = SobolEngine(dimension=n_dims, scramble=True, seed=sobol_seed)
     if n_drawn > 0:
         sobol.fast_forward(n_drawn)
     samples = sobol.draw(draw_count).to(device=get_device(), dtype=get_dtype())

@@ -61,7 +61,17 @@ class IntakeData(BaseModel):
     max_observations: int | None = Field(default=None, ge=1)
     convergence_tolerance: float | None = Field(default=None, gt=0.0)
     initial_design_size: int | None = None
-    random_seed: int | None = None
+    random_seed: int | None = Field(
+        default=None,
+        description=(
+            "Campaign-level RNG seed. Optional. When supplied, the Sobol "
+            "initial design and acquisition multi-start are deterministic "
+            "within a fixed (torch version, device, deterministic-algorithms "
+            "setting) triple; suggestions are NOT byte-identical across "
+            "different torch versions, CPU vs. CUDA, or backend swaps. Set "
+            "torch.use_deterministic_algorithms(True) for strictest behavior."
+        ),
+    )
     acquisition_optimization: dict[str, Any] | None = None
     # ``Literal`` mirrors :class:`bo_mcp_server.domain.CampaignIntakeInput`
     # so the REST OpenAPI schema advertises an explicit ``enum`` constraint

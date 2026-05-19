@@ -35,7 +35,6 @@ from bo_engine.constants import (
     CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD,
     MAX_RANDOM_SEED,
     MIN_OBSERVATIONS_FOR_MODEL,
-    SEED_ITERATION_OFFSET,
 )
 from bo_engine.constraints import (
     build_botorch_linear_constraints,
@@ -44,16 +43,19 @@ from bo_engine.device import get_device, get_dtype
 from bo_engine.models import (
     create_and_fit_model,
     create_and_fit_single_task_model,
+    post_fit_verification,
 )
 from bo_engine.reference_point import (
     ReferencePointConfig,
     ReferencePointStrategy,
     get_reference_point_dynamic,
 )
+from bo_engine.reproducibility import derive_seed
 from bo_engine.transforms import (
     decode_categorical,
     encode_categorical,
     get_bounds_tensor,
+    get_categorical_dim_indices,
     stack_encoded_values,
 )
 from bo_engine.turbo import (
@@ -102,6 +104,44 @@ class OutcomeConstraintConfigurationError(ValueError):
     """
 
 
+class MultiFidelityNotSupportedError(ValueError):
+    """Raised when a spec requests multi-fidelity dispatch.
+
+    The ``bo_engine.multifidelity`` module exposes standalone helpers, but
+    the active suggestion pipeline does not route
+    ``AcquisitionMethod.MULTI_FIDELITY_KG`` to BoTorch's qMFKG and does
+    not build a ``SingleTaskMultiFidelityGP`` when
+    ``spec.fidelity_parameter`` is set. Raising here keeps the
+    advertisement honest — silent downgrade to single-fidelity would let
+    callers think they were getting cost-amortized exploration when they
+    were not.
+    """
+
+
+def _resolve_noise_prior(spec: OptimizationSpec) -> Any | None:
+    """Build a :class:`GammaPrior` from ``spec.noise_prior_params`` when set.
+
+    Returns ``None`` when the spec does not override the prior so the
+    model factory falls back to its ``_default_noise_prior`` (calibrated
+    for unit-standardized targets). The override is only consulted on the
+    trainable-noise path; the ``FixedNoiseGaussianLikelihood`` path bypasses
+    the prior entirely.
+    """
+    if spec.noise_prior_params is None:
+        return None
+    # Import locally to avoid a top-level gpytorch dependency in the
+    # suggestion module (keeps import time low for diagnostic-only callers).
+    from gpytorch.priors import GammaPrior
+
+    concentration, rate = spec.noise_prior_params
+    if concentration <= 0 or rate <= 0:
+        raise ValueError(
+            "noise_prior_params must be positive (concentration, rate); "
+            f"got {(concentration, rate)}."
+        )
+    return GammaPrior(float(concentration), float(rate))
+
+
 def _resolve_acquisition_seed(
     spec: OptimizationSpec,
     iteration: int,
@@ -113,16 +153,19 @@ def _resolve_acquisition_seed(
 
     1. ``rng`` wins whenever supplied so external callers keep control
        of their RNG pipeline.
-    2. ``spec.random_seed`` seeds a deterministic per-iteration stride
-       so two independent replays of the same campaign state produce
-       identical acquisition candidates.
+    2. ``spec.random_seed`` flows through
+       :func:`bo_engine.reproducibility.derive_seed` with role tag
+       ``"acquisition:iter_{iteration}"`` so two independent replays of the
+       same campaign state produce identical acquisition candidates and
+       the seed for any other phase at the same iteration (Sobol initial
+       design, MCMC chain) cannot collide with it.
     3. Falls back to :func:`random.randint` only when neither is
        supplied; this path is documented as non-reproducible.
     """
     if rng is not None:
         return int(rng.integers(0, MAX_RANDOM_SEED))
     if spec.random_seed is not None:
-        return (spec.random_seed + iteration * SEED_ITERATION_OFFSET) % MAX_RANDOM_SEED
+        return derive_seed(spec.random_seed, f"acquisition:iter_{iteration}")
     # Deliberately non-reproducible — no seed was supplied. Used in tests
     # and ad-hoc campaigns where reproducibility is not required.
     return random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
@@ -166,11 +209,13 @@ def generate_next_batch(
            precedence over any other source so callers that already
            manage a :class:`numpy.random.Generator` stay in control.
         2. ``spec.random_seed`` is set — the seed is derived
-           deterministically as
-           ``(spec.random_seed + iteration * SEED_ITERATION_OFFSET)
-           % MAX_RANDOM_SEED``.  Two independent calls on the same
-           campaign state at the same iteration therefore produce
-           identical acquisition candidates.
+           deterministically via
+           :func:`bo_engine.reproducibility.derive_seed` with role tag
+           ``"acquisition:iter_{iteration}"``. Two independent calls on
+           the same campaign state at the same iteration therefore
+           produce identical acquisition candidates, and the per-phase
+           role tag prevents the Sobol initial design from sharing the
+           same seed as the acquisition multi-start.
         3. Neither is provided — the seed is drawn from the Python
            stdlib ``random`` module, which is explicitly
            non-reproducible across process runs.
@@ -189,6 +234,23 @@ def generate_next_batch(
     """
     if batch_size is None:
         batch_size = spec.batch_size
+
+    # Multi-fidelity routing is not implemented end-to-end in this pipeline.
+    # Reject loudly rather than silently downgrading to single-fidelity —
+    # the latter is what the audit specifically called out as misleading
+    # advertisement (cf. ``BoTorchBackend.supported_features``).
+    if (
+        spec.fidelity_parameter is not None
+        or spec.acquisition_method == AcquisitionMethod.MULTI_FIDELITY_KG
+    ):
+        raise MultiFidelityNotSupportedError(
+            "Multi-fidelity dispatch (qMFKG / SingleTaskMultiFidelityGP) is "
+            "not wired into generate_next_batch. Remove "
+            "spec.fidelity_parameter and acquisition_method="
+            "MULTI_FIDELITY_KG to proceed with single-fidelity BO; the "
+            "standalone helpers in bo_engine.multifidelity remain available "
+            "for direct multi-fidelity workflows."
+        )
 
     random_seed = _resolve_acquisition_seed(spec, iteration, rng)
 
@@ -451,6 +513,7 @@ def _build_single_objective_provenance(
     index: int,
     obj_name: str,
     minimize: bool,
+    auto_shift: float = 0.0,
 ) -> tuple[
     float | None,
     float | None,
@@ -470,6 +533,13 @@ def _build_single_objective_provenance(
         index: Candidate index in the batch
         obj_name: Objective name
         minimize: Whether the objective is minimized
+        auto_shift: Additive shift applied at fit time when the campaign
+            opted into ``auto_shift_for_log`` on a log-transformed
+            objective (see ``bo_engine.models.compute_log_auto_shift``).
+            The GP is fit on ``train_y + shift`` so its posterior mean is
+            on the shifted scale; we subtract the shift before populating
+            ``predicted_objectives`` so the user-facing value matches the
+            raw observation scale.
 
     Returns:
         Tuple of (acq_val, std_val, confidence_level_unused,
@@ -482,6 +552,9 @@ def _build_single_objective_provenance(
     pred_mean = _extract_scalar_prediction(means, index)
     if pred_mean is not None and not minimize:
         pred_mean = -pred_mean  # undo BoTorch negation
+    if pred_mean is not None and auto_shift:
+        # Subtract the shift so callers see predictions on the raw scale.
+        pred_mean = pred_mean - auto_shift
 
     predicted_objectives = {obj_name: pred_mean} if pred_mean is not None else None
     predicted_std_dict = {obj_name: std_val} if std_val is not None else None
@@ -501,6 +574,8 @@ def _create_single_objective_suggestions(
     method: AcquisitionMethod,
     turbo_state: TurboState | None,
     turbo_info: str,
+    model_warnings: tuple[str, ...] = (),
+    auto_shift: float = 0.0,
 ) -> list[SuggestionResult]:
     """Create SuggestionResult objects from optimization results.
 
@@ -540,7 +615,9 @@ def _create_single_objective_suggestions(
         values = decode_categorical(candidates[i], spec)
 
         acq_val, std_val, _, predicted_objectives, predicted_std_dict = (
-            _build_single_objective_provenance(means, stds, acq_values, i, obj_name, minimize)
+            _build_single_objective_provenance(
+                means, stds, acq_values, i, obj_name, minimize, auto_shift=auto_shift
+            )
         )
         confidence_level = _get_confidence_level(std_val)
 
@@ -565,6 +642,7 @@ def _create_single_objective_suggestions(
             explanation=explanation,
             predicted_objectives=predicted_objectives,
             predicted_std=predicted_std_dict,
+            model_warnings=model_warnings,
         )
         suggestions.append(suggestion)
 
@@ -620,6 +698,7 @@ def _generate_single_objective_batch(
     # uncertainty for this objective, route through the
     # ``FixedNoiseGaussianLikelihood`` path so the GP trusts the user's
     # known noise instead of re-estimating it from MLL.
+    cat_dim_indices = get_categorical_dim_indices(spec) if spec.use_categorical_kernel else None
     model = create_and_fit_single_task_model(
         train_x,
         train_y_bo,
@@ -627,6 +706,18 @@ def _generate_single_objective_batch(
         use_input_warping=spec.use_input_warping,
         train_yvar=train_yvar,
         log_transform=log_transform,
+        categorical_dim_indices=cat_dim_indices,
+        auto_shift_for_log=spec.auto_shift_for_log,
+        noise_prior=_resolve_noise_prior(spec),
+    )
+
+    # Post-fit standardization audit: read-only inspection of each
+    # sub-model's recorded ``Standardize.stdvs`` (mutating it would break
+    # the forward / inverse transform round-trip) plus the unit-variance
+    # invariant check. Failures surface as batch-level warnings to the
+    # caller.
+    model_warnings = post_fit_verification(
+        model, objective_names=[obj.name for obj in spec.objectives]
     )
 
     # Outcome constraint models (constraints on OUTPUT space)
@@ -697,6 +788,11 @@ def _generate_single_objective_batch(
 
     # Get model predictions and create suggestions
     means, stds = _get_model_predictions(model, candidates)
+    # Pull the recorded auto-shift off the model (only populated when the
+    # caller opted into ``auto_shift_for_log`` AND the data had non-positive
+    # observations). The provenance helper subtracts it so user-facing
+    # ``predicted_objectives`` are reported on the raw scale.
+    auto_shift = float(getattr(model, "_auto_shift_for_log", 0.0))
     suggestions = _create_single_objective_suggestions(
         candidates,
         acq_values,
@@ -709,6 +805,8 @@ def _generate_single_objective_batch(
         method,
         turbo_state,
         turbo_info,
+        model_warnings=tuple(model_warnings),
+        auto_shift=auto_shift,
     )
 
     return suggestions, turbo_state
@@ -792,6 +890,7 @@ def _create_multi_objective_suggestions(
     iteration: int,
     random_seed: int,
     method: AcquisitionMethod,
+    model_warnings: tuple[str, ...] = (),
 ) -> list[SuggestionResult]:
     """Create SuggestionResult objects for multi-objective optimization.
 
@@ -836,6 +935,7 @@ def _create_multi_objective_suggestions(
             explanation=explanation,
             predicted_objectives=predicted_objectives or None,
             predicted_std=predicted_std_dict or None,
+            model_warnings=model_warnings,
         )
         suggestions.append(suggestion)
 
@@ -860,6 +960,7 @@ def _generate_multi_objective_batch(
     train_y = ctx.train_y
     bounds = ctx.bounds
     batch_size = ctx.batch_size
+    observations = ctx.observations
 
     # Get minimize mask for objectives
     minimize_mask = torch.tensor([obj.minimize for obj in spec.objectives], dtype=torch.bool)
@@ -879,6 +980,18 @@ def _generate_multi_objective_batch(
                 "objective definition or pre-transform the data."
             )
 
+    # ``auto_shift_for_log`` is a single-objective-only opt-in. The
+    # multi-objective factory builds per-objective sub-models but doesn't
+    # currently track per-objective shifts in suggestion provenance.
+    # Refusing the combination at the boundary keeps the contract honest
+    # rather than silently fitting half the campaign on shifted data.
+    if spec.auto_shift_for_log and any(log_flags):
+        raise ValueError(
+            "OptimizationSpec.auto_shift_for_log=True is only supported on "
+            "single-objective campaigns. Drop the flag or pre-shift the "
+            "non-positive observations before submitting the campaign."
+        )
+
     # Negate maximization objectives (BoTorch assumes minimization). Variance
     # is sign-invariant, so ``train_yvar`` flows through unchanged.
     train_y_bo = train_y.clone()
@@ -886,6 +999,7 @@ def _generate_multi_objective_batch(
 
     # Create and fit model -- pass per-objective measurement variance when
     # every observation supplied it for every objective.
+    cat_dim_indices = get_categorical_dim_indices(spec) if spec.use_categorical_kernel else None
     model = create_and_fit_model(
         train_x,
         train_y_bo,
@@ -893,7 +1007,27 @@ def _generate_multi_objective_batch(
         use_input_warping=spec.use_input_warping,
         train_yvar=ctx.train_yvar,
         log_transform=log_flags,
+        categorical_dim_indices=cat_dim_indices,
+        noise_prior=_resolve_noise_prior(spec),
     )
+
+    # Post-fit standardization audit (per-objective). Inspects the
+    # recorded Standardize stddev on each sub-model (read-only) and
+    # emits a warning naming any collapsed objective.
+    model_warnings = post_fit_verification(
+        model, objective_names=[obj.name for obj in spec.objectives]
+    )
+
+    # Outcome constraint models (constraints on OUTPUT space). Mirrors
+    # the single-objective path so multi-objective campaigns don't
+    # silently ignore ``outcome_constraints``. The constraint GPs are
+    # bundled into the acquisition ModelListGP by the dispatcher and
+    # constraint callables are wired to BoTorch's negative-feasible
+    # convention; qLogNEHVI restricts hypervolume to the objective
+    # channels via ``IdentityMCMultiOutputObjective``.
+    outcome_constraints = None
+    if spec.outcome_constraints and observations is not None:
+        outcome_constraints = _build_outcome_constraint_models(spec, observations, train_x, bounds)
 
     # Get reference point (using STATIC strategy for backward compatibility;
     # DYNAMIC can be enabled via ReferencePointConfig when exposed in OptimizationSpec)
@@ -927,6 +1061,7 @@ def _generate_multi_objective_batch(
         minimize_mask=torch.ones(spec.n_objectives, dtype=torch.bool),
         method=method,
         constraints=None,
+        outcome_constraint_models=outcome_constraints,
     )
     # Optimize with native constraints where possible
     candidates, acq_values = optimize_acquisition(
@@ -956,6 +1091,7 @@ def _generate_multi_objective_batch(
         ctx.iteration,
         ctx.random_seed,
         method,
+        model_warnings=tuple(model_warnings),
     )
 
 
@@ -1008,8 +1144,35 @@ def _build_outcome_constraint_models(
 ) -> list[tuple[Any, float]] | None:
     """Build constraint models for outcome constraints.
 
-    For each outcome constraint, trains a GP to predict feasibility
-    and returns (model, threshold) pairs for use in constrained acquisition.
+    For each outcome constraint, trains a GP and returns
+    ``(model, signed_threshold)`` pairs that the existing
+    ``_make_outcome_constraint_callable`` consumes as
+    ``threshold - samples`` (BoTorch's MC feasibility convention:
+    **negative return = feasible**; see
+    :func:`botorch.utils.objective.compute_smoothed_feasibility_indicator`).
+    The shape supports both modeling methods:
+
+    * ``"continuous"`` (default; Gardner et al., ICML 2014): GP fits the raw
+      constrained-objective values. We encode the constraint direction at
+      fit time so a single callable formula ``threshold - samples`` lands
+      at the right sign for BoTorch's negative-feasible convention:
+
+      - For ``>=`` (feasible when ``raw_obj >= bound``) the GP is fit on
+        raw values with ``threshold = bound``. The callable
+        ``threshold - samples`` is negative exactly when
+        ``samples > bound`` — i.e. feasible.
+      - For ``<=`` (feasible when ``raw_obj <= bound``) we fit on the
+        *negated* objective and store ``threshold = -bound``. The same
+        callable becomes ``(-bound) - (-raw_obj_pred) = raw_obj_pred -
+        bound``, which is negative exactly when
+        ``raw_obj_pred < bound`` — i.e. feasible.
+
+      Posterior CDF evaluation in
+      :func:`outcome_constraints.compute_constraint_probability`
+      therefore reads the *boundary distance*, preserving gradient
+      information near the boundary.
+    * ``"binary"`` (legacy): GP fits 1/0 feasibility labels — kept for
+      genuinely binary outcomes (pass/fail quality gates).
 
     Args:
         spec: Optimization specification with outcome_constraints
@@ -1024,7 +1187,14 @@ def _build_outcome_constraint_models(
         return None
 
     objective_names = {obj.name for obj in spec.objectives}
-    constraint_models = []
+    method = (spec.outcome_constraint_method or "continuous").lower()
+    if method not in {"continuous", "binary"}:
+        raise OutcomeConstraintConfigurationError(
+            f"Unknown outcome_constraint_method={spec.outcome_constraint_method!r}; "
+            "expected 'continuous' or 'binary'."
+        )
+
+    constraint_models: list[tuple[Any, float]] = []
     for oc in spec.outcome_constraints:
         if oc.objective_name not in objective_names:
             msg = (
@@ -1033,34 +1203,71 @@ def _build_outcome_constraint_models(
                 f"{sorted(objective_names)})."
             )
             raise OutcomeConstraintConfigurationError(msg)
-        # Extract the objective values for this constraint
-        obj_values = []
-        for obs in observations:
-            if oc.objective_name not in obs.objective_values:
-                msg = (
-                    f"Outcome constraint on '{oc.objective_name}' cannot be honored: "
-                    f"at least one observation is missing this objective. Every "
-                    f"observation must record the constrained objective."
-                )
-                raise OutcomeConstraintConfigurationError(msg)
-            obj_values.append(obs.objective_values[oc.objective_name])
-
+        obj_values = _collect_constraint_values(oc.objective_name, observations)
         obj_tensor = torch.tensor(obj_values, dtype=get_dtype(), device=get_device()).unsqueeze(-1)
 
-        # Compute feasibility (binary: 1 if feasible, 0 if not)
-        if oc.greater_than:
-            feasible = (obj_tensor >= oc.threshold).double()
-        else:
-            feasible = (obj_tensor <= oc.threshold).double()
-
-        # Train constraint GP on feasibility
-        constraint_model = create_and_fit_single_task_model(
-            train_x, feasible, bounds, use_input_warping=False
+        constraint_models.append(
+            _fit_outcome_constraint_model(oc, obj_tensor, train_x, bounds, method)
         )
-        # Use per-constraint feasibility threshold from the spec (default 0.5)
-        constraint_models.append((constraint_model, oc.feasibility_threshold))
 
     return constraint_models if constraint_models else None
+
+
+def _collect_constraint_values(
+    objective_name: str, observations: list[ObservationData]
+) -> list[float]:
+    """Pull the constrained-objective column from observations.
+
+    Raises ``OutcomeConstraintConfigurationError`` when any observation is
+    missing the named objective — outcome constraints require complete
+    coverage so the constraint GP is fit on the same support as the
+    objective GP.
+    """
+    values: list[float] = []
+    for obs in observations:
+        if objective_name not in obs.objective_values:
+            msg = (
+                f"Outcome constraint on '{objective_name}' cannot be honored: "
+                "at least one observation is missing this objective. Every "
+                "observation must record the constrained objective."
+            )
+            raise OutcomeConstraintConfigurationError(msg)
+        values.append(obs.objective_values[objective_name])
+    return values
+
+
+def _fit_outcome_constraint_model(
+    oc: Any,
+    obj_tensor: Tensor,
+    train_x: Tensor,
+    bounds: Tensor,
+    method: str,
+) -> tuple[Any, float]:
+    """Fit one outcome-constraint GP and return ``(model, signed_threshold)``.
+
+    Encodes the constraint direction via a sign flip on the training
+    targets (for the continuous path) so the acquisition callable
+    ``threshold - samples`` lands at the right sign — BoTorch treats
+    *negative* output as feasible (see
+    :func:`botorch.utils.objective.compute_smoothed_feasibility_indicator`).
+    """
+    if method == "continuous":
+        targets = obj_tensor if oc.greater_than else -obj_tensor
+        threshold = float(oc.threshold) if oc.greater_than else -float(oc.threshold)
+        constraint_model = create_and_fit_single_task_model(
+            train_x, targets, bounds, use_input_warping=False
+        )
+        return constraint_model, threshold
+
+    # Binary path (legacy)
+    if oc.greater_than:
+        feasible = (obj_tensor >= oc.threshold).double()
+    else:
+        feasible = (obj_tensor <= oc.threshold).double()
+    constraint_model = create_and_fit_single_task_model(
+        train_x, feasible, bounds, use_input_warping=False
+    )
+    return constraint_model, oc.feasibility_threshold
 
 
 def update_turbo_after_evaluation(

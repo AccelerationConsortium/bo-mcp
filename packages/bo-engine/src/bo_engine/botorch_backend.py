@@ -103,7 +103,19 @@ class BoTorchBackend(BaseBackend):
 
     @property
     def supported_features(self) -> frozenset[Feature]:
-        return frozenset(Feature)  # BoTorch supports all features
+        """Features this backend supports **unconditionally**.
+
+        ``Feature.MULTI_FIDELITY`` is deliberately excluded — the
+        ``bo_engine.multifidelity`` module provides standalone
+        ``SingleTaskMultiFidelityGP`` helpers, but the active
+        ``generate_next_batch`` pipeline does not dispatch
+        ``AcquisitionMethod.MULTI_FIDELITY_KG`` to ``qMFKG`` and does not
+        construct a multi-fidelity GP when ``spec.fidelity_parameter`` is
+        set. Until the suggestion pipeline routes multi-fidelity end to
+        end, advertising the capability would silently downgrade callers
+        to single-fidelity behaviour.
+        """
+        return frozenset(f for f in Feature if f is not Feature.MULTI_FIDELITY)
 
     def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
         """BoTorch supports every neutral feature and option in the spec."""
@@ -217,6 +229,16 @@ class BoTorchBackend(BaseBackend):
                 "cost data in metadata. Falling back to standard optimization. "
                 "Add 'cost' to result metadata to enable cost weighting."
             )
+
+        # ``model_warnings`` is stamped onto every SuggestionResult in the
+        # batch — collapse duplicates before lifting them to the SuggestionBatch.
+        seen: set[str] = set()
+        for sr in results:
+            for warning in sr.model_warnings:
+                if warning in seen:
+                    continue
+                seen.add(warning)
+                batch_warnings.append(warning)
 
         return SuggestionBatch(
             suggestions=suggestions,

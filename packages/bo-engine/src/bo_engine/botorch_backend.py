@@ -22,6 +22,7 @@ from bo_engine.backend_base import (
     CapabilityStatus,
     option_is_active,
     required_features,
+    wrap_backend_exception,
 )
 from bo_engine.diagnostics import (
     LOOCVMetrics,
@@ -36,6 +37,7 @@ from bo_engine.diagnostics import (
     summarize_pareto_front,
 )
 from bo_engine.feature_importance import compute_feature_importance
+from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.method_selector import select_methods
 from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
@@ -101,7 +103,19 @@ class BoTorchBackend(BaseBackend):
 
     @property
     def supported_features(self) -> frozenset[Feature]:
-        return frozenset(Feature)  # BoTorch supports all features
+        """Features this backend supports **unconditionally**.
+
+        ``Feature.MULTI_FIDELITY`` is deliberately excluded — the
+        ``bo_engine.multifidelity`` module provides standalone
+        ``SingleTaskMultiFidelityGP`` helpers, but the active
+        ``generate_next_batch`` pipeline does not dispatch
+        ``AcquisitionMethod.MULTI_FIDELITY_KG`` to ``qMFKG`` and does not
+        construct a multi-fidelity GP when ``spec.fidelity_parameter`` is
+        set. Until the suggestion pipeline routes multi-fidelity end to
+        end, advertising the capability would silently downgrade callers
+        to single-fidelity behaviour.
+        """
+        return frozenset(f for f in Feature if f is not Feature.MULTI_FIDELITY)
 
     def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
         """BoTorch supports every neutral feature and option in the spec."""
@@ -152,14 +166,25 @@ class BoTorchBackend(BaseBackend):
             ),
         )
 
-        results, new_turbo = generate_next_batch(
-            spec=spec,
-            observations=observations,
-            batch_size=batch_size,
-            iteration=iteration,
-            turbo_state=turbo_state,
-            pending_points=pending_points,
-        )
+        # SearchSpaceExhaustedError is a domain signal interpreted by the
+        # operations layer; it is not a backend bug, so let it propagate
+        # untouched. All other library-level exceptions are wrapped via
+        # ``wrap_backend_exception`` so the MCP error mapper sees a
+        # typed :class:`BackendError` rather than a leaky torch/gpytorch
+        # exception class.
+        try:
+            results, new_turbo = generate_next_batch(
+                spec=spec,
+                observations=observations,
+                batch_size=batch_size,
+                iteration=iteration,
+                turbo_state=turbo_state,
+                pending_points=pending_points,
+            )
+        except SearchSpaceExhaustedError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — re-raised after typed wrap
+            raise wrap_backend_exception(exc, backend_name=self.name) from exc
 
         emit(
             progress_callback,
@@ -204,6 +229,16 @@ class BoTorchBackend(BaseBackend):
                 "cost data in metadata. Falling back to standard optimization. "
                 "Add 'cost' to result metadata to enable cost weighting."
             )
+
+        # ``model_warnings`` is stamped onto every SuggestionResult in the
+        # batch — collapse duplicates before lifting them to the SuggestionBatch.
+        seen: set[str] = set()
+        for sr in results:
+            for warning in sr.model_warnings:
+                if warning in seen:
+                    continue
+                seen.add(warning)
+                batch_warnings.append(warning)
 
         return SuggestionBatch(
             suggestions=suggestions,

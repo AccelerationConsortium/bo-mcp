@@ -12,8 +12,11 @@ The tests assert:
 * During the random/warmup phase the strategy reflects ``RandomRecommender``
   (or the active non-meta recommender) — not the post-switch BO label.
 * After enough observations, the strategy includes ``BotorchRecommender``.
-* The static ``select_methods`` fallback is explicitly tagged with
-  ``"(fallback)"`` so callers can distinguish live metadata from a guess.
+* The static ``select_methods`` fallback is explicitly tagged via the
+  structured ``is_fallback=True`` field (replacing the legacy
+  ``"(fallback)"`` suffix per the audit's structured-signal preference)
+  so callers can distinguish live metadata from a guess without
+  string-matching free-form labels.
 * Version metadata for BayBE and bo-engine-baybe is present.
 """
 
@@ -95,12 +98,24 @@ class TestLiveMethodMetadata:
 
 
 class TestFallbackSelectMethods:
-    def test_select_methods_tags_labels_as_fallback(self) -> None:
-        """``select_methods`` is the no-campaign path → its labels are tagged."""
+    def test_select_methods_marks_dict_as_fallback(self) -> None:
+        """``select_methods`` is the no-campaign path → ``is_fallback=True``.
+
+        The distinguishability contract that mattered to callers (a
+        guess vs. live metadata) is preserved by the structured
+        ``is_fallback`` / ``acquisition_function_inferred`` flags; the
+        legacy ``"(fallback)"`` suffix is removed so consumers do not
+        have to substring-match free-form labels (TODO 8.51).
+        """
         backend = BayBEBackend()
         info = backend.select_methods(_spec(), n_observations=0)
-        assert "(fallback)" in info["optimization_strategy"]
-        assert "(fallback)" in info["acquisition_function"]
+        assert info["is_fallback"] is True
+        assert info["acquisition_function_inferred"] is True
+        # The labels themselves are free of the legacy suffix.
+        assert "(fallback)" not in info["optimization_strategy"]
+        assert "(fallback)" not in info["acquisition_function"]
+        # And the confidence is honest about the lack of live data.
+        assert info["confidence"] == "low"
 
     def test_select_methods_multi_objective_label(self) -> None:
         spec = OptimizationSpec(
@@ -113,5 +128,6 @@ class TestFallbackSelectMethods:
             ],
         )
         info = BayBEBackend().select_methods(spec, n_observations=5)
-        assert "qLogNoisyExpectedHypervolumeImprovement" in info["acquisition_function"]
+        assert info["acquisition_function"] == "qLogNoisyExpectedHypervolumeImprovement"
         assert "Multi-objective" in info["explanation"]
+        assert info["is_fallback"] is True

@@ -394,15 +394,31 @@ def get_reproducibility_summary(report: ReproducibilityReport) -> str:
     return "\n".join(lines)
 
 
-def _derive_seed(master_seed: int, context: str) -> int:
-    """Derive a deterministic seed from master seed and context.
+def derive_seed(master_seed: int, context: str) -> int:
+    """Derive a deterministic per-phase seed from the master seed.
+
+    Every stochastic phase of the engine (initial-design Sobol scrambling,
+    acquisition multi-start, fantasy sampling, MCMC chain offsets) should
+    obtain its seed through this helper so cross-phase reproducibility is
+    a function of the campaign master seed plus a stable role tag rather
+    than ad-hoc per-call-site derivations.
+
+    The derivation is a SHA-256 hash of ``f"{master_seed}:{context}"``,
+    truncated to a 4-byte unsigned integer and folded into ``[0,
+    MAX_RANDOM_SEED)``. The hash gives near-uniform coverage of the seed
+    space and is stable across Python versions — picking the same context
+    string at the same master seed always returns the same integer.
 
     Args:
-        master_seed: The master random seed.
-        context: String context for derivation (e.g., "torch", "iteration_5").
+        master_seed: The master random seed (from ``OptimizationSpec.random_seed``
+            or a higher-level reproducibility manager).
+        context: A stable role tag — e.g. ``"sobol:iter_5"``,
+            ``"acquisition:iter_5"``. New stochastic phases should pick
+            human-readable tags so seed reuse across phases is impossible
+            by construction.
 
     Returns:
-        Derived seed value.
+        Derived seed value in ``[0, MAX_RANDOM_SEED)``.
     """
     combined = f"{master_seed}:{context}"
     hash_bytes = hashlib.sha256(combined.encode()).digest()
@@ -410,6 +426,12 @@ def _derive_seed(master_seed: int, context: str) -> int:
     derived = int.from_bytes(hash_bytes[:4], byteorder="big")
     # Ensure within valid range
     return derived % MAX_RANDOM_SEED
+
+
+# Backward-compatibility alias for callers that imported the underscore
+# name before the helper was promoted. New code should call the public
+# ``derive_seed`` directly.
+_derive_seed = derive_seed
 
 
 def _compute_environment_hash() -> str:

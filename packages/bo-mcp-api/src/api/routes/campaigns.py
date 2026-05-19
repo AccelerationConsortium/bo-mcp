@@ -7,24 +7,29 @@ from bo_mcp_server.client import (
     NotFoundError,
     VerbosityLevel,
     batch_get_status_operation,
+    canonical_create_campaign_payload,
     compare_campaigns_operation,
     create_campaign_operation,
     discover_transfer_candidates_operation,
     export_campaign_operation,
     format_validate_intake_response,
-    get_campaign_spec_by_id,
     get_campaign_with_spec,
+    get_spec_for_user,
+    http_status_for_error,
     list_campaigns_operation,
     list_owner_campaigns_with_specs,
     manage_campaign_lifecycle_operation,
+    run_idempotent_operation,
     validate_intake_operation,
 )
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import (
     CurrentUser,
+    IdempotencyKey,
     ensure_owned_campaigns,
     get_authorized_campaign,
     validate_uuid,
@@ -92,6 +97,7 @@ def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
             fidelity_parameter=intake.fidelity_parameter,  # ty: ignore[invalid-argument-type]
             transfer_learning=intake.transfer_learning,  # ty: ignore[invalid-argument-type]
             outcome_constraints=intake.outcome_constraints,  # ty: ignore[invalid-argument-type]
+            acknowledge_degradations=tuple(intake.acknowledge_degradations),
         )
     except ValidationError as exc:
         # Prefix locations with ("body", "intake") so the error shape
@@ -110,23 +116,99 @@ def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
         ) from exc
 
 
-@router.post("", response_model=CampaignCreateResponse)
+@router.post(
+    "",
+    response_model=CampaignCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_new_campaign(
     request: CampaignCreate,
     current_user: CurrentUser,
+    idempotency_key: IdempotencyKey,
+    response: Response,
 ) -> CampaignCreateResponse:
-    """Create a new optimization campaign."""
+    """Create a new optimization campaign.
+
+    Returns ``201 Created`` with a ``Location`` header pointing at
+    :func:`get_campaign` on success. Operation-level rejections —
+    the ``success=False`` envelope produced when intake / capability
+    validation fails — keep the historical ``200 OK`` shape so
+    existing tests for that contract still receive the envelope
+    rather than a redirected HTTP error.
+
+    Honours the ``Idempotency-Key`` request header so retries
+    against this endpoint replay the cached response instead of
+    creating a duplicate campaign — same semantics as the MCP
+    ``bo_create_campaign`` tool's ``idempotency_key`` parameter,
+    sharing the same cache namespace so a retry on either transport
+    sees the other's prior response.
+    """
     intake = _coerce_intake(request.intake)
-    result = await create_campaign_operation(
-        intake_data=intake,
-        owner_id=str(current_user.id),
+    owner_id = str(current_user.id)
+
+    async def run(session: AsyncSession) -> dict:
+        return await create_campaign_operation(
+            intake_data=intake,
+            owner_id=owner_id,
+            session=session,
+        )
+
+    # Shared canonical builder — same shape the MCP wrapper feeds to
+    # the cache — so a retry against either transport replays the
+    # cached response from the original mutation.
+    result = await run_idempotent_operation(
+        operation_name="bo_create_campaign",
+        idempotency_key=idempotency_key,
+        request_payload=canonical_create_campaign_payload(
+            intake_data=intake,
+            owner_id=owner_id,
+        ),
+        executor=run,
     )
+    # Idempotency-layer envelopes (conflict / in-progress / stale-owner)
+    # do not carry the operation's success-shape fields, so we cannot
+    # construct a ``CampaignCreateResponse`` from them. Detect the
+    # missing field and promote them to an HTTPException with the
+    # status code derived from the error code (409 for both conflict
+    # and in-progress today).
+    if "campaign_id" not in result:
+        _raise_idempotency_envelope(result)
+
+    if result.get("success") and result.get("campaign_id"):
+        response.headers["Location"] = f"/api/v1/campaigns/{result['campaign_id']}"
+    else:
+        # Operation-level rejection: the campaign was not persisted,
+        # so a 201 would mislead clients. Fall back to 200 with the
+        # ``success=False`` envelope intact.
+        response.status_code = status.HTTP_200_OK
+
     return CampaignCreateResponse(
         success=result["success"],
         campaign_id=result["campaign_id"],
         spec_id=result["spec_id"],
         warnings=result.get("warnings", []),
         errors=result["errors"],
+        # Forward the wrapper's replay marker so REST clients can
+        # distinguish a cached replay from a fresh mutation. The
+        # marker is added by ``apply_idempotency`` on the cached
+        # response and is absent on the original write.
+        idempotency_replay=bool(result.get("idempotency_replay", False)),
+    )
+
+
+def _raise_idempotency_envelope(result: dict) -> None:
+    """Promote an idempotency-layer error envelope into an HTTPException.
+
+    The idempotency wrapper short-circuits with conflict / in-progress
+    / stale-owner envelopes that lack the operation's success-shape
+    fields. Surface them as a typed HTTP error (409 by default for
+    both ``IDEMPOTENCY_CONFLICT`` and ``IDEMPOTENCY_IN_PROGRESS``) so
+    clients see the structured ``error`` payload instead of a 500
+    triggered by an unpacking ``KeyError``.
+    """
+    raise HTTPException(
+        status_code=http_status_for_error(result),
+        detail=result.get("error", {"message": "Idempotency error"}),
     )
 
 
@@ -187,14 +269,48 @@ async def query_campaigns(
     request: CampaignQueryRequest,
     current_user: CurrentUser,
 ) -> CampaignQueryResponse:
-    """Query campaigns with filtering, pagination, and verbosity control."""
+    """Query campaigns with filtering, pagination, and verbosity control.
+
+    Pagination is cursor-first: pass the ``next_cursor`` returned by
+    the previous response back as ``cursor`` to walk the next page
+    safely under concurrent inserts. ``offset`` is preserved for
+    backwards-compatibility and is mutually exclusive with ``cursor``;
+    supplying both surfaces as an ``HTTPException(400)`` whose
+    ``detail`` carries the structured ``error`` envelope from the
+    operation layer (code, recovery_action, retryable, details).
+    """
+    # Pydantic emits a DeprecationWarning every time the deprecated
+    # ``offset`` field is read. Suppress it locally so well-behaved
+    # callers (who leave it at the default 0) do not see noise; the
+    # warning still surfaces in the OpenAPI schema and on actual use
+    # via the operation-level mutual-exclusion check.
+    import warnings  # noqa: PLC0415 -- scoped to this single suppression
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        offset = request.offset
     result = await list_campaigns_operation(
         owner_id=current_user.id,
         status=request.status,
         limit=request.limit,
-        offset=request.offset,
+        offset=offset,
         verbosity=request.verbosity,
+        cursor=request.cursor,
     )
+    # The success-shaped ``CampaignQueryResponse`` cannot represent
+    # the operation's ``{success: false, error: …}`` envelope —
+    # Pydantic would silently drop the unknown ``error`` field on
+    # construction, so callers would never see the cursor+offset
+    # mutual-exclusion violation (TODO 8.42 friend-review finding).
+    # Promote the structured error to an ``HTTPException`` whose
+    # ``detail`` is the original envelope so clients inspecting
+    # ``response.json()["detail"]["code"]`` can route on it the same
+    # way they route on operation envelopes.
+    if not result.get("success", False):
+        raise HTTPException(
+            status_code=http_status_for_error(result),
+            detail=result.get("error", {"message": "Query failed"}),
+        )
     return CampaignQueryResponse(**result)
 
 
@@ -308,11 +424,18 @@ async def export_campaign(
 
 @router.get("/spec/{spec_id}")
 async def get_campaign_spec(spec_id: str, current_user: CurrentUser) -> dict:
-    """Get campaign spec details."""
+    """Get campaign spec details for a spec the caller owns via a campaign.
+
+    Specs hold parameter, objective, and constraint shape that is often
+    IP-sensitive. Resolving them through the owning campaign — rather
+    than treating the spec UUID as a global lookup key — closes the
+    cross-tenant IDOR that would otherwise expose every spec to anyone
+    who knows or guesses a spec id.
+    """
     # validate_uuid raises a 400 directly; preserve that behavior.
     validate_uuid(spec_id, "spec_id")
     try:
-        spec = await get_campaign_spec_by_id(spec_id)
+        spec = await get_spec_for_user(spec_id, current_user.id)
     except NotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

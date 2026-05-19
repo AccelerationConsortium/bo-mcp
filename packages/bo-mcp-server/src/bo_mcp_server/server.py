@@ -124,11 +124,29 @@ def create_mcp_server() -> FastMCP:
     # agents would see opaque ToolError text instead of an
     # addressable per-field response.
     from bo_mcp_server.tool_boundary import (  # noqa: PLC0415
+        assert_all_tools_routed_through_wrapper,
         install_validation_envelope_wrapper,
     )
 
     install_validation_envelope_wrapper(mcp)
+    # Startup invariant (TODO 8.45): every registered tool must route
+    # through the envelope wrapper so payload-validation failures
+    # always surface as the structured ``field_errors`` envelope. Pin
+    # the contract here so a future code path that bypasses the
+    # wrapper fails at boot instead of leaking ``ToolError`` text on
+    # the first failing call.
+    assert_all_tools_routed_through_wrapper(mcp)
+
+    # TODO 8.43 follow-up: surface ``ResourceOperationError`` at the
+    # FastMCP read-resource boundary so the structured envelope is
+    # not double-wrapped in ``"Error creating resource from template:
+    # ..."`` strings before the lowlevel JSON-RPC dispatcher sees it.
+    from bo_mcp_server.resource_boundary import (  # noqa: PLC0415
+        install_resource_envelope_wrapper,
+    )
+
+    install_resource_envelope_wrapper(mcp)
 
     n_tools = len(mcp._tool_manager._tools)
-    logger.info("MCP server created with %d tools and 3 resources", n_tools)
+    logger.info("MCP server created with %d tools", n_tools)
     return mcp

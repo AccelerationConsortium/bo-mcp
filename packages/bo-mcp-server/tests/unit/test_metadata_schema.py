@@ -42,12 +42,14 @@ def test_result_metadata_accepts_documented_keys() -> None:
         batch_ref="batch-1",
         notes="ran with new reagent batch",
         source_row=3,
+        source_file="results.csv",
     )
     dumped = meta.model_dump(exclude_unset=True)
     # Every key the caller set survives the round trip.
     assert dumped["cost"] == 1.5
     assert dumped["experiment_id"] == "exp-1"
     assert dumped["source_row"] == 3
+    assert dumped["source_file"] == "results.csv"
 
 
 def test_result_metadata_rejects_unknown_keys() -> None:
@@ -87,3 +89,24 @@ def test_result_submission_empty_metadata_passes_through() -> None:
         objective_values={"y": 1.0},
     )
     assert payload.metadata == {}
+
+
+def test_result_submission_round_trips_source_file_metadata() -> None:
+    """REST file-upload route emits ``source_file`` — it must validate.
+
+    Regression test for a Pydantic ``extra_forbidden`` 500 that fired
+    on every REST CSV/XLSX upload before ``source_file`` was added to
+    the documented metadata set.
+    """
+    payload = ResultSubmissionInput(
+        parameter_values={"x": 0.5},
+        objective_values={"y": 1.0},
+        metadata={"source_file": "experiments_q1.csv", "source_row": 7},
+    )
+    assert payload.metadata == {"source_file": "experiments_q1.csv", "source_row": 7}
+
+
+def test_result_metadata_rejects_empty_source_file() -> None:
+    """An empty filename is a programming bug, not a valid provenance value."""
+    with pytest.raises(ValidationError):
+        ResultMetadata(source_file="")

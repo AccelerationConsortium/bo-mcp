@@ -33,13 +33,31 @@ Usage:
 import functools
 from collections.abc import Callable, Coroutine
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from bo_mcp_server import __version__
 
 _METADATA_FIELD = "_metadata"
+_SCHEMA_VERSION_FIELD = "schema_version"
+
+# Top-level response-envelope schema version (TODO 8.55).
+#
+# Every MCP-tool / REST response carries ``schema_version`` so older
+# clients (including older LLM tool descriptions) can detect a
+# backwards-incompatible envelope change without parsing the body.
+# Bump rules:
+#   * additive fields → keep the version unchanged (the contract is
+#     forward-compatible by design — callers ignore unknown keys);
+#   * removed / renamed / re-typed fields → bump by 1 and document
+#     the change in the project changelog and the migration notes.
+#
+# Reference: the schema-version handshake is the same pattern Stripe
+# documents at https://stripe.com/docs/api/versioning — a single
+# integer the client compares against the version it was built
+# against.
+RESPONSE_SCHEMA_VERSION: Final[int] = 1
 
 
 class ResponseMetadata(BaseModel):
@@ -93,7 +111,12 @@ def attach_response_metadata(response: dict[str, Any]) -> dict[str, Any]:
     carries a ``_metadata`` block — e.g. it was assembled by the
     Pydantic per-verbosity formatter — the existing entry is left
     untouched.
+
+    Always stamps ``schema_version`` at the top level so callers can
+    dispatch on the envelope contract without inspecting the body
+    shape.
     """
+    response.setdefault(_SCHEMA_VERSION_FIELD, RESPONSE_SCHEMA_VERSION)
     if _METADATA_FIELD in response:
         return response
     metadata_dump = get_response_metadata().model_dump()
@@ -141,6 +164,12 @@ def _with_metadata(
         if metadata_dump.get("trace_id") is None:
             metadata_dump.pop("trace_id", None)
         result[_METADATA_FIELD] = metadata_dump
+        # Every formatted envelope carries the top-level schema_version
+        # so older clients can dispatch on the contract without parsing
+        # the body. ``setdefault`` so a per-operation formatter that
+        # needs to advertise a higher version during a staged migration
+        # can override.
+        result.setdefault(_SCHEMA_VERSION_FIELD, RESPONSE_SCHEMA_VERSION)
         return result
 
     return wrapper

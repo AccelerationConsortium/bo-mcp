@@ -11,6 +11,7 @@ from bo_mcp_server import __version__
 
 dotenv.load_dotenv()
 
+from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan  # noqa: E402
 from bo_mcp_server.server import create_mcp_server  # noqa: E402
 from bo_mcp_server.storage import close_database, init_database  # noqa: E402
 
@@ -20,12 +21,13 @@ async def main_async(transport: str, host: str, port: int) -> None:
     await init_database()
     mcp = create_mcp_server()
 
-    if transport == "stdio":
-        await mcp.run_stdio_async()
-    else:
-        mcp.settings.host = host
-        mcp.settings.port = port
-        await mcp.run_sse_async()
+    async with idempotency_gc_lifespan():
+        if transport == "stdio":
+            await mcp.run_stdio_async()
+        else:
+            mcp.settings.host = host
+            mcp.settings.port = port
+            await mcp.run_sse_async()
 
 
 async def _verify_setup() -> None:

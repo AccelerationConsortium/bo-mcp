@@ -38,7 +38,7 @@ async def session() -> AsyncGenerator[AsyncSession]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, expire_on_commit=True)
 
     async with async_session() as session:
         yield session
@@ -105,6 +105,40 @@ class TestUserRepository:
 
         assert result is True
         assert await repo.get(saved.id) is None
+
+    @pytest.mark.asyncio
+    async def test_duplicate_api_key_hash_rejected(self, session: AsyncSession) -> None:
+        """Two users cannot share the same ``api_key_hash``.
+
+        The auth path resolves a single user with ``scalar_one_or_none``;
+        without a uniqueness guarantee, duplicate provisioning would
+        surface as a 500 on every login. The schema enforces the
+        invariant so the failure mode is provisioning-time, not
+        request-time. References the SQLAlchemy / SQLite UNIQUE
+        constraint behaviour:
+        https://www.sqlite.org/lang_createtable.html#uniqueconst.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        repo = UserRepository(session)
+        await repo.save(
+            User(
+                name="First",
+                email="first@example.com",
+                api_key_hash="shared-hash",
+            )
+        )
+        await session.commit()
+
+        await repo.save(
+            User(
+                name="Second",
+                email="second@example.com",
+                api_key_hash="shared-hash",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()
 
 
 class TestSuggestionRepository:

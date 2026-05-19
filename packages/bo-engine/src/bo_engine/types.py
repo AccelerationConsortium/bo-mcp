@@ -356,6 +356,69 @@ class OptimizationSpec:
     # and the per-backend converters; backends that do not recognize a key
     # must silently ignore it.
     backend_options: dict[str, dict[str, Any]] | None = None
+    # Explicit caller-side acknowledgement that the chosen backend may
+    # silently degrade these option fields. Backends classify
+    # semantically load-bearing options (e.g. ``outcome_constraints`` on
+    # BayBE) as UNSUPPORTED by default so misroutings fail loudly at
+    # intake; passing the corresponding field name here downgrades the
+    # report to IGNORED so the caller opts into the degraded run with a
+    # warning. ``backend="auto"`` continues to route around backends that
+    # require acknowledgement for active options.
+    acknowledge_degradations: tuple[str, ...] = field(default_factory=tuple)
+    # Modeling strategy for ``outcome_constraints``. ``"continuous"``
+    # (default) fits a regression GP on the raw constrained-objective values
+    # and converts posterior samples to signed distance-to-boundary so the
+    # acquisition retains gradient information near the boundary;
+    # Gaussian-CDF feasibility weighting is then exact in expectation
+    # (Gardner et al. ICML 2014; Letham et al. ICML 2019). ``"binary"`` is
+    # the legacy path that fits a GP on binary feasibility labels — kept as
+    # an opt-in fallback for genuinely binary outcomes (e.g. pass/fail
+    # quality gates) where the objective value is not informative.
+    outcome_constraint_method: str = "continuous"
+    # Categorical-aware GP kernel routing. ``False`` (default) keeps the
+    # historical one-hot + RBF behaviour. ``True`` requests an additive
+    # ``RBF(continuous_dims) + CategoricalKernel(one_hot_blocks)`` kernel —
+    # Hamming-style similarity on the categorical dims instead of Euclidean
+    # distance on their one-hot columns. The audit identified this as a
+    # modeling-efficiency concern (slower fits and lower posterior quality
+    # on high-cardinality categorical specs) rather than a correctness bug;
+    # the acquisition path already enumerates one-hot combinations via
+    # ``optimize_acqf_mixed`` so projection drift is not in scope.
+    #
+    # The flag is wired to ``models.create_input_transform`` /
+    # ``models.create_single_task_model``; routing to BoTorch's
+    # ``MixedSingleTaskGP`` (which requires *ordinal* integer encoding for
+    # the categorical block) is a separate piece of work because it
+    # propagates through every transform / acquisition call site.
+    use_categorical_kernel: bool = False
+    # Optional override for the GP observation-noise ``GammaPrior``
+    # concentration and rate. ``None`` (default) uses the
+    # bo_engine.constants values calibrated for standardized targets. In
+    # data-starved regimes (small n on a high-noise problem) the inferred
+    # noise hyperparameter is miscalibrated by the stock prior; passing
+    # ``(concentration, rate)`` lets the caller tighten or relax the
+    # prior to match an empirically known noise floor. The override is
+    # only consumed when ``train_yvar`` is not supplied — the
+    # heteroskedastic / known-uncertainty path bypasses the prior
+    # entirely (see ``models._build_likelihood``).
+    noise_prior_params: tuple[float, float] | None = None
+    # Auto-shift toggle for objectives that declare ``log_transform=True``
+    # but may have occasional non-positive observations. When set, the
+    # log-transform path computes ``shift = -min(y) + epsilon`` once at
+    # fit and applies it before training — see
+    # :func:`bo_engine.models.create_single_task_model` for the
+    # bookkeeping. Defaults to ``False`` so the strict positivity check
+    # remains the default and only opt-in callers are subject to the
+    # shifted-scale posterior contract.
+    #
+    # **Single-objective only.** The current shift bookkeeping lives on
+    # the single-task GP factory and the single-objective suggestion
+    # provenance; the multi-objective path
+    # (``create_model`` / ``_generate_multi_objective_batch``) does not
+    # thread it through and raises ``ValueError`` when the flag is set
+    # alongside more than one objective. Per-objective shifts are
+    # tracked separately (Phase H follow-up).
+    auto_shift_for_log: bool = False
 
     @property
     def use_turbo(self) -> bool:
@@ -390,6 +453,14 @@ class SuggestionResult:
     """Result of suggestion generation.
 
     Contains parameter values and metadata about how the suggestion was generated.
+
+    ``model_warnings`` (when non-empty) carries diagnostic strings raised by
+    post-fit checks (e.g. failed standardization invariant on a constant
+    objective). The warnings are batch-level rather than per-suggestion, but
+    they are stamped onto every entry of the batch so a downstream wrapper
+    that operates on the full list (e.g. :class:`bo_engine.backend.SuggestionBatch`)
+    can de-duplicate and lift them onto its own ``warnings`` field without
+    threading a separate channel through the generator API.
     """
 
     parameter_values: dict[str, Any]
@@ -406,6 +477,7 @@ class SuggestionResult:
     explanation: str | None = None
     predicted_objectives: dict[str, float] | None = None  # Posterior mean per objective
     predicted_std: dict[str, float] | None = None  # Posterior std per objective
+    model_warnings: tuple[str, ...] = ()
 
 
 @dataclass
@@ -428,6 +500,16 @@ class ObservationData:
     objective_values: dict[str, float]
     cost: float | None = None  # v1.3: Cost for cost-aware optimization
     measurement_uncertainty: dict[str, float] | None = None  # per-objective stddev
+    # Optional durable cross-system identity (TODO 8.50). Backends that
+    # serialise per-observation state (notably BayBE, which keeps an
+    # ``observation_identity`` index) use this as the discriminator for
+    # otherwise-identical replicate rows so a specific replicate can be
+    # tied to the same storage row across reorder / restart cycles. The
+    # MCP server populates it with ``Result.id`` (a UUID string) via
+    # ``helpers.results_to_observations``; direct bo-engine callers that
+    # do not need cross-system addressing can leave it ``None`` and the
+    # backend falls back to a within-batch fingerprint as before.
+    result_id: str | None = None
 
 
 # =============================================================================

@@ -18,6 +18,15 @@ the bo-engine package, making them easy to understand, tune, and override.
 # recommendation.
 SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD = 10.0
 
+# Order-of-magnitude width (in log10 units) above which a SAASBO posterior
+# interval is considered "wide" and the corresponding dimension is flagged
+# with ``confident=False``. Early in a campaign the half-Cauchy posterior
+# can span several orders of magnitude and the median importance is
+# unreliable for pruning decisions; pinning the threshold at 1 order of
+# magnitude follows Eriksson & Jankowiak's UAI-2021 recommendation in
+# §3.3 / Appendix B.
+SAASBO_WIDE_INTERVAL_LOG10_THRESHOLD = 1.0
+
 # =============================================================================
 # GP Noise Prior (likelihood)
 # =============================================================================
@@ -34,6 +43,13 @@ NOISE_PRIOR_GAMMA_RATE = 0.05
 # to keep the GP Cholesky factor well conditioned under noisy / multi-scale
 # objectives.
 NOISE_PRIOR_MIN_INFERRED = 1e-4
+
+# Default LogNormal-prior parameters for the Kumaraswamy warp concentrations
+# (see ``models.create_input_transform``). Calibrated to BoTorch's stock prior
+# under the post-Normalize unit-cube domain — the input transform is ordered
+# ``normalize → warp`` and the prior assumes a [0, 1] input space.
+WARP_PRIOR_LOC = 0.0
+WARP_PRIOR_SCALE = 0.75
 
 # =============================================================================
 # High-Dimensional Optimization Thresholds
@@ -62,6 +78,15 @@ MIN_OBSERVATIONS_FOR_MODEL = 2
 # noise, not statistical slack.
 STANDARDIZATION_MEAN_TOLERANCE = 1e-5
 STANDARDIZATION_VAR_TOLERANCE = 1e-4
+
+# Minimum standard deviation applied to a sub-model whose raw training targets
+# are (near-)constant. BoTorch's ``Standardize(m=1)`` divides by an empirical
+# stddev that can collapse to ~0 on replicate / constant data, which inflates
+# posterior variance and produces spurious acquisition spikes. The verifier in
+# ``models.verify_standardization`` floors the *floor used for the unit-variance
+# assertion*; the model factory floors the post-standardize stddev attribute
+# itself so subsequent posterior evaluation stays numerically stable.
+STANDARDIZATION_STD_FLOOR = 1e-4
 
 # Minimum observations for meaningful LOO cross-validation
 MIN_OBSERVATIONS_FOR_LOO_CV = 5

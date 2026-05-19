@@ -35,15 +35,24 @@ class _FakeSession:
     """Minimal stand-in for ``mcp.server.session.ServerSession``.
 
     Only ``send_resource_updated`` is exercised by the registry.
+    ``fail_on_send`` makes every delivery raise; ``fail_attempts``
+    fails the first N attempts and then lets the next one succeed —
+    used to exercise the bounded-retry path in
+    :func:`notify_campaign_updated` (TODO 8.44).
     """
 
     def __init__(self) -> None:
         self.delivered: list[str] = []
         self.fail_on_send = False
+        self.fail_attempts = 0
+        self.attempts = 0
 
     async def send_resource_updated(self, uri: Any) -> None:
+        self.attempts += 1
         if self.fail_on_send:
             raise RuntimeError("simulated transport failure")
+        if self.attempts <= self.fail_attempts:
+            raise RuntimeError(f"transient failure on attempt {self.attempts}")
         self.delivered.append(str(uri))
 
 
@@ -124,17 +133,49 @@ class TestNotifyDelivery:
         assert sub_b.delivered == []
 
     @pytest.mark.asyncio
-    async def test_failed_send_drops_subscriber_silently(self) -> None:
+    async def test_failed_send_drops_subscriber_after_retry_budget(self) -> None:
+        """A permanently-failing transport ends up unsubscribed.
+
+        After TODO 8.44 the registry retries up to
+        ``SUBSCRIPTION_SEND_MAX_ATTEMPTS`` times before unsubscribing.
+        A permanently-failing session still hits zero subscriptions —
+        the budget just rides out blips before tearing down.
+        """
         cid = uuid4()
         registry = get_registry()
         flaky = _FakeSession()
         flaky.fail_on_send = True
         await registry.subscribe(campaign_uri(cid), flaky)
 
-        # The first delivery raises internally; the registry must catch
+        # All retry attempts raise internally; the registry must catch
         # and unsubscribe so the next notification finds nobody.
         await notify_campaign_updated(cid)
         assert await registry.total_subscriptions() == 0
+        # The full retry budget was actually exercised.
+        from bo_mcp_server.subscriptions import SUBSCRIPTION_SEND_MAX_ATTEMPTS
+
+        assert flaky.attempts == SUBSCRIPTION_SEND_MAX_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_does_not_drop_subscriber(self) -> None:
+        """A single wire-blip rides out the retry budget (TODO 8.44).
+
+        Pre-fix, the very first ``send_resource_updated`` exception
+        unsubscribed the session, which silently severed long-running
+        agents whenever a transport hiccup occurred. The bounded-retry
+        path keeps the subscription alive when the delivery eventually
+        succeeds within the budget.
+        """
+        cid = uuid4()
+        registry = get_registry()
+        sub = _FakeSession()
+        sub.fail_attempts = 1  # one transient failure, then succeed
+        await registry.subscribe(campaign_uri(cid), sub)
+
+        await notify_campaign_updated(cid)
+        # Delivery eventually landed and the subscription survived.
+        assert sub.delivered == [campaign_uri(cid)]
+        assert await registry.total_subscriptions() == 1
 
     @pytest.mark.asyncio
     async def test_no_subscribers_no_op(self) -> None:

@@ -9,6 +9,7 @@ from bo_mcp_server.domain import (
     ConstraintType,
     InputParameter,
     Objective,
+    OutcomeConstraint,
     ParameterType,
     TurboConfig,
 )
@@ -89,6 +90,74 @@ class TestInputParameter:
         )
         assert param.name == "catalyst"
         assert len(param.categories) == 3  # ty: ignore[invalid-argument-type]
+
+
+class TestConstraintShape:
+    """Tests for :class:`Constraint` shape-by-type invariants.
+
+    Linear constraints must carry one coefficient per parameter; sum
+    constraints are unweighted and must not carry coefficients. Pre-fix,
+    the engine quietly rewrote a ``LINEAR`` constraint without
+    coefficients into an unweighted sum (which has different semantics),
+    so a typo'd input ran a different optimization than the caller
+    asked for.
+    """
+
+    def test_linear_requires_coefficients(self):
+        """``type=linear`` without ``coefficients`` is rejected."""
+        with pytest.raises(ValidationError) as exc:
+            Constraint(
+                type=ConstraintType.LINEAR,
+                parameters=("a", "b"),
+                value=1.0,
+            )
+        assert "Linear constraint requires coefficients" in str(exc.value)
+
+    def test_linear_coefficient_count_must_match_parameters(self):
+        """``coefficients`` must align one-to-one with ``parameters``."""
+        with pytest.raises(ValidationError) as exc:
+            Constraint(
+                type=ConstraintType.LINEAR,
+                parameters=("a", "b"),
+                value=1.0,
+                coefficients=(1.0,),  # one coefficient, two parameters
+            )
+        assert "one coefficient per parameter" in str(exc.value)
+
+    def test_sum_constraint_rejects_coefficients(self):
+        """Sum-* constraints are unweighted; coefficients are not accepted."""
+        for sum_type in (
+            ConstraintType.SUM_EQUALS,
+            ConstraintType.SUM_LESS_THAN,
+            ConstraintType.SUM_GREATER_THAN,
+        ):
+            with pytest.raises(ValidationError) as exc:
+                Constraint(
+                    type=sum_type,
+                    parameters=("a", "b"),
+                    value=1.0,
+                    coefficients=(0.5, 0.5),
+                )
+            assert "does not accept coefficients" in str(exc.value)
+
+    def test_valid_linear_constraint(self):
+        """Well-shaped linear constraint passes validation."""
+        c = Constraint(
+            type=ConstraintType.LINEAR,
+            parameters=("a", "b"),
+            value=1.0,
+            coefficients=(0.5, 0.5),
+        )
+        assert c.coefficients == (0.5, 0.5)
+
+    def test_valid_sum_constraint(self):
+        """Well-shaped sum constraint passes validation."""
+        c = Constraint(
+            type=ConstraintType.SUM_EQUALS,
+            parameters=("a", "b"),
+            value=1.0,
+        )
+        assert c.coefficients is None
 
 
 class TestObjective:
@@ -179,6 +248,48 @@ class TestCampaignSpec:
                     ),
                 ),
             )
+
+    def test_outcome_constraint_rejects_unknown_objective(self):
+        """A typo'd ``objective_name`` on an outcome constraint fails at intake.
+
+        Pre-fix, the engine silently disabled outcome constraints
+        referencing a missing objective (``return None`` in
+        ``_build_outcome_constraint_models``). That produced
+        unconstrained suggestions the caller believed were constrained
+        — the worst class of BO bug.
+        """
+        with pytest.raises(ValidationError) as exc:
+            CampaignSpec(
+                name="Test",
+                parameters=(
+                    InputParameter(
+                        name="x",
+                        type=ParameterType.CONTINUOUS,
+                        bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
+                    ),
+                ),
+                objectives=(Objective(name="yield", direction="maximize"),),
+                outcome_constraints=(
+                    OutcomeConstraint(objective_name="ield", threshold=0.5),  # typo
+                ),
+            )
+        assert "Outcome constraint references unknown objective" in str(exc.value)
+
+    def test_outcome_constraint_accepts_declared_objective(self):
+        """Outcome constraint that names a declared objective passes intake."""
+        spec = CampaignSpec(
+            name="Test",
+            parameters=(
+                InputParameter(
+                    name="x",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
+                ),
+            ),
+            objectives=(Objective(name="yield", direction="maximize"),),
+            outcome_constraints=(OutcomeConstraint(objective_name="yield", threshold=0.5),),
+        )
+        assert spec.outcome_constraints[0].objective_name == "yield"
 
     def test_get_parameter(self, sample_campaign_spec: CampaignSpec):
         """get_parameter returns correct parameter or None."""

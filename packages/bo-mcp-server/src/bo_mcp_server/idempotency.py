@@ -52,22 +52,29 @@ can reuse the same store.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import contextvars
 import hashlib
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import case, delete, select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain.utils import utcnow
-from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.errors import ErrorCode, make_error_response, retry_hint_for
+from bo_mcp_server.settings import (
+    get_idempotency_reservation_ttl_seconds,
+    get_idempotency_response_ttl_seconds,
+)
 from bo_mcp_server.storage import get_session
 from bo_mcp_server.storage.models import IdempotencyCacheModel
 
@@ -83,32 +90,63 @@ zero-arg executor would otherwise leave open.
 
 logger = logging.getLogger(__name__)
 
-# 24 hours. Chosen to cover same-day agent retry windows without
-# letting the cache grow unbounded. Override via the constructor only
-# in tests.
-DEFAULT_IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
-
-# How long a reservation can stay in the "pending" state before a
-# retrying caller is allowed to reclaim the slot. Without this bound, a
-# worker that dies between mutation-commit and cache-finalize would
-# poison the slot for the entire ``DEFAULT_IDEMPOTENCY_TTL_SECONDS``
-# window — every retry would see ``E014 IDEMPOTENCY_IN_PROGRESS`` until
-# the 24h TTL elapsed, at which point retries could finally execute
-# again and *duplicate* the mutation. With a short pending lifetime
-# (10 min, well above any normal BO operation), abandoned reservations
-# clear within minutes and retries can re-enter the reservation race.
+# Default response-replay and reservation TTLs. The literal values
+# live on :class:`bo_mcp_server.settings.Settings` so deployments can
+# tune them via env (``IDEMPOTENCY_RESPONSE_TTL_SECONDS`` /
+# ``IDEMPOTENCY_RESERVATION_TTL_SECONDS``) without editing source. The
+# module-level names below are read at import time and retained for
+# backwards-compat call sites and tests; the live ``apply_idempotency``
+# path re-reads the active settings on every call.
 #
-# Trade-off: an operation that genuinely runs longer than this timeout
-# may have its slot reclaimed by a concurrent retry — leading to two
-# executions of the same logical call. Tune up only if you intentionally
-# run very slow operations and prefer a longer block to a possible
-# duplicate. Document the choice for callers.
-DEFAULT_RESERVATION_TTL_SECONDS = 10 * 60
+# Response TTL trade-off: longer windows cover same-day agent retries
+# but grow the cache. The 24h default matches the IETF idempotency-key
+# draft.
+#
+# Reservation TTL trade-off: a worker that dies between mutation-
+# commit and cache-finalize poisons the slot for the entire response
+# TTL unless the reservation expires sooner. With a short pending
+# lifetime (10 min, well above any normal BO operation), abandoned
+# reservations clear within minutes and retries can re-enter the
+# reservation race. Operations that genuinely run longer than this
+# timeout may have their slot reclaimed by a concurrent retry —
+# leading to two executions of the same logical call.
+DEFAULT_IDEMPOTENCY_TTL_SECONDS = get_idempotency_response_ttl_seconds()
+DEFAULT_RESERVATION_TTL_SECONDS = get_idempotency_reservation_ttl_seconds()
 
 # Sentinel stored in ``response_json`` while the reservation winner is
 # executing the operation. Distinguishable from any real JSON response
 # because no JSON document is ever the empty string.
 _PENDING_SENTINEL = ""
+
+# Heartbeat cadence and per-tick TTL extension for the long-running
+# operation path (TODO 8.24). The cadence is shorter than the extension
+# so a single missed tick (event-loop hiccup, slow DB roundtrip) does
+# not let the reservation slot lapse — the next tick still lands well
+# inside the prior extension window.
+DEFAULT_HEARTBEAT_PERIOD_SECONDS = 60.0
+DEFAULT_HEARTBEAT_EXTENSION_SECONDS = 5 * 60.0
+
+
+@dataclass(frozen=True)
+class _ActiveReservation:
+    """In-flight reservation metadata exposed to heartbeat callers.
+
+    Stored on a :class:`contextvars.ContextVar` so call sites deep in
+    the operation graph (the heavy backend dispatch in
+    ``generate_suggestions``) can extend the slot without threading
+    the tool_name / key / token through every intermediate function
+    signature. The token guards against extending a slot that has
+    already been reclaimed by a concurrent retry.
+    """
+
+    tool_name: str
+    idempotency_key: str
+    reservation_token: str
+
+
+_active_reservation: contextvars.ContextVar[_ActiveReservation | None] = contextvars.ContextVar(
+    "_bo_mcp_active_reservation", default=None
+)
 
 
 def _ensure_aware(value: datetime) -> datetime:
@@ -145,6 +183,91 @@ class IdempotencyLookup:
     in_progress: bool = False
 
 
+# Non-semantic field names that must never participate in the
+# idempotency hash (TODO 8.25). Each entry is a transport- or telemetry-
+# layer artefact that the client may regenerate on every retry; hashing
+# them would surface spurious ``IDEMPOTENCY_CONFLICT`` envelopes on
+# what is logically the same call.
+#
+# - ``created_at`` / ``client_timestamp`` / ``submitted_at``: client-side
+#   wall-clocks that always advance on retry.
+# - ``request_id`` / ``trace_id`` / ``x_trace_id``: per-request
+#   correlation ids regenerated by the transport.
+# - ``retry_count`` / ``attempt`` / ``correlation_id``: client retry
+#   bookkeeping.
+# - ``idempotency_key``: never include the key in its own hash; it lives
+#   on the row's primary key, not in the request_hash column.
+#
+# Path contract (TODO 8.25 / second review pass): these keys are
+# stripped ONLY at the top of ``request_payload``. They are transport /
+# telemetry artefacts that the wrapper layers above the idempotency
+# call site add (REST request id, MCP trace id, server-side
+# ``created_at`` snapshot, etc.). Stripping them lets retries replay
+# even when only those advance.
+#
+# Nested dicts are walked through verbatim. The domain layer permits
+# arbitrary user-defined parameter / objective names
+# (``min_length=1`` on
+# :class:`bo_mcp_server.domain.campaign_spec.Parameter`, free-form
+# keys on :attr:`ResultSubmissionInput.parameter_values`), so a real
+# campaign may legitimately contain ``parameter_values["timestamp"]``,
+# ``parameter_values["_metadata"]``, or
+# ``objective_values["created_at"]``. A recursive key-name strip — at
+# *any* depth, including the once-reserved ``_metadata`` block —
+# would collapse those semantically-distinct submissions onto one
+# hash bucket and let the idempotency cache replay the wrong
+# response. Transports that nest their own transport metadata MUST
+# put it at the top of ``request_payload`` (the only stripping path
+# here); nothing nested is treated as transport-owned.
+NON_SEMANTIC_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {
+        "_metadata",
+        "attempt",
+        "client_timestamp",
+        "correlation_id",
+        "created_at",
+        "idempotency_key",
+        "request_id",
+        "retry_count",
+        "submitted_at",
+        "timestamp",
+        "trace_id",
+        "x_trace_id",
+    }
+)
+
+
+def strip_non_semantic_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``payload`` with top-level non-semantic keys removed.
+
+    Top-level-only contract (TODO 8.25 / second review pass): nested
+    dicts and lists are walked through verbatim. The domain layer
+    permits arbitrary user-defined keys inside ``parameter_values`` /
+    ``objective_values`` (and inside ``parameters`` / ``objectives``
+    intake collections), so a real campaign may legitimately use any
+    name in :data:`NON_SEMANTIC_PAYLOAD_KEYS` — including the
+    previously-reserved ``_metadata`` — as a *semantic* field.
+    Recursive stripping would collapse two semantically-distinct
+    submissions onto the same SHA256 bucket and have the idempotency
+    cache replay the wrong response.
+
+    Transports that need to attach their own transport metadata MUST
+    put it at the top of ``request_payload``; that is the only path
+    where stripping happens. Nothing nested is treated as
+    transport-owned.
+
+    Tools that need a deeper canonicalisation (renaming nested fields,
+    applying defaults) should do it *before* calling
+    :func:`canonical_request_hash`.
+    """
+    if not isinstance(payload, dict):
+        # ``payload`` is documented as ``dict[str, Any]`` but defend
+        # against an accidentally-supplied scalar so the SHA256 input
+        # stays stable.
+        return {}
+    return {k: v for k, v in payload.items() if k not in NON_SEMANTIC_PAYLOAD_KEYS}
+
+
 def canonical_request_hash(payload: dict[str, Any]) -> str:
     """Hash a tool call payload deterministically.
 
@@ -157,13 +280,19 @@ def canonical_request_hash(payload: dict[str, Any]) -> str:
     because the upstream tool layer has already validated the payload
     against its typed schema.
 
+    Before hashing, :func:`strip_non_semantic_fields` removes documented
+    transport / telemetry artefacts (``created_at``, ``request_id``,
+    ``trace_id``, …) so a retry that regenerates those fields still
+    replays the cached response instead of triggering a spurious
+    :class:`ErrorCode.IDEMPOTENCY_CONFLICT` envelope (TODO 8.25).
+
     No size cap is applied: SHA256 is O(n) and even multi-megabyte
     payloads hash in milliseconds. Tools that carry genuinely large
     fields (e.g. CSV uploads) should still pre-digest those fields
     before building the idempotency payload (see
     :func:`digest_large_field`) so the cache row stays small.
     """
-    serialized = json.dumps(payload, sort_keys=True, default=str)
+    serialized = json.dumps(strip_non_semantic_fields(payload), sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
@@ -203,8 +332,16 @@ def _in_progress_envelope(tool_name: str, key: str) -> dict[str, Any]:
 
 
 def _conflict_envelope(tool_name: str, key: str) -> dict[str, Any]:
+    """Build the structured envelope for an idempotency-key collision.
+
+    Uses :class:`ErrorCode.IDEMPOTENCY_CONFLICT` so callers can
+    programmatically distinguish the key-reuse case from generic
+    validation failures. ``details.idempotency_conflict=True`` is
+    retained for backward compatibility with existing clients that
+    grep the details field.
+    """
     return make_error_response(
-        ErrorCode.VALIDATION_FAILED,
+        ErrorCode.IDEMPOTENCY_CONFLICT,
         message=(
             f"idempotency_key {key!r} was previously used by "
             f"{tool_name} with a different payload; refusing to "
@@ -261,6 +398,28 @@ def _project_row(
     return IdempotencyLookup(cached_response=cached)
 
 
+async def purge_expired_cache_rows() -> int:
+    """Delete every idempotency_cache row whose ``expires_at`` has passed.
+
+    Runs in its own short transaction so it does not block the
+    operation path. Returns the number of rows removed so the caller
+    (the lifespan-managed sweep) can publish it as a metric. The
+    opportunistic per-key purge in :func:`_read_existing` only fires
+    when that key is queried; rows for never-retried calls accumulate
+    until this sweep runs. See TODO 8.23.
+
+    Safe to call concurrently with operation traffic: the ``DELETE``
+    uses the same primary-key predicate as a fresh reservation, so a
+    pending reservation winner can never have its row removed (its
+    ``expires_at`` is still in the future).
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            delete(IdempotencyCacheModel).where(IdempotencyCacheModel.expires_at <= utcnow())
+        )
+    return int(result.rowcount or 0)  # ty: ignore[unresolved-attribute]
+
+
 async def _read_existing(
     tool_name: str,
     key: str,
@@ -293,8 +452,11 @@ async def _read_existing(
             )
         )
         row = result.scalar_one_or_none()
-
-    return _project_row(row, tool_name, key, request_hash)
+        # Project inside the session: ``expire_on_commit=True`` expires
+        # every ORM attribute on the way out of this block, so reading
+        # ``row.expires_at`` after the ``async with`` would raise
+        # ``DetachedInstanceError``.
+        return _project_row(row, tool_name, key, request_hash)
 
 
 async def _try_reserve(
@@ -658,8 +820,11 @@ async def apply_idempotency(
         async with get_session() as session:
             return await executor(session)
 
-    ttl = ttl_seconds or DEFAULT_IDEMPOTENCY_TTL_SECONDS
-    reservation_ttl = reservation_ttl_seconds or DEFAULT_RESERVATION_TTL_SECONDS
+    # Re-read the active settings on every call so a monkeypatched
+    # environment variable takes effect immediately. The module-level
+    # constants stay as snapshots for backwards-compatible callers.
+    ttl = ttl_seconds or get_idempotency_response_ttl_seconds()
+    reservation_ttl = reservation_ttl_seconds or get_idempotency_reservation_ttl_seconds()
     request_hash = canonical_request_hash(request_payload)
 
     outcome = await _reserve_or_short_circuit(
@@ -683,23 +848,41 @@ async def apply_idempotency(
 def _is_transient_error(response: dict[str, Any]) -> bool:
     """Whether the executor returned a retryable-error envelope.
 
-    Currently only :class:`ErrorCode.CONCURRENT_MODIFICATION` is treated
-    as transient: the optimistic-lock race resolves on retry, so we
-    must *not* cache the error response — caching it would block all
-    future retries until TTL even though a successful outcome is
-    possible immediately.
+    Any envelope whose error is marked ``retryable=True`` must not be
+    cached: caching it would block all future retries until the 24h
+    TTL elapsed even though a successful outcome is possible
+    immediately. This covers the historical ``CONCURRENT_MODIFICATION``
+    case and every newer addition to the typed backend hierarchy
+    (notably ``BACKEND_TRANSIENT_ERROR``) introduced in TODO 8.13/8.14
+    without having to re-list each code here.
 
     Other operation errors (validation failures, missing campaign,
-    etc.) are deterministic given the same payload, so caching them is
-    correct and avoids re-running an operation that will always fail
-    the same way.
+    incompatible backend, etc.) are deterministic given the same
+    payload, so caching them is correct and avoids re-running an
+    operation that will always fail the same way.
+
+    The lookup first consults the envelope's own ``retryable`` flag
+    (always populated by :func:`make_error_response` since 8.14) so
+    custom envelopes that set the flag are honoured; falls back to
+    the central :data:`ERROR_CODE_RETRY_HINTS` table when the field
+    is missing (legacy callers that built the envelope by hand).
     """
     if response.get("success") is not False:
         return False
     error = response.get("error")
     if not isinstance(error, dict):
         return False
-    return error.get("code") == ErrorCode.CONCURRENT_MODIFICATION.value
+    if "retryable" in error:
+        return bool(error["retryable"])
+    code_value = error.get("code")
+    if not code_value:
+        return False
+    try:
+        code = ErrorCode(code_value)
+    except ValueError:
+        return False
+    retryable, _ = retry_hint_for(code)
+    return retryable
 
 
 class _StaleReservationError(Exception):
@@ -740,6 +923,128 @@ def _stale_reservation_envelope(tool_name: str, key: str) -> dict[str, Any]:
     )
 
 
+async def _extend_reservation_ttl(
+    tool_name: str,
+    idempotency_key: str,
+    reservation_token: str,
+    extra_seconds: float,
+) -> bool:
+    """Push the pending reservation's ``expires_at`` forward by ``extra_seconds``.
+
+    Used by the heartbeat (TODO 8.24) so a legitimately slow operation
+    (SAASBO MCMC, large-batch generation) does not lose its slot to a
+    concurrent retry. The ``WHERE`` clause is intentionally tight:
+
+    * ``reservation_token`` must still match — a slot reclaimed by a
+      newer reservation gets a fresh token, so the bump no-ops there.
+    * ``response_json = _PENDING_SENTINEL`` — never extend a row that
+      has already been finalized; that would silently delay the response
+      cache expiry past the 24h TTL contract.
+
+    Monotonic-expiry contract (TODO 8.24 review pass): the heartbeat is
+    "extend if the proposed deadline is later than the current one",
+    never "set deadline to now + extra". Without this guard the first
+    heartbeat after 60s would *shorten* a 10-min initial reservation
+    to 5-6 min, which is the exact opposite of the stated intent. The
+    ``CASE`` expression on ``expires_at`` enforces ``max(current,
+    now+extra)`` server-side so the row's deadline cannot move
+    backward.
+
+    Returns ``True`` iff one row matched the WHERE clause (slot is
+    still ours, regardless of whether the CASE actually moved the
+    deadline). ``False`` means the slot is no longer ours (concurrent
+    reclaim, post-finalize, soft-delete), in which case the caller
+    should stop heartbeating.
+    """
+    candidate = utcnow() + timedelta(seconds=extra_seconds)
+    monotonic_expiry = case(
+        (IdempotencyCacheModel.expires_at < candidate, candidate),
+        else_=IdempotencyCacheModel.expires_at,
+    )
+    stmt = (
+        update(IdempotencyCacheModel)
+        .where(
+            IdempotencyCacheModel.tool_name == tool_name,
+            IdempotencyCacheModel.idempotency_key == idempotency_key,
+            IdempotencyCacheModel.reservation_token == reservation_token,
+            IdempotencyCacheModel.response_json == _PENDING_SENTINEL,
+        )
+        .values(expires_at=monotonic_expiry)
+    )
+    async with get_session() as session:
+        result = await session.execute(stmt)
+    return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
+
+
+async def extend_active_reservation(extra_seconds: float | None = None) -> bool:
+    """Heartbeat: extend the in-flight reservation slot of the active context.
+
+    Reads the active reservation from the contextvar populated by
+    :func:`_run_session_aware`. When called outside an idempotent
+    operation (or after the slot was already lost), returns ``False``
+    without touching the DB.
+    """
+    reservation = _active_reservation.get()
+    if reservation is None:
+        return False
+    return await _extend_reservation_ttl(
+        reservation.tool_name,
+        reservation.idempotency_key,
+        reservation.reservation_token,
+        extra_seconds if extra_seconds is not None else DEFAULT_HEARTBEAT_EXTENSION_SECONDS,
+    )
+
+
+@asynccontextmanager
+async def reservation_heartbeat(
+    period_seconds: float | None = None,
+    extension_seconds: float | None = None,
+) -> AsyncGenerator[None]:
+    """Run a background ``asyncio`` task that bumps the slot every ``period_seconds``.
+
+    Wrap the slow body of an idempotent operation with this context so
+    the reservation row stays alive past the pending TTL. The heartbeat
+    stops on the first ``False`` return from
+    :func:`extend_active_reservation` — at that point the slot has been
+    reclaimed and the existing stale-reservation envelope path
+    (:func:`_run_session_aware`) handles the conflict for us.
+
+    No-op when called outside an idempotent context (the contextvar is
+    unset), which is exactly the legacy behaviour for direct callers.
+    """
+    if _active_reservation.get() is None:
+        yield
+        return
+
+    cadence = period_seconds if period_seconds is not None else DEFAULT_HEARTBEAT_PERIOD_SECONDS
+    extension = (
+        extension_seconds if extension_seconds is not None else DEFAULT_HEARTBEAT_EXTENSION_SECONDS
+    )
+
+    async def _beat() -> None:
+        while True:
+            await asyncio.sleep(cadence)
+            try:
+                still_ours = await extend_active_reservation(extension)
+            except SQLAlchemyError:
+                logger.warning("Reservation heartbeat extend failed", exc_info=True)
+                continue
+            if not still_ours:
+                logger.warning(
+                    "Reservation slot lost during heartbeat; the stale-reservation "
+                    "path will surface the conflict on finalize."
+                )
+                return
+
+    task = asyncio.create_task(_beat(), name="idempotency-reservation-heartbeat")
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 async def _run_session_aware(
     executor: ToolExecutor,
     tool_name: str,
@@ -778,47 +1083,62 @@ async def _run_session_aware(
     caller. The retry will hit the new owner's slot through the
     normal lookup path.
     """
+    reservation = _ActiveReservation(
+        tool_name=tool_name,
+        idempotency_key=idempotency_key,
+        reservation_token=reservation_token,
+    )
+    handle = _active_reservation.set(reservation)
     try:
-        async with get_session() as session:
-            response = await executor(session)
-            transient = _is_transient_error(response)
-            if not transient:
-                affected = await finalize_reservation_in_session(
-                    session,
-                    tool_name,
-                    idempotency_key,
-                    request_hash,
-                    reservation_token,
-                    response,
-                    ttl_seconds,
-                )
-                if affected == 0:
-                    logger.warning(
-                        "Stale reservation finalize for %s/%s (token=%s): "
-                        "the slot is now owned by a different caller. "
-                        "Rolling back the operation's writes.",
+        try:
+            async with get_session() as session:
+                response = await executor(session)
+                transient = _is_transient_error(response)
+                if not transient:
+                    affected = await finalize_reservation_in_session(
+                        session,
                         tool_name,
                         idempotency_key,
+                        request_hash,
                         reservation_token,
+                        response,
+                        ttl_seconds,
                     )
-                    raise _StaleReservationError
-    except _StaleReservationError:
-        # The session rolled back via get_session's exception handler,
-        # so no operation writes survive. The cache row is owned by
-        # someone else now — do NOT drop the reservation (the
-        # token-matched drop would no-op anyway, but skipping the call
-        # makes the intent explicit). Return a retryable envelope.
-        return _attach_metadata(_stale_reservation_envelope(tool_name, idempotency_key))
-    except Exception:
-        # The async with already rolled back the session; drop our
-        # reservation so a future retry can claim the slot.
-        await _drop_reservation(tool_name, idempotency_key, reservation_token)
-        raise
+                    if affected == 0:
+                        logger.warning(
+                            "Stale reservation finalize for %s/%s (token=%s): "
+                            "the slot is now owned by a different caller. "
+                            "Rolling back the operation's writes.",
+                            tool_name,
+                            idempotency_key,
+                            reservation_token,
+                        )
+                        raise _StaleReservationError
+        except _StaleReservationError:
+            # The session rolled back via get_session's exception handler,
+            # so no operation writes survive. The cache row is owned by
+            # someone else now — do NOT drop the reservation (the
+            # token-matched drop would no-op anyway, but skipping the call
+            # makes the intent explicit). Return a retryable envelope.
+            return _attach_metadata(_stale_reservation_envelope(tool_name, idempotency_key))
+        except Exception:  # noqa: BLE001 - cleanup-then-reraise for any operation failure
+            # The async with already rolled back the session; drop our
+            # reservation so a future retry can claim the slot. We do
+            # not narrow the catch because the operation can raise any
+            # exception type (BackendError variants, ValidationError,
+            # third-party backend exceptions); the only thing we own
+            # at this point is reservation hygiene, so we re-raise
+            # unchanged and let the caller's exception routing handle
+            # the original error.
+            await _drop_reservation(tool_name, idempotency_key, reservation_token)
+            raise
 
-    if transient:
-        # Operation rolled back its writes; do not cache the transient
-        # error response — drop the reservation so a retry with the
-        # same key can race for a fresh slot.
-        await _drop_reservation(tool_name, idempotency_key, reservation_token)
+        if transient:
+            # Operation rolled back its writes; do not cache the transient
+            # error response — drop the reservation so a retry with the
+            # same key can race for a fresh slot.
+            await _drop_reservation(tool_name, idempotency_key, reservation_token)
 
-    return response
+        return response
+    finally:
+        _active_reservation.reset(handle)

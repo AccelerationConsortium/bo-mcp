@@ -21,6 +21,12 @@ from bo_mcp_server.client import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.limits import (
+    MAX_INTAKE_CONSTRAINTS,
+    MAX_INTAKE_OBJECTIVES,
+    MAX_INTAKE_PARAMETERS,
+)
+
 
 class IntakeData(BaseModel):
     """Campaign intake data schema for the REST API.
@@ -43,15 +49,29 @@ class IntakeData(BaseModel):
 
     name: str = Field(..., min_length=1)
     description: str = ""
-    parameters: tuple[InputParameter, ...]
-    objectives: tuple[Objective, ...]
-    constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
+    parameters: tuple[InputParameter, ...] = Field(
+        ..., min_length=1, max_length=MAX_INTAKE_PARAMETERS
+    )
+    objectives: tuple[Objective, ...] = Field(..., min_length=1, max_length=MAX_INTAKE_OBJECTIVES)
+    constraints: tuple[Constraint, ...] = Field(
+        default_factory=tuple, max_length=MAX_INTAKE_CONSTRAINTS
+    )
     batch_size: int = Field(default=1, ge=1)
     max_iterations: int | None = None
     max_observations: int | None = Field(default=None, ge=1)
     convergence_tolerance: float | None = Field(default=None, gt=0.0)
     initial_design_size: int | None = None
-    random_seed: int | None = None
+    random_seed: int | None = Field(
+        default=None,
+        description=(
+            "Campaign-level RNG seed. Optional. When supplied, the Sobol "
+            "initial design and acquisition multi-start are deterministic "
+            "within a fixed (torch version, device, deterministic-algorithms "
+            "setting) triple; suggestions are NOT byte-identical across "
+            "different torch versions, CPU vs. CUDA, or backend swaps. Set "
+            "torch.use_deterministic_algorithms(True) for strictest behavior."
+        ),
+    )
     acquisition_optimization: dict[str, Any] | None = None
     # ``Literal`` mirrors :class:`bo_mcp_server.domain.CampaignIntakeInput`
     # so the REST OpenAPI schema advertises an explicit ``enum`` constraint
@@ -69,5 +89,9 @@ class IntakeData(BaseModel):
     fidelity_parameter: dict[str, Any] | None = None
     transfer_learning: dict[str, Any] | None = None
     outcome_constraints: list[dict[str, Any]] = Field(default_factory=list)
+    # Caller opt-in to "this backend may silently drop these option
+    # fields". Mirrors :class:`CampaignIntakeInput.acknowledge_degradations`
+    # so the REST and MCP transports accept the same shape.
+    acknowledge_degradations: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")

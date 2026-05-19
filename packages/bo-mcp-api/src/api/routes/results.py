@@ -1,23 +1,31 @@
 """Results routes."""
 
-import io
-from typing import Any
+import logging
 
-import pandas as pd
 from bo_mcp_server.client import (
+    CampaignSpec,
     InvalidIdentifierError,
     NotAuthorizedError,
     NotFoundError,
     ResultSubmissionInput,
+    canonical_submit_results_payload,
     get_campaign_with_spec,
+    http_status_for_error,
     list_campaign_results,
     list_results_operation,
     parse_named_result_rows,
+    run_idempotent_operation,
     submit_results_operation,
 )
-from fastapi import APIRouter, HTTPException, UploadFile, status
+from fastapi import APIRouter, HTTPException, Response, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import CurrentUser, get_authorized_campaign
+from api.deps import CurrentUser, IdempotencyKey, get_authorized_campaign
+from api.limits import (
+    MAX_BATCH_RESULTS,
+    MAX_UPLOAD_FILE_SIZE_BYTES,
+    UPLOAD_READ_CHUNK_BYTES,
+)
 from api.schemas.result import (
     ResultBatchCreate,
     ResultQueryRequest,
@@ -25,17 +33,72 @@ from api.schemas.result import (
     ResultResponse,
     ResultSubmitResponse,
 )
+from api.upload_parser import UploadParseError, parse_upload_rows
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-@router.post("/{campaign_id}", response_model=ResultSubmitResponse)
+def _results_location(campaign_id: str) -> str:
+    """URL of the canonical GET that resolves this campaign's results.
+
+    Batch creates have no per-row GET, so we point ``Location`` at the
+    collection that contains every result row produced by the call.
+    """
+    return f"/api/v1/results/{campaign_id}"
+
+
+async def _read_upload_bounded(file: UploadFile) -> bytes:
+    """Read an :class:`UploadFile` in chunks, refusing past the size cap.
+
+    Streaming the read means an oversize payload is rejected before
+    it occupies the full memory footprint; the alternative
+    (``await file.read()``) would buffer the whole body first and
+    only check length afterwards.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(f"Upload exceeds the {MAX_UPLOAD_FILE_SIZE_BYTES}-byte limit."),
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@router.post(
+    "/{campaign_id}",
+    response_model=ResultSubmitResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def submit_campaign_results(
     campaign_id: str,
     request: ResultBatchCreate,
     current_user: CurrentUser,
+    idempotency_key: IdempotencyKey,
+    response: Response,
 ) -> ResultSubmitResponse:
-    """Submit results for a campaign."""
+    """Submit results for a campaign.
+
+    Returns ``201 Created`` with a ``Location`` header pointing at
+    :func:`list_campaign_results_route` for the freshly-inserted
+    batch. Operation-level rejections (``success=False`` envelopes
+    from validation failures) keep the historical ``200 OK`` shape
+    so existing tests for that path still see the envelope rather
+    than a routed-out HTTP error.
+
+    Honours the ``Idempotency-Key`` request header (same cache
+    namespace as the MCP ``bo_submit_results`` tool) so a retry
+    replays the cached response instead of persisting the batch
+    twice.
+    """
     await get_authorized_campaign(campaign_id, current_user)
 
     results_data = [
@@ -48,13 +111,44 @@ async def submit_campaign_results(
         )
         for r in request.results
     ]
+    submitted_by = str(current_user.id)
 
-    result = await submit_results_operation(
-        campaign_id=campaign_id,
-        results=results_data,
-        submitted_by=str(current_user.id),
-        source=request.source,
+    async def run(session: AsyncSession) -> dict:
+        return await submit_results_operation(
+            campaign_id=campaign_id,
+            results=results_data,
+            submitted_by=submitted_by,
+            source=request.source,
+            session=session,
+        )
+
+    # Shared canonical builder so REST and MCP hash the same shape for
+    # semantically identical batches — the precondition for the
+    # audit's "same cache namespace" promise.
+    result = await run_idempotent_operation(
+        operation_name="bo_submit_results",
+        idempotency_key=idempotency_key,
+        request_payload=canonical_submit_results_payload(
+            campaign_id=campaign_id,
+            results=results_data,
+            submitted_by=submitted_by,
+            source=request.source,
+        ),
+        executor=run,
     )
+    # Idempotency-layer envelopes lack the operation's success-shape
+    # fields (``result_ids`` here); promote them to a typed HTTPException
+    # rather than letting the unpacking below trigger a KeyError 500.
+    if "result_ids" not in result:
+        raise HTTPException(
+            status_code=http_status_for_error(result),
+            detail=result.get("error", {"message": "Idempotency error"}),
+        )
+
+    if result.get("success"):
+        response.headers["Location"] = _results_location(campaign_id)
+    else:
+        response.status_code = status.HTTP_200_OK
 
     return ResultSubmitResponse(
         success=result["success"],
@@ -62,18 +156,16 @@ async def submit_campaign_results(
         errors=result["errors"],
         warnings=result["warnings"],
         field_errors=result.get("field_errors", {}),
+        # Forward the wrapper's replay marker so REST clients can
+        # distinguish a cached batch from a fresh insert.
+        idempotency_replay=bool(result.get("idempotency_replay", False)),
     )
 
 
-@router.post("/{campaign_id}/upload", response_model=ResultSubmitResponse)
-async def upload_results_file(
-    campaign_id: str,
-    file: UploadFile,
-    current_user: CurrentUser,
-) -> ResultSubmitResponse:
-    """Upload results from CSV or Excel file."""
+async def _resolve_upload_spec(campaign_id: str, user_id) -> CampaignSpec:
+    """Resolve the campaign spec for an upload, mapping facade errors to HTTP."""
     try:
-        _, spec = await get_campaign_with_spec(campaign_id, current_user.id)
+        _, spec = await get_campaign_with_spec(campaign_id, user_id)
     except InvalidIdentifierError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -94,47 +186,92 @@ async def upload_results_file(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=detail,
         ) from None
+    return spec
 
-    # Parse file
+
+@router.post(
+    "/{campaign_id}/upload",
+    response_model=ResultSubmitResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_results_file(
+    campaign_id: str,
+    file: UploadFile,
+    current_user: CurrentUser,
+    response: Response,
+) -> ResultSubmitResponse:
+    """Upload results from CSV or Excel file.
+
+    Streams the upload through :func:`_read_upload_bounded` (refusing
+    over :data:`api.limits.MAX_UPLOAD_FILE_SIZE_BYTES`) and parses
+    with :func:`api.upload_parser.parse_upload_rows`, which uses
+    ``openpyxl(read_only=True)`` so a workbook is iterated rather
+    than materialised in full. Parse failures surface as a sanitized
+    400 — the underlying library exception is logged server-side
+    but not echoed to the client (so library names / versions stay
+    out of the response body).
+    """
+    spec = await _resolve_upload_spec(campaign_id, current_user.id)
+
     filename = file.filename or ""
-    content = await file.read()
+    content = await _read_upload_bounded(file)
 
     try:
-        if filename.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content))
-        elif filename.endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(content))
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Unsupported file format. Use CSV or Excel.",
-            )
-    except Exception as e:
+        headers, upload_rows = parse_upload_rows(filename, content)
+    except UploadParseError as exc:
+        logger.warning(
+            "Rejected upload for campaign %s (%s)",
+            campaign_id,
+            type(exc.__cause__).__name__ if exc.__cause__ else "no cause",
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to parse file: {e}",
-        ) from e
+            detail=str(exc),
+        ) from exc
 
     param_names = [p.name for p in spec.parameters]
     objective_names = [o.name for o in spec.objectives]
 
-    # Validate columns exist
-    missing_cols = set(param_names + objective_names) - set(df.columns)
+    # Column validation against the *header row* — not against the
+    # union of data-row keys. Pre-fix, a header-only CSV would be
+    # misreported as "Missing columns" even when the column names
+    # were declared correctly; the real defect there is "no data
+    # rows", which we surface separately below.
+    missing_cols = set(param_names + objective_names) - set(headers)
     if missing_cols:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Missing columns: {missing_cols}",
+            detail=f"Missing columns: {sorted(missing_cols)}",
         )
 
-    upload_rows: list[dict[str, Any]] = [
-        {str(key): value for key, value in row.items()} for row in df.to_dict(orient="records")
-    ]
+    if not upload_rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload contains no result rows.",
+        )
+
+    # Apply the same per-batch cap as the JSON ``ResultBatchCreate``
+    # schema (``MAX_BATCH_RESULTS``). Without this the upload route
+    # would silently accept arbitrarily many rows for any CSV/XLSX
+    # under the 25 MiB file-size cap; the JSON-body cap is on the
+    # ``results`` list only, not on a different transport's parse
+    # output.
+    if len(upload_rows) > MAX_BATCH_RESULTS:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=(
+                f"Upload contains {len(upload_rows)} rows, exceeding the "
+                f"per-batch cap of {MAX_BATCH_RESULTS}. Split the file into "
+                "smaller batches and resubmit."
+            ),
+        )
 
     results_data, parse_errors = parse_named_result_rows(
         upload_rows,
         parameter_names=param_names,
         objective_names=objective_names,
-        metadata_factory=lambda _row_num: {"source_file": filename},
+        metadata_factory=lambda row_num: {"source_file": filename, "source_row": row_num},
     )
 
     if parse_errors:
@@ -149,6 +286,11 @@ async def upload_results_file(
         submitted_by=str(current_user.id),
         source="file_upload",
     )
+
+    if result.get("success"):
+        response.headers["Location"] = _results_location(campaign_id)
+    else:
+        response.status_code = status.HTTP_200_OK
 
     return ResultSubmitResponse(
         success=result["success"],

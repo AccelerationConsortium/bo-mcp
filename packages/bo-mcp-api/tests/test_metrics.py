@@ -95,3 +95,72 @@ async def test_metrics_endpoint_samples_db_pool_state(
     # ``bo_mcp_db_pool_connections{state="checked_out"} 1.0``
     assert 'bo_mcp_db_pool_connections{state="checked_out"}' in body
     assert 'bo_mcp_db_pool_connections{state="size"} 5.0' in body
+
+
+def test_sanitize_unmatched_path_collapses_uuids_and_numbers() -> None:
+    """High-cardinality URL segments collapse to placeholder labels.
+
+    Reference: the Prometheus practical guide explicitly warns against
+    unbounded label cardinality on a counter
+    (https://prometheus.io/docs/practices/instrumentation/#do-not-overuse-labels).
+    A 404-scanner hitting paths with concrete UUIDs would otherwise
+    blow up the label set on ``bo_mcp_http_requests_total``.
+    """
+    from api.metrics import _sanitize_unmatched_path
+
+    uuid_path = "/api/v1/wrong/01234567-89ab-cdef-0123-456789abcdef"
+    assert _sanitize_unmatched_path(uuid_path) == "/api/v1/wrong/{uuid}"
+
+    numeric_path = "/api/v1/wrong/12345/details"
+    assert _sanitize_unmatched_path(numeric_path) == "/api/v1/wrong/{int}/details"
+
+    hex_path = "/api/v1/wrong/deadbeefcafebabe"
+    assert _sanitize_unmatched_path(hex_path) == "/api/v1/wrong/{hex}"
+
+    safe_path = "/api/v1/known/path"
+    assert _sanitize_unmatched_path(safe_path) == "/api/v1/known/path"
+
+
+def test_bounded_unmatched_label_overflows_after_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Beyond the cap, fresh unmatched paths collapse onto a single sentinel.
+
+    Even with sanitization, a determined scanner can produce many
+    distinct ``/word/word/...`` paths. The cap bounds the label set
+    so a series cannot grow without limit.
+    """
+    from api import metrics as api_metrics
+
+    monkeypatch.setattr(api_metrics, "_unmatched_labels", set())
+    monkeypatch.setattr(api_metrics, "_UNMATCHED_LABEL_CAP", 2)
+
+    first = api_metrics._bounded_unmatched_label("/a")
+    second = api_metrics._bounded_unmatched_label("/b")
+    third = api_metrics._bounded_unmatched_label("/c")
+    repeat = api_metrics._bounded_unmatched_label("/a")
+    overflow_repeat = api_metrics._bounded_unmatched_label("/d")
+
+    assert first == "/a"
+    assert second == "/b"
+    # ``/c`` arrives after the cap is reached and is collapsed.
+    assert third == api_metrics._UNMATCHED_OVERFLOW
+    # Already-tracked entries keep their identity post-cap.
+    assert repeat == "/a"
+    # Anything new after the cap is overflowed.
+    assert overflow_repeat == api_metrics._UNMATCHED_OVERFLOW
+
+
+@pytest.mark.asyncio
+async def test_unmatched_path_with_uuid_does_not_pollute_label_set(api_client) -> None:
+    """A 404 with a UUID segment records a single template label, not the raw URL.
+
+    Asserts the contract by scraping ``/metrics`` and verifying the
+    UUID appears nowhere in the exposition format (the counter only
+    sees the sanitized template).
+    """
+    uuid_value = "01234567-89ab-cdef-0123-456789abcdef"
+    await api_client.get(f"/api/v1/does-not-exist/{uuid_value}")
+    response = await api_client.get("/metrics")
+    body = response.text
+    assert uuid_value not in body
+    # The sanitized template is recorded instead.
+    assert "/api/v1/does-not-exist/{uuid}" in body

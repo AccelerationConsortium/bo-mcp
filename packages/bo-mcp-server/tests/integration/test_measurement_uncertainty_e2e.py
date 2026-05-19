@@ -27,7 +27,10 @@ async def test_measurement_uncertainty_drives_fixed_noise_likelihood(
     setup_database,
 ) -> None:
     """Full-coverage uncertainty submissions -> FixedNoiseGaussianLikelihood."""
-    from bo_engine import suggestions as sugg_mod
+    # Patch where the GP factory is *resolved* at call time. The single-
+    # objective dispatch lives in :mod:`bo_engine.suggestions_single_objective`
+    # after the suggestions god-module split.
+    from bo_engine import suggestions_single_objective as sugg_mod
     from gpytorch.likelihoods import FixedNoiseGaussianLikelihood
 
     from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -110,7 +113,10 @@ async def test_partial_measurement_uncertainty_falls_back_to_trainable_noise(
     setup_database,
 ) -> None:
     """If any observation is missing uncertainty, the GP keeps trainable noise."""
-    from bo_engine import suggestions as sugg_mod
+    # Patch where the GP factory is *resolved* at call time. The single-
+    # objective dispatch lives in :mod:`bo_engine.suggestions_single_objective`
+    # after the suggestions god-module split.
+    from bo_engine import suggestions_single_objective as sugg_mod
     from gpytorch.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood
 
     from bo_mcp_server.operations.submit_results import submit_results_operation

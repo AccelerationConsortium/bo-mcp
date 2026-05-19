@@ -150,7 +150,7 @@ async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[A
     """
     async with postgres_engine.connect() as connection:
         outer_transaction = await connection.begin()
-        session = AsyncSession(bind=connection, expire_on_commit=False)
+        session = AsyncSession(bind=connection, expire_on_commit=True)
         await session.begin_nested()
 
         @event.listens_for(session.sync_session, "after_transaction_end")
@@ -187,7 +187,7 @@ async def postgres_session_committed(
     async_session_factory = async_sessionmaker(
         postgres_engine,
         class_=AsyncSession,
-        expire_on_commit=False,
+        expire_on_commit=True,
     )
 
     async with async_session_factory() as session:

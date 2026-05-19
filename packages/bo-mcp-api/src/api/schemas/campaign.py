@@ -5,7 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.schemas.common import VerbosityLevel
+from api.limits import MAX_BATCH_CAMPAIGN_IDS, MAX_COMPARE_CAMPAIGN_IDS
+from api.schemas.common import ResponseEnvelope, VerbosityLevel
 from api.schemas.intake import IntakeData
 
 # ``extra="forbid"`` is applied to every request schema in this module so
@@ -40,17 +41,26 @@ class CampaignResponse(BaseModel):
     n_objectives: int
 
 
-class CampaignCreateResponse(BaseModel):
-    """Campaign creation response."""
+class CampaignCreateResponse(ResponseEnvelope):
+    """Campaign creation response.
+
+    ``idempotency_replay`` is ``True`` when the response was served
+    from the idempotency cache instead of executing a fresh
+    mutation — same marker the MCP tool exposes. REST clients can
+    distinguish a network retry's replayed response from a brand-new
+    create and surface the distinction to their users (e.g. "Already
+    created earlier, here's the same id").
+    """
 
     success: bool
     campaign_id: str | None = None
     spec_id: str | None = None
     warnings: list[str] = []
     errors: list[str]
+    idempotency_replay: bool = False
 
 
-class CampaignListResponse(BaseModel):
+class CampaignListResponse(ResponseEnvelope):
     """Campaign list response."""
 
     campaigns: list[CampaignResponse]
@@ -65,7 +75,7 @@ class ValidateIntakeRequest(BaseModel):
     intake: IntakeData
 
 
-class ValidateIntakeResponse(BaseModel):
+class ValidateIntakeResponse(ResponseEnvelope):
     """Intake validation response."""
 
     valid: bool
@@ -74,33 +84,72 @@ class ValidateIntakeResponse(BaseModel):
     spec_summary: dict[str, Any] | None = None
 
 
-class CapabilitiesResponse(BaseModel):
-    """Backend capabilities response."""
+class CapabilitiesResponse(ResponseEnvelope):
+    """Backend capabilities response.
+
+    ``supported_features`` lists features the backend can honour for
+    *any* well-formed spec; ``conditional_features`` maps each
+    feature that depends on spec shape to a short description of the
+    precondition (e.g. BayBE's TRANSFER_LEARNING requires a
+    TaskParameter). Together the two surfaces match the runtime
+    contract so callers can plan ahead instead of hitting late
+    rejections.
+    """
 
     backend: str
     supported_features: list[str]
+    conditional_features: dict[str, str] = {}
     server_version: str
 
 
 class CampaignQueryRequest(BaseModel):
-    """Campaign query request with filtering and pagination."""
+    """Campaign query request with filtering and pagination.
+
+    Pagination model: cursor-only is the supported path. The legacy
+    ``offset`` field is preserved for callers that have not migrated
+    but is marked ``deprecated`` so OpenAPI clients and the auto-
+    generated docs surface the deprecation; it is mutually exclusive
+    with ``cursor`` at the operation layer (supplying both yields a
+    ``VALIDATION_FAILED`` envelope).
+    """
 
     model_config = _FORBID_EXTRA
 
     status: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
-    offset: int = Field(default=0, ge=0)
+    offset: int = Field(
+        default=0,
+        ge=0,
+        deprecated=(
+            "Offset-based pagination is unstable under concurrent inserts. "
+            "Use the cursor returned in next_cursor instead."
+        ),
+    )
+    cursor: str | None = Field(
+        default=None,
+        description=(
+            "Opaque cursor from a previous response's next_cursor field. "
+            "Cursor-based pagination is stable under concurrent inserts. "
+            "Mutually exclusive with offset."
+        ),
+    )
     verbosity: str = "standard"
 
 
-class CampaignQueryResponse(BaseModel):
-    """Campaign query response with pagination envelope."""
+class CampaignQueryResponse(ResponseEnvelope):
+    """Campaign query response with pagination envelope.
+
+    ``next_cursor`` carries the opaque pagination pointer for the next
+    page. ``offset`` is echoed back for callers still on the deprecated
+    pagination model.
+    """
 
     success: bool
     campaigns: list[dict[str, Any]] = Field(default_factory=list)
     total_count: int = 0
     limit: int = 20
     offset: int = 0
+    next_cursor: str | None = None
     errors: list[str] = Field(default_factory=list)
 
 
@@ -112,7 +161,7 @@ class CampaignLifecycleRequest(BaseModel):
     action: str = Field(pattern="^(pause|resume|terminate)$")
 
 
-class CampaignLifecycleResponse(BaseModel):
+class CampaignLifecycleResponse(ResponseEnvelope):
     """Lifecycle action response."""
 
     success: bool
@@ -123,15 +172,20 @@ class CampaignLifecycleResponse(BaseModel):
 
 
 class BatchStatusRequest(BaseModel):
-    """Batch status request."""
+    """Batch status request.
+
+    ``campaign_ids`` is bounded by
+    :data:`api.limits.MAX_BATCH_CAMPAIGN_IDS` to keep the read-only
+    fan-out from being weaponised into a memory-heavy lookup storm.
+    """
 
     model_config = _FORBID_EXTRA
 
-    campaign_ids: list[str]
+    campaign_ids: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_CAMPAIGN_IDS)
     verbosity: VerbosityLevel = VerbosityLevel.MINIMAL
 
 
-class BatchStatusResponse(BaseModel):
+class BatchStatusResponse(ResponseEnvelope):
     """Batch status response."""
 
     success: bool
@@ -141,15 +195,21 @@ class BatchStatusResponse(BaseModel):
 
 
 class CompareCampaignsRequest(BaseModel):
-    """Campaign comparison request."""
+    """Campaign comparison request.
+
+    ``campaign_ids`` is bounded by
+    :data:`api.limits.MAX_COMPARE_CAMPAIGN_IDS` because pairwise
+    trajectory joins inside the comparison operation are quadratic
+    in the number of supplied campaigns.
+    """
 
     model_config = _FORBID_EXTRA
 
-    campaign_ids: list[str]
+    campaign_ids: list[str] = Field(..., min_length=1, max_length=MAX_COMPARE_CAMPAIGN_IDS)
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD
 
 
-class CompareCampaignsResponse(BaseModel):
+class CompareCampaignsResponse(ResponseEnvelope):
     """Campaign comparison response."""
 
     success: bool
@@ -178,7 +238,7 @@ class TransferCandidatesRequest(BaseModel):
     parameter_aliases: dict[str, list[str]] | None = None
 
 
-class TransferCandidatesResponse(BaseModel):
+class TransferCandidatesResponse(ResponseEnvelope):
     """Transfer candidate discovery response."""
 
     success: bool

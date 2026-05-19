@@ -45,6 +45,55 @@ class ConvergenceReport:
     recommendation: str
 
 
+def _history_scale(history: list[float]) -> float:
+    """Compute a robust scale for the history that does not depend on absolute magnitude.
+
+    Uses the inter-quartile range (IQR) of the recorded values; falls back
+    to the sample standard deviation when the IQR collapses (rare on
+    real-valued metric streams but possible on plateaus); finally falls
+    back to the absolute value of the latest reading or
+    ``IMPROVEMENT_TOLERANCE_ABSOLUTE``. The scale is only consulted by
+    :func:`_step_denominator` when the per-step ``|prev|`` is below the
+    absolute floor, so high-magnitude trajectories keep their per-step
+    semantics and low-magnitude trajectories get a meaningful scale-based
+    normalization (this is the audit's concrete fix; see :func:`detect_convergence`).
+    """
+    if not history:
+        return IMPROVEMENT_TOLERANCE_ABSOLUTE
+    sorted_history = sorted(history)
+    n = len(sorted_history)
+    if n >= 4:
+        q1 = sorted_history[n // 4]
+        q3 = sorted_history[(3 * n) // 4]
+        iqr = q3 - q1
+        if iqr > IMPROVEMENT_TOLERANCE_ABSOLUTE:
+            return iqr
+    if n >= 2:
+        mean = sum(history) / n
+        variance = sum((v - mean) ** 2 for v in history) / max(n - 1, 1)
+        std = variance**0.5
+        if std > IMPROVEMENT_TOLERANCE_ABSOLUTE:
+            return std
+    return max(abs(history[-1]), IMPROVEMENT_TOLERANCE_ABSOLUTE)
+
+
+def _step_denominator(prev_value: float, history_scale: float) -> float:
+    """Return the scale-invariant denominator for one step of the improvement loop.
+
+    Uses ``|prev_value|`` when it is meaningfully above the absolute
+    floor; otherwise falls back to the history-level scale (IQR / std).
+    This keeps the historical per-step semantics for high-magnitude
+    metrics (so existing convergence thresholds calibrated against a
+    1.0-scale metric remain meaningful) and switches to a trajectory-
+    derived scale only for low-magnitude metrics, which is exactly the
+    case the audit called out as silently misbehaving under the old
+    ``max(|prev|, ABS_TOL)`` formula.
+    """
+    if abs(prev_value) > IMPROVEMENT_TOLERANCE_ABSOLUTE:
+        return abs(prev_value)
+    return history_scale
+
+
 def detect_convergence(
     metric_history: list[float],
     window_size: int = CONVERGENCE_WINDOW_SIZE,
@@ -55,6 +104,15 @@ def detect_convergence(
 
     Analyzes the improvement rate over recent iterations to determine
     if optimization has reached a point of diminishing returns.
+
+    **Scale-invariant normalization.** Per-iteration deltas are divided by
+    a robust scale derived from the full history (IQR → std → abs latest
+    → ``IMPROVEMENT_TOLERANCE_ABSOLUTE``). This makes the same campaign
+    rescaled by 1000× (e.g. cost in dollars vs cents) converge at the
+    same iteration count — the previous formula divided by
+    ``abs(prev)``, which scales with the absolute magnitude of the
+    metric and therefore returned different "still improving" verdicts
+    for the same underlying optimization run.
 
     Args:
         metric_history: History of optimization metric (e.g., hypervolume, best value)
@@ -95,23 +153,27 @@ def detect_convergence(
             recommendation="Continue optimization to enable convergence detection.",
         )
 
-    # Compute improvements over recent window using combined relative-absolute criterion
-    # to avoid instability when values are near zero
+    # Robust scale derived from the full history — only consulted by
+    # :func:`_step_denominator` when the per-step ``|prev|`` is below the
+    # absolute floor, so high-magnitude trajectories keep their historical
+    # per-step relative semantics.
+    scale = _history_scale(metric_history)
+
+    # Compute improvements over recent window using the hybrid scale
+    # (per-step ``|prev|`` when meaningful, history scale otherwise).
     recent = metric_history[-window_size:]
     improvements = []
     for i in range(1, len(recent)):
         delta = recent[i] - recent[i - 1]
-        denominator = max(abs(recent[i - 1]), IMPROVEMENT_TOLERANCE_ABSOLUTE)
-        improvements.append(delta / denominator)
+        improvements.append(delta / _step_denominator(recent[i - 1], scale))
 
     avg_improvement = sum(improvements) / len(improvements) if improvements else 0.0
 
-    # Count iterations without meaningful improvement
+    # Count iterations without meaningful improvement (same hybrid scale).
     iterations_without_improvement = 0
     for i in range(n - 1, 0, -1):
         delta = metric_history[i] - metric_history[i - 1]
-        denominator = max(abs(metric_history[i - 1]), IMPROVEMENT_TOLERANCE_ABSOLUTE)
-        rel_improvement = delta / denominator
+        rel_improvement = delta / _step_denominator(metric_history[i - 1], scale)
 
         if rel_improvement > improvement_threshold:
             break

@@ -45,7 +45,35 @@ class CampaignIntakeInput(BaseModel):
     # the caller omits the seed: a fresh OS-level scramble each iteration.
     # Callers that want deterministic Sobol sequences must opt in by
     # supplying an explicit seed (see TODO 1.66).
-    random_seed: int | None = None
+    #
+    # **Reproducibility bounds.** Supplying ``random_seed`` makes the Sobol
+    # initial design and acquisition multi-start deterministic *within* a
+    # fixed (torch version, device, ``torch.use_deterministic_algorithms``
+    # setting) triple. Suggestions are NOT guaranteed byte-identical
+    # across:
+    #
+    # * Different ``torch`` minor versions (kernel-fitting drift in
+    #   gpytorch / fit_gpytorch_mll changes between releases).
+    # * CPU vs. CUDA (and across CUDA driver versions) — float ordering in
+    #   reductions differs between devices.
+    # * ``torch.use_deterministic_algorithms(False)`` (default) — some
+    #   CUDA kernels still use non-deterministic reductions.
+    # * Backend swaps (``backend="botorch"`` vs ``backend="baybe"``).
+    #
+    # A nightly drift test in CI pins suggestions against a golden file for
+    # a reference campaign on the production torch version; bumping the
+    # torch pin requires regenerating the golden file.
+    random_seed: int | None = Field(
+        default=None,
+        description=(
+            "Campaign-level RNG seed. Optional. When supplied, the Sobol "
+            "initial design and acquisition multi-start are deterministic "
+            "within a fixed (torch version, device, deterministic-algorithms "
+            "setting) triple; suggestions are NOT byte-identical across "
+            "different torch versions, CPU vs. CUDA, or backend swaps. Set "
+            "torch.use_deterministic_algorithms(True) for strictest behavior."
+        ),
+    )
     # Per-campaign override for L-BFGS-B restart count / raw-sample budget.
     # Leave None to use the dimension-adaptive defaults in bo-engine.
     acquisition_optimization: AcquisitionOptimizationConfig | None = None
@@ -68,6 +96,13 @@ class CampaignIntakeInput(BaseModel):
     fidelity_parameter: FidelityParameter | None = None
     transfer_learning: TransferLearningConfig | None = None
     outcome_constraints: tuple[OutcomeConstraint, ...] = Field(default_factory=tuple)
+    # Per-spec opt-in to "this backend may silently drop these option
+    # fields". Semantically load-bearing options (outcome_constraints,
+    # turbo_config, …) are classified as UNSUPPORTED by default on
+    # backends that cannot honor them; naming the field here downgrades
+    # the rejection to an IGNORED warning so the caller accepts the
+    # degraded run knowingly.
+    acknowledge_degradations: tuple[str, ...] = Field(default_factory=tuple)
 
     model_config = {"extra": "forbid"}
 

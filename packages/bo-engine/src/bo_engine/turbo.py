@@ -292,6 +292,18 @@ def update_turbo_state(
     after consecutive failures. This adapts the search region based
     on optimization progress.
 
+    **Batch-aware counter update.** Per Eriksson et al. (NeurIPS 2019) the
+    original TuRBO algorithm counts a "success" per batch when any point
+    in the batch improves the incumbent. The previous implementation
+    incremented ``success_counter`` by exactly 1 regardless of how many
+    points in the batch actually improved, which paced the trust-region
+    expansion conservatively for batch sizes > 1. We now increment the
+    success counter by the *number of distinct improving points in the
+    batch* (clamped to ``batch_size``). The increment is at most one per
+    point so batches with many tiny improvements do not skip over the
+    expansion tolerance; the increment is at least one when any point
+    improves, matching the paper's per-batch semantics.
+
     Args:
         state: Current TuRBO state
         y_next: Objective values from latest batch (shape: [batch_size] or [batch_size, 1])
@@ -307,7 +319,8 @@ def update_turbo_state(
     # Negate if minimizing so that "improvement" always means higher internal value
     # (TuRBO internally works in maximization convention)
     y_internal = -y_next if minimize else y_next
-    y_max = y_internal.max().item()
+    y_flat = y_internal.detach().reshape(-1)
+    y_max = float(y_flat.max().item())
 
     # Check improvement with tolerance for numerical stability
     tolerance = (
@@ -315,11 +328,19 @@ def update_turbo_state(
         if state.best_value != 0
         else IMPROVEMENT_TOLERANCE_ABSOLUTE
     )
-    improved = y_max > state.best_value + tolerance
+    improvement_threshold = state.best_value + tolerance
+
+    # Per-batch improvement count: each entry that strictly beats the
+    # incumbent by more than the tolerance contributes one. Bounded by the
+    # actual batch size so a degenerate larger-than-batch tensor cannot
+    # over-credit.
+    n_improving = int((y_flat > improvement_threshold).sum().item())
+    n_improving = min(n_improving, max(int(state.batch_size), 1))
+    improved = n_improving > 0
 
     # Update counters
     if improved:
-        new_success_counter = state.success_counter + 1
+        new_success_counter = state.success_counter + n_improving
         new_failure_counter = 0
     else:
         new_success_counter = 0

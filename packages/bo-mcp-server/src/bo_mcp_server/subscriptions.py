@@ -49,7 +49,22 @@ from pydantic import AnyUrl
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bo_mcp_server.metrics import SUBSCRIPTION_DROPPED, SUBSCRIPTION_SEND_RETRIES
+
 logger = logging.getLogger(__name__)
+
+# Retry budget for a single resource-update delivery. The wire-level
+# spec does not guarantee delivery, but a single transient hiccup
+# (transport reconnect, momentary backpressure) should not be enough
+# to silently unsubscribe a long-running agent. Three attempts with
+# exponential backoff is enough to ride out brief flakes while
+# bounding worst-case latency for permanent failures.
+SUBSCRIPTION_SEND_MAX_ATTEMPTS = 3
+# Base backoff in seconds before the first retry; doubles on each
+# subsequent attempt (0.05s, 0.10s). Kept small because the receiving
+# session is in the same process — anything longer would just stall
+# unrelated notifications behind this one.
+SUBSCRIPTION_SEND_BACKOFF_BASE_SECONDS = 0.05
 
 
 @runtime_checkable
@@ -190,11 +205,69 @@ def get_registry() -> _SubscriptionRegistry:
     return _registry
 
 
+async def _deliver_with_retry(
+    session: _ResourceSubscriber,
+    uri: str,
+    parsed: AnyUrl,
+) -> bool:
+    """Send a resource-update with bounded exponential-backoff retries.
+
+    Returns ``True`` if delivery succeeded (possibly on a retry),
+    ``False`` after the full retry budget is exhausted. Centralising
+    the retry loop here keeps :func:`notify_campaign_updated` focused
+    on fan-out and lets us emit a single ``SUBSCRIPTION_SEND_RETRIES``
+    bump on each recovered delivery so dashboards distinguish
+    "wire-blip ridden out" from "subscription wedged".
+
+    The retry strategy is intentionally small: a long-running agent
+    that holds a subscription open for hours is the workload we want
+    to protect, and three attempts ride out the transient hiccups
+    that previously dropped the subscriber on the very first error.
+    Permanent transport failures (closed session, decoder mismatch)
+    still surface as an unsubscribe after the budget is exhausted.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, SUBSCRIPTION_SEND_MAX_ATTEMPTS + 1):
+        try:
+            await session.send_resource_updated(parsed)
+        except Exception as exc:  # noqa: BLE001 -- transport errors are retried then escalated
+            last_exc = exc
+            if attempt >= SUBSCRIPTION_SEND_MAX_ATTEMPTS:
+                break
+            backoff = SUBSCRIPTION_SEND_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+            logger.debug(
+                "Resource-update delivery for %s failed on attempt %d/%d; retrying after %.3fs.",
+                uri,
+                attempt,
+                SUBSCRIPTION_SEND_MAX_ATTEMPTS,
+                backoff,
+                exc_info=True,
+            )
+            await asyncio.sleep(backoff)
+            continue
+        if attempt > 1:
+            SUBSCRIPTION_SEND_RETRIES.inc()
+        return True
+
+    logger.warning(
+        "Failed to deliver resource update for %s after %d attempts; dropping subscriber.",
+        uri,
+        SUBSCRIPTION_SEND_MAX_ATTEMPTS,
+        exc_info=last_exc,
+    )
+    return False
+
+
 async def notify_campaign_updated(campaign_id: UUID | str) -> None:
     """Broadcast a ``notifications/resources/updated`` for ``campaign://{id}``.
 
-    Failed sends drop the offending session from the registry so a
-    downstream broken transport does not keep re-firing on every
+    Delivery is bounded-retry: each subscriber's
+    ``send_resource_updated`` call is attempted up to
+    :data:`SUBSCRIPTION_SEND_MAX_ATTEMPTS` times with exponential
+    backoff before the subscription is unregistered. The retry budget
+    keeps a transient wire blip from silently severing a long-running
+    agent's subscription; the unsubscribe-after-exhaustion behaviour
+    keeps a permanently-broken transport from re-firing on every
     notification. The function never raises -- lifecycle callers must
     not see push failures bubble up into their main flow.
     """
@@ -204,14 +277,9 @@ async def notify_campaign_updated(campaign_id: UUID | str) -> None:
         return
     parsed = AnyUrl(uri)
     for session in sessions:
-        try:
-            await session.send_resource_updated(parsed)
-        except Exception:  # noqa: BLE001 -- transport errors are logged, not propagated
-            logger.warning(
-                "Failed to deliver resource update for %s; dropping subscriber.",
-                uri,
-                exc_info=True,
-            )
+        delivered = await _deliver_with_retry(session, uri, parsed)
+        if not delivered:
+            SUBSCRIPTION_DROPPED.inc()
             await _registry.unsubscribe(uri, session)
 
 

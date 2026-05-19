@@ -20,6 +20,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from bo_engine.backend import BOBackend
+from bo_engine.backend_base import BackendError
 from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
 from bo_engine.convergence import (
     StoppingDecision,
@@ -30,6 +31,7 @@ from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.pending_points import filter_pending_points
 from bo_engine.progress import ProgressCallback
 from bo_engine.types import ObservationData, OptimizationSpec
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.backend import get_backend
@@ -43,10 +45,15 @@ from bo_mcp_server.domain import (
 )
 from bo_mcp_server.errors import (
     ErrorCode,
+    make_backend_error_response,
     make_concurrent_modification_response,
     make_error_response,
 )
-from bo_mcp_server.idempotency import session_scope
+from bo_mcp_server.idempotency import reservation_heartbeat, session_scope
+from bo_mcp_server.operations.backend_output import (
+    BackendOutputError,
+    validate_backend_batch,
+)
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
     parse_verbosity,
@@ -64,6 +71,7 @@ from bo_mcp_server.storage import (
     ResultRepository,
     SuggestionRepository,
 )
+from bo_mcp_server.storage.models import ResultModel, SuggestionModel
 from bo_mcp_server.subscriptions import notify_campaign_updated_after_commit
 
 logger = logging.getLogger(__name__)
@@ -202,87 +210,6 @@ def _classify_pending_suggestions(
     return valid, stale
 
 
-async def _handle_pending_suggestions(
-    pending: list[Suggestion],
-    suggestion_repo: SuggestionRepository,
-) -> tuple[dict[str, Any] | None, list[Suggestion]]:
-    """Filter actionable suggestions, expire stale ones.
-
-    Auto-staleness applies only to ``PENDING`` rows: an ``ACCEPTED``
-    suggestion is a user-approved commitment and must not be dropped just
-    because an experiment is taking a long time, so it always counts as a
-    reservation regardless of age.
-
-    Returns (pending_info dict or None, valid pending list).
-    """
-    if not pending:
-        return None, []
-
-    valid_pending, stale = _classify_pending_suggestions(pending)
-    stale_count = len(stale)
-    for sugg in stale:
-        await suggestion_repo.save(sugg.with_status(SuggestionStatus.EXPIRED))
-
-    # Split the actionable set into PENDING vs ACCEPTED so clients can
-    # distinguish "generated, awaiting acknowledgement" from "user-approved,
-    # awaiting result". The legacy ``total_pending``/``valid_pending`` keys
-    # remain for back-compat but already include both statuses since
-    # ``list_actionable_by_campaign`` started returning ACCEPTED rows; the
-    # explicit breakdown makes that semantics visible.
-    breakdown = _status_breakdown(valid_pending)
-    pending_info = {
-        "total_pending": len(pending),
-        "valid_pending": len(valid_pending),
-        "stale_expired": stale_count,
-        "actionable_breakdown": breakdown,
-        "note": (
-            f"{len(valid_pending)} actionable experiments "
-            f"(pending={breakdown['pending']}, accepted={breakdown['accepted']}) "
-            "considered for diversity. "
-            f"{stale_count} stale suggestions expired."
-            if valid_pending
-            else "No valid pending experiments."
-        ),
-    }
-    logger.debug(
-        "Pending point handling: total=%d, valid=%d, expired=%d",
-        len(pending),
-        len(valid_pending),
-        stale_count,
-    )
-    return pending_info, valid_pending
-
-
-async def _compute_diversity_info(
-    backend: BOBackend,
-    opt_spec: OptimizationSpec,
-    suggestions: list[Suggestion],
-) -> dict[str, Any] | None:
-    """Compute batch diversity metrics via the backend.
-
-    Returns diversity info dict, or None if fewer than 2
-    suggestions or on failure. The backend call is offloaded to a thread
-    so it cannot block the event loop.
-    """
-    if len(suggestions) <= 1:
-        return None
-
-    try:
-        candidates = [s.parameter_values for s in suggestions]
-        metrics = await asyncio.to_thread(backend.compute_batch_diversity, opt_spec, candidates)
-        if metrics is None:
-            return None
-        return {
-            "min_pairwise_distance": round(metrics.min_pairwise_distance, 4),
-            "mean_pairwise_distance": round(metrics.mean_pairwise_distance, 4),
-            "diversity_score": round(metrics.diversity_score, 4),
-            "is_diverse": metrics.is_diverse,
-        }
-    except (RuntimeError, ValueError, TypeError) as e:
-        logger.debug("Could not compute batch diversity: %s", e)
-        return None
-
-
 def _build_success_response(
     suggestions: list[Suggestion],
     iteration: int,
@@ -388,37 +315,114 @@ async def generate_suggestions_operation(
     # Re-use the caller's session when provided; otherwise open and
     # commit our own. Used by ``apply_idempotency``'s session-aware
     # path so the new suggestion rows and the cache finalize commit
-    # together.
-    from bo_mcp_server.metrics import observe_suggestion_latency  # noqa: PLC0415
-
+    # together. The latency observation lives inside
+    # ``_run_three_phase_generation`` so it only fires on the success
+    # path that actually ran the BO compute.
     started = time.perf_counter()
     try:
-        async with session_scope(session) as db:
-            repos = _init_repositories(db)
-            response = await _generate_within_session(
-                campaign_id,
-                campaign_uuid,
-                batch_size,
-                verbosity_level,
-                repos,
-                db,
-                progress_callback=progress_callback,
-            )
-            # Observe success-path latency only; the exception branches
-            # below record their own envelopes without a backend handle.
-            observe_suggestion_latency(
-                response.get("_metadata", {}).get("backend"),
-                time.perf_counter() - started,
-            )
-            return response
-    except ConcurrentModificationError as err:
-        # When a caller (typically ``apply_idempotency``'s session-aware
-        # path) supplied the session, ``session_scope`` only yields it
-        # — the partial writes that landed before the optimistic-lock
-        # conflict (e.g. new suggestion rows saved at
-        # ``_create_and_save_suggestions`` before the campaign-version
-        # save raised) would otherwise survive the outer commit. Roll
-        # back here so the conflict produces no observable state.
+        return await _run_three_phase_generation(
+            campaign_id,
+            campaign_uuid,
+            batch_size,
+            verbosity_level,
+            session,
+            started=started,
+            progress_callback=progress_callback,
+        )
+    except (
+        ConcurrentModificationError,
+        SearchSpaceExhaustedError,
+        BackendOutputError,
+        BackendError,
+    ) as err:
+        return await _handle_generation_failure(err, campaign_id, session)
+
+
+async def _run_three_phase_generation(
+    campaign_id: str,
+    campaign_uuid: UUID,
+    batch_size: int | None,
+    verbosity_level: VerbosityLevel,
+    session: AsyncSession | None,
+    *,
+    started: float,
+    progress_callback: ProgressCallback | None,
+) -> dict[str, Any]:
+    """Drive the snapshot → compute → persist split (TODO 8.12).
+
+    Phase 1 (``_load_generation_snapshot``) acquires its own short
+    read transaction even when the caller supplies an outer session,
+    so the snapshot's locks are released before the BO compute runs.
+    Phase 2 (``_compute_generation_batch``) does the heavy backend
+    work with no DB session open — concurrent ``submit_results``,
+    status updates, and other reads on the same campaign are no
+    longer blocked. Phase 3 (``_persist_generation_batch``) reopens
+    a write transaction (the caller's, or its own) and uses the
+    existing ``CampaignRepository.save(expected_version=...)`` OCC
+    guard to abort cleanly if the campaign moved on during the
+    compute window.
+
+    The pre-flight early-exits (campaign not found, invalid status,
+    stopping criteria, budget exhaustion) all live in phase 1 and
+    return their own envelope; the latency observation only fires
+    on the success path so callers tracking ``observe_suggestion_latency``
+    keep a clean histogram for "the compute actually ran".
+    """
+    from bo_mcp_server.metrics import observe_suggestion_latency  # noqa: PLC0415
+
+    phase1 = await _load_generation_snapshot(campaign_id, campaign_uuid, batch_size)
+    if not isinstance(phase1, _GenerationSnapshot):
+        return phase1
+
+    backend = get_backend(phase1.spec.backend)
+    compute = await _compute_generation_batch(
+        snapshot=phase1,
+        backend=backend,
+        prior_backend_state=phase1.campaign.backend_state,
+        progress_callback=progress_callback,
+    )
+
+    async with session_scope(session) as db:
+        response = await _persist_generation_batch(
+            db=db,
+            campaign_id=campaign_id,
+            campaign_uuid=campaign_uuid,
+            snapshot=phase1,
+            compute=compute,
+            backend=backend,
+            verbosity_level=verbosity_level,
+        )
+
+    observe_suggestion_latency(
+        response.get("_metadata", {}).get("backend"),
+        time.perf_counter() - started,
+    )
+    return response
+
+
+async def _handle_generation_failure(
+    err: ConcurrentModificationError
+    | SearchSpaceExhaustedError
+    | BackendOutputError
+    | BackendError,
+    campaign_id: str,
+    session: AsyncSession | None,
+) -> dict[str, Any]:
+    """Map a generation-loop exception to a structured error envelope.
+
+    Extracted from :func:`generate_suggestions_operation` so the
+    function stays under the lint-enforced cyclomatic-complexity
+    budget (one ``except`` branch per failure mode would otherwise
+    blow the return-statement count).
+
+    When the caller supplied the session (e.g.
+    ``apply_idempotency``'s session-aware path), partial writes that
+    landed before the failure (new suggestion rows saved before the
+    campaign-version save raised) would otherwise survive the outer
+    commit. Roll back here so the failure produces no observable
+    state.
+    """
+    if isinstance(err, ConcurrentModificationError):
         if session is not None:
             await session.rollback()
         logger.warning(
@@ -431,7 +435,7 @@ async def generate_suggestions_operation(
         )
         response.update({"suggestions": [], "iteration": None})
         return response
-    except SearchSpaceExhaustedError as err:
+    if isinstance(err, SearchSpaceExhaustedError):
         logger.info(
             "Search space exhausted for campaign %s: %s",
             campaign_id,
@@ -448,6 +452,45 @@ async def generate_suggestions_operation(
                 "next_action_recommendation": "terminate_campaign",
             },
         )
+    if isinstance(err, BackendError):
+        # The backend (BoTorch / BayBE) raised one of the typed
+        # :class:`BackendError` subclasses defined in
+        # ``bo_engine.backend_base``. Route it through
+        # :func:`make_backend_error_response` so the envelope carries
+        # the right ``retryable`` flag and ``retry_after`` hint without
+        # this layer having to know the per-subclass mapping.
+        if session is not None:
+            await session.rollback()
+        logger.warning(
+            "Backend failure during suggestion generation for campaign %s: %s",
+            campaign_id,
+            err,
+        )
+        response = make_backend_error_response(
+            err,
+            extra_details={"campaign_id": campaign_id},
+        )
+        response.update({"suggestions": [], "iteration": None})
+        return response
+    # BackendOutputError: the backend returned a malformed
+    # SuggestionBatch. The fault is in the backend, not the caller,
+    # so this is not retryable — surface the structured Pydantic
+    # error list so an operator can identify the offending field.
+    if session is not None:
+        await session.rollback()
+    logger.exception(
+        "Backend returned malformed SuggestionBatch for campaign %s: %s",
+        campaign_id,
+        err.errors,
+    )
+    return _make_suggestions_error(
+        ErrorCode.ACQUISITION_OPTIMIZATION_FAILED,
+        message=str(err),
+        details={
+            "campaign_id": campaign_id,
+            "validation_errors": err.errors,
+        },
+    )
 
 
 def _init_repositories(session: AsyncSession) -> _Repositories:
@@ -479,6 +522,56 @@ class _GenerationPreflight:
     batch_clamped: bool
 
 
+@dataclass
+class _GenerationSnapshot:
+    """Phase-1 snapshot consumed by the compute phase (TODO 8.12).
+
+    Captures every value the BO backend needs to generate a batch so
+    the heavy ``backend.generate_suggestions`` call can run with no
+    DB session open. ``campaign_version`` is recorded here and
+    re-checked inside the phase-3 write transaction via
+    ``CampaignRepository.save(..., expected_version=...)``.
+
+    ``result_count`` is the child-table invariant used by phase 3 to
+    detect concurrent ``submit_results`` calls that did *not* bump
+    ``campaign.version`` (the single-objective / no-backend-state path
+    in ``_update_campaign_state`` skips the campaign save when the
+    hypervolume history is unchanged). Without this count, a result
+    inserted during the compute window would be invisible to the OCC
+    guard and the new suggestions would commit against stale
+    observations.
+
+    ``stale_pending`` carries the rows that the phase-3 writer will
+    mark ``EXPIRED``; phase 1 only classifies them and never writes.
+    """
+
+    campaign: Any  # bo_mcp_server.domain.Campaign — typed Any to avoid the import dance.
+    campaign_version: int
+    spec: CampaignSpec
+    actual_batch_size: int
+    new_iteration: int
+    observations: list[ObservationData]
+    valid_pending: list[Suggestion]
+    stale_pending: list[Suggestion]
+    pending_info: dict[str, Any] | None
+    result_count: int
+
+
+@dataclass
+class _GenerationComputeResult:
+    """Output of the phase-2 backend compute (TODO 8.12).
+
+    Carries everything phase 3 needs to persist + format the response
+    without touching the backend again.
+    """
+
+    suggestion_data: SuggestionDataList
+    new_backend_state: dict[str, Any] | None
+    warnings: list[str]
+    method_selection: dict[str, Any]
+    diversity_info: dict[str, Any] | None
+
+
 def _compute_preflight(
     campaign: Any,
     spec: CampaignSpec,
@@ -494,7 +587,7 @@ def _compute_preflight(
     structured envelope the real path emits via ``_build_stopping_response``.
 
     The function is intentionally pure (no DB writes, no model fit) so
-    both ``_preview_generation`` (dry-run) and ``_generate_within_session``
+    both ``_preview_generation`` (dry-run) and ``_load_generation_snapshot``
     can call it before doing anything irreversible.
     """
     opt_spec = campaign_spec_to_optimization_spec(spec)
@@ -686,96 +779,74 @@ async def _save_campaign_after_generation(
         notify_campaign_updated_after_commit(db, campaign_uuid)
 
 
-async def _generate_within_session(
+async def _load_generation_snapshot(
     campaign_id: str,
     campaign_uuid: UUID,
     batch_size: int | None,
-    verbosity_level: VerbosityLevel,
-    repos: _Repositories,
-    db: AsyncSession,
-    progress_callback: ProgressCallback | None = None,
-) -> dict[str, Any]:
-    """Run the suggestion generation within an active DB session.
+) -> _GenerationSnapshot | dict[str, Any]:
+    """Phase 1 (TODO 8.12) — short read transaction → snapshot.
 
-    ``db`` is threaded through so post-commit notifications can attach
-    to its ``after_commit`` event without having to plumb the session
-    into every helper that needs to fire one. Handles fetching,
-    validation, generation, and persistence.
+    Opens its own session so the read locks are released *before* the
+    BO compute starts. Returns either a fully-populated snapshot or
+    the same structured envelope the legacy path emits for the
+    early-exit cases (campaign not found, invalid status, stopping
+    criteria fired, budget exhausted). Phase 1 is read-only; the
+    EXPIRED writes for stale pending rows are deferred to phase 3 so
+    a long compute that ultimately conflicts on OCC does not leak
+    a half-finished expiration set.
     """
-    campaign_repo = repos.campaign
-    spec_repo = repos.spec
-    result_repo = repos.result
-    suggestion_repo = repos.suggestion
+    async with session_scope(None) as db:
+        repos = _init_repositories(db)
+        campaign = await repos.campaign.get(campaign_uuid)
+        if campaign is None:
+            logger.warning("Campaign not found: %s", campaign_id)
+            return make_error_response(
+                ErrorCode.CAMPAIGN_NOT_FOUND,
+                message=f"Campaign {campaign_id} not found",
+                details={"campaign_id": campaign_id},
+            )
 
-    # Fetch and validate campaign
-    campaign = await campaign_repo.get(campaign_uuid)
-    if campaign is None:
-        logger.warning("Campaign not found: %s", campaign_id)
-        return make_error_response(
-            ErrorCode.CAMPAIGN_NOT_FOUND,
-            message=f"Campaign {campaign_id} not found",
-            details={"campaign_id": campaign_id},
-        )
+        if not campaign.can_generate_suggestions:
+            logger.warning(
+                "Cannot generate suggestions for campaign %s: status=%s",
+                campaign_id,
+                campaign.status.value,
+            )
+            response = make_error_response(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                message=(
+                    f"Campaign status is {campaign.status.value}, cannot generate suggestions"
+                ),
+                details={"current_status": campaign.status.value},
+            )
+            response["iteration"] = campaign.iteration
+            return response
 
-    if not campaign.can_generate_suggestions:
-        logger.warning(
-            "Cannot generate suggestions for campaign %s: status=%s",
-            campaign_id,
-            campaign.status.value,
-        )
-        response = make_error_response(
-            ErrorCode.INVALID_STATE_TRANSITION,
-            message=(f"Campaign status is {campaign.status.value}, cannot generate suggestions"),
-            details={
-                "current_status": campaign.status.value,
-            },
-        )
-        response["iteration"] = campaign.iteration
-        return response
+        spec = await repos.spec.get(campaign.spec_id)
+        if spec is None:
+            response = make_error_response(
+                ErrorCode.DATABASE_ERROR,
+                message="Campaign spec not found",
+                details={"spec_id": str(campaign.spec_id)},
+            )
+            response["iteration"] = campaign.iteration
+            return response
 
-    # Fetch campaign spec
-    spec = await spec_repo.get(campaign.spec_id)
-    if spec is None:
-        response = make_error_response(
-            ErrorCode.DATABASE_ERROR,
-            message="Campaign spec not found",
-            details={"spec_id": str(campaign.spec_id)},
-        )
-        response["iteration"] = campaign.iteration
-        return response
+        results = await repos.result.list_by_campaign(campaign_uuid)
+        pending = await repos.suggestion.list_actionable_by_campaign(campaign_uuid)
 
-    # Fetch existing results
-    results = await result_repo.list_by_campaign(campaign_uuid)
+    valid_pending, stale_pending = _classify_pending_suggestions(pending)
+    pending_info = _build_pending_info(pending, valid_pending, len(stale_pending))
 
-    # Handle actionable suggestions. PENDING and ACCEPTED both reserve
-    # experiment slots (see ``Suggestion.is_actionable``): PENDING means
-    # "generated, awaiting execution"; ACCEPTED means "user approved, awaiting
-    # result". Both must be considered for X_pending diversification *and* for
-    # the observation budget so accepted-but-unsubmitted experiments cannot
-    # have their slot stolen by free-floating submissions or new generations.
-    pending = await suggestion_repo.list_actionable_by_campaign(campaign_uuid)
-    pending_info, valid_pending = await _handle_pending_suggestions(pending, suggestion_repo)
-
-    # Prepare generation inputs
     actual_batch_size = batch_size or spec.batch_size
     opt_spec = campaign_spec_to_optimization_spec(spec)
     new_iteration = campaign.iteration + 1
-    backend = get_backend(spec.backend)
-
-    # Budget / convergence-based automatic stopping. Runs before any BO work
-    # so we never spend a model fit when the campaign has already exhausted
-    # its iteration or observation budget, or improvement has plateaued
-    # below ``convergence_tolerance``.
     observations = results_to_observations(results)
+
     stopping = evaluate_stopping_decision(opt_spec, observations, new_iteration)
     if stopping.should_stop:
         return _build_stopping_response(stopping, campaign.iteration, campaign_id)
 
-    # Clamp the requested batch to the remaining observation budget so a
-    # campaign with ``max_observations=3``, ``batch_size=2`` and two
-    # existing observations does not finish with four observations. Valid
-    # pending suggestions count as already-reserved budget: a generated-but-
-    # unsubmitted batch is an in-flight experiment we have committed to.
     if opt_spec.max_observations is not None:
         remaining_budget = int(opt_spec.max_observations) - len(observations) - len(valid_pending)
         if remaining_budget <= 0:
@@ -791,10 +862,6 @@ async def _generate_within_session(
                 ),
                 details={
                     "n_observations": len(observations),
-                    # ``n_pending`` is preserved for back-compat -- it has
-                    # always meant "actionable count" since ACCEPTED was
-                    # added to the budget calculation. The explicit
-                    # ``actionable_breakdown`` makes the split visible.
                     "n_pending": len(valid_pending),
                     "actionable_breakdown": actionable_breakdown,
                     "max_observations": int(opt_spec.max_observations),
@@ -815,66 +882,265 @@ async def _generate_within_session(
             actual_batch_size = remaining_budget
 
     logger.debug(
-        "Generation context: n_results=%d, batch_size=%d, iteration=%d, n_pending=%d",
+        "Generation snapshot: n_results=%d, batch_size=%d, iteration=%d, n_pending=%d",
         len(results),
         actual_batch_size,
         new_iteration,
         len(valid_pending),
     )
 
-    # Pending suggestions condition the acquisition so the new batch does
-    # not cluster around in-flight experiments.
-    pending_parameter_values = [p.parameter_values for p in valid_pending]
+    return _GenerationSnapshot(
+        campaign=campaign,
+        campaign_version=campaign.version,
+        spec=spec,
+        actual_batch_size=actual_batch_size,
+        new_iteration=new_iteration,
+        observations=observations,
+        valid_pending=valid_pending,
+        stale_pending=stale_pending,
+        pending_info=pending_info,
+        result_count=len(results),
+    )
 
-    # Generate suggestions via backend (heavy work offloaded to a thread)
-    suggestion_data, new_backend_state, warnings = await _generate_via_backend(
+
+def _build_pending_info(
+    pending: list[Suggestion],
+    valid_pending: list[Suggestion],
+    stale_count: int,
+) -> dict[str, Any] | None:
+    """Render the read-only pending-info block reported with the response.
+
+    Replaces the side-effect-bearing :func:`_handle_pending_suggestions`
+    on the phase-1 path: classification only — the EXPIRED writes for
+    stale rows happen in phase 3 alongside the new-suggestion writes
+    so a failed compute leaves no half-finished expiration set behind.
+    """
+    if not pending:
+        return None
+    breakdown = _status_breakdown(valid_pending)
+    return {
+        "total_pending": len(pending),
+        "valid_pending": len(valid_pending),
+        "stale_expired": stale_count,
+        "actionable_breakdown": breakdown,
+        "note": (
+            f"{len(valid_pending)} actionable experiments "
+            f"(pending={breakdown['pending']}, accepted={breakdown['accepted']}) "
+            "considered for diversity. "
+            f"{stale_count} stale suggestions expired."
+            if valid_pending
+            else "No valid pending experiments."
+        ),
+    }
+
+
+async def _compute_generation_batch(
+    snapshot: _GenerationSnapshot,
+    backend: BOBackend,
+    prior_backend_state: dict[str, Any] | None,
+    progress_callback: ProgressCallback | None,
+) -> _GenerationComputeResult:
+    """Phase 2 (TODO 8.12) — heavy BO compute with no DB session open.
+
+    Runs ``backend.generate_suggestions`` (and the follow-up diversity
+    metric) outside any transaction so a concurrent
+    ``submit_results`` / status update / dashboard read can acquire
+    DB locks while the GP fit + acquisition optimization is running.
+    """
+    opt_spec = campaign_spec_to_optimization_spec(snapshot.spec)
+    pending_parameter_values = [p.parameter_values for p in snapshot.valid_pending]
+
+    suggestion_data, new_backend_state, warnings, live_method_info = await _generate_via_backend(
         backend,
         opt_spec,
-        observations,
-        actual_batch_size,
-        new_iteration,
-        campaign.backend_state,
+        snapshot.observations,
+        snapshot.actual_batch_size,
+        snapshot.new_iteration,
+        prior_backend_state,
         pending_parameter_values,
         progress_callback=progress_callback,
     )
 
-    # Create and save suggestion entities
-    suggestions = await _create_and_save_suggestions(
-        suggestion_data, campaign_uuid, suggestion_repo
+    diversity_info = await _compute_diversity_info_from_params(
+        backend, opt_spec, [params for params, _ in suggestion_data]
     )
 
-    # Compute batch diversity
-    diversity_info = await _compute_diversity_info(backend, opt_spec, suggestions)
+    # Prefer the live ``method_info`` the backend recorded during the
+    # actual run; fall back to ``select_methods`` only when the backend
+    # emits nothing (e.g. a third-party implementation that leaves the
+    # field empty). Recomputing ``select_methods`` after the fact used
+    # to mis-report: BayBE's static path explicitly tags every label
+    # with ``(fallback)`` so the response would carry a fallback label
+    # even on a successful BO run.
+    if live_method_info:
+        method_selection = live_method_info
+        method_selection.setdefault("is_fallback", False)
+    else:
+        method_selection = backend.select_methods(
+            opt_spec, n_observations=len(snapshot.observations)
+        )
+        method_selection["is_fallback"] = True
+        method_selection.setdefault("confidence", "low")
 
-    # Update campaign state -- promotes CREATED→RUNNING when needed
-    # and arms a post-commit hook so subscribers learn about that
-    # transition only after the row is durable. Subscribers do not
-    # care about per-iteration bumps so the hook is conditional.
+    return _GenerationComputeResult(
+        suggestion_data=suggestion_data,
+        new_backend_state=new_backend_state,
+        warnings=warnings,
+        method_selection=method_selection,
+        diversity_info=diversity_info,
+    )
+
+
+async def _compute_diversity_info_from_params(
+    backend: BOBackend,
+    opt_spec: OptimizationSpec,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Diversity-metric helper that consumes raw parameter dicts.
+
+    Takes raw parameter dicts from the phase-2 backend output (which
+    has not been persisted yet) so the diversity check can run
+    without the side-effect of a database write.
+    """
+    if len(candidates) <= 1:
+        return None
+    try:
+        metrics = await asyncio.to_thread(backend.compute_batch_diversity, opt_spec, candidates)
+        if metrics is None:
+            return None
+        return {
+            "min_pairwise_distance": round(metrics.min_pairwise_distance, 4),
+            "mean_pairwise_distance": round(metrics.mean_pairwise_distance, 4),
+            "diversity_score": round(metrics.diversity_score, 4),
+            "is_diverse": metrics.is_diverse,
+        }
+    except (RuntimeError, ValueError, TypeError) as e:
+        logger.debug("Could not compute batch diversity: %s", e)
+        return None
+
+
+async def _persist_generation_batch(
+    db: AsyncSession,
+    campaign_id: str,
+    campaign_uuid: UUID,
+    snapshot: _GenerationSnapshot,
+    compute: _GenerationComputeResult,
+    backend: BOBackend,
+    verbosity_level: VerbosityLevel,
+) -> dict[str, Any]:
+    """Phase 3 (TODO 8.12) — short write transaction with OCC + child-table recheck.
+
+    Two complementary guards protect against concurrent state changes
+    that landed during the compute window:
+
+    1. ``CampaignRepository.save(..., expected_version=...)`` catches
+       campaign-row mutations (status flips from a lifecycle call,
+       multi-objective hypervolume bumps from ``submit_results``).
+    2. A child-table invariant check catches mutations that don't
+       touch ``campaign.version`` — most importantly a single-objective
+       ``submit_results`` (no hypervolume to bump) and direct
+       suggestion-status updates. Phase 1 captured the result count
+       and the actionable-suggestion count; if either changed by the
+       time phase 3 runs, the snapshot is stale and we raise
+       ``ConcurrentModificationError`` so the existing machinery
+       routes a retryable envelope back to the caller.
+    """
+    _ = campaign_id  # surfaced in log lines below
+    repos = _init_repositories(db)
+
+    fresh_result_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(ResultModel)
+            .where(
+                ResultModel.campaign_id == str(campaign_uuid),
+                ResultModel.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    fresh_actionable_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(SuggestionModel)
+            .where(
+                SuggestionModel.campaign_id == str(campaign_uuid),
+                SuggestionModel.status.in_((SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED)),
+                SuggestionModel.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    snapshot_actionable_count = len(snapshot.valid_pending) + len(snapshot.stale_pending)
+    if (
+        fresh_result_count != snapshot.result_count
+        or fresh_actionable_count != snapshot_actionable_count
+    ):
+        logger.warning(
+            "Snapshot invalidated for campaign %s during compute: results %d→%d, actionable %d→%d",
+            campaign_uuid,
+            snapshot.result_count,
+            fresh_result_count,
+            snapshot_actionable_count,
+            fresh_actionable_count,
+        )
+        raise ConcurrentModificationError("Campaign", campaign_uuid, snapshot.campaign_version)
+
+    # Expire stale pending suggestions. The classification was done in
+    # phase 1 but the write is deferred to phase 3 so a failed compute
+    # leaves no half-finished EXPIRED set behind. The expire path uses
+    # ``expire_if_pending`` (atomic ``UPDATE ... WHERE status = PENDING``)
+    # so a concurrent ``PENDING -> ACCEPTED`` transition during the
+    # compute window — which the count-only invariant cannot see,
+    # since both PENDING and ACCEPTED count as actionable — does not
+    # get clobbered with ``EXPIRED`` by the snapshot's view of the
+    # world.
+    #
+    # ``expire_if_pending == False`` indicates the row changed status
+    # during the compute (typically ``ACCEPTED`` via
+    # ``update_suggestion_status``). Phase 1 excluded the stale row
+    # from ``valid_pending``, so the new batch's budget and X_pending
+    # were computed without it — committing those suggestions now
+    # would understate the in-flight count and could exceed
+    # ``max_observations`` or cluster against the newly-accepted
+    # point. Raise :class:`ConcurrentModificationError` so the
+    # existing machinery returns a retryable envelope; the retry's
+    # phase 1 will see the row as ACCEPTED and account for it
+    # correctly.
+    for sugg in snapshot.stale_pending:
+        if not await repos.suggestion.expire_if_pending(sugg.id):
+            logger.warning(
+                "Stale suggestion %s changed during compute; aborting phase 3 "
+                "to let the caller retry with a fresh snapshot",
+                sugg.id,
+            )
+            raise ConcurrentModificationError("Suggestion", sugg.id, snapshot.campaign_version)
+
+    suggestions = await _create_and_save_suggestions(
+        compute.suggestion_data, campaign_uuid, repos.suggestion
+    )
+
     await _save_campaign_after_generation(
-        campaign,
+        snapshot.campaign,
         campaign_uuid,
-        new_backend_state,
-        campaign_repo,
+        compute.new_backend_state,
+        repos.campaign,
         db,
     )
 
     logger.info(
         "Generated %d suggestions for campaign %s, iteration=%d",
         len(suggestions),
-        campaign_id,
-        new_iteration,
+        campaign_uuid,
+        snapshot.new_iteration,
     )
 
-    # Format and return
-    method_selection = backend.select_methods(opt_spec, n_observations=len(results))
-
+    _ = backend  # backend is captured in compute.method_selection; keep parity with phase-1 / 2.
     full_response = _build_success_response(
         suggestions,
-        new_iteration,
-        method_selection,
-        warnings,
-        pending_info,
-        diversity_info,
+        snapshot.new_iteration,
+        compute.method_selection,
+        compute.warnings,
+        snapshot.pending_info,
+        compute.diversity_info,
     )
     return format_suggestions_response(full_response, verbosity_level)
 
@@ -892,6 +1158,7 @@ async def _generate_via_backend(
     SuggestionDataList,
     dict[str, Any] | None,
     list[str],
+    dict[str, Any],
 ]:
     """Generate a batch of suggestions via the backend.
 
@@ -917,21 +1184,41 @@ async def _generate_via_backend(
     optimization, MCMC) and are offloaded via ``asyncio.to_thread`` so
     concurrent requests do not stall the event loop.
 
-    Returns (suggestion_data, backend_state, warnings).
+    Returns ``(suggestion_data, backend_state, warnings, method_info)``.
+    ``method_info`` is the live metadata the backend recorded during
+    the actual run (which recommender phase / strategy / acquisition
+    fired). Routing it through here lets ``_build_success_response``
+    surface the live labels instead of the static ``select_methods``
+    fallback the operation previously recomputed (TODO 8.51).
     """
-    batch = await asyncio.to_thread(
-        backend.generate_suggestions,
-        spec=opt_spec,
-        observations=observations,
-        batch_size=batch_size,
-        iteration=iteration,
-        backend_state=prior_backend_state,
-        pending_points=pending_parameter_values,
-        progress_callback=progress_callback,
-    )
+    # The heartbeat is a no-op when there is no active idempotency
+    # reservation (the typical direct-call path). When invoked inside
+    # ``apply_idempotency``'s session-aware branch it keeps the
+    # ``pending`` row alive past the default 10-min reservation TTL so
+    # legitimately-slow runs (SAASBO MCMC, large batches) finish
+    # without surrendering their slot to a concurrent retry storm.
+    async with reservation_heartbeat():
+        batch = await asyncio.to_thread(
+            backend.generate_suggestions,
+            spec=opt_spec,
+            observations=observations,
+            batch_size=batch_size,
+            iteration=iteration,
+            backend_state=prior_backend_state,
+            pending_points=pending_parameter_values,
+            progress_callback=progress_callback,
+        )
+    # Re-validate the batch shape against the documented contract.
+    # ``bo-engine`` is Pydantic-free for third-party backend plugins, so
+    # a misbehaving backend can hand us a partial dict that would otherwise
+    # surface downstream as an opaque ``KeyError`` or as a malformed
+    # provenance row in storage. Convert the contract violation to a
+    # typed :class:`BackendOutputError` here.
+    batch = validate_backend_batch(batch)
     suggestion_data = [(item["parameter_values"], item["provenance"]) for item in batch.suggestions]
     return (
         suggestion_data,
         batch.backend_state,
         batch.warnings,
+        dict(batch.method_info or {}),
     )

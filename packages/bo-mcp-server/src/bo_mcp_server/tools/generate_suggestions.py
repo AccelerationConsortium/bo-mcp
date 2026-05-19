@@ -9,7 +9,12 @@ from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.generate_suggestions import (
     generate_suggestions_operation,
 )
-from bo_mcp_server.progress_bridge import make_progress_callback_from_context
+from bo_mcp_server.progress_bridge import (
+    ProgressStatus,
+    make_progress_callback_from_context,
+    register_progress_status,
+    unregister_progress_status,
+)
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
 from bo_mcp_server.trace_context import bind_trace_id
@@ -65,7 +70,13 @@ async def generate_suggestions(
             "verbosity": verbosity,
         }
 
-        progress_callback = make_progress_callback_from_context(ctx)
+        progress_status = ProgressStatus()
+        progress_callback = make_progress_callback_from_context(ctx, status=progress_status)
+        # Register the snapshot under the campaign id so a polling
+        # client (``bo_check_progress``) can read the latest event even
+        # when the push channel has dropped. The entry is removed in
+        # the finally below so completed campaigns do not linger.
+        register_progress_status(campaign_id, progress_status)
 
         async def run(session: AsyncSession) -> dict[str, Any]:
             return await generate_suggestions_operation(
@@ -76,9 +87,12 @@ async def generate_suggestions(
                 session=session,
             )
 
-        return await apply_idempotency(
-            tool_name="bo_generate_suggestions",
-            idempotency_key=idempotency_key,
-            request_payload=request_payload,
-            executor=run,
-        )
+        try:
+            return await apply_idempotency(
+                tool_name="bo_generate_suggestions",
+                idempotency_key=idempotency_key,
+                request_payload=request_payload,
+                executor=run,
+            )
+        finally:
+            unregister_progress_status(campaign_id)

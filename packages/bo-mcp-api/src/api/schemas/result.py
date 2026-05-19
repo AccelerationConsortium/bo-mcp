@@ -5,6 +5,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.limits import MAX_BATCH_RESULTS
+from api.schemas.common import ResponseEnvelope
+
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
 # permissive because the MCP response formatter splices a ``_metadata``
@@ -32,11 +35,16 @@ class ResultCreate(BaseModel):
 
 
 class ResultBatchCreate(BaseModel):
-    """Batch result creation request."""
+    """Batch result creation request.
+
+    ``results`` is bounded by :data:`api.limits.MAX_BATCH_RESULTS` so a
+    single POST cannot pin a worker behind validating tens of
+    thousands of rows.
+    """
 
     model_config = _FORBID_EXTRA
 
-    results: list[ResultCreate]
+    results: list[ResultCreate] = Field(..., min_length=1, max_length=MAX_BATCH_RESULTS)
     source: str = Field(default="api", pattern="^(gui|file_upload|api)$")
 
 
@@ -68,7 +76,7 @@ class ResultQueryRequest(BaseModel):
     verbosity: str = "standard"
 
 
-class ResultQueryResponse(BaseModel):
+class ResultQueryResponse(ResponseEnvelope):
     """Result query response with pagination envelope."""
 
     success: bool
@@ -79,12 +87,19 @@ class ResultQueryResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
-class ResultSubmitResponse(BaseModel):
+class ResultSubmitResponse(ResponseEnvelope):
     """Response for result submission.
 
     ``field_errors`` mirrors the MCP envelope so REST callers can
     target the offending field by dotted path
     (e.g. ``results[5].objective_values``).
+
+    ``idempotency_replay`` is ``True`` when the response was served
+    from the idempotency cache instead of persisting a fresh batch —
+    same marker the MCP tool exposes. Without it, REST clients that
+    used an Idempotency-Key on a retry could not tell the cached
+    reply from a brand-new insert and would have no way to surface
+    that distinction to their users.
     """
 
     success: bool
@@ -92,3 +107,4 @@ class ResultSubmitResponse(BaseModel):
     errors: list[str]
     warnings: list[str]
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
+    idempotency_replay: bool = False

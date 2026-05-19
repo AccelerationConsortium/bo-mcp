@@ -101,7 +101,7 @@ async def setup_database():
     database._session_factory = async_sessionmaker(
         database._engine,
         class_=AsyncSession,
-        expire_on_commit=False,
+        expire_on_commit=True,
     )
 
     await init_database()

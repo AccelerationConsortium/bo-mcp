@@ -54,7 +54,11 @@ async def list_campaigns(
         limit: Maximum number of campaigns to return (default 20, max 100).
         offset: **Deprecated**. Number of campaigns to skip for
             pagination. Unsafe under concurrent inserts — use ``cursor``
-            instead. Kept for backward compatibility.
+            instead. Kept for backward compatibility. Mutually
+            exclusive with ``cursor``: supplying both yields a
+            ``VALIDATION_FAILED`` envelope so callers learn about the
+            half-migrated pagination loop instead of silently letting
+            one of the two values win.
         verbosity: Response verbosity level. Options:
             - "minimal": ~50 tokens - campaign_id, name, status only
             - "standard": ~200 tokens - includes iteration, n_results, created_at

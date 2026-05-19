@@ -22,6 +22,7 @@ https://prometheus.io/docs/practices/naming/.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 
@@ -102,18 +103,81 @@ def sample_db_pool() -> None:
         DB_POOL.labels(state).set(value)
 
 
+_UUID_SEGMENT = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_HEX_SEGMENT = re.compile(r"^[0-9a-fA-F]{8,}$")
+_NUMERIC_SEGMENT = re.compile(r"^\d+$")
+# Cap on the fallback label set so a scanner walking thousands of
+# unique URLs cannot blow up Prometheus cardinality. Hit-rate of the
+# unmatched path is meant to be near zero in steady state, so the cap
+# is small on purpose: once exhausted, additional unmatched paths
+# collapse onto the ``_UNMATCHED_OVERFLOW`` sentinel.
+_UNMATCHED_LABEL_CAP = 64
+_UNMATCHED_OVERFLOW = "<unmatched-overflow>"
+
+# Set of fallback labels we have emitted in this process so we can
+# detect when the cap has been reached. Reset is intentionally
+# process-bound; long-running deployments restart on schedule and a
+# transient burst of unmatched paths drains naturally on restart.
+_unmatched_labels: set[str] = set()
+
+
+def _sanitize_unmatched_path(path: str) -> str:
+    """Collapse high-cardinality URL segments to placeholders.
+
+    Replaces UUIDs, long hex strings, and pure-numeric segments with
+    ``{uuid}`` / ``{hex}`` / ``{int}`` so a 404-scanner hitting paths
+    like ``/api/v1/wrong/<random>`` cannot blow up the Prometheus
+    label set. Real route templates resolved by FastAPI already use
+    placeholders for their path parameters; this sanitizer applies
+    the same shape to URLs that never matched a route.
+    """
+    sanitized = _UUID_SEGMENT.sub("{uuid}", path)
+    segments = sanitized.split("/")
+    for idx, segment in enumerate(segments):
+        if not segment:
+            continue
+        if _NUMERIC_SEGMENT.match(segment):
+            segments[idx] = "{int}"
+        elif _HEX_SEGMENT.match(segment):
+            segments[idx] = "{hex}"
+    return "/".join(segments)
+
+
+def _bounded_unmatched_label(path: str) -> str:
+    """Cap unique fallback labels per series to a fixed budget.
+
+    Even after sanitization a determined scanner can produce many
+    distinct ``/<word>/<word>/...`` paths. We keep a process-local set
+    of fallback labels and collapse anything beyond the cap onto a
+    single overflow sentinel so the label-set size is bounded under
+    pathological input.
+    """
+    if path in _unmatched_labels:
+        return path
+    if len(_unmatched_labels) >= _UNMATCHED_LABEL_CAP:
+        return _UNMATCHED_OVERFLOW
+    _unmatched_labels.add(path)
+    return path
+
+
 def _route_template(request: Request) -> str:
-    """Resolve the matched route template, falling back to the raw path.
+    """Resolve the matched route template, falling back to a sanitized path.
 
     Recording the *template* (``/api/v1/campaigns/{campaign_id}``) rather
     than the concrete URL keeps cardinality bounded: a million unique
-    campaign ids would otherwise blow up the metric label set.
+    campaign ids would otherwise blow up the metric label set. When no
+    route matched (404 scanner, typo, deprecated path), the raw URL
+    can carry concrete UUIDs / numeric ids of its own — sanitize and
+    cap before exposing as a label.
     """
     route = request.scope.get("route")
     template = getattr(route, "path", None)
     if isinstance(template, str) and template:
         return template
-    return request.url.path
+    sanitized = _sanitize_unmatched_path(request.url.path)
+    return _bounded_unmatched_label(sanitized)
 
 
 def _status_class(status_code: int) -> str:
@@ -130,7 +194,12 @@ async def _instrument(
     start = time.perf_counter()
     try:
         response = await call_next(request)
-    except Exception:
+    except BaseException:  # noqa: BLE001 - re-raised after recording metric
+        # We deliberately catch every escape — ``BaseException`` to cover
+        # ``CancelledError`` / ``SystemExit`` too — so the latency
+        # histogram and the ``5xx`` counter still reflect the failed
+        # request. The original exception is re-raised unchanged so the
+        # downstream exception handler sees identical behavior.
         elapsed = time.perf_counter() - start
         route = _route_template(request)
         REQUEST_DURATION.labels(method, route).observe(elapsed)

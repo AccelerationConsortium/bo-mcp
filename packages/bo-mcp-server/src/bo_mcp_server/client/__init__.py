@@ -37,6 +37,8 @@ from bo_mcp_server.client.auth import (
     ensure_owned_campaigns,
     get_campaign_spec_by_id,
     get_campaign_with_spec,
+    get_spec_for_user,
+    get_user_by_api_key,
     list_campaign_results,
     list_campaign_suggestions,
     list_owner_campaigns_with_specs,
@@ -67,8 +69,10 @@ from bo_mcp_server.domain import (
     User,
 )
 from bo_mcp_server.errors import (
+    ERROR_CODE_TO_HTTP_STATUS,
     ErrorCode,
     http_status_for_error,
+    make_corrupted_json_response,
     make_error_response,
 )
 from bo_mcp_server.metrics import (
@@ -88,6 +92,12 @@ from bo_mcp_server.operations.generate_suggestions import (
     generate_suggestions_operation,
 )
 from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
+from bo_mcp_server.operations.idempotency_wrapper import (
+    OperationExecutor,
+    canonical_create_campaign_payload,
+    canonical_submit_results_payload,
+    run_idempotent_operation,
+)
 from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
 from bo_mcp_server.operations.list_results import list_results_operation
@@ -104,10 +114,12 @@ from bo_mcp_server.operations.update_suggestion_status import (
 )
 from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import (
+    RESPONSE_SCHEMA_VERSION,
     VerbosityLevel,
     format_validate_intake_response,
 )
 from bo_mcp_server.result_upload_parser import parse_named_result_rows
+from bo_mcp_server.storage.models import CorruptedJsonColumnError
 
 __all__ = [
     # DTOs
@@ -128,10 +140,14 @@ __all__ = [
     "SuggestionStatus",
     "User",
     # Errors / formatting
+    "CorruptedJsonColumnError",
+    "ERROR_CODE_TO_HTTP_STATUS",
     "ErrorCode",
+    "RESPONSE_SCHEMA_VERSION",
     "VerbosityLevel",
     "format_validate_intake_response",
     "http_status_for_error",
+    "make_corrupted_json_response",
     "make_error_response",
     # Operations
     "batch_get_status_operation",
@@ -150,6 +166,11 @@ __all__ = [
     "submit_results_operation",
     "update_suggestion_status_operation",
     "validate_intake_operation",
+    # Idempotency (transport-neutral)
+    "OperationExecutor",
+    "canonical_create_campaign_payload",
+    "canonical_submit_results_payload",
+    "run_idempotent_operation",
     # Auth helpers / exceptions
     "ClientError",
     "DEV_API_KEY",
@@ -164,6 +185,8 @@ __all__ = [
     "ensure_owned_campaigns",
     "get_campaign_spec_by_id",
     "get_campaign_with_spec",
+    "get_spec_for_user",
+    "get_user_by_api_key",
     "list_campaign_results",
     "list_campaign_suggestions",
     "list_owner_campaigns_with_specs",

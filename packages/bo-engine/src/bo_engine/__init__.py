@@ -44,7 +44,12 @@ from bo_engine.backend import (
 )
 from bo_engine.backend_base import (
     CURRENT_STATE_ENVELOPE_VERSION,
+    BackendError,
+    BackendIncompatibilityError,
+    BackendInputError,
+    BackendInternalError,
     BackendStateEnvelope,
+    BackendTransientError,
     BackendValidationResult,
     BaseBackend,
     CapabilityReport,
@@ -56,6 +61,7 @@ from bo_engine.backend_base import (
     is_state_envelope,
     required_features,
     unwrap_state,
+    wrap_backend_exception,
     wrap_state,
 )
 
@@ -192,7 +198,9 @@ from bo_engine.models import (
     extract_lengthscales,
     fit_model,
     fit_single_task_model,
+    floor_standardize_stdvs,
     get_warping_parameters,
+    post_fit_verification,
     verify_standardization,
 )
 from bo_engine.multifidelity import (
@@ -297,6 +305,7 @@ from bo_engine.reproducibility import (
     SeedState,
     compute_suggestions_hash,
     create_reproducible_sobol,
+    derive_seed,
     get_reproducibility_summary,
     verify_reproducibility,
 )
@@ -340,6 +349,7 @@ from bo_engine.spec_ir import (
     normalize_spec,
 )
 from bo_engine.suggestions import (
+    OutcomeConstraintConfigurationError,
     generate_initial_design,
     generate_next_batch,
     update_turbo_after_evaluation,
@@ -460,6 +470,7 @@ __all__ = [
     "compute_pareto_front",
     "compute_single_objective_improvement_rate",
     "ModelFittingError",
+    "OutcomeConstraintConfigurationError",
     "create_acquisition",
     "create_and_fit_model",
     "create_and_fit_single_task_model",
@@ -704,7 +715,10 @@ __all__ = [
     "SeedState",
     "compute_suggestions_hash",
     "create_reproducible_sobol",
+    "derive_seed",
+    "floor_standardize_stdvs",
     "get_reproducibility_summary",
+    "post_fit_verification",
     "verify_reproducibility",
     "verify_standardization",
     # What-If Analysis (v2.7 - Section 3.8)
@@ -727,7 +741,12 @@ __all__ = [
     "Feature",
     "SuggestionBatch",
     # Backend extensibility (TODO 1.69)
+    "BackendError",
+    "BackendIncompatibilityError",
+    "BackendInputError",
+    "BackendInternalError",
     "BackendStateEnvelope",
+    "BackendTransientError",
     "BackendValidationResult",
     "BaseBackend",
     "CapabilityReport",
@@ -740,5 +759,6 @@ __all__ = [
     "is_state_envelope",
     "required_features",
     "unwrap_state",
+    "wrap_backend_exception",
     "wrap_state",
 ]

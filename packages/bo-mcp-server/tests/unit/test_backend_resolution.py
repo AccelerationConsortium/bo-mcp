@@ -195,9 +195,10 @@ def test_auto_falls_back_to_degraded_when_no_full_support(monkeypatch):
     """If only degraded backends exist, the selector still picks one.
 
     Simulated by patching the available-backends list to BayBE only.
-    BayBE is DEGRADED (the warping knob is ignored) but it's the only
-    candidate, so the selector picks it rather than failing with
-    ``DEFAULT_BACKEND`` (which is unavailable here).
+    The caller acknowledges the degradation so BayBE reports ``IGNORED``
+    (DEGRADED tier) instead of ``UNSUPPORTED`` (INCOMPATIBLE). With no
+    fully-supporting candidate available, the selector picks the only
+    DEGRADED backend rather than failing.
     """
     from bo_mcp_server import backend as backend_module
 
@@ -210,6 +211,7 @@ def test_auto_falls_back_to_degraded_when_no_full_support(monkeypatch):
         ],
         "objectives": [{"name": "y", "direction": "minimize"}],
         "use_input_warping": True,
+        "acknowledge_degradations": ["use_input_warping"],
     }
     resolved = resolve_backend_name("auto", spec_dict)
     assert resolved == "baybe"

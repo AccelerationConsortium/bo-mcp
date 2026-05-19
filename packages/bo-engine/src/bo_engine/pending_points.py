@@ -3,6 +3,16 @@
 Section 1.6 of Implementation Plan: Handles pending/in-progress experiments
 when generating new suggestions to avoid overlap.
 
+Active strategy: BoTorch's ``X_pending`` conditioning is the production
+path. ``bo_engine.suggestions._encode_pending_points`` encodes the
+in-flight batch and forwards it to ``optimize_acquisition`` as
+``X_pending`` so the qNEI / qNEHVI sampler treats those points as
+already-acquired and pushes new candidates away from them. The
+Kriging-Believer fantasy-model approach is documented in the reference
+below for context, but is **not** wired into the pipeline; we removed
+the dead ``get_pending_as_fantasy_model_input`` helper to keep the
+module honest.
+
 References:
 - BoTorch pending points: https://botorch.org/docs/batched_bayesian_optimization/
 - Kriging Believer: https://arxiv.org/abs/1012.2599
@@ -217,37 +227,6 @@ def penalize_near_pending(
 
     # Points very close to pending are strongly penalized
     return acq_values * (1 - penalization)
-
-
-def get_pending_as_fantasy_model_input(
-    pending_x: Tensor | None,
-    model_mean: Tensor | None = None,
-) -> tuple[Tensor | None, Tensor | None]:
-    """Prepare pending points for fantasy model (Kriging Believer).
-
-    The Kriging Believer approach uses the model's mean prediction at
-    pending points as their "fantasy" observation value.
-
-    Args:
-        pending_x: Pending points of shape (n_pending, n_dims)
-        model_mean: Model's mean prediction at pending points
-
-    Returns:
-        Tuple of (pending_x, fantasy_y) for use with BoTorch's
-        get_fantasy_model method
-
-    Reference:
-        "Kriging is well-suited to parallelize optimization"
-        https://arxiv.org/abs/1012.2599
-    """
-    if pending_x is None or pending_x.shape[0] == 0:
-        return None, None
-
-    if model_mean is None:
-        # Can't compute fantasy values without predictions
-        return pending_x, None
-
-    return pending_x, model_mean
 
 
 class PendingPointTracker:

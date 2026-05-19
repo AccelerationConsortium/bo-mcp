@@ -154,47 +154,54 @@ def _compute_static_reference_point(
     _minimize_mask: Tensor,
     config: ReferencePointConfig,
 ) -> Tensor:
-    """Compute static reference point (current behavior).
+    """Compute static reference point per objective.
 
-    The reference point is set to ``worst + margin * window`` for each
-    objective, where ``window = max(range, abs(worst) * RELATIVE_TOLERANCE,
-    MIN_OBJECTIVE_RANGE)``. The three-way max keeps hypervolume well behaved
-    across the regimes that matter:
+    The reference point is set to ``worst_j + margin * window_j`` for each
+    objective. The per-objective ``window_j`` is the maximum of three
+    floors:
 
-    * **Normal range, normal scale.** ``window = range``: recovers the
-      legacy ``worst + margin * range`` formula.
-    * **Tiny range, non-tiny worst.** Without a relative floor a
-      large-magnitude objective with a narrow observed spread (e.g. yield
-      hovering between 0.998 and 1.000 around ``worst=1.0``) would receive a
-      reference offset of ``margin * 0.002`` — three orders of magnitude
-      smaller than the natural scale — distorting hypervolume relative to
-      other objectives. ``abs(worst) * RELATIVE_TOLERANCE`` clamps the
-      window to at least 1 % of the absolute scale by default.
-    * **Near-zero worst with collapsed range.** Both ``range`` and
-      ``abs(worst)`` underflow to zero; ``MIN_OBJECTIVE_RANGE`` then keeps the
-      reference offset numerically distinguishable from ``worst``.
+    1. ``range_j`` — the observed spread of the objective.
+    2. ``abs(worst_j) * REFERENCE_POINT_RELATIVE_TOLERANCE`` — proportional
+       to the objective's absolute scale.
+    3. ``MIN_OBJECTIVE_RANGE`` — a small absolute number for the
+       degenerate ``worst_j = 0`` and ``range_j = 0`` case.
+
+    Floor #2 is the load-bearing one for the audit's heterogeneous-scale
+    concern: a small-spread objective with a non-trivial absolute scale
+    (e.g. purity in ``[0.998, 0.999]`` around ``worst = 1.0``) gets a
+    margin proportional to that scale instead of collapsing to
+    ``MIN_OBJECTIVE_RANGE``. Cost in ``[0, 1000]`` lands in the range-
+    dominated regime and gets ``margin * 1000``. Both contributions to
+    the hypervolume stay measurable.
+
+    A coefficient-of-variation floor would be mathematically redundant
+    here: for finite-sample data ``std_j`` is bounded above by ``range_j``,
+    so ``max(range_j, std_j) == range_j``. The previous code that added
+    such a floor was a no-op against the existing range / relative-tolerance
+    pair and was removed after a follow-up review.
 
     For BoTorch, every objective is already in minimization form (lower is
     better), so ``worst = train_y.max(dim=0)``.
 
     Args:
-        train_y: Training outputs (assumed already negated for maximization)
-        minimize_mask: Boolean mask (True = minimize)
+        train_y: Training outputs in canonical minimization form
+            (maximization columns pre-negated by the caller).
+        minimize_mask: Boolean mask (True = minimize). Unused here because
+            every column is already in minimization form by the time we see
+            it; retained for signature compatibility with the alternative
+            strategies.
         config: Configuration with margin setting
 
     Returns:
-        Reference point tensor
+        Reference point tensor of shape ``(n_objectives,)``.
     """
     # For BoTorch, all objectives should already be negated for maximization
     # So "worst" is always max
     worst = train_y.max(dim=0).values
     ranges = train_y.max(dim=0).values - train_y.min(dim=0).values
 
-    # Three-way floor: the per-objective margin window is the maximum of the
-    # observed range, a fraction of ``abs(worst)`` (so high-magnitude
-    # objectives keep proportional headroom), and an absolute floor (so
-    # zero-centred near-constant objectives still get a non-degenerate
-    # offset).
+    # Three-way per-objective floor. The relative floor is what keeps a
+    # small-spread, non-zero-scale objective visible in the hypervolume.
     relative_floor = worst.abs() * REFERENCE_POINT_RELATIVE_TOLERANCE
     absolute_floor = torch.full_like(ranges, MIN_OBJECTIVE_RANGE)
     window = torch.maximum(torch.maximum(ranges, relative_floor), absolute_floor)

@@ -172,11 +172,15 @@ class TestGenerateNextBatchUsesFixedNoise:
 
     def test_uncertainty_routes_to_fixed_noise_likelihood(self, monkeypatch) -> None:
         """Full coverage flips the constructed GP to ``FixedNoiseGaussianLikelihood``."""
-        from bo_engine import suggestions as sugg_mod
+        # The single-objective dispatch lives in
+        # :mod:`bo_engine.suggestions_single_objective` after the
+        # suggestions god-module split; patch where the factory is
+        # looked up at call time.
+        from bo_engine import suggestions_single_objective as so_mod
 
         spec, observations = self._force_bo_path()
         captured: dict[str, object] = {}
-        real_factory = sugg_mod.create_and_fit_single_task_model
+        real_factory = so_mod.create_and_fit_single_task_model
 
         def spy(train_x, train_y, bounds, **kwargs):
             captured["train_yvar"] = kwargs.get("train_yvar")
@@ -184,7 +188,7 @@ class TestGenerateNextBatchUsesFixedNoise:
             captured["likelihood"] = model.likelihood
             return model
 
-        monkeypatch.setattr(sugg_mod, "create_and_fit_single_task_model", spy)
+        monkeypatch.setattr(so_mod, "create_and_fit_single_task_model", spy)
 
         suggestions, _ = generate_next_batch(spec, observations, batch_size=1, iteration=1)
         assert suggestions, "should have produced at least one suggestion"
@@ -194,7 +198,7 @@ class TestGenerateNextBatchUsesFixedNoise:
 
     def test_partial_coverage_keeps_trainable_noise(self, monkeypatch) -> None:
         """Missing uncertainty on any observation -> trainable noise path."""
-        from bo_engine import suggestions as sugg_mod
+        from bo_engine import suggestions_single_objective as so_mod
 
         spec, observations = self._force_bo_path()
         # Drop uncertainty from the middle observation.
@@ -205,7 +209,7 @@ class TestGenerateNextBatchUsesFixedNoise:
         )
 
         captured: dict[str, object] = {}
-        real_factory = sugg_mod.create_and_fit_single_task_model
+        real_factory = so_mod.create_and_fit_single_task_model
 
         def spy(train_x, train_y, bounds, **kwargs):
             captured["train_yvar"] = kwargs.get("train_yvar")
@@ -213,7 +217,7 @@ class TestGenerateNextBatchUsesFixedNoise:
             captured["likelihood"] = model.likelihood
             return model
 
-        monkeypatch.setattr(sugg_mod, "create_and_fit_single_task_model", spy)
+        monkeypatch.setattr(so_mod, "create_and_fit_single_task_model", spy)
 
         generate_next_batch(spec, observations, batch_size=1, iteration=1)
         assert captured["train_yvar"] is None

@@ -43,6 +43,31 @@ CACHE_EVENTS = Counter(
     "Diagnostics-cache lookup outcomes.",
     labelnames=("outcome",),
 )
+AUDIT_FAILURES = Counter(
+    "bo_mcp_audit_failures_total",
+    "Audit-event persistence failures, regardless of whether the parent tool succeeded.",
+    labelnames=("tool",),
+)
+IDEMPOTENCY_GC_PURGED = Counter(
+    "bo_mcp_idempotency_cache_gc_rows_total",
+    "Expired idempotency_cache rows removed by the background GC sweep.",
+)
+SUBSCRIPTION_SEND_RETRIES = Counter(
+    "bo_mcp_subscription_send_retries_total",
+    "Resource-update deliveries that succeeded on a retry attempt.",
+)
+SUBSCRIPTION_DROPPED = Counter(
+    "bo_mcp_subscription_dropped_total",
+    "Subscriptions unregistered after exhausting the retry budget on push delivery.",
+)
+PROGRESS_NOTIFY_FAILURES = Counter(
+    "bo_mcp_progress_notify_failures_total",
+    "Progress events that could not be forwarded to the MCP session. "
+    "A sustained non-zero rate means clients waiting on progress for "
+    "ETAs or cancellation are hanging — the poll fallback "
+    "(bo_check_progress) is the supported workaround.",
+    labelnames=("reason",),
+)
 
 
 def record_campaign_created(backend: str | None) -> None:
@@ -227,6 +252,27 @@ def observe_suggestion_latency(backend: str | None, seconds: float) -> None:
     SUGGESTION_LATENCY.labels(backend or "unknown").observe(seconds)
 
 
+def record_audit_failure(tool: str) -> None:
+    """Bump the audit-failure counter for ``tool``.
+
+    Always called from the audit logger's failure branch — dashboards
+    can alarm on ``rate(bo_mcp_audit_failures_total[5m]) > 0`` even when
+    ``AUDIT_FAILURES_FATAL`` is unset and the parent tool kept running.
+    """
+    AUDIT_FAILURES.labels(tool or "unknown").inc()
+
+
+def record_idempotency_gc(rows_removed: int) -> None:
+    """Bump the idempotency-cache GC counter by ``rows_removed``.
+
+    Always called from the background sweep; a zero sweep is recorded
+    as a no-op so the counter still exists in ``/metrics`` once the
+    sweep has run at least once.
+    """
+    if rows_removed > 0:
+        IDEMPOTENCY_GC_PURGED.inc(rows_removed)
+
+
 def record_diagnostics_cache(outcome: str) -> None:
     """Bump the diagnostics-cache counter labelled by ``hit`` or ``miss``.
 
@@ -289,6 +335,16 @@ def reset_for_test() -> None:
     idempotent and safe to call between tests; production code must not
     call this — it would erase running counters.
     """
-    for instrument in (CAMPAIGNS_CREATED, SUGGESTION_LATENCY, CACHE_EVENTS):
+    for instrument in (
+        CAMPAIGNS_CREATED,
+        SUGGESTION_LATENCY,
+        CACHE_EVENTS,
+        AUDIT_FAILURES,
+    ):
         children: dict[Any, Any] = instrument._metrics  # type: ignore[attr-defined]  # noqa: SLF001
         children.clear()
+    # Labelless counters bypass the ``_metrics`` child dict and store the
+    # running total directly on ``_value``; reset that slot to its zero
+    # equivalent so tests start from a clean baseline.
+    if hasattr(IDEMPOTENCY_GC_PURGED, "_value"):
+        IDEMPOTENCY_GC_PURGED._value.set(0)  # type: ignore[attr-defined]  # noqa: SLF001

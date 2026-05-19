@@ -10,6 +10,9 @@ from bo_mcp_server.domain.intake_models import INTAKE_INPUT_JSON_SCHEMA
 from bo_mcp_server.field_errors import shape_envelope
 from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.create_campaign import create_campaign_operation
+from bo_mcp_server.operations.idempotency_wrapper import (
+    canonical_create_campaign_payload,
+)
 from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
@@ -51,18 +54,6 @@ _INTAKE_BOUNDARY_DEFAULTS: dict[str, Any] = {
 }
 
 
-def _payload_for_intake(intake_data: Any) -> dict[str, Any]:
-    """Return a JSON-safe dict representation of the intake payload.
-
-    Accepts either an already-validated :class:`CampaignIntakeInput` (the
-    legacy in-process path used by tests pre-1.53 follow-up) or a raw
-    dict (the MCP-boundary path).
-    """
-    if isinstance(intake_data, BaseModel):
-        return intake_data.model_dump()
-    return dict(intake_data)
-
-
 def _check_intake_shape(intake_data: Any) -> dict[str, Any] | None:
     """Return a structured envelope iff ``intake_data`` is not object-shaped.
 
@@ -98,6 +89,10 @@ async def create_campaign(
 
     Args:
         intake_data: Campaign intake payload validated via CampaignIntakeInput.
+            ``intake_data.random_seed`` makes suggestions deterministic only
+            within a fixed torch version, device, and
+            ``torch.use_deterministic_algorithms`` setting; it is not a
+            cross-version reproducibility guarantee.
         owner_id: UUID of the user creating the campaign.
         verbosity: Response verbosity level (minimal, standard, detailed).
         idempotency_key: Optional client-supplied key (recommended: UUIDv7
@@ -139,11 +134,15 @@ async def create_campaign(
                 dry_run=True,
             )
 
-        request_payload = {
-            "intake_data": _payload_for_intake(intake_data),
-            "owner_id": owner_id,
-            "verbosity": verbosity,
-        }
+        # Canonical builder normalizes raw-dict and CampaignIntakeInput
+        # inputs through the same validated model dump so the hash
+        # matches what REST emits — the precondition for the audit's
+        # "same cache namespace as the matching MCP tool" promise.
+        request_payload = canonical_create_campaign_payload(
+            intake_data=intake_data,
+            owner_id=owner_id,
+            verbosity=verbosity,
+        )
 
         async def run(session: AsyncSession) -> dict[str, Any]:
             # Session-aware: the operation writes the new campaign on the

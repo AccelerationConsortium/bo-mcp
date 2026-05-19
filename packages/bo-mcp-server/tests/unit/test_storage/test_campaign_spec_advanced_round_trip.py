@@ -42,7 +42,7 @@ async def session() -> AsyncGenerator[AsyncSession]:
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, expire_on_commit=True)
     async with async_session() as s:
         yield s
     await engine.dispose()

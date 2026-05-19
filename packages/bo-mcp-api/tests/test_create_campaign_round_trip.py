@@ -51,10 +51,13 @@ async def test_rest_create_campaign_persists_advanced_fields(
         headers=auth_headers,
     )
 
-    assert response.status_code == 200, response.text
+    # 8.19: successful create returns 201 + Location pointing at the
+    # new resource's canonical GET.
+    assert response.status_code == 201, response.text
     body = response.json()
     assert body["success"] is True, body
     campaign_id = body["campaign_id"]
+    assert response.headers["Location"] == f"/api/v1/campaigns/{campaign_id}"
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
@@ -77,3 +80,82 @@ async def test_rest_create_campaign_persists_advanced_fields(
     assert spec.outcome_constraints[0].objective_name == "y"
     assert spec.max_observations == 12
     assert spec.random_seed == 42
+
+
+def _baybe_acknowledged_intake() -> dict:
+    """Minimal BayBE intake with a degradable knob and matching acknowledgement."""
+    return {
+        "name": "BayBE acknowledged degradation",
+        "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+        "backend": "baybe",
+        "use_input_warping": True,
+        "acknowledge_degradations": ["use_input_warping"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_rest_create_campaign_accepts_acknowledged_baybe_degradation(
+    api_client, auth_headers, persisted_user
+):
+    """REST ``acknowledge_degradations`` must reach the domain intake.
+
+    Without the field threading through ``_coerce_intake``, the route
+    accepts the JSON shape and then silently drops the acknowledgement;
+    create-time capability enforcement on BayBE then rejects the spec
+    even though the caller asked for the degraded run. This regression
+    test pins both the round-trip and the resulting success.
+    """
+    _ = persisted_user
+    response = await api_client.post(
+        "/api/campaigns",
+        json={"intake": _baybe_acknowledged_intake()},
+        headers=auth_headers,
+    )
+    # 8.19: successful create returns 201 even with acknowledged
+    # degradations (the campaign is still persisted).
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["success"] is True, body
+    warnings = body.get("warnings") or []
+    assert any("Input warping" in w or "input_warping" in w for w in warnings), warnings
+
+    async with get_session() as session:
+        spec_repo = CampaignSpecRepository(session)
+        campaign_repo = CampaignRepository(session)
+        campaign = await campaign_repo.get(UUID(body["campaign_id"]))
+        assert campaign is not None
+        spec = await spec_repo.get(campaign.spec_id)
+    assert spec is not None
+    assert spec.acknowledge_degradations == ("use_input_warping",)
+
+
+@pytest.mark.asyncio
+async def test_rest_create_campaign_rejects_unacknowledged_baybe_degradation(
+    api_client, auth_headers, persisted_user
+):
+    """Without acknowledgement the same payload must be rejected at create-time.
+
+    Operation-level rejections in this codebase ride on the
+    ``CampaignCreateResponse`` envelope: the route returns HTTP 200
+    with ``success=False`` and the structured error in ``errors``
+    (see e.g. ``test_rest_measurement_uncertainty.py`` for the
+    established convention). Only request-body Pydantic validation
+    returns 4xx. Pin both halves so a future route change cannot
+    silently downgrade the contract.
+    """
+    _ = persisted_user
+    intake = _baybe_acknowledged_intake()
+    intake.pop("acknowledge_degradations")
+    response = await api_client.post(
+        "/api/campaigns",
+        json={"intake": intake},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is False, body
+    assert body.get("campaign_id") is None
+    errors = body.get("errors") or []
+    joined = " ".join(errors)
+    assert "Input warping" in joined or "use_input_warping" in joined, errors

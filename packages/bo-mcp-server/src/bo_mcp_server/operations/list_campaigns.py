@@ -74,12 +74,21 @@ def _validate_list_campaigns_inputs(
     status: str | None,
     verbosity: str,
     cursor: str | None,
+    offset: int,
 ) -> dict[str, Any] | tuple[VerbosityLevel, CampaignStatus | None, Any, Any]:
     """Validate filter and pagination inputs.
 
     Splits the multi-step validation out of the main operation so
     cognitive complexity stays manageable. Returns an error response
     dict on failure, or the parsed tuple on success.
+
+    ``cursor`` and ``offset`` are mutually exclusive: keyset-based
+    cursor pagination is stable under concurrent inserts (no
+    duplicates, no skips) whereas an offset window silently shifts
+    when new rows land between page reads. Accepting both at once is
+    almost always a caller bug — usually a half-migrated polling
+    loop — so the operation surfaces a structured validation error
+    instead of silently honouring one and ignoring the other.
     """
     try:
         verbosity_level = VerbosityLevel(verbosity)
@@ -100,6 +109,17 @@ def _validate_list_campaigns_inputs(
                 message=f"Invalid status '{status}'. Must be one of: {valid_statuses}",
                 details={"status": status, "valid_statuses": valid_statuses},
             )
+
+    if cursor is not None and offset > 0:
+        return make_error_response(
+            ErrorCode.VALIDATION_FAILED,
+            message=(
+                "cursor and offset are mutually exclusive. Use cursor for stable "
+                "pagination under concurrent inserts; offset is deprecated and "
+                "preserved only for callers that have not migrated yet."
+            ),
+            details={"cursor": cursor, "offset": offset},
+        )
 
     cursor_parsed = parse_optional_cursor(cursor)
     if isinstance(cursor_parsed, str):
@@ -148,13 +168,13 @@ async def list_campaigns_operation(
         verbosity,
     )
 
-    validated = _validate_list_campaigns_inputs(status, verbosity, cursor)
+    limit = max(1, min(limit, MAX_LIMIT))
+    offset = max(0, offset)
+
+    validated = _validate_list_campaigns_inputs(status, verbosity, cursor, offset)
     if isinstance(validated, dict):
         return validated
     verbosity_level, status_filter, cursor_created_at, cursor_id = validated
-
-    limit = max(1, min(limit, MAX_LIMIT))
-    offset = max(0, offset)
 
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)

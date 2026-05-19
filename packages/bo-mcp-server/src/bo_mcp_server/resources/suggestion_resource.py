@@ -1,9 +1,17 @@
-"""Suggestion resource for MCP."""
+"""Suggestion resource for MCP.
+
+Errors raise :class:`ResourceOperationError`; the MCP read path
+(via the wrapper installed by :mod:`bo_mcp_server.resource_boundary`)
+surfaces them as :class:`McpError` JSON-RPC errors with the
+structured envelope on ``error.data``. Direct in-process callers
+catch the typed exception and read the envelope off ``exc.envelope``
+or ``str(exc)``.
+"""
 
 from uuid import UUID
 
 from bo_mcp_server.domain import SuggestionStatus
-from bo_mcp_server.errors import ErrorCode, render_resource_error
+from bo_mcp_server.errors import ErrorCode, raise_resource_error
 from bo_mcp_server.server import mcp
 from bo_mcp_server.storage import CampaignRepository, SuggestionRepository, get_session
 
@@ -16,17 +24,18 @@ async def get_suggestions(campaign_id: str) -> str:
         campaign_id: UUID of the campaign
 
     Returns:
-        Markdown listing on success, or a JSON-encoded structured error
-        envelope (same shape as MCP tool errors). The envelope is also
-        returned when the campaign id is well-formed but no such
-        campaign exists — distinguishing that case from an existing
-        campaign with no pending suggestions, which still returns the
-        plain Markdown placeholder.
+        Markdown listing on success.
+
+    Raises:
+        ResourceOperationError: ``INVALID_CAMPAIGN_ID`` for malformed
+            ids and ``CAMPAIGN_NOT_FOUND`` when the well-formed id is
+            unknown. An existing campaign with no pending suggestions
+            still returns the plain Markdown placeholder.
     """
     try:
         campaign_uuid = UUID(campaign_id)
     except ValueError:
-        return render_resource_error(
+        raise_resource_error(
             ErrorCode.INVALID_CAMPAIGN_ID,
             details={"campaign_id": campaign_id},
         )
@@ -34,10 +43,10 @@ async def get_suggestions(campaign_id: str) -> str:
     async with get_session() as session:
         # Verify the campaign exists before listing suggestions so that
         # ``no rows`` from the suggestions table cannot be confused with
-        # ``campaign does not exist`` (TODO 1.9 review).
+        # ``campaign does not exist``.
         campaign_repo = CampaignRepository(session)
         if await campaign_repo.get(campaign_uuid) is None:
-            return render_resource_error(
+            raise_resource_error(
                 ErrorCode.CAMPAIGN_NOT_FOUND,
                 message=f"Campaign {campaign_id} not found",
                 details={"campaign_id": campaign_id},
@@ -80,13 +89,16 @@ async def get_suggestion(suggestion_id: str) -> str:
         suggestion_id: UUID of the suggestion
 
     Returns:
-        Markdown details on success, or a JSON-encoded structured error
-        envelope when the suggestion id is malformed or unknown.
+        Markdown details on success.
+
+    Raises:
+        ResourceOperationError: ``VALIDATION_FAILED`` for malformed
+            ids; ``SUGGESTION_NOT_FOUND`` when the id is unknown.
     """
     try:
         suggestion_uuid = UUID(suggestion_id)
     except ValueError:
-        return render_resource_error(
+        raise_resource_error(
             ErrorCode.VALIDATION_FAILED,
             message=f"Invalid suggestion_id format: {suggestion_id}",
             details={"suggestion_id": suggestion_id},
@@ -98,7 +110,7 @@ async def get_suggestion(suggestion_id: str) -> str:
         suggestion = await suggestion_repo.get(suggestion_uuid)
 
         if suggestion is None:
-            return render_resource_error(
+            raise_resource_error(
                 ErrorCode.SUGGESTION_NOT_FOUND,
                 message=f"Suggestion {suggestion_id} not found",
                 details={"suggestion_id": suggestion_id},

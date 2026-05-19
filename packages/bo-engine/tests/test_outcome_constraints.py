@@ -1,11 +1,13 @@
 """Tests for outcome constraint modeling."""
 
 import numpy as np
+import pytest
 
 from bo_engine import (
     ObjectiveSpec,
     ObservationData,
     OptimizationSpec,
+    OutcomeConstraintConfigurationError,
     OutcomeConstraintSpec,
     ParameterSpec,
     ParameterType,
@@ -237,6 +239,49 @@ class TestOutcomeConstraintIntegration:
         )
 
         assert len(suggestions) == 2
+
+
+class TestOutcomeConstraintEngineGuard:
+    """Engine-path guard against silent outcome-constraint disabling.
+
+    Pre-fix, the engine returned ``None`` from
+    ``_build_outcome_constraint_models`` whenever observations lacked
+    the constrained objective. That converted a typo / data-loss bug
+    into a silent semantic change. The guard is now an
+    :class:`OutcomeConstraintConfigurationError` so regressions surface
+    loudly instead of producing wrong-but-plausible suggestions.
+
+    Intake validation rejects an undeclared ``objective_name`` before
+    the spec ever reaches the engine, so this test exercises a direct
+    engine caller (third-party agent, legacy test, mutated spec) that
+    bypasses the intake validator.
+    """
+
+    def test_engine_raises_when_objective_not_declared(self, rng: np.random.Generator) -> None:
+        """Constraint that references an undeclared objective raises in the engine."""
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="yield", minimize=False)],
+            batch_size=1,
+            outcome_constraints=[
+                OutcomeConstraintSpec(objective_name="ield", threshold=0.5),  # typo
+            ],
+        )
+        observations = [
+            ObservationData(parameter_values={"x1": 0.3}, objective_values={"yield": 0.85}),
+            ObservationData(parameter_values={"x1": 0.6}, objective_values={"yield": 0.7}),
+            ObservationData(parameter_values={"x1": 0.9}, objective_values={"yield": 0.6}),
+        ]
+        with pytest.raises(OutcomeConstraintConfigurationError):
+            generate_next_batch(
+                spec=spec,
+                observations=observations,
+                batch_size=1,
+                iteration=1,
+                rng=rng,
+            )
 
 
 class TestOutcomeConstraintEdgeCases:

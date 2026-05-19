@@ -155,7 +155,7 @@ class TestFormatDiagnosticsResponse:
 
         # All input fields survive the round trip, exactly — same keys
         # plus ``_metadata``, nothing else.
-        assert set(result) == set(full_diagnostics_response) | {"_metadata"}
+        assert set(result) == set(full_diagnostics_response) | {"_metadata", "schema_version"}
         for key, value in full_diagnostics_response.items():
             assert result[key] == value
 
@@ -239,7 +239,7 @@ class TestFormatSuggestionsResponse:
         """
         result = format_suggestions_response(full_suggestions_response, VerbosityLevel.DETAILED)
 
-        assert set(result) == set(full_suggestions_response) | {"_metadata"}
+        assert set(result) == set(full_suggestions_response) | {"_metadata", "schema_version"}
         for key, value in full_suggestions_response.items():
             assert result[key] == value
 
@@ -327,7 +327,7 @@ class TestFormatCompareCampaignsResponse:
         """Verify detailed verbosity returns complete response (plus ``_metadata``)."""
         result = format_compare_campaigns_response(full_compare_response, VerbosityLevel.DETAILED)
 
-        assert set(result) == set(full_compare_response) | {"_metadata"}
+        assert set(result) == set(full_compare_response) | {"_metadata", "schema_version"}
         for key, value in full_compare_response.items():
             assert result[key] == value
 
@@ -441,7 +441,7 @@ class TestFormatTransferCandidatesResponse:
             full_transfer_response, VerbosityLevel.DETAILED
         )
 
-        assert set(result) == set(full_transfer_response) | {"_metadata"}
+        assert set(result) == set(full_transfer_response) | {"_metadata", "schema_version"}
         for key, value in full_transfer_response.items():
             assert result[key] == value
 
@@ -551,6 +551,7 @@ class TestResponseContractValidation:
             "errors",
             "field_errors",
             "_metadata",
+            "schema_version",
         }
         assert result["campaign_id"] == "cmp-123"
 
@@ -588,3 +589,42 @@ class TestResponseContractValidation:
         result = format_submit_results_response(full, VerbosityLevel.STANDARD)
         assert result["n_duplicates_detected"] == 1
         assert "duplicates_detected" not in result
+
+
+class TestSchemaVersionContract:
+    """Every tool envelope advertises a stable ``schema_version``.
+
+    Reference: this is the "single integer the client compares against"
+    pattern Stripe documents at https://stripe.com/docs/api/versioning;
+    it lets a caller dispatch on the contract without parsing the body
+    shape. Bump rules are documented in ``response_formatter.py``.
+    """
+
+    def test_success_envelope_includes_schema_version(self) -> None:
+        from bo_mcp_server.response_formatter import RESPONSE_SCHEMA_VERSION
+
+        result = format_create_campaign_response(
+            {
+                "success": True,
+                "campaign_id": "cmp-123",
+                "warnings": [],
+                "errors": [],
+            },
+            VerbosityLevel.STANDARD,
+        )
+        assert result["schema_version"] == RESPONSE_SCHEMA_VERSION
+
+    def test_error_envelope_includes_schema_version(self) -> None:
+        from bo_mcp_server.errors import ErrorCode, make_error_response
+        from bo_mcp_server.response_formatter import RESPONSE_SCHEMA_VERSION
+
+        envelope = make_error_response(ErrorCode.CAMPAIGN_NOT_FOUND)
+        assert envelope["schema_version"] == RESPONSE_SCHEMA_VERSION
+        assert envelope["success"] is False
+
+    def test_schema_version_is_a_positive_integer(self) -> None:
+        """The version is a small positive int — clients ``int()``-cast safely."""
+        from bo_mcp_server.response_formatter import RESPONSE_SCHEMA_VERSION
+
+        assert isinstance(RESPONSE_SCHEMA_VERSION, int)
+        assert RESPONSE_SCHEMA_VERSION >= 1

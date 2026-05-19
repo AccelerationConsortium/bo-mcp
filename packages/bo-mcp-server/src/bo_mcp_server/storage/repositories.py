@@ -1,6 +1,8 @@
 """Repository implementations."""
 
 import json
+import logging
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -25,6 +27,7 @@ from bo_mcp_server.domain import (
     User,
 )
 from bo_mcp_server.domain.event import Event, EventType
+from bo_mcp_server.domain.utils import utcnow
 from bo_mcp_server.storage.base import ConcurrentModificationError
 from bo_mcp_server.storage.models import (
     CampaignModel,
@@ -34,6 +37,8 @@ from bo_mcp_server.storage.models import (
     SuggestionModel,
     UserModel,
 )
+
+logger = logging.getLogger(__name__)
 
 # CampaignSpec attributes persisted via the ``advanced_options_json`` blob.
 # They're consumed in-process (not queried in SQL), so a single JSON column
@@ -48,6 +53,7 @@ _ADVANCED_SPEC_FIELDS: tuple[str, ...] = (
     "fidelity_parameter",
     "transfer_learning",
     "outcome_constraints",
+    "acknowledge_degradations",
 )
 
 
@@ -76,6 +82,24 @@ def _advanced_options_kwargs(data: dict[str, Any]) -> dict[str, Any]:
     and skips ``None``/missing entries so ``CampaignSpec`` defaults apply.
     """
     return {k: data[k] for k in _ADVANCED_SPEC_FIELDS if k in data and data[k] is not None}
+
+
+def _active_filter(model: Any, include_deleted: bool) -> list[Any]:
+    """Return WHERE-clauses that hide soft-deleted rows by default.
+
+    TODO 8.11: every campaign / suggestion / result / event read goes
+    through this helper so a single flag (``include_deleted=True``,
+    reserved for admin / forensics paths) flips the filter
+    consistently. The model's ``deleted_at`` column must exist for
+    this helper to be valid; calling it on a model without the column
+    silently disables the filter (and is therefore a bug — guard with
+    an ``hasattr`` check before extending to a new entity).
+    """
+    if include_deleted:
+        return []
+    if not hasattr(model, "deleted_at"):
+        return []
+    return [model.deleted_at.is_(None)]
 
 
 class UserRepository:
@@ -316,26 +340,43 @@ class CampaignRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get(self, id: UUID) -> Campaign | None:
-        """Get campaign by ID."""
+    async def get(self, id: UUID, *, include_deleted: bool = False) -> Campaign | None:
+        """Get campaign by ID.
+
+        Soft-deleted rows are hidden by default; set ``include_deleted=True``
+        for admin / forensics queries that need to read historical state
+        (see TODO 8.11).
+        """
         result = await self.session.execute(
-            select(CampaignModel).where(CampaignModel.id == str(id))
+            select(CampaignModel).where(
+                CampaignModel.id == str(id),
+                *_active_filter(CampaignModel, include_deleted),
+            )
         )
         model = result.scalar_one_or_none()
         if model is None:
             return None
         return self._to_entity(model)
 
-    async def list_by_owner(self, owner_id: UUID) -> list[Campaign]:
-        """List campaigns by owner."""
+    async def list_by_owner(
+        self, owner_id: UUID, *, include_deleted: bool = False
+    ) -> list[Campaign]:
+        """List campaigns by owner (hides soft-deleted rows by default)."""
         result = await self.session.execute(
-            select(CampaignModel).where(CampaignModel.owner_id == str(owner_id))
+            select(CampaignModel).where(
+                CampaignModel.owner_id == str(owner_id),
+                *_active_filter(CampaignModel, include_deleted),
+            )
         )
         return [self._to_entity(m) for m in result.scalars()]
 
-    async def list_all(self) -> list[Campaign]:
-        """List all campaigns."""
-        result = await self.session.execute(select(CampaignModel))
+    async def list_all(self, *, include_deleted: bool = False) -> list[Campaign]:
+        """List all campaigns (hides soft-deleted rows by default)."""
+        query = select(CampaignModel)
+        active = _active_filter(CampaignModel, include_deleted)
+        if active:
+            query = query.where(*active)
+        result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
 
     async def list_filtered(
@@ -345,6 +386,8 @@ class CampaignRepository:
         exclude_ids: list[UUID] | None = None,
         limit: int | None = None,
         offset: int = 0,
+        *,
+        include_deleted: bool = False,
     ) -> tuple[list[Campaign], int]:
         """List campaigns with database-side filtering and pagination.
 
@@ -354,12 +397,18 @@ class CampaignRepository:
             exclude_ids: Campaign IDs to exclude.
             limit: Maximum number of results.
             offset: Number of results to skip.
+            include_deleted: Include soft-deleted rows (admin / forensics only).
 
         Returns:
             Tuple of (campaigns, total_count).
         """
         query = select(CampaignModel)
         count_query = select(func.count()).select_from(CampaignModel)
+
+        soft_delete_filter = _active_filter(CampaignModel, include_deleted)
+        if soft_delete_filter:
+            query = query.where(*soft_delete_filter)
+            count_query = count_query.where(*soft_delete_filter)
 
         if owner_id is not None:
             query = query.where(CampaignModel.owner_id == str(owner_id))
@@ -375,7 +424,14 @@ class CampaignRepository:
         total_result = await self.session.execute(count_query)
         total_count = total_result.scalar_one()
 
-        query = query.order_by(CampaignModel.created_at.desc())
+        # Order matches :meth:`list_keyset` — ``(created_at DESC, id
+        # DESC)`` — so a cursor handed back by this offset page chains
+        # losslessly when the next page switches to keyset mode. Without
+        # the ``id DESC`` tiebreaker the first page can pick an arbitrary
+        # order among rows sharing a ``created_at`` value while the
+        # keyset comparator uses ``id < cursor_id``, opening a duplicate /
+        # skip window on equal-timestamp ties (TODO 8.42 friend-review).
+        query = query.order_by(CampaignModel.created_at.desc(), CampaignModel.id.desc())
         if offset > 0:
             query = query.offset(offset)
         if limit is not None:
@@ -391,19 +447,28 @@ class CampaignRepository:
         cursor_created_at: datetime | None = None,
         cursor_id: str | None = None,
         limit: int = 20,
+        *,
+        include_deleted: bool = False,
     ) -> tuple[list[Campaign], int]:
         """List campaigns via keyset pagination on ``(created_at, id)``.
 
-        The ordering is ascending so the cursor advances forward in
-        time. Under concurrent inserts, this gives a stable window:
-        rows the agent has already paged past will never re-appear, and
-        new rows always show up after the current cursor position.
+        The ordering matches :meth:`list_filtered` — newest-first
+        descending on ``created_at`` with ``id`` as the descending
+        tiebreaker. The cursor walks *backwards* through time: page 1
+        returns the newest ``limit`` campaigns, the cursor points at
+        the oldest row of that page, and page 2 returns rows strictly
+        older than the cursor row. Aligning the two paginators
+        guarantees the no-duplicate / no-skip invariant of keyset
+        pagination — under the previous ASC-with-``>`` formulation
+        the cursor walked the *opposite* direction from page 1 and
+        could both duplicate page-1 rows and skip the oldest row
+        entirely (TODO 8.42 friend-review finding).
 
         ``total_count`` is still reported so the agent can show "X of N"
         when desired; under concurrency the totals can drift, which is
         why the cursor (not the offset) is the load-bearing contract.
         """
-        base_filters: list[Any] = []
+        base_filters: list[Any] = list(_active_filter(CampaignModel, include_deleted))
         if owner_id is not None:
             base_filters.append(CampaignModel.owner_id == str(owner_id))
         if status is not None:
@@ -420,23 +485,28 @@ class CampaignRepository:
         if cursor_created_at is not None and cursor_id is not None:
             query = query.where(
                 or_(
-                    CampaignModel.created_at > cursor_created_at,
+                    CampaignModel.created_at < cursor_created_at,
                     and_(
                         CampaignModel.created_at == cursor_created_at,
-                        CampaignModel.id > cursor_id,
+                        CampaignModel.id < cursor_id,
                     ),
                 )
             )
-        query = query.order_by(CampaignModel.created_at.asc(), CampaignModel.id.asc()).limit(limit)
+        query = query.order_by(CampaignModel.created_at.desc(), CampaignModel.id.desc()).limit(
+            limit
+        )
 
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
-    async def get_by_ids(self, ids: list[UUID]) -> dict[UUID, Campaign]:
+    async def get_by_ids(
+        self, ids: list[UUID], *, include_deleted: bool = False
+    ) -> dict[UUID, Campaign]:
         """Get multiple campaigns by their IDs in a single query.
 
         Args:
             ids: List of UUIDs to fetch.
+            include_deleted: Include soft-deleted rows (admin / forensics only).
 
         Returns:
             Dictionary mapping UUID to Campaign for found campaigns.
@@ -445,18 +515,85 @@ class CampaignRepository:
             return {}
         str_ids = [str(id) for id in ids]
         result = await self.session.execute(
-            select(CampaignModel).where(CampaignModel.id.in_(str_ids))
+            select(CampaignModel).where(
+                CampaignModel.id.in_(str_ids),
+                *_active_filter(CampaignModel, include_deleted),
+            )
         )
         return {UUID(m.id): self._to_entity(m) for m in result.scalars()}
 
+    async def list_recent(
+        self,
+        owner_id: UUID | None = None,
+        limit: int = 5,
+        *,
+        include_deleted: bool = False,
+    ) -> list[Campaign]:
+        """Return the most recently created campaigns (newest first).
+
+        Powers the cheap ``campaigns://recent`` discovery resource: a
+        bounded, parameter-free listing that an LLM can hit to recover
+        from a hallucinated id without paying the cost of paginating
+        ``campaigns://list``. ``owner_id`` lets the caller scope to the
+        authenticated user; ``limit`` caps the result regardless of how
+        many rows the table holds.
+        """
+        query = select(CampaignModel)
+        filters = list(_active_filter(CampaignModel, include_deleted))
+        if owner_id is not None:
+            filters.append(CampaignModel.owner_id == str(owner_id))
+        if filters:
+            query = query.where(*filters)
+        # ``id DESC`` tiebreaker matches :meth:`list_filtered` and
+        # :meth:`list_keyset` so equal-timestamp rows have a single
+        # deterministic order across every campaign listing surface.
+        query = query.order_by(CampaignModel.created_at.desc(), CampaignModel.id.desc()).limit(
+            max(1, limit)
+        )
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()]
+
+    async def list_active_ids(
+        self,
+        owner_id: UUID | None = None,
+        *,
+        include_deleted: bool = False,
+    ) -> list[str]:
+        """Return string-form campaign ids for fuzzy id-prefix matching.
+
+        Cheap projection (id-only ``SELECT``) so the
+        ``CAMPAIGN_NOT_FOUND`` envelope can attach suggestions for a
+        typo'd UUID without loading every row.
+        """
+        query = select(CampaignModel.id)
+        filters = list(_active_filter(CampaignModel, include_deleted))
+        if owner_id is not None:
+            filters.append(CampaignModel.owner_id == str(owner_id))
+        if filters:
+            query = query.where(*filters)
+        result = await self.session.execute(query)
+        return [row for (row,) in result.all()]
+
     async def save(self, campaign: Campaign, expected_version: int | None = None) -> Campaign:
-        """Save campaign with optimistic locking.
+        """Save campaign with optimistic locking + soft-delete guard.
 
         For new campaigns (first save), ``expected_version`` may be ``None``.
         For updates to existing campaigns, ``expected_version`` **must** be
-        provided.  The version check and row update happen in a single
-        ``UPDATE … WHERE version = expected`` statement so the operation is
-        atomic even under concurrent PostgreSQL connections.
+        provided. The version check and row update happen in a single
+        ``UPDATE … WHERE version = expected AND deleted_at IS NULL``
+        statement so the operation is atomic even under concurrent
+        PostgreSQL connections.
+
+        TODO 8.11 follow-up: ``deleted_at IS NULL`` is part of the OCC
+        predicate so a campaign that was soft-deleted between the
+        caller's read and this save raises
+        :class:`ConcurrentModificationError` instead of silently
+        writing fresh state (status, iteration, backend_state,
+        hypervolume_history) into a tombstoned row. Without this
+        guard, ``generate_suggestions`` phase 3 could leave new
+        active suggestions attached to a deleted campaign — the soft-
+        delete contract treats the campaign as gone, but the
+        downstream INSERTs still happen.
         """
         campaign_id_str = str(campaign.id)
         values = {
@@ -483,12 +620,13 @@ class CampaignRepository:
             if expected_version is None:
                 raise ConcurrentModificationError("Campaign", campaign.id, -1)
 
-            # Atomic UPDATE … WHERE version = expected
+            # Atomic UPDATE … WHERE version = expected AND deleted_at IS NULL
             stmt = (
                 update(CampaignModel)
                 .where(
                     CampaignModel.id == campaign_id_str,
                     CampaignModel.version == expected_version,
+                    CampaignModel.deleted_at.is_(None),
                 )
                 .values(**values)
             )
@@ -504,7 +642,34 @@ class CampaignRepository:
         return campaign
 
     async def delete(self, id: UUID) -> bool:
-        """Delete campaign by ID."""
+        """Soft-delete a campaign by stamping ``deleted_at``.
+
+        TODO 8.11 replaces hard-delete cascades with a soft-delete
+        first-class semantics: the row stays queryable through
+        ``include_deleted=True`` so forensics and audit can reconstruct
+        history, but normal reads hide it. The suggestion / result
+        children stay intact because the FKs are now ``RESTRICT`` — a
+        future cleanup that wants to physically remove them must do
+        so explicitly via :meth:`hard_delete`.
+        """
+        stmt = (
+            update(CampaignModel)
+            .where(CampaignModel.id == str(id), CampaignModel.deleted_at.is_(None))
+            .values(deleted_at=utcnow())
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
+
+    async def hard_delete(self, id: UUID) -> bool:
+        """Physically remove the row (admin / cleanup only).
+
+        Fails with an integrity error when child rows (suggestions,
+        results, events) still reference the campaign — the FKs are
+        ``ON DELETE RESTRICT`` so accidental cascades cannot wipe
+        history. Callers that need a hard delete must soft-delete and
+        cascade the children explicitly first.
+        """
         result = await self.session.execute(
             select(CampaignModel).where(CampaignModel.id == str(id))
         )
@@ -537,10 +702,13 @@ class SuggestionRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get(self, id: UUID) -> Suggestion | None:
-        """Get suggestion by ID."""
+    async def get(self, id: UUID, *, include_deleted: bool = False) -> Suggestion | None:
+        """Get suggestion by ID (hides soft-deleted rows by default)."""
         result = await self.session.execute(
-            select(SuggestionModel).where(SuggestionModel.id == str(id))
+            select(SuggestionModel).where(
+                SuggestionModel.id == str(id),
+                *_active_filter(SuggestionModel, include_deleted),
+            )
         )
         model = result.scalar_one_or_none()
         if model is None:
@@ -548,10 +716,17 @@ class SuggestionRepository:
         return self._to_entity(model)
 
     async def list_by_campaign(
-        self, campaign_id: UUID, status: SuggestionStatus | None = None
+        self,
+        campaign_id: UUID,
+        status: SuggestionStatus | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[Suggestion]:
-        """List suggestions for a campaign."""
-        query = select(SuggestionModel).where(SuggestionModel.campaign_id == str(campaign_id))
+        """List suggestions for a campaign (hides soft-deleted by default)."""
+        query = select(SuggestionModel).where(
+            SuggestionModel.campaign_id == str(campaign_id),
+            *_active_filter(SuggestionModel, include_deleted),
+        )
         if status is not None:
             query = query.where(SuggestionModel.status == status)
         result = await self.session.execute(query)
@@ -570,6 +745,7 @@ class SuggestionRepository:
         query = select(SuggestionModel).where(
             SuggestionModel.campaign_id == str(campaign_id),
             SuggestionModel.status.in_((SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED)),
+            SuggestionModel.deleted_at.is_(None),
         )
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
@@ -580,17 +756,26 @@ class SuggestionRepository:
         status: SuggestionStatus | None = None,
         limit: int = 50,
         offset: int = 0,
+        *,
+        include_deleted: bool = False,
     ) -> tuple[list[Suggestion], int]:
         """List suggestions with database-level ordering, pagination, and count.
 
         Returns:
             Tuple of (suggestions, total_count).
         """
-        base = select(SuggestionModel).where(SuggestionModel.campaign_id == str(campaign_id))
+        soft_delete_filter = _active_filter(SuggestionModel, include_deleted)
+        base = select(SuggestionModel).where(
+            SuggestionModel.campaign_id == str(campaign_id),
+            *soft_delete_filter,
+        )
         count_base = (
             select(func.count())
             .select_from(SuggestionModel)
-            .where(SuggestionModel.campaign_id == str(campaign_id))
+            .where(
+                SuggestionModel.campaign_id == str(campaign_id),
+                *soft_delete_filter,
+            )
         )
         if status is not None:
             base = base.where(SuggestionModel.status == status)
@@ -599,7 +784,15 @@ class SuggestionRepository:
         total_result = await self.session.execute(count_base)
         total_count = total_result.scalar_one()
 
-        query = base.order_by(SuggestionModel.created_at.desc()).offset(offset).limit(limit)
+        # ``(created_at DESC, id DESC)`` mirrors :meth:`list_by_campaign_keyset`
+        # so the two paginators agree even when rows share a
+        # ``created_at`` value (see ``CampaignRepository.list_filtered``
+        # for the equivalent ordering on campaigns).
+        query = (
+            base.order_by(SuggestionModel.created_at.desc(), SuggestionModel.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
@@ -610,14 +803,23 @@ class SuggestionRepository:
         cursor_created_at: datetime | None = None,
         cursor_id: str | None = None,
         limit: int = 50,
+        *,
+        include_deleted: bool = False,
     ) -> tuple[list[Suggestion], int]:
         """List suggestions via keyset pagination on ``(created_at, id)``.
 
-        Ascending order keeps the page sequence stable while the
-        backend issues new suggestions concurrently (a common pattern
-        in live agent workflows that interleave generation and review).
+        Ordering matches the offset paginator above (newest-first
+        descending). The cursor walks backwards through time so a page
+        2 request returns rows strictly older than the cursor row —
+        this is the only direction that preserves the no-duplicate /
+        no-skip invariant when the first page is newest-first. See
+        the corresponding ``CampaignRepository.list_keyset`` docstring
+        for the friend-review finding that motivated the realignment.
         """
-        base_filters: list[Any] = [SuggestionModel.campaign_id == str(campaign_id)]
+        base_filters: list[Any] = [
+            SuggestionModel.campaign_id == str(campaign_id),
+            *_active_filter(SuggestionModel, include_deleted),
+        ]
         if status is not None:
             base_filters.append(SuggestionModel.status == status)
 
@@ -631,32 +833,84 @@ class SuggestionRepository:
         if cursor_created_at is not None and cursor_id is not None:
             query = query.where(
                 or_(
-                    SuggestionModel.created_at > cursor_created_at,
+                    SuggestionModel.created_at < cursor_created_at,
                     and_(
                         SuggestionModel.created_at == cursor_created_at,
-                        SuggestionModel.id > cursor_id,
+                        SuggestionModel.id < cursor_id,
                     ),
                 )
             )
-        query = query.order_by(SuggestionModel.created_at.asc(), SuggestionModel.id.asc()).limit(
+        query = query.order_by(SuggestionModel.created_at.desc(), SuggestionModel.id.desc()).limit(
             limit
         )
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
+    @staticmethod
+    def _suggestion_column_values(suggestion: Suggestion) -> dict[str, Any]:
+        """Serialize the Suggestion entity into ORM column values.
+
+        Centralised so the UPDATE and INSERT branches of :meth:`save`
+        share the exact same column set.
+        """
+        return {
+            "campaign_id": str(suggestion.campaign_id),
+            "parameter_values_json": json.dumps(suggestion.parameter_values),
+            "status": suggestion.status,
+            "provenance_json": json.dumps(suggestion.provenance.model_dump()),
+            "created_at": suggestion.created_at,
+            "updated_at": suggestion.updated_at,
+        }
+
     async def save(self, suggestion: Suggestion) -> Suggestion:
-        """Save suggestion."""
-        model = SuggestionModel(
-            id=str(suggestion.id),
-            campaign_id=str(suggestion.campaign_id),
-            parameter_values_json=json.dumps(suggestion.parameter_values),
-            status=suggestion.status,
-            provenance_json=json.dumps(suggestion.provenance.model_dump()),
-            created_at=suggestion.created_at,
-            updated_at=suggestion.updated_at,
+        """Save suggestion. Atomic ``deleted_at`` guard on the write itself.
+
+        TODO 8.11 follow-up: the previous implementation read
+        ``deleted_at`` first, then merged — a race window where a
+        concurrent ``delete()`` landing between the read and the
+        merge would silently resurrect the tombstone. The write path
+        is now split into an existence check plus either:
+
+        * an atomic ``UPDATE … WHERE id = :id AND deleted_at IS
+          NULL`` (raising :class:`ConcurrentModificationError` when
+          ``rowcount == 0``, which means the row was tombstoned at
+          execution time regardless of what the existence check saw),
+          or
+        * an ``INSERT`` for genuinely-new rows.
+
+        Suggestions do not carry a version column, so ``-1`` is the
+        sentinel ``expected_version`` on the raised CMR — mirroring
+        the new-row branch of :meth:`CampaignRepository.save`. A
+        dedicated admin restore operation (not yet exposed) is the
+        only supported path to clear a tombstone.
+        """
+        suggestion_id_str = str(suggestion.id)
+        existing = await self.session.execute(
+            select(SuggestionModel.id).where(SuggestionModel.id == suggestion_id_str)
         )
-        merged = await self.session.merge(model)
-        return self._to_entity(merged)
+        values = self._suggestion_column_values(suggestion)
+
+        if existing.scalar_one_or_none() is not None:
+            stmt = (
+                update(SuggestionModel)
+                .where(
+                    SuggestionModel.id == suggestion_id_str,
+                    SuggestionModel.deleted_at.is_(None),
+                )
+                .values(**values)
+            )
+            result = await self.session.execute(stmt)
+            if result.rowcount == 0:  # ty: ignore[unresolved-attribute]
+                logger.warning(
+                    "Refusing to save suggestion %s: row was soft-deleted "
+                    "concurrently with this save",
+                    suggestion.id,
+                )
+                raise ConcurrentModificationError("Suggestion", suggestion.id, -1)
+        else:
+            self.session.add(SuggestionModel(id=suggestion_id_str, deleted_at=None, **values))
+        await self.session.flush()
+        return suggestion
 
     async def save_batch(self, suggestions: list[Suggestion]) -> list[Suggestion]:
         """Save multiple suggestions using bulk insert.
@@ -692,7 +946,18 @@ class SuggestionRepository:
         return suggestions
 
     async def delete(self, id: UUID) -> bool:
-        """Delete suggestion by ID."""
+        """Soft-delete a suggestion. See :meth:`CampaignRepository.delete`."""
+        stmt = (
+            update(SuggestionModel)
+            .where(SuggestionModel.id == str(id), SuggestionModel.deleted_at.is_(None))
+            .values(deleted_at=utcnow())
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
+
+    async def hard_delete(self, id: UUID) -> bool:
+        """Physically remove the row (admin / cleanup only)."""
         result = await self.session.execute(
             select(SuggestionModel).where(SuggestionModel.id == str(id))
         )
@@ -702,9 +967,80 @@ class SuggestionRepository:
         await self.session.delete(model)
         return True
 
-    async def list_all(self) -> list[Suggestion]:
-        """List all suggestions."""
-        result = await self.session.execute(select(SuggestionModel))
+    async def transition_status(
+        self,
+        id: UUID,
+        from_status: SuggestionStatus | Sequence[SuggestionStatus],
+        to_status: SuggestionStatus,
+    ) -> bool:
+        """Atomically transition a suggestion from one status to another.
+
+        TODO 8.11 follow-up: status updates used to read the row,
+        validate the transition in Python, and write through
+        :meth:`save`. Two concurrent transitions from ``PENDING``
+        could both pass the in-Python validation and then race to
+        overwrite each other (last-writer-wins). This helper folds
+        the expected-status guard into the SQL ``UPDATE`` so only
+        one of the racing callers wins; the other observes
+        ``rowcount == 0`` and can surface a structured conflict.
+
+        ``from_status`` accepts either a single status or a sequence
+        — ``submit_results._resolve_suggestion_id`` needs the latter
+        to mark either a ``PENDING`` or an ``ACCEPTED`` suggestion
+        ``COMPLETED`` in one atomic statement.
+
+        Returns ``True`` when the row was updated. Returns ``False``
+        when the row no longer matches the conditional
+        (``status ∈ from_status AND deleted_at IS NULL``) —
+        typically because a concurrent caller already moved the
+        suggestion to a different status or the row was soft-deleted.
+
+        Used by:
+        * :func:`update_suggestion_status_operation` for the
+          manual PENDING→ACCEPTED / PENDING→REJECTED / ACCEPTED→…
+          paths
+        * the phase-3 expiration step in ``generate_suggestions``
+          (``transition_status(id, PENDING, EXPIRED)``); a count-only
+          invariant check cannot detect ``PENDING -> ACCEPTED``
+          because both states are actionable
+        * ``submit_results._resolve_suggestion_id`` to mark the
+          backing suggestion ``COMPLETED`` without races against
+          manual status updates
+        """
+        if isinstance(from_status, SuggestionStatus):
+            status_predicate = SuggestionModel.status == from_status
+        else:
+            status_predicate = SuggestionModel.status.in_(tuple(from_status))
+        stmt = (
+            update(SuggestionModel)
+            .where(
+                SuggestionModel.id == str(id),
+                status_predicate,
+                SuggestionModel.deleted_at.is_(None),
+            )
+            .values(status=to_status, updated_at=utcnow())
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
+
+    async def expire_if_pending(self, id: UUID) -> bool:
+        """Atomically mark a still-``PENDING`` suggestion as ``EXPIRED``.
+
+        Convenience wrapper around :meth:`transition_status` —
+        ``PENDING -> EXPIRED`` is the only transition the phase-3
+        expiration path needs and naming it explicitly keeps the
+        call site at that layer readable.
+        """
+        return await self.transition_status(id, SuggestionStatus.PENDING, SuggestionStatus.EXPIRED)
+
+    async def list_all(self, *, include_deleted: bool = False) -> list[Suggestion]:
+        """List all suggestions (hides soft-deleted by default)."""
+        query = select(SuggestionModel)
+        active = _active_filter(SuggestionModel, include_deleted)
+        if active:
+            query = query.where(*active)
+        result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
 
     async def count_pending_by_campaigns(self, campaign_ids: list[UUID]) -> dict[UUID, int]:
@@ -723,6 +1059,7 @@ class SuggestionRepository:
             select(SuggestionModel.campaign_id, func.count())
             .where(SuggestionModel.campaign_id.in_(str_ids))
             .where(SuggestionModel.status == SuggestionStatus.PENDING)
+            .where(SuggestionModel.deleted_at.is_(None))
             .group_by(SuggestionModel.campaign_id)
         )
         return {UUID(row[0]): row[1] for row in result.all()}
@@ -764,15 +1101,22 @@ class ResultRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get(self, id: UUID) -> Result | None:
-        """Get result by ID."""
-        result = await self.session.execute(select(ResultModel).where(ResultModel.id == str(id)))
+    async def get(self, id: UUID, *, include_deleted: bool = False) -> Result | None:
+        """Get result by ID (hides soft-deleted rows by default)."""
+        result = await self.session.execute(
+            select(ResultModel).where(
+                ResultModel.id == str(id),
+                *_active_filter(ResultModel, include_deleted),
+            )
+        )
         model = result.scalar_one_or_none()
         if model is None:
             return None
         return self._to_entity(model)
 
-    async def list_by_campaign(self, campaign_id: UUID) -> list[Result]:
+    async def list_by_campaign(
+        self, campaign_id: UUID, *, include_deleted: bool = False
+    ) -> list[Result]:
         """List results for a campaign in deterministic insertion order.
 
         Ordering by ``(created_at, id)`` makes the returned sequence stable
@@ -783,7 +1127,10 @@ class ResultRepository:
         """
         result = await self.session.execute(
             select(ResultModel)
-            .where(ResultModel.campaign_id == str(campaign_id))
+            .where(
+                ResultModel.campaign_id == str(campaign_id),
+                *_active_filter(ResultModel, include_deleted),
+            )
             .order_by(ResultModel.created_at.asc(), ResultModel.id.asc())
         )
         return [self._to_entity(m) for m in result.scalars()]
@@ -793,23 +1140,33 @@ class ResultRepository:
         campaign_id: UUID,
         limit: int = 50,
         offset: int = 0,
+        *,
+        include_deleted: bool = False,
     ) -> tuple[list[Result], int]:
         """List results with database-level ordering, pagination, and count.
 
         Returns:
             Tuple of (results, total_count).
         """
-        base_where = ResultModel.campaign_id == str(campaign_id)
+        soft_delete_filter = _active_filter(ResultModel, include_deleted)
+        base_filters: list[Any] = [
+            ResultModel.campaign_id == str(campaign_id),
+            *soft_delete_filter,
+        ]
 
         count_result = await self.session.execute(
-            select(func.count()).select_from(ResultModel).where(base_where)
+            select(func.count()).select_from(ResultModel).where(*base_filters)
         )
         total_count = count_result.scalar_one()
 
+        # ``(created_at DESC, id DESC)`` mirrors :meth:`list_by_campaign_keyset`
+        # so equal-timestamp rows have a deterministic order that the
+        # cursor comparator can chain off (see the campaign repository
+        # for the friend-review finding that motivated the tiebreaker).
         query = (
             select(ResultModel)
-            .where(base_where)
-            .order_by(ResultModel.created_at.desc())
+            .where(*base_filters)
+            .order_by(ResultModel.created_at.desc(), ResultModel.id.desc())
             .offset(offset)
             .limit(limit)
         )
@@ -822,42 +1179,56 @@ class ResultRepository:
         cursor_created_at: datetime | None = None,
         cursor_id: str | None = None,
         limit: int = 50,
+        *,
+        include_deleted: bool = False,
     ) -> tuple[list[Result], int]:
         """List results via keyset pagination on ``(created_at, id)``.
 
-        Ascending order matches the canonical insertion order already
-        used by ``list_by_campaign`` (convergence trajectory) so callers
-        paginating through results see them in submission order, never
-        skipping or duplicating under concurrent writes.
+        Ordering matches :meth:`list_by_campaign_paginated`
+        (newest-first descending) so that cursor pages chain correctly
+        from the first offset / cursorless page. Walking backwards
+        through time with ``< cursor_created_at`` is what gives keyset
+        pagination its no-duplicate / no-skip invariant when the
+        first page is newest-first; the previous ASC formulation
+        could both duplicate page-1 rows and skip the oldest row.
+        The non-paginated :meth:`list_by_campaign` retains its
+        ``ASC`` ordering for the convergence-trajectory consumer.
         """
-        base_where = ResultModel.campaign_id == str(campaign_id)
+        soft_delete_filter = _active_filter(ResultModel, include_deleted)
+        base_filters: list[Any] = [
+            ResultModel.campaign_id == str(campaign_id),
+            *soft_delete_filter,
+        ]
         total_count = (
             await self.session.execute(
-                select(func.count()).select_from(ResultModel).where(base_where)
+                select(func.count()).select_from(ResultModel).where(*base_filters)
             )
         ).scalar_one()
 
-        query = select(ResultModel).where(base_where)
+        query = select(ResultModel).where(*base_filters)
         if cursor_created_at is not None and cursor_id is not None:
             query = query.where(
                 or_(
-                    ResultModel.created_at > cursor_created_at,
+                    ResultModel.created_at < cursor_created_at,
                     and_(
                         ResultModel.created_at == cursor_created_at,
-                        ResultModel.id > cursor_id,
+                        ResultModel.id < cursor_id,
                     ),
                 )
             )
-        query = query.order_by(ResultModel.created_at.asc(), ResultModel.id.asc()).limit(limit)
+        query = query.order_by(ResultModel.created_at.desc(), ResultModel.id.desc()).limit(limit)
 
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
-    async def list_by_campaigns(self, campaign_ids: list[UUID]) -> dict[UUID, list[Result]]:
+    async def list_by_campaigns(
+        self, campaign_ids: list[UUID], *, include_deleted: bool = False
+    ) -> dict[UUID, list[Result]]:
         """List results for multiple campaigns in a single query.
 
         Args:
             campaign_ids: List of campaign UUIDs.
+            include_deleted: Include soft-deleted rows (admin / forensics only).
 
         Returns:
             Dictionary mapping campaign UUID to list of results.
@@ -866,7 +1237,10 @@ class ResultRepository:
             return {}
         str_ids = [str(cid) for cid in campaign_ids]
         result = await self.session.execute(
-            select(ResultModel).where(ResultModel.campaign_id.in_(str_ids))
+            select(ResultModel).where(
+                ResultModel.campaign_id.in_(str_ids),
+                *_active_filter(ResultModel, include_deleted),
+            )
         )
         by_campaign: dict[UUID, list[Result]] = {cid: [] for cid in campaign_ids}
         for m in result.scalars():
@@ -874,26 +1248,91 @@ class ResultRepository:
             by_campaign[entity.campaign_id].append(entity)
         return by_campaign
 
-    async def save(self, result: Result) -> Result:
-        """Save result."""
-        model = ResultModel(
-            id=str(result.id),
-            campaign_id=str(result.campaign_id),
-            suggestion_id=str(result.suggestion_id) if result.suggestion_id else None,
-            parameter_values_json=json.dumps(result.parameter_values),
-            objective_values_json=json.dumps(result.objective_values),
-            source=result.source,
-            submitted_by=str(result.submitted_by),
-            measurement_uncertainty_json=(
+    @staticmethod
+    def _result_column_values(result: Result) -> dict[str, Any]:
+        """Serialize the Result entity into ORM column values.
+
+        Centralised so the UPDATE and INSERT branches of :meth:`save`
+        cannot drift apart — every column the entity persists lives
+        in exactly one place.
+        """
+        return {
+            "campaign_id": str(result.campaign_id),
+            "suggestion_id": str(result.suggestion_id) if result.suggestion_id else None,
+            "parameter_values_json": json.dumps(result.parameter_values),
+            "objective_values_json": json.dumps(result.objective_values),
+            "source": result.source,
+            "submitted_by": str(result.submitted_by),
+            "measurement_uncertainty_json": (
                 json.dumps(result.measurement_uncertainty)
                 if result.measurement_uncertainty
                 else None
             ),
-            metadata_json=json.dumps(result.metadata),
-            created_at=result.created_at,
+            "metadata_json": json.dumps(result.metadata),
+            "suggestion_snapshot_json": (
+                json.dumps(result.suggestion_snapshot)
+                if result.suggestion_snapshot is not None
+                else None
+            ),
+            "created_at": result.created_at,
+        }
+
+    async def save(self, result: Result) -> Result:
+        """Save result. Atomic ``deleted_at`` guard on the write itself.
+
+        TODO 8.11 follow-up: see :meth:`SuggestionRepository.save`
+        for the rationale — the previous read-then-merge sequence
+        left a race window where a concurrent ``delete()`` between
+        the ``deleted_at`` read and the merge could resurrect the
+        tombstone. The write path is now split into an existence
+        check plus either an atomic
+        ``UPDATE … WHERE id = :id AND deleted_at IS NULL``
+        (raising :class:`ConcurrentModificationError` on
+        ``rowcount == 0``) or an ``INSERT`` for new rows. Results
+        are typically write-once, but the symmetric contract keeps
+        every mutating repository consistent under concurrent
+        deletes.
+        """
+        result_id_str = str(result.id)
+        existing = await self.session.execute(
+            select(ResultModel.id).where(ResultModel.id == result_id_str)
         )
-        merged = await self.session.merge(model)
-        return self._to_entity(merged)
+        values = self._result_column_values(result)
+
+        if existing.scalar_one_or_none() is not None:
+            stmt = (
+                update(ResultModel)
+                .where(
+                    ResultModel.id == result_id_str,
+                    ResultModel.deleted_at.is_(None),
+                )
+                .values(**values)
+            )
+            response = await self.session.execute(stmt)
+            if response.rowcount == 0:  # ty: ignore[unresolved-attribute]
+                logger.warning(
+                    "Refusing to save result %s: row was soft-deleted concurrently with this save",
+                    result.id,
+                )
+                raise ConcurrentModificationError("Result", result.id, -1)
+        else:
+            self.session.add(ResultModel(id=result_id_str, deleted_at=None, **values))
+        await self.session.flush()
+        return result
+
+    async def _fetch_deleted_at(self, result_id: UUID) -> datetime | None:
+        """Return the existing row's ``deleted_at`` (None for inserts).
+
+        Kept for tests that need to inspect tombstone state directly.
+        The save path no longer relies on this helper — it uses the
+        atomic ``UPDATE … WHERE deleted_at IS NULL`` instead.
+        """
+        row = (
+            await self.session.execute(
+                select(ResultModel.deleted_at).where(ResultModel.id == str(result_id))
+            )
+        ).first()
+        return row[0] if row is not None else None
 
     async def save_batch(self, results: list[Result]) -> list[Result]:
         """Save multiple results using bulk insert.
@@ -921,6 +1360,9 @@ class ResultRepository:
                     json.dumps(r.measurement_uncertainty) if r.measurement_uncertainty else None
                 ),
                 metadata_json=json.dumps(r.metadata),
+                suggestion_snapshot_json=(
+                    json.dumps(r.suggestion_snapshot) if r.suggestion_snapshot is not None else None
+                ),
                 created_at=r.created_at,
             )
             for r in results
@@ -934,7 +1376,18 @@ class ResultRepository:
         return results
 
     async def delete(self, id: UUID) -> bool:
-        """Delete result by ID."""
+        """Soft-delete a result. See :meth:`CampaignRepository.delete`."""
+        stmt = (
+            update(ResultModel)
+            .where(ResultModel.id == str(id), ResultModel.deleted_at.is_(None))
+            .values(deleted_at=utcnow())
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
+
+    async def hard_delete(self, id: UUID) -> bool:
+        """Physically remove the row (admin / cleanup only)."""
         result = await self.session.execute(select(ResultModel).where(ResultModel.id == str(id)))
         model = result.scalar_one_or_none()
         if model is None:
@@ -942,9 +1395,13 @@ class ResultRepository:
         await self.session.delete(model)
         return True
 
-    async def list_all(self) -> list[Result]:
-        """List all results."""
-        result = await self.session.execute(select(ResultModel))
+    async def list_all(self, *, include_deleted: bool = False) -> list[Result]:
+        """List all results (hides soft-deleted by default)."""
+        query = select(ResultModel)
+        active = _active_filter(ResultModel, include_deleted)
+        if active:
+            query = query.where(*active)
+        result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
 
     async def count_by_campaigns(self, campaign_ids: list[UUID]) -> dict[UUID, int]:
@@ -962,6 +1419,7 @@ class ResultRepository:
         result = await self.session.execute(
             select(ResultModel.campaign_id, func.count())
             .where(ResultModel.campaign_id.in_(str_ids))
+            .where(ResultModel.deleted_at.is_(None))
             .group_by(ResultModel.campaign_id)
         )
         return {UUID(row[0]): row[1] for row in result.all()}
@@ -982,6 +1440,7 @@ class ResultRepository:
             submitted_by=UUID(model.submitted_by),
             measurement_uncertainty=measurement_uncertainty,
             metadata=model.get_metadata(),
+            suggestion_snapshot=model.get_suggestion_snapshot(),
             created_at=model.created_at,
         )
 
@@ -1020,11 +1479,16 @@ class EventRepository:
         merged = await self.session.merge(model)
         return self._to_entity(merged)
 
-    async def list_by_campaign(self, campaign_id: UUID, limit: int = 50) -> list[Event]:
+    async def list_by_campaign(
+        self, campaign_id: UUID, limit: int = 50, *, include_deleted: bool = False
+    ) -> list[Event]:
         """List events for a campaign, most recent first."""
         result = await self.session.execute(
             select(EventModel)
-            .where(EventModel.campaign_id == str(campaign_id))
+            .where(
+                EventModel.campaign_id == str(campaign_id),
+                *_active_filter(EventModel, include_deleted),
+            )
             .order_by(EventModel.created_at.desc())
             .limit(limit)
         )

@@ -54,7 +54,7 @@ _INTAKE_BOUNDARY_DEFAULTS: dict[str, Any] = {
 }
 
 
-def _check_intake_shape(intake_data: Any) -> dict[str, Any] | None:
+def _check_intake_shape(intake_data: object) -> dict[str, Any] | None:
     """Return a structured envelope iff ``intake_data`` is not object-shaped.
 
     The Pydantic models down the call chain produce per-field
@@ -64,7 +64,7 @@ def _check_intake_shape(intake_data: Any) -> dict[str, Any] | None:
     container-shape failure here keeps the agent-facing contract
     identical to inner-field failures.
     """
-    if isinstance(intake_data, Mapping) or isinstance(intake_data, BaseModel):
+    if isinstance(intake_data, (Mapping, BaseModel)):
         return None
     return shape_envelope(
         "intake_data",

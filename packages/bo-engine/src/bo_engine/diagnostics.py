@@ -82,10 +82,7 @@ def compute_pareto_front(
     y = to_device(y)
 
     # BoTorch is_non_dominated expects maximization, so we negate for minimization
-    if minimize:
-        pareto_mask = is_non_dominated(-y)
-    else:
-        pareto_mask = is_non_dominated(y)
+    pareto_mask = is_non_dominated(-y) if minimize else is_non_dominated(y)
 
     pareto_y = y[pareto_mask]
     return pareto_y, pareto_mask
@@ -269,10 +266,10 @@ def compute_rank_correlation(
     try:
         result = scipy_stats.spearmanr(pred_np, actual_np)
         corr = float(result.statistic)  # type: ignore[union-attr]
-        return corr if corr == corr else 0.0  # Handle NaN
     except (RuntimeError, ValueError, TypeError) as e:
-        logger.debug(f"Rank correlation calculation failed with {len(pred_np)} samples: {e!r}")
+        logger.debug("Rank correlation calculation failed with %d samples: %r", len(pred_np), e)
         return 0.0
+    return corr if corr == corr else 0.0  # Handle NaN
 
 
 def determine_health_status(
@@ -326,13 +323,12 @@ def determine_health_status(
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CRITICAL
     ):
         return "critical", warnings
-    elif (
+    if (
         iterations_without_improvement >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
         or model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
     ):
         return "warning", warnings
-    else:
-        return "healthy", warnings
+    return "healthy", warnings
 
 
 def _classify_improvement(rate: float) -> str:
@@ -567,8 +563,7 @@ def compute_suggestion_diversity(
     n_dims = suggestions.shape[1]
     expected_distance = (n_dims / EXPECTED_DISTANCE_HYPERCUBE_DIVISOR) ** 0.5
 
-    diversity = min(1.0, avg_distance / (expected_distance + EXPLORATION_EXPLOITATION_OFFSET))
-    return diversity
+    return min(1.0, avg_distance / (expected_distance + EXPLORATION_EXPLOITATION_OFFSET))
 
 
 # ---------------------------------------------------------------------------
@@ -611,29 +606,29 @@ __all__ = [
     # Multi-objective + campaign health (defined in this module)
     "analyze_hypervolume_history",
     "assess_model_health",
+    # Single-objective diagnostics
+    "compute_best_value",
     "compute_campaign_health",
+    # Agent-usability diagnostics
+    "compute_constraint_satisfaction",
     "compute_convergence_metric",
+    "compute_exploration_exploitation_metrics",
     "compute_exploration_exploitation_ratio",
     "compute_hypervolume",
     "compute_hypervolume_improvement",
-    "compute_pareto_front",
-    "compute_rank_correlation",
-    "compute_single_objective_progress_status",
-    "compute_suggestion_diversity",
-    "determine_health_status",
-    "determine_progress_status",
-    "summarize_pareto_front",
+    "compute_improvement_history",
     # LOO cross-validation
     "compute_loo_cv_for_model",
     "compute_loo_cv_metrics",
-    # Single-objective diagnostics
-    "compute_best_value",
-    "compute_improvement_history",
+    "compute_pareto_front",
+    "compute_rank_correlation",
     "compute_single_objective_improvement_rate",
-    "determine_single_objective_health_status",
-    # Agent-usability diagnostics
-    "compute_constraint_satisfaction",
-    "compute_exploration_exploitation_metrics",
+    "compute_single_objective_progress_status",
+    "compute_suggestion_diversity",
     "compute_uncertainty_trend",
+    "determine_health_status",
+    "determine_progress_status",
+    "determine_single_objective_health_status",
     "extract_hyperparameters",
+    "summarize_pareto_front",
 ]

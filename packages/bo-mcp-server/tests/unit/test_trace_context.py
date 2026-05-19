@@ -38,10 +38,15 @@ def test_bind_trace_id_passthrough_on_none() -> None:
 
 def test_bind_trace_id_clears_on_exception() -> None:
     """Context manager restores the previous value when the body raises."""
-    with pytest.raises(RuntimeError):
-        with bind_trace_id("workflow-err"):
-            assert get_trace_id() == "workflow-err"
-            raise RuntimeError("boom")
+
+    def _raise() -> None:
+        msg = "boom"
+        raise RuntimeError(msg)
+
+    with bind_trace_id("workflow-err"):
+        assert get_trace_id() == "workflow-err"
+        with pytest.raises(RuntimeError):
+            _raise()
     assert get_trace_id() is None
 
 

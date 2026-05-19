@@ -1,6 +1,6 @@
 """REST mapping of ``CorruptedJsonColumnError`` to the ``DATA_INTEGRITY_ERROR`` envelope.
 
-The strict JSON decoder added in TODO 8.48 raises a typed exception
+The strict JSON decoder raises a typed exception
 when a persisted JSON column cannot be decoded. The unit tests in
 ``packages/bo-mcp-server/tests/unit/test_storage/test_strict_json_column_decode.py``
 pin the ORM-level behaviour; this module covers the **REST transport
@@ -37,7 +37,7 @@ from api.main import create_app
 
 
 @pytest_asyncio.fixture
-async def corruption_api_client(setup_database) -> AsyncGenerator[AsyncClient]:
+async def corruption_api_client(request: pytest.FixtureRequest) -> AsyncGenerator[AsyncClient]:
     """API client whose ``/raise-corrupted-json`` route trips the typed error.
 
     The endpoint raises a synthetic :class:`CorruptedJsonColumnError`
@@ -46,13 +46,15 @@ async def corruption_api_client(setup_database) -> AsyncGenerator[AsyncClient]:
     decode path is covered in
     ``packages/bo-mcp-server/tests/unit/test_storage/test_strict_json_column_decode.py``.
     """
+    request.getfixturevalue("setup_database")
     app = create_app()
     router = APIRouter()
 
     @router.get("/raise-corrupted-json")
     async def _raise() -> dict:
+        msg = "CampaignSpec(test-spec-id).parameters"
         raise CorruptedJsonColumnError(
-            "CampaignSpec(test-spec-id).parameters",
+            msg,
             "not-json-bytes-with-secret-content",
             ValueError("Expecting value"),
         )

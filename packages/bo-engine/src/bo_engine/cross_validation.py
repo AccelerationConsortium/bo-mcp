@@ -293,7 +293,7 @@ def _compute_batch_loo_cv(
         )
 
     except (RuntimeError, ValueError, TypeError) as e:
-        logger.warning(f"Batch LOO-CV failed: {e}")
+        logger.warning("Batch LOO-CV failed: %s", e)
         return _create_nan_metrics("batch_loo_failed")
 
 
@@ -500,7 +500,7 @@ def _compute_kfold_cv(
             per_fold_errors.append((pred_mean - test_y_fold.squeeze()).abs().mean().item())
 
         except (RuntimeError, ValueError, TypeError) as e:
-            logger.warning(f"K-fold CV failed for fold {fold_idx}: {e}")
+            logger.warning("K-fold CV failed for fold %s: %s", fold_idx, e)
             continue
 
     return _compute_cv_metrics_from_predictions(
@@ -616,20 +616,18 @@ def estimate_cv_time(
     # Handle method aliases
     if method in ("loo", "batch_loo"):
         return n_samples * base_fit_time
-    elif method == "approximate_loo":
+    if method == "approximate_loo":
         return base_fit_time * 1.5
-    elif method == "kfold":
+    if method == "kfold":
         k = k_folds if k_folds is not None else 5
         return k * base_fit_time
-    elif method == "auto":
+    if method == "auto":
         # Return estimate for recommended method
         if n_samples > 100:
             return base_fit_time * 1.5  # approximate_loo
-        else:
-            return n_samples * base_fit_time  # batch_loo
-    else:
-        # Default to LOO estimate
-        return n_samples * base_fit_time
+        return n_samples * base_fit_time  # batch_loo
+    # Default to LOO estimate
+    return n_samples * base_fit_time
 
 
 def get_cv_time_estimates(

@@ -60,6 +60,8 @@ from bo_mcp_server.storage import (
     init_database,
 )
 
+pytestmark = pytest.mark.usefixtures("fresh_database")
+
 
 @pytest_asyncio.fixture
 async def fresh_database() -> AsyncGenerator[None]:
@@ -109,9 +111,7 @@ async def _corrupt_spec_parameters(spec_id: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_boundary_returns_database_error_envelope(
-    fresh_database: None,
-) -> None:
+async def test_mcp_tool_boundary_returns_database_error_envelope() -> None:
     """A tool whose body trips ``CorruptedJsonColumnError`` returns the envelope.
 
     The wrapper installed by
@@ -144,7 +144,7 @@ async def test_mcp_tool_boundary_returns_database_error_envelope(
 
     install_validation_envelope_wrapper(mcp)
 
-    response = await mcp._tool_manager.call_tool(  # noqa: SLF001 — exercise wrapper
+    response = await mcp._tool_manager.call_tool(
         "_read_spec_parameters",
         {"spec_id": ids["spec_id"]},
     )
@@ -165,9 +165,7 @@ async def test_mcp_tool_boundary_returns_database_error_envelope(
 
 
 @pytest.mark.asyncio
-async def test_make_corrupted_json_response_uses_data_integrity_code(
-    fresh_database: None,
-) -> None:
+async def test_make_corrupted_json_response_uses_data_integrity_code() -> None:
     """The shared mapper produces the canonical ``DATA_INTEGRITY_ERROR`` envelope.
 
     Locks the surface that both the MCP wrapper and the REST handler

@@ -1,4 +1,4 @@
-"""Tests for the SAASBO active-dimension mask (TODO 1.6).
+"""Tests for the SAASBO active-dimension mask.
 
 SAASBO's sparsity-inducing prior drives inactive dimensions to large
 lengthscales. The normalized inverse-lengthscale importance metric then
@@ -207,12 +207,16 @@ class TestParameterNameValidation:
 
     def test_mismatched_names_raise(self) -> None:
         """Three lengthscales but two names -> ValueError, not silent drop."""
-        with _patched_lengthscales([0.5, 1.0, 50.0]):
-            with pytest.raises(ValueError, match="parameter_names length"):
-                compute_saasbo_importance_report(model=_fake_model(), parameter_names=["a", "b"])
+        with (
+            _patched_lengthscales([0.5, 1.0, 50.0]),
+            pytest.raises(ValueError, match="parameter_names length"),
+        ):
+            compute_saasbo_importance_report(model=_fake_model(), parameter_names=["a", "b"])
 
     def test_legacy_function_validates_names_too(self) -> None:
         """The dict-shape API delegates and therefore inherits the check."""
-        with _patched_lengthscales([0.5, 1.0]):
-            with pytest.raises(ValueError, match="parameter_names length"):
-                compute_saasbo_importance(model=_fake_model(), parameter_names=["only_one"])
+        with (
+            _patched_lengthscales([0.5, 1.0]),
+            pytest.raises(ValueError, match="parameter_names length"),
+        ):
+            compute_saasbo_importance(model=_fake_model(), parameter_names=["only_one"])

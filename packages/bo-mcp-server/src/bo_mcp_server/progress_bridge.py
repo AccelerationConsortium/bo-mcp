@@ -10,8 +10,8 @@ running event loop and an async session, and forwards each event by
 scheduling the async ``report_progress`` call back onto that loop via
 ``asyncio.run_coroutine_threadsafe``.
 
-Failure observability (TODO 8.59)
----------------------------------
+Failure observability
+---------------------
 
 Forwarding failures used to be swallowed at ``DEBUG`` with no metric.
 That hid a real correctness gap for clients relying on progress for
@@ -85,6 +85,7 @@ class ProgressStatus:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def update_event(self, event: ProgressEvent) -> None:
+        """Atomically replace the latest progress event under the bridge lock."""
         with self._lock:
             self.progress = event.progress
             self.total = event.total
@@ -92,6 +93,7 @@ class ProgressStatus:
             self.phase = event.phase
 
     def record_failure(self, reason: str) -> None:
+        """Increment the failure counter and remember the latest reason."""
         with self._lock:
             self.failures += 1
             self.last_failure_reason = reason
@@ -231,7 +233,7 @@ def make_progress_callback_from_context(
 
 
 # ---------------------------------------------------------------------------
-# Process-local progress registry (TODO 8.59 poll fallback)
+# Process-local progress registry (poll fallback)
 # ---------------------------------------------------------------------------
 
 

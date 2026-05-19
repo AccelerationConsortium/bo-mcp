@@ -69,23 +69,28 @@ def decode_cursor(token: str) -> Cursor:
     try:
         raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
     except (ValueError, UnicodeDecodeError) as exc:
-        raise CursorError(f"Malformed cursor token: {exc}") from exc
+        msg = f"Malformed cursor token: {exc}"
+        raise CursorError(msg) from exc
 
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise CursorError(f"Cursor token is not valid JSON: {exc}") from exc
+        msg = f"Cursor token is not valid JSON: {exc}"
+        raise CursorError(msg) from exc
 
     if not isinstance(payload, dict):
-        raise CursorError("Cursor token must decode to a JSON object")
+        msg = "Cursor token must decode to a JSON object"
+        raise CursorError(msg)
 
     if "created_at" not in payload or "id" not in payload:
-        raise CursorError("Cursor token missing required keys 'created_at' and 'id'")
+        msg = "Cursor token missing required keys 'created_at' and 'id'"
+        raise CursorError(msg)
 
     try:
         created_at = datetime.fromisoformat(str(payload["created_at"]))
     except ValueError as exc:
-        raise CursorError(f"Cursor 'created_at' is not ISO-8601: {exc}") from exc
+        msg = f"Cursor 'created_at' is not ISO-8601: {exc}"
+        raise CursorError(msg) from exc
 
     return Cursor(created_at=created_at, entity_id=str(payload["id"]))
 

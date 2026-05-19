@@ -15,14 +15,17 @@ Reference: https://prometheus.io/docs/practices/naming/.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from prometheus_client import Counter, Histogram
 from sqlalchemy import event
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +78,7 @@ def record_campaign_created(backend: str | None) -> None:
     CAMPAIGNS_CREATED.labels(backend or "unknown").inc()
 
 
-def record_campaign_created_after_commit(session: Any, backend: str | None) -> None:
+def record_campaign_created_after_commit(session: AsyncSession, backend: str | None) -> None:
     """Defer :func:`record_campaign_created` until ``session`` commits.
 
     The operation can be invoked with an externally-owned session
@@ -146,10 +149,8 @@ def record_campaign_created_after_commit(session: Any, backend: str | None) -> N
             ("after_commit", _on_after_commit),
             ("after_rollback", _on_after_rollback),
         ):
-            try:
+            with contextlib.suppress(InvalidRequestError):
                 event.remove(sync_session, evt, listener)
-            except InvalidRequestError:
-                pass
 
     def _schedule_detach() -> None:
         try:
@@ -164,7 +165,7 @@ def record_campaign_created_after_commit(session: Any, backend: str | None) -> N
             return
         loop.call_soon(_detach)
 
-    def _on_after_commit(committed_session: Any) -> None:
+    def _on_after_commit(committed_session: Session) -> None:
         if not state.armed:
             _schedule_detach()
             return
@@ -188,7 +189,7 @@ def record_campaign_created_after_commit(session: Any, backend: str | None) -> N
         record_campaign_created(backend)
         _schedule_detach()
 
-    def _on_after_rollback(_: Any) -> None:
+    def _on_after_rollback(_: Session) -> None:
         # Rollback disables the commit listener for this arming so a
         # later, unrelated commit on the same session does not bump
         # the counter retroactively.
@@ -212,7 +213,7 @@ class _ArmingState:
 
 
 def _commit_is_durable(
-    committed_session: Any,
+    committed_session: Session,
     external_connection: Connection | None,
 ) -> bool:
     """Return True when the just-fired commit actually persists state.
@@ -236,7 +237,7 @@ def _commit_is_durable(
     try:
         if bool(committed_session.in_nested_transaction()):
             return False
-    except Exception:  # noqa: BLE001, S110 - introspection is best-effort
+    except Exception:  # noqa: BLE001 - introspection is best-effort
         logger.debug("Session.in_nested_transaction() raised", exc_info=True)
     if external_connection is None:
         return True
@@ -298,7 +299,7 @@ def snapshot_db_pool() -> dict[str, float]:
     not expose the relevant counters.
     """
     try:
-        from bo_mcp_server.storage import database  # noqa: PLC0415
+        from bo_mcp_server.storage import database
 
         # Read the slot directly — do *not* call ``_get_engine``,
         # which would lazily construct an engine. A metrics scrape
@@ -316,12 +317,12 @@ def snapshot_db_pool() -> dict[str, float]:
         ("overflow", "overflow"),
         ("size", "size"),
     ):
-        accessor: Any = getattr(pool, getter, None)
+        accessor: Callable[[], float] | None = getattr(pool, getter, None)
         if accessor is None:
             continue
         try:
             snapshot[state] = float(accessor())
-        except Exception:  # noqa: BLE001, S112 - per-pool method may raise on non-pooled engines
+        except Exception:  # noqa: BLE001 - per-pool method may raise on non-pooled engines
             logger.debug("DB pool accessor %s raised", state, exc_info=True)
             continue
     return snapshot
@@ -341,10 +342,10 @@ def reset_for_test() -> None:
         CACHE_EVENTS,
         AUDIT_FAILURES,
     ):
-        children: dict[Any, Any] = instrument._metrics  # type: ignore[attr-defined]  # noqa: SLF001
+        children = instrument._metrics  # type: ignore[attr-defined]
         children.clear()
     # Labelless counters bypass the ``_metrics`` child dict and store the
     # running total directly on ``_value``; reset that slot to its zero
     # equivalent so tests start from a clean baseline.
     if hasattr(IDEMPOTENCY_GC_PURGED, "_value"):
-        IDEMPOTENCY_GC_PURGED._value.set(0)  # type: ignore[attr-defined]  # noqa: SLF001
+        IDEMPOTENCY_GC_PURGED._value.set(0)  # type: ignore[attr-defined]

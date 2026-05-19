@@ -38,7 +38,7 @@ class _FakeSession:
     ``fail_on_send`` makes every delivery raise; ``fail_attempts``
     fails the first N attempts and then lets the next one succeed —
     used to exercise the bounded-retry path in
-    :func:`notify_campaign_updated` (TODO 8.44).
+    :func:`notify_campaign_updated`.
     """
 
     def __init__(self) -> None:
@@ -50,9 +50,11 @@ class _FakeSession:
     async def send_resource_updated(self, uri: Any) -> None:
         self.attempts += 1
         if self.fail_on_send:
-            raise RuntimeError("simulated transport failure")
+            msg = "simulated transport failure"
+            raise RuntimeError(msg)
         if self.attempts <= self.fail_attempts:
-            raise RuntimeError(f"transient failure on attempt {self.attempts}")
+            msg = f"transient failure on attempt {self.attempts}"
+            raise RuntimeError(msg)
         self.delivered.append(str(uri))
 
 
@@ -136,7 +138,7 @@ class TestNotifyDelivery:
     async def test_failed_send_drops_subscriber_after_retry_budget(self) -> None:
         """A permanently-failing transport ends up unsubscribed.
 
-        After TODO 8.44 the registry retries up to
+        The registry retries up to
         ``SUBSCRIPTION_SEND_MAX_ATTEMPTS`` times before unsubscribing.
         A permanently-failing session still hits zero subscriptions —
         the budget just rides out blips before tearing down.
@@ -158,7 +160,7 @@ class TestNotifyDelivery:
 
     @pytest.mark.asyncio
     async def test_transient_failure_does_not_drop_subscriber(self) -> None:
-        """A single wire-blip rides out the retry budget (TODO 8.44).
+        """A single wire-blip rides out the retry budget.
 
         Pre-fix, the very first ``send_resource_updated`` exception
         unsubscribed the session, which silently severed long-running

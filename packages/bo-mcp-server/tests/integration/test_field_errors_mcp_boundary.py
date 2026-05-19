@@ -37,14 +37,15 @@ async def _server() -> Any:
 async def _call(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Dispatch a tool call exactly the way the FastMCP transport does."""
     mcp = await _server()
-    return await mcp._tool_manager.call_tool(tool, arguments=arguments)  # noqa: SLF001
+    return await mcp._tool_manager.call_tool(tool, arguments=arguments)
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestCreateCampaignBoundary:
     """MCP-boundary failures for ``bo_create_campaign``."""
 
     @pytest.mark.asyncio
-    async def test_empty_name_returns_structured_field_errors(self, setup_database) -> None:
+    async def test_empty_name_returns_structured_field_errors(self) -> None:
         result = await _call(
             "bo_create_campaign",
             arguments={
@@ -66,7 +67,7 @@ class TestCreateCampaignBoundary:
         assert result["error"]["code"] == "E005"
 
     @pytest.mark.asyncio
-    async def test_unknown_intake_field_returns_field_errors(self, setup_database) -> None:
+    async def test_unknown_intake_field_returns_field_errors(self) -> None:
         """``extra=forbid`` errors must also reach the structured envelope.
 
         Before the fix, ``intake_data`` was typed as
@@ -96,7 +97,7 @@ class TestCreateCampaignBoundary:
         )
 
     @pytest.mark.asyncio
-    async def test_valid_intake_round_trips_through_call_tool(self, setup_database) -> None:
+    async def test_valid_intake_round_trips_through_call_tool(self) -> None:
         """The dict-boundary path still creates campaigns for valid payloads."""
         result = await _call(
             "bo_create_campaign",
@@ -114,11 +115,12 @@ class TestCreateCampaignBoundary:
         assert result["campaign_id"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSubmitResultsBoundary:
     """MCP-boundary failures for ``bo_submit_results``."""
 
     @pytest.mark.asyncio
-    async def test_bad_uncertainty_type_pins_results_row_path(self, setup_database) -> None:
+    async def test_bad_uncertainty_type_pins_results_row_path(self) -> None:
         """A non-dict ``measurement_uncertainty`` pins ``results[i]``.
 
         The Pydantic ``loc`` of ``("measurement_uncertainty",)`` is
@@ -150,7 +152,7 @@ class TestSubmitResultsBoundary:
         assert result["error"]["code"] == "E005"
 
     @pytest.mark.asyncio
-    async def test_unknown_result_key_pins_results_row_path(self, setup_database) -> None:
+    async def test_unknown_result_key_pins_results_row_path(self) -> None:
         """``ResultSubmissionInput`` rejects unknown keys with row-rooted paths."""
         result = await _call(
             "bo_submit_results",
@@ -172,7 +174,7 @@ class TestSubmitResultsBoundary:
         assert any(path.startswith("results[0]") for path in result["field_errors"])
 
     @pytest.mark.asyncio
-    async def test_second_row_bad_pins_correct_index(self, setup_database) -> None:
+    async def test_second_row_bad_pins_correct_index(self) -> None:
         """A failing later row reports its own index, not row 0's.
 
         This is the regression that motivated the field-error work:
@@ -204,6 +206,7 @@ class TestSubmitResultsBoundary:
         assert not any("results[0]" in k for k in keys), keys
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestOuterShapeBoundary:
     """Outer-shape failures must also produce structured envelopes.
 
@@ -218,7 +221,7 @@ class TestOuterShapeBoundary:
     """
 
     @pytest.mark.asyncio
-    async def test_intake_data_not_an_object_returns_envelope(self, setup_database) -> None:
+    async def test_intake_data_not_an_object_returns_envelope(self) -> None:
         result = await _call(
             "bo_create_campaign",
             arguments={
@@ -234,7 +237,7 @@ class TestOuterShapeBoundary:
         assert result["campaign_id"] is None
 
     @pytest.mark.asyncio
-    async def test_intake_data_as_list_returns_envelope(self, setup_database) -> None:
+    async def test_intake_data_as_list_returns_envelope(self) -> None:
         """A list is not an object either — distinct shape, same envelope."""
         result = await _call(
             "bo_create_campaign",
@@ -248,7 +251,7 @@ class TestOuterShapeBoundary:
         assert "intake_data" in result["field_errors"]
 
     @pytest.mark.asyncio
-    async def test_results_not_a_list_returns_envelope(self, setup_database) -> None:
+    async def test_results_not_a_list_returns_envelope(self) -> None:
         result = await _call(
             "bo_submit_results",
             arguments={
@@ -263,7 +266,7 @@ class TestOuterShapeBoundary:
         assert result["result_ids"] == []
 
     @pytest.mark.asyncio
-    async def test_results_as_dict_returns_envelope(self, setup_database) -> None:
+    async def test_results_as_dict_returns_envelope(self) -> None:
         """A dict-shaped payload that should be a list is still a shape failure.
 
         Pinning the dict shape separately from the string shape (above)
@@ -282,7 +285,7 @@ class TestOuterShapeBoundary:
         assert "results" in result["field_errors"]
 
     @pytest.mark.asyncio
-    async def test_results_item_not_an_object_returns_envelope(self, setup_database) -> None:
+    async def test_results_item_not_an_object_returns_envelope(self) -> None:
         result = await _call(
             "bo_submit_results",
             arguments={
@@ -296,7 +299,7 @@ class TestOuterShapeBoundary:
         assert "results[0]" in result["field_errors"]
 
     @pytest.mark.asyncio
-    async def test_second_row_not_an_object_pins_correct_index(self, setup_database) -> None:
+    async def test_second_row_not_an_object_pins_correct_index(self) -> None:
         """A shape-bad row reports its own index, not row 0's."""
         result = await _call(
             "bo_submit_results",
@@ -318,6 +321,7 @@ class TestOuterShapeBoundary:
         assert "results[0]" not in result["field_errors"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestScalarBoundary:
     """Missing or wrongly-typed scalar arguments produce envelopes too.
 
@@ -332,7 +336,7 @@ class TestScalarBoundary:
     """
 
     @pytest.mark.asyncio
-    async def test_missing_intake_data_returns_envelope(self, setup_database) -> None:
+    async def test_missing_intake_data_returns_envelope(self) -> None:
         result = await _call(
             "bo_create_campaign",
             arguments={"owner_id": str(uuid4())},
@@ -345,7 +349,7 @@ class TestScalarBoundary:
         assert result["campaign_id"] is None
 
     @pytest.mark.asyncio
-    async def test_missing_results_returns_envelope(self, setup_database) -> None:
+    async def test_missing_results_returns_envelope(self) -> None:
         result = await _call(
             "bo_submit_results",
             arguments={
@@ -359,7 +363,7 @@ class TestScalarBoundary:
         assert result["result_ids"] == []
 
     @pytest.mark.asyncio
-    async def test_non_string_owner_id_returns_envelope(self, setup_database) -> None:
+    async def test_non_string_owner_id_returns_envelope(self) -> None:
         result = await _call(
             "bo_create_campaign",
             arguments={
@@ -376,7 +380,7 @@ class TestScalarBoundary:
         assert "owner_id" in result["field_errors"]
 
     @pytest.mark.asyncio
-    async def test_non_string_campaign_id_returns_envelope(self, setup_database) -> None:
+    async def test_non_string_campaign_id_returns_envelope(self) -> None:
         result = await _call(
             "bo_submit_results",
             arguments={
@@ -395,7 +399,7 @@ class TestScalarBoundary:
         assert "campaign_id" in result["field_errors"]
 
     @pytest.mark.asyncio
-    async def test_non_string_submitted_by_returns_envelope(self, setup_database) -> None:
+    async def test_non_string_submitted_by_returns_envelope(self) -> None:
         result = await _call(
             "bo_submit_results",
             arguments={
@@ -414,7 +418,7 @@ class TestScalarBoundary:
         assert "submitted_by" in result["field_errors"]
 
     @pytest.mark.asyncio
-    async def test_invalid_bool_atomic_returns_envelope(self, setup_database) -> None:
+    async def test_invalid_bool_atomic_returns_envelope(self) -> None:
         result = await _call(
             "bo_submit_results",
             arguments={
@@ -434,6 +438,7 @@ class TestScalarBoundary:
         assert "atomic" in result["field_errors"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestValidateIntakeBoundary:
     """``bo_validate_intake`` shares the validation-localization workflow.
 
@@ -444,7 +449,7 @@ class TestValidateIntakeBoundary:
     """
 
     @pytest.mark.asyncio
-    async def test_missing_intake_data_returns_envelope(self, setup_database) -> None:
+    async def test_missing_intake_data_returns_envelope(self) -> None:
         result = await _call("bo_validate_intake", arguments={})
         assert isinstance(result, dict)
         # The validate-intake response carries ``valid=False`` instead
@@ -455,7 +460,7 @@ class TestValidateIntakeBoundary:
         assert result["spec"] is None
 
     @pytest.mark.asyncio
-    async def test_string_intake_data_pins_single_field(self, setup_database) -> None:
+    async def test_string_intake_data_pins_single_field(self) -> None:
         """Outer-shape failure surfaces a clean ``intake_data`` path.
 
         Pre-fix the ``CampaignIntakeInput | dict[str, Any]`` union
@@ -473,7 +478,7 @@ class TestValidateIntakeBoundary:
         assert list(result["field_errors"].keys()) == ["intake_data"]
 
     @pytest.mark.asyncio
-    async def test_list_intake_data_returns_envelope(self, setup_database) -> None:
+    async def test_list_intake_data_returns_envelope(self) -> None:
         result = await _call(
             "bo_validate_intake",
             arguments={"intake_data": [{"name": "wrong-shape"}]},
@@ -483,7 +488,7 @@ class TestValidateIntakeBoundary:
         assert "intake_data" in result["field_errors"]
 
     @pytest.mark.asyncio
-    async def test_non_string_verbosity_returns_envelope(self, setup_database) -> None:
+    async def test_non_string_verbosity_returns_envelope(self) -> None:
         """Scalar-type failures are converted by the FastMCP-boundary wrapper.
 
         Verbosity is not in the wrapper's ``extra`` defaults map -- it
@@ -501,7 +506,7 @@ class TestValidateIntakeBoundary:
         assert "verbosity" in result["field_errors"]
 
     @pytest.mark.asyncio
-    async def test_inner_field_failure_still_uses_operation_layer(self, setup_database) -> None:
+    async def test_inner_field_failure_still_uses_operation_layer(self) -> None:
         """Inner-field failures stay on the operation-layer code path.
 
         The operation already produces per-field ``field_errors``;
@@ -526,6 +531,7 @@ class TestValidateIntakeBoundary:
         assert "name" in result["field_errors"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestNonValidationToolErrorsPassthrough:
     """Non-validation ``ToolError`` (unknown tool, body raised) is not converted.
 
@@ -536,7 +542,7 @@ class TestNonValidationToolErrorsPassthrough:
     """
 
     @pytest.mark.asyncio
-    async def test_unknown_tool_still_raises(self, setup_database) -> None:
+    async def test_unknown_tool_still_raises(self) -> None:
         from mcp.server.fastmcp.exceptions import ToolError
 
         with pytest.raises(ToolError):

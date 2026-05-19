@@ -1,6 +1,6 @@
 """Soft-delete columns, suggestion-provenance snapshot, RESTRICT cascades.
 
-TODO 8.11 hardens the data-integrity story around campaign / suggestion /
+This migration hardens the data-integrity story around campaign / suggestion /
 result cleanup:
 
 * ``deleted_at`` is added to ``campaigns``, ``suggestions``, ``results``

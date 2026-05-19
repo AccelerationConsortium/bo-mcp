@@ -89,8 +89,7 @@ def postgres_url(postgres_container) -> str:
     # Replace postgresql:// with postgresql+asyncpg://
     async_url = sync_url.replace("postgresql://", "postgresql+asyncpg://")
     # Also handle psycopg2 driver if present
-    async_url = async_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
-    return async_url
+    return async_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
 
 
 @pytest.fixture(scope="session")
@@ -128,7 +127,9 @@ async def postgres_tables(postgres_engine):
 
 
 @pytest_asyncio.fixture
-async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[AsyncSession]:
+async def postgres_session(
+    request: pytest.FixtureRequest, postgres_engine
+) -> AsyncGenerator[AsyncSession]:
     """Create an async session for PostgreSQL integration tests.
 
     The session is bound to a dedicated connection that is wrapped in an
@@ -148,6 +149,7 @@ async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[A
     Yields:
         AsyncSession: Database session connected to PostgreSQL.
     """
+    request.getfixturevalue("postgres_tables")
     async with postgres_engine.connect() as connection:
         outer_transaction = await connection.begin()
         session = AsyncSession(bind=connection, expire_on_commit=True)
@@ -172,7 +174,7 @@ async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[A
 
 @pytest_asyncio.fixture
 async def postgres_session_committed(
-    postgres_engine, postgres_tables
+    request: pytest.FixtureRequest, postgres_engine
 ) -> AsyncGenerator[AsyncSession]:
     """Create a session that commits changes (for tests that need persistence).
 
@@ -184,6 +186,7 @@ async def postgres_session_committed(
     Yields:
         AsyncSession: Database session that commits changes.
     """
+    request.getfixturevalue("postgres_tables")
     async_session_factory = async_sessionmaker(
         postgres_engine,
         class_=AsyncSession,

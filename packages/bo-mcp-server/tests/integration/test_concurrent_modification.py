@@ -46,19 +46,21 @@ def _inject_lost_race(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         if expected_version is not None:
             state["updates_triggered"] += 1
             if state["updates_triggered"] == 1:
-                raise ConcurrentModificationError("Campaign", campaign.id, expected_version)
+                msg = "Campaign"
+                raise ConcurrentModificationError(msg, campaign.id, expected_version)
         return await original_save(self, campaign, expected_version=expected_version)
 
     monkeypatch.setattr(repo_mod.CampaignRepository, "save", lost_race_save)
     return state
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestConcurrentModificationEnvelope:
     """Structured CONCURRENT_MODIFICATION envelope on each racing operation."""
 
     @pytest.mark.asyncio
     async def test_submit_results_lost_race_returns_structured_error(
-        self, setup_database, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Lost submit race surfaces CONCURRENT_MODIFICATION with retry hint.
 
@@ -125,7 +127,7 @@ class TestConcurrentModificationEnvelope:
 
     @pytest.mark.asyncio
     async def test_campaign_lifecycle_lost_race_returns_structured_error(
-        self, setup_database, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Pause/resume/terminate losing the version race surfaces the envelope.
 
@@ -166,7 +168,7 @@ class TestConcurrentModificationEnvelope:
 
     @pytest.mark.asyncio
     async def test_generate_suggestions_lost_race_returns_structured_error(
-        self, setup_database, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Suggestion generation losing the version race surfaces the envelope.
 

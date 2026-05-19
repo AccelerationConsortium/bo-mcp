@@ -1,4 +1,4 @@
-"""Live ``SuggestionBatch.method_info`` survives the MCP boundary (TODO 8.51).
+"""Live ``SuggestionBatch.method_info`` survives the MCP boundary.
 
 The audit flagged that ``generate_suggestions_operation`` was throwing
 away the live ``method_info`` populated by ``backend.generate_suggestions``
@@ -58,9 +58,10 @@ def _no_fallback_suffix(method_info: dict[str, Any]) -> None:
             )
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestLiveMethodInfoSurvivesMCPBoundary:
     @pytest.mark.asyncio
-    async def test_botorch_live_method_info_is_used(self, setup_database) -> None:
+    async def test_botorch_live_method_info_is_used(self) -> None:
         """BoTorch live method_info reaches the response unchanged.
 
         BoTorch always populates ``SuggestionBatch.method_info`` via
@@ -106,7 +107,7 @@ class TestLiveMethodInfoSurvivesMCPBoundary:
         _no_fallback_suffix(method)
 
     @pytest.mark.asyncio
-    async def test_baybe_live_recommender_label_reaches_response(self, setup_database) -> None:
+    async def test_baybe_live_recommender_label_reaches_response(self) -> None:
         """BayBE BO-phase suggestions report the live recommender, not the fallback.
 
         Reproducer for the audit's flagged regression: before the fix,
@@ -186,7 +187,7 @@ class TestLiveMethodInfoSurvivesMCPBoundary:
         _no_fallback_suffix(method)
 
     @pytest.mark.asyncio
-    async def test_method_info_explanation_survives(self, setup_database) -> None:
+    async def test_method_info_explanation_survives(self) -> None:
         """Live method_info still carries the explanation field for transparency."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions

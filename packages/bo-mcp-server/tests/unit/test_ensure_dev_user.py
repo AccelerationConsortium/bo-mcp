@@ -33,13 +33,15 @@ from bo_mcp_server.client import (
 from bo_mcp_server.domain import User
 from bo_mcp_server.storage import UserRepository, get_session
 
+pytestmark = pytest.mark.usefixtures("setup_database")
+
 
 def _dev_hash() -> str:
     return hashlib.sha256(DEV_API_KEY.encode()).hexdigest()
 
 
 @pytest.mark.asyncio
-async def test_creates_user_on_empty_db(setup_database) -> None:
+async def test_creates_user_on_empty_db() -> None:
     user = await ensure_dev_user()
     assert user.email == DEV_USER_EMAIL
     assert user.name == DEV_USER_NAME
@@ -48,20 +50,19 @@ async def test_creates_user_on_empty_db(setup_database) -> None:
 
     # The standard auth path must accept the dev key after bootstrap.
     via_auth = await get_user_by_api_key(DEV_API_KEY)
-    assert via_auth is not None and via_auth.id == user.id
+    assert via_auth is not None
+    assert via_auth.id == user.id
 
 
 @pytest.mark.asyncio
-async def test_returns_existing_user_unchanged_when_already_correct(
-    setup_database,
-) -> None:
+async def test_returns_existing_user_unchanged_when_already_correct() -> None:
     first = await ensure_dev_user()
     second = await ensure_dev_user()
     assert first.id == second.id  # same row, no churn
 
 
 @pytest.mark.asyncio
-async def test_repairs_user_with_stale_api_key_hash(setup_database) -> None:
+async def test_repairs_user_with_stale_api_key_hash() -> None:
     """A leftover record with the wrong hash must be repaired in place.
 
     Reproduces the situation a developer falls into after a hash-scheme
@@ -82,11 +83,12 @@ async def test_repairs_user_with_stale_api_key_hash(setup_database) -> None:
     assert repaired.is_active is True
 
     via_auth = await get_user_by_api_key(DEV_API_KEY)
-    assert via_auth is not None and via_auth.id == repaired.id
+    assert via_auth is not None
+    assert via_auth.id == repaired.id
 
 
 @pytest.mark.asyncio
-async def test_reactivates_deactivated_dev_user(setup_database) -> None:
+async def test_reactivates_deactivated_dev_user() -> None:
     """A deactivated record must be reactivated.
 
     Without this, :func:`get_user_by_api_key` (which filters on
@@ -106,4 +108,5 @@ async def test_reactivates_deactivated_dev_user(setup_database) -> None:
     assert repaired.is_active is True
 
     via_auth = await get_user_by_api_key(DEV_API_KEY)
-    assert via_auth is not None and via_auth.id == repaired.id
+    assert via_auth is not None
+    assert via_auth.id == repaired.id

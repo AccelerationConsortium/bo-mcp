@@ -63,7 +63,7 @@ async def _make_campaign(owner_id: str | None = None, name: str = "Test Campaign
 async def test_concurrent_create_campaign_with_same_idempotency_key() -> None:
     """Two concurrent ``bo_create_campaign`` retries never produce two campaigns.
 
-    Regression test for the High-severity review finding on TODO 1.46.
+    Regression test for the High-severity review finding.
     The load-bearing invariant is **no duplicate campaign**: under
     concurrent retries with the same ``idempotency_key``, the database
     must contain at most one campaign. Each individual response may be
@@ -122,7 +122,7 @@ async def test_concurrent_create_campaign_with_same_idempotency_key() -> None:
 async def test_mcp_tool_schema_advertises_result_metadata_keys() -> None:
     """``bo_submit_results`` exposes the ResultMetadata key set in its schema.
 
-    Regression test for the High-severity review finding on TODO 1.12:
+    Regression test for the High-severity review finding:
     the runtime validator already rejected unknown keys, but the
     generated tool schema still advertised ``additionalProperties:
     true``, so agents could not introspect the documented set.
@@ -138,10 +138,7 @@ async def test_mcp_tool_schema_advertises_result_metadata_keys() -> None:
     schema = submit.inputSchema
     defs = schema.get("$defs", {})
     items = schema["properties"]["results"]["items"]
-    if "$ref" in items:
-        item_schema = defs[items["$ref"].split("/")[-1]]
-    else:
-        item_schema = items
+    item_schema = defs[items["$ref"].split("/")[-1]] if "$ref" in items else items
 
     metadata_schema = item_schema["properties"]["metadata"]
     documented_keys = {
@@ -255,7 +252,7 @@ async def test_campaigns_resource_accepts_cursor_filter() -> None:
     Regression test for the Medium review finding: the resource
     accepted ``owner``, ``status``, ``limit``, ``offset`` but not
     ``cursor``, so resource callers could not use the stable pagination
-    path introduced in TODO 1.47.
+    path.
     """
     from bo_mcp_server.resources.campaign_resource import list_campaigns_filtered
 
@@ -279,7 +276,7 @@ async def test_campaigns_resource_accepts_cursor_filter() -> None:
 
 @pytest.mark.asyncio
 async def test_campaigns_resource_rejects_unknown_filter() -> None:
-    """An unknown filter key raises a structured resource error (TODO 8.43)."""
+    """An unknown filter key raises a structured resource error."""
     from bo_mcp_server.errors import ResourceOperationError
     from bo_mcp_server.resources.campaign_resource import list_campaigns_filtered
 
@@ -294,10 +291,10 @@ async def test_campaigns_resource_rejects_unknown_filter() -> None:
 async def test_events_resource_returns_envelope_for_unknown_campaign() -> None:
     """``events://{id}`` with a valid-but-missing UUID raises CAMPAIGN_NOT_FOUND.
 
-    Regression test for the review-pass finding on TODO 1.9: the events
+    Regression test for the review-pass finding: the events
     resource previously returned ``"No events recorded..."`` Markdown
     for any campaign id without rows, conflating "does not exist" with
-    "exists but has no audit trail". 8.43 promoted the error to a
+    "exists but has no audit trail". The fix promoted the error to a
     raised :class:`ResourceOperationError` so FastMCP surfaces it as a
     protocol-level failure.
     """
@@ -354,7 +351,7 @@ async def _seed_results(campaign_id: str, n: int) -> None:
 async def test_list_results_no_cursor_on_exact_final_page() -> None:
     """``list_results_operation`` does not emit ``next_cursor`` for exact-page totals.
 
-    Regression test for the review-pass finding on TODO 1.47: previously
+    Regression test for the review-pass finding: previously
     ``next_cursor`` was set whenever ``len(page) == limit``, which
     misled callers when the total was an exact multiple of ``limit``.
     """
@@ -405,7 +402,7 @@ async def _seed_suggestions(campaign_id: str, batches: int) -> None:
 async def test_list_suggestions_no_cursor_on_exact_final_page() -> None:
     """``list_suggestions_operation`` does not over-advertise on exact pages.
 
-    Regression test for the review-pass finding on TODO 1.47, mirroring
+    Regression test for the review-pass finding, mirroring
     the campaigns / results tests for the suggestion path.
     """
     campaign_id = await _make_campaign(name="Suggestions-pagination campaign")
@@ -444,7 +441,7 @@ async def test_upload_results_file_replays_idempotent_response_for_large_csv(
 ) -> None:
     """A multi-MB upload with an idempotency_key replays the cached response.
 
-    Regression test for the review-pass finding on TODO 1.46:
+    Regression test for the review-pass finding:
 
     1. The previous 1 MiB cap on ``canonical_request_hash`` would have
        raised ``ValueError`` before the tool returned a structured
@@ -463,7 +460,7 @@ async def test_upload_results_file_replays_idempotent_response_for_large_csv(
     n_invocations = 0
     expected_campaign = await _make_campaign(name="Upload-large-csv campaign")
 
-    async def _stub_inner(**kwargs: Any) -> dict[str, Any]:
+    async def _stub_inner(**_kwargs: Any) -> dict[str, Any]:
         nonlocal n_invocations
         n_invocations += 1
         return {"success": True, "results_created": 1, "errors": []}
@@ -514,7 +511,8 @@ def _inject_lost_race(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         if expected_version is not None:
             state["updates_triggered"] += 1
             if state["updates_triggered"] == 1:
-                raise ConcurrentModificationError("Campaign", campaign.id, expected_version)
+                msg = "Campaign"
+                raise ConcurrentModificationError(msg, campaign.id, expected_version)
         return await original_save(self, campaign, expected_version=expected_version)
 
     monkeypatch.setattr(repo_mod.CampaignRepository, "save", lost_race_save)

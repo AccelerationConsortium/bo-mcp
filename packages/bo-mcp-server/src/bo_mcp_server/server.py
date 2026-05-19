@@ -76,15 +76,15 @@ def create_mcp_server() -> FastMCP:
     # ``backend`` / ``action`` / etc. without resorting to trial-and-
     # error retries. Lazy import keeps the dependency graph clean for
     # tests that only exercise tools.
-    from bo_mcp_server.completion import (  # noqa: PLC0415
+    from bo_mcp_server.completion import (
         register_completion_handler,
     )
-    from bo_mcp_server.resources import (  # noqa: F401, PLC0415
+    from bo_mcp_server.resources import (  # noqa: F401
         campaign_resource,
         events_resource,
         suggestion_resource,
     )
-    from bo_mcp_server.tools import (  # noqa: F401, PLC0415
+    from bo_mcp_server.tools import (  # noqa: F401
         batch_operations,
         campaign_lifecycle,
         compare_campaigns,
@@ -110,7 +110,7 @@ def create_mcp_server() -> FastMCP:
     # long-running agents can stop polling ``campaign://{id}`` for
     # state transitions. Notifications are emitted by the lifecycle
     # operations themselves (see :mod:`bo_mcp_server.subscriptions`).
-    from bo_mcp_server.subscriptions import (  # noqa: PLC0415
+    from bo_mcp_server.subscriptions import (
         register_subscription_handlers,
     )
 
@@ -123,13 +123,13 @@ def create_mcp_server() -> FastMCP:
     # would intercept those failures before the tool body runs and
     # agents would see opaque ToolError text instead of an
     # addressable per-field response.
-    from bo_mcp_server.tool_boundary import (  # noqa: PLC0415
+    from bo_mcp_server.tool_boundary import (
         assert_all_tools_routed_through_wrapper,
         install_validation_envelope_wrapper,
     )
 
     install_validation_envelope_wrapper(mcp)
-    # Startup invariant (TODO 8.45): every registered tool must route
+    # Startup invariant: every registered tool must route
     # through the envelope wrapper so payload-validation failures
     # always surface as the structured ``field_errors`` envelope. Pin
     # the contract here so a future code path that bypasses the
@@ -137,11 +137,11 @@ def create_mcp_server() -> FastMCP:
     # the first failing call.
     assert_all_tools_routed_through_wrapper(mcp)
 
-    # TODO 8.43 follow-up: surface ``ResourceOperationError`` at the
+    # Follow-up: surface ``ResourceOperationError`` at the
     # FastMCP read-resource boundary so the structured envelope is
     # not double-wrapped in ``"Error creating resource from template:
     # ..."`` strings before the lowlevel JSON-RPC dispatcher sees it.
-    from bo_mcp_server.resource_boundary import (  # noqa: PLC0415
+    from bo_mcp_server.resource_boundary import (
         install_resource_envelope_wrapper,
     )
 

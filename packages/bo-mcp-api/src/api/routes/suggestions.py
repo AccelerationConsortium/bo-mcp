@@ -1,5 +1,7 @@
 """Suggestion routes."""
 
+from typing import Annotated
+
 from bo_mcp_server.client import (
     InvalidIdentifierError,
     NotAuthorizedError,
@@ -36,14 +38,13 @@ router = APIRouter()
 
 @router.post(
     "/{campaign_id}/generate",
-    response_model=SuggestionsGenerateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def generate_campaign_suggestions(
     campaign_id: str,
     current_user: CurrentUser,
     response: Response,
-    batch_size: int | None = Query(default=None, ge=1),
+    batch_size: Annotated[int | None, Query(ge=1)] = None,
 ) -> SuggestionsGenerateResponse:
     """Generate new suggestions for a campaign.
 
@@ -95,10 +96,7 @@ async def generate_campaign_suggestions(
     )
 
 
-@router.get(
-    "/{suggestion_id}/explanation",
-    response_model=SuggestionExplanationResponse,
-)
+@router.get("/{suggestion_id}/explanation")
 async def get_campaign_suggestion_explanation(
     suggestion_id: str,
     current_user: CurrentUser,
@@ -110,7 +108,7 @@ async def get_campaign_suggestion_explanation(
     return SuggestionExplanationResponse(**result)
 
 
-@router.post("/{campaign_id}/query", response_model=SuggestionQueryResponse)
+@router.post("/{campaign_id}/query")
 async def query_campaign_suggestions(
     campaign_id: str,
     request: SuggestionQueryRequest,
@@ -129,10 +127,7 @@ async def query_campaign_suggestions(
     return SuggestionQueryResponse(**result)
 
 
-@router.post(
-    "/{suggestion_id}/status",
-    response_model=SuggestionStatusUpdateResponse,
-)
+@router.post("/{suggestion_id}/status")
 async def update_suggestion_status(
     suggestion_id: str,
     request: SuggestionStatusUpdateRequest,
@@ -154,11 +149,11 @@ async def update_suggestion_status(
     )
 
 
-@router.get("/{campaign_id}", response_model=list[SuggestionResponse])
+@router.get("/{campaign_id}")
 async def list_campaign_suggestions_route(
     campaign_id: str,
     current_user: CurrentUser,
-    status_filter: str | None = Query(default=None, alias="status"),
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
 ) -> list[SuggestionResponse]:
     """List suggestions for a campaign."""
     status_enum: SuggestionStatus | None = None

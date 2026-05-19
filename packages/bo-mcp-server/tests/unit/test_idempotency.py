@@ -1,4 +1,4 @@
-"""Idempotency cache (TODO 1.46).
+"""Idempotency cache.
 
 Background: state-mutating MCP tools accept an optional ``idempotency_
 key``. Retries with the same key + payload return the cached response
@@ -266,7 +266,6 @@ async def test_stale_owner_envelope_carries_trace_metadata() -> None:
                 IdempotencyCacheModel.tool_name == tool,
                 IdempotencyCacheModel.idempotency_key == key,
             )
-            # noqa S106: literal is a test fixture token, not a credential
             .values(reservation_token="different-owner-token-32-chars-aa")  # noqa: S106
         )
         return {"success": True, "executed": True}
@@ -354,7 +353,8 @@ async def test_apply_idempotency_drops_reservation_on_exception() -> None:
         nonlocal n_calls
         n_calls += 1
         if n_calls == 1:
-            raise RuntimeError("simulated failure")
+            msg = "simulated failure"
+            raise RuntimeError(msg)
         return {"success": True, "attempt": n_calls}
 
     with pytest.raises(RuntimeError):
@@ -381,7 +381,7 @@ async def test_apply_idempotency_drops_reservation_on_exception() -> None:
 async def test_canonical_hash_accepts_large_payload() -> None:
     """Large payloads hash without raising — SHA256 is O(n) and cheap.
 
-    Regression test for the review pass on TODO 1.46: the old 1 MiB
+    Regression test for the review pass: the old 1 MiB
     safety cap raised :class:`ValueError` before the tool could return
     a structured envelope, which broke file uploads that bundled the
     raw CSV in the payload. The fix removes the cap and tools digest
@@ -471,7 +471,8 @@ async def test_stale_reservation_is_reclaimed_when_pending_ttl_elapses() -> None
     # pending TTL: the reservation row is in the DB, response_json="",
     # expires_at already past.
     token = await _try_reserve(tool, key, request_hash, reservation_ttl_seconds=0)
-    assert token is not None and len(token) == 32  # uuid4().hex length
+    assert token is not None
+    assert len(token) == 32
 
     # Sanity-check: the row is "pending" the instant we insert it.
     # (We can't easily observe that without racing the purge, so we
@@ -648,7 +649,6 @@ async def test_stale_owner_session_aware_writes_roll_back() -> None:
                 IdempotencyCacheModel.tool_name == tool,
                 IdempotencyCacheModel.idempotency_key == key,
             )
-            # noqa S106: literal is a test fixture token, not a credential
             .values(reservation_token="different-owner-token-32-chars-aa")  # noqa: S106
         )
 
@@ -755,7 +755,8 @@ async def test_session_aware_executor_failure_rolls_back_writes() -> None:
 
     async def crasher(db: AsyncSession) -> dict[str, Any]:
         _ = db
-        raise RuntimeError("operation died mid-flight")
+        msg = "operation died mid-flight"
+        raise RuntimeError(msg)
 
     with pytest.raises(RuntimeError):
         await apply_idempotency(
@@ -865,7 +866,7 @@ async def test_apply_idempotency_does_not_cache_retryable_error_envelopes() -> N
 
     Pre-fix: ``_is_transient_error`` only special-cased
     ``CONCURRENT_MODIFICATION`` (E010). A ``BACKEND_TRANSIENT_ERROR``
-    (E105, introduced in TODO 8.13/8.14) would therefore be finalized
+    (E105) would therefore be finalized
     into the cache and every retry would replay the failure instead
     of re-executing the operation against the (now-recovered) backend.
 

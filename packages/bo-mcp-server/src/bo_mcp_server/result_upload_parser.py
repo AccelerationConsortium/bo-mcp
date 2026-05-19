@@ -153,15 +153,17 @@ def _parse_objective_values(
 # ---------------------------------------------------------------------------
 
 
-def _try_parse_float(value: Any) -> float | None:
+def _try_parse_float(value: object) -> float | None:
     """Try to convert *value* to float, returning None on failure."""
+    if not isinstance(value, (int, float, str, bytes)):
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
 
 
-def _parse_scalar(value: Any) -> Any:
+def _parse_scalar(value: object) -> object:
     """Parse string scalars to int/float when possible; keep other values as-is."""
     if not isinstance(value, str):
         return value
@@ -179,6 +181,6 @@ def _parse_scalar(value: Any) -> Any:
     return value
 
 
-def _is_missing(value: Any) -> bool:
+def _is_missing(value: object) -> bool:
     """Return True when the value is absent from an uploaded row."""
     return value is None or (isinstance(value, float) and math.isnan(value))

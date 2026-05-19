@@ -17,15 +17,15 @@ import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
 
+pytestmark = pytest.mark.usefixtures("setup_database")
+
 
 def _to_result_inputs(results: list[dict[str, Any]]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
 @pytest.mark.asyncio
-async def test_measurement_uncertainty_drives_fixed_noise_likelihood(
-    setup_database,
-) -> None:
+async def test_measurement_uncertainty_drives_fixed_noise_likelihood() -> None:
     """Full-coverage uncertainty submissions -> FixedNoiseGaussianLikelihood."""
     # Patch where the GP factory is *resolved* at call time. The single-
     # objective dispatch lives in :mod:`bo_engine.suggestions_single_objective`
@@ -109,9 +109,7 @@ async def test_measurement_uncertainty_drives_fixed_noise_likelihood(
 
 
 @pytest.mark.asyncio
-async def test_partial_measurement_uncertainty_falls_back_to_trainable_noise(
-    setup_database,
-) -> None:
+async def test_partial_measurement_uncertainty_falls_back_to_trainable_noise() -> None:
     """If any observation is missing uncertainty, the GP keeps trainable noise."""
     # Patch where the GP factory is *resolved* at call time. The single-
     # objective dispatch lives in :mod:`bo_engine.suggestions_single_objective`

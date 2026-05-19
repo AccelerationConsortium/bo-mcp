@@ -77,7 +77,7 @@ def sample_campaign_spec() -> CampaignSpec:
     )
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(autouse=True)
 async def setup_database():
     """Initialize fresh in-memory database for each test.
 
@@ -113,7 +113,7 @@ async def setup_database():
 
 
 @pytest_asyncio.fixture
-async def persisted_user(setup_database, sample_user: User) -> User:
+async def persisted_user(sample_user: User) -> User:
     """Create and persist a user in the database."""
     async with get_session() as session:
         user_repo = UserRepository(session)
@@ -123,7 +123,7 @@ async def persisted_user(setup_database, sample_user: User) -> User:
 
 
 @pytest_asyncio.fixture
-async def persisted_another_user(setup_database, another_user: User) -> User:
+async def persisted_another_user(another_user: User) -> User:
     """Create and persist the secondary user in the database."""
     async with get_session() as session:
         user_repo = UserRepository(session)
@@ -145,7 +145,7 @@ def other_auth_headers() -> dict[str, str]:
 
 
 @pytest_asyncio.fixture
-async def api_client(setup_database) -> AsyncGenerator[AsyncClient]:
+async def api_client() -> AsyncGenerator[AsyncClient]:
     """Async HTTP client bound to the FastAPI app."""
     app = create_app()
     async with AsyncClient(
@@ -157,7 +157,6 @@ async def api_client(setup_database) -> AsyncGenerator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def persisted_campaign_with_users(
-    setup_database,
     sample_campaign_spec: CampaignSpec,
 ) -> tuple[Campaign, User, User]:
     """Create and persist a campaign with owner and another user.

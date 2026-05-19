@@ -78,12 +78,12 @@ class TestNumericalSafety:
     The diagnostics helpers run on user data that may include zero or
     near-zero baselines (a flat initial trajectory, a degenerate
     hypervolume history, an exactly-zero initial sample). Without the
-    NUMERICAL_EPSILON clamps swept into these helpers (TODO 1.18 + the
-    god-module split), any of these inputs would produce ``inf`` /
-    ``nan`` instead of a finite result. These tests pin the contract.
+    NUMERICAL_EPSILON clamps swept into these helpers, any of these
+    inputs would produce ``inf`` / ``nan`` instead of a finite result.
+    These tests pin the contract.
 
-    Reference: numerical-safety guidance in project CLAUDE.md (no bare
-    zero comparisons on computed floats; clamp before division).
+    Numerical-safety rule: no bare zero comparisons on computed floats;
+    clamp to ``NUMERICAL_EPSILON`` before division.
     """
 
     def test_hypervolume_improvement_zero_baseline_returns_zero(self) -> None:

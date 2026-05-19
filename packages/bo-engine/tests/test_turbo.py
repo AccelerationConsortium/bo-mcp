@@ -206,7 +206,7 @@ class TestTurboConfigDefaultsExposed:
 
     Reference: Eriksson et al., NeurIPS 2019, Algorithm 1 — the success /
     failure tolerances and the trust-region length bounds are first-class
-    configuration knobs; before TODO 1.49 they could only be edited by
+    configuration knobs; previously they could only be edited by
     constructing :class:`TurboState` by hand and were silently swallowed
     when supplied via ``TurboConfig``.
     """

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
+from gpytorch.priors import GammaPrior
 from torch import Tensor
 
 from bo_engine.acquisition import (
@@ -219,6 +220,11 @@ def _create_single_objective_suggestions(
         method: Acquisition method used
         turbo_state: Optional TuRBO state
         turbo_info: TuRBO info string for explanation
+        model_warnings: Non-fatal warnings produced during model fitting
+            that should be threaded into each suggestion's provenance.
+        auto_shift: Offset applied to ``train_y`` before fitting (e.g. for
+            log-transformed objectives); subtracted from posterior means
+            so predictions are reported on the raw scale.
 
     Returns:
         List of SuggestionResult objects
@@ -280,7 +286,7 @@ def _create_single_objective_suggestions(
 def _generate_single_objective_batch(
     ctx: GenerationContext,
     *,
-    noise_prior=None,
+    noise_prior: GammaPrior | None = None,
 ) -> tuple[list[SuggestionResult], TurboState | None]:
     """Generate suggestions for single-objective optimization.
 
@@ -314,12 +320,13 @@ def _generate_single_objective_batch(
         # the sign of every positive observation to negative, which makes
         # the log step ill-defined. Surface this at the boundary instead of
         # letting BoTorch raise a less actionable error during fit.
-        raise ValueError(
+        msg = (
             "ObjectiveSpec.log_transform=True is only supported for "
             "minimize=True objectives. For a maximize objective with a "
             "multi-decade target, either flip the objective definition "
             "(minimize the negative log) or pre-transform the data."
         )
+        raise ValueError(msg)
 
     # Negate if maximizing (BoTorch assumes minimization). Variance is
     # sign-invariant -- ``Var(-Y) == Var(Y)`` -- so ``train_yvar`` flows

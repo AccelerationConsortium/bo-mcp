@@ -397,8 +397,12 @@ class TestDeltaMeasurements:
         state = batch1.backend_state
 
         # Iteration 2 — restores from state, adds only delta
-        obs2 = obs + [
-            ObservationData(parameter_values={"x1": 0.1, "x2": 0.9}, objective_values={"y": 0.3}),
+        obs2 = [
+            *obs,
+            ObservationData(
+                parameter_values={"x1": 0.1, "x2": 0.9},
+                objective_values={"y": 0.3},
+            ),
         ]
         batch2 = backend.generate_suggestions(
             simple_spec,

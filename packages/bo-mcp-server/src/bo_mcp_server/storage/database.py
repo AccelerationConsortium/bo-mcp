@@ -12,7 +12,6 @@ so importing this module does not require DATABASE_URL to be set.
 
 import asyncio
 import logging
-import os
 import subprocess
 import sys
 from collections.abc import AsyncGenerator
@@ -61,6 +60,7 @@ class DatabaseInitializationError(RuntimeError):
     """
 
     def __init__(self, stage: str, message: str) -> None:
+        """Record the failure ``stage`` tag and human-readable message."""
         super().__init__(message)
         self.stage = stage
 
@@ -103,7 +103,7 @@ USE_ALEMBIC = get_use_alembic_mode()
 
 def _get_engine() -> AsyncEngine:
     """Get or create the async engine (lazy initialization)."""
-    global _engine  # noqa: PLW0603
+    global _engine
     if _engine is None:
         _engine = _create_engine_with_options()
     return _engine
@@ -123,7 +123,7 @@ def _get_session_factory() -> async_sessionmaker[AsyncSession]:
     ``storage/models.py`` already forbids re-reading them after a
     state mutation.
     """
-    global _session_factory  # noqa: PLW0603
+    global _session_factory
     if _session_factory is None:
         _session_factory = async_sessionmaker(
             _get_engine(),
@@ -156,18 +156,17 @@ def _create_engine_with_options() -> AsyncEngine:
             pool_recycle=get_db_pool_recycle_seconds(),
             **common_options,
         )
-    else:
-        # SQLite (used for testing). FK enforcement is intentionally
-        # *not* enabled engine-wide here: many pre-existing test
-        # fixtures construct campaigns with synthetic ``owner_id`` /
-        # ``spec_id`` UUIDs that have no matching parent row, and
-        # turning the pragma on globally would surface those as
-        # spurious failures unrelated to the change at hand. Tests
-        # that specifically exercise the ``ON DELETE RESTRICT``
-        # contract (see ``test_soft_delete_and_snapshot.py``) enable
-        # the pragma on their own engine. Production runs PostgreSQL,
-        # which enforces FKs unconditionally.
-        return create_async_engine(database_url, **common_options)
+    # SQLite (used for testing). FK enforcement is intentionally
+    # *not* enabled engine-wide here: many pre-existing test
+    # fixtures construct campaigns with synthetic ``owner_id`` /
+    # ``spec_id`` UUIDs that have no matching parent row, and
+    # turning the pragma on globally would surface those as
+    # spurious failures unrelated to the change at hand. Tests
+    # that specifically exercise the ``ON DELETE RESTRICT``
+    # contract (see ``test_soft_delete_and_snapshot.py``) enable
+    # the pragma on their own engine. Production runs PostgreSQL,
+    # which enforces FKs unconditionally.
+    return create_async_engine(database_url, **common_options)
 
 
 def _should_use_alembic() -> bool:
@@ -188,7 +187,7 @@ def _should_use_alembic() -> bool:
 def _run_alembic_in_subprocess(timeout_seconds: float) -> None:
     """Run ``python -m alembic upgrade head`` in a subprocess with a SIGKILL on timeout.
 
-    Real wall-clock kill switch (TODO 8.22 third review pass). The
+    Real wall-clock kill switch. The
     earlier ``asyncio.to_thread(in_process_command.upgrade)`` could
     only abort the *await* — the worker thread kept running, and a
     migration made of many short individually-bounded statements with
@@ -240,13 +239,13 @@ def _run_alembic_in_subprocess(timeout_seconds: float) -> None:
         # The subprocess has been SIGKILLed by subprocess.run; surface
         # a uniform TimeoutError so the caller's existing exception
         # routing maps it to ``stage='timeout'``.
-        raise TimeoutError(
-            f"Alembic upgrade exceeded {timeout_seconds:.1f}s and was SIGKILLed"
-        ) from exc
+        msg = f"Alembic upgrade exceeded {timeout_seconds:.1f}s and was SIGKILLed"
+        raise TimeoutError(msg) from exc
 
     if result.returncode != 0:
         stderr_excerpt = result.stderr.decode("utf-8", errors="replace")[:2000]
-        raise RuntimeError(f"Alembic exited with code {result.returncode}: {stderr_excerpt}")
+        msg = f"Alembic exited with code {result.returncode}: {stderr_excerpt}"
+        raise RuntimeError(msg)
     logger.info("Alembic migrations completed")
 
 
@@ -275,8 +274,9 @@ async def _preflight_connectivity(engine: AsyncEngine, timeout_seconds: float) -
     try:
         await asyncio.wait_for(_probe(), timeout=timeout_seconds)
     except TimeoutError as exc:
+        msg = "connect"
         raise DatabaseInitializationError(
-            "connect",
+            msg,
             f"Database connectivity probe timed out after {timeout_seconds:.1f}s; "
             "check DATABASE_URL host/port and network reachability.",
         ) from exc
@@ -285,8 +285,9 @@ async def _preflight_connectivity(engine: AsyncEngine, timeout_seconds: float) -
         # ``socket.gaierror``) which SQLAlchemy does not always wrap into
         # ``SQLAlchemyError`` before raising. Both shapes are "DB unreachable"
         # to the operator.
+        msg = "connect"
         raise DatabaseInitializationError(
-            "connect",
+            msg,
             f"Database connectivity probe failed ({type(exc).__name__}); "
             "verify DATABASE_URL credentials and that the server is up.",
         ) from exc
@@ -302,7 +303,7 @@ async def init_database() -> None:
     setup; no timeout because the in-process driver returns
     synchronously.
 
-    Worker-thread caveat (TODO 8.22 review pass): ``asyncio.wait_for``
+    Worker-thread caveat: ``asyncio.wait_for``
     aborts the coroutine it wraps, but Python cannot interrupt a
     worker thread spawned via :func:`asyncio.to_thread`. The Alembic
     upgrade runs in such a thread, so the timeout here is *advisory*
@@ -328,15 +329,15 @@ async def init_database() -> None:
 
     # Ensure data directory exists for SQLite (testing only)
     if database_url.startswith("sqlite") and "memory" not in database_url:
-        data_dir = os.path.dirname(database_url.replace("sqlite+aiosqlite:///", ""))
-        if data_dir and data_dir != ".":
-            os.makedirs(data_dir, exist_ok=True)
+        data_dir = Path(database_url.replace("sqlite+aiosqlite:///", "")).parent
+        if str(data_dir) and str(data_dir) != ".":
+            data_dir.mkdir(parents=True, exist_ok=True)
 
     if _should_use_alembic():
         connect_timeout = get_database_init_connect_timeout_seconds()
         upgrade_timeout = get_database_init_timeout_seconds()
         await _preflight_connectivity(engine, connect_timeout)
-        # Wall-clock kill switch (TODO 8.22 third review pass): run
+        # Wall-clock kill switch: run
         # the migration as a child process so subprocess.run(timeout=N)
         # can SIGKILL it. ``asyncio.to_thread`` parks the blocking
         # call on the worker pool — the subprocess.run inside it
@@ -347,14 +348,15 @@ async def init_database() -> None:
         try:
             await asyncio.to_thread(_run_alembic_in_subprocess, upgrade_timeout)
         except TimeoutError as exc:
+            msg = "timeout"
             raise DatabaseInitializationError(
-                "timeout",
+                msg,
                 f"Alembic schema upgrade exceeded the configured "
                 f"{upgrade_timeout:.1f}s timeout; the subprocess was "
                 "SIGKILLed. Check for a long-running migration or "
                 "DB-side lock.",
             ) from exc
-        except Exception as exc:  # noqa: BLE001 - intentional translation boundary
+        except Exception as exc:
             # Alembic raises a wide and undocumented set of exception
             # types: ``CommandError`` for CLI-level failures (missing
             # revision, ambiguous head), ``RuntimeError`` and
@@ -366,8 +368,9 @@ async def init_database() -> None:
             # maps cleanly to ``stage='alembic'``. ``TimeoutError``
             # has its own branch above; ``BaseException`` subclasses
             # (``KeyboardInterrupt``, ``SystemExit``) are unaffected.
+            msg = "alembic"
             raise DatabaseInitializationError(
-                "alembic",
+                msg,
                 f"Alembic schema upgrade failed ({type(exc).__name__}); "
                 "inspect the migration log for the offending revision.",
             ) from exc
@@ -402,7 +405,7 @@ async def get_session() -> AsyncGenerator[AsyncSession]:
 
 async def close_database() -> None:
     """Close database connections and dispose of the engine."""
-    global _engine, _session_factory  # noqa: PLW0603
+    global _engine, _session_factory
     if _engine is not None:
         await _engine.dispose()
         _engine = None

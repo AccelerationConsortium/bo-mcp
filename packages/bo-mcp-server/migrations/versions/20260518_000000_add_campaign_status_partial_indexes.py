@@ -1,7 +1,7 @@
 """Add per-status partial indexes on ``campaigns.status``.
 
-Background (TODO 8.49)
-======================
+Background
+==========
 
 The initial schema declared a plain BTree on ``campaigns.status``. With
 five status values (``CREATED``, ``RUNNING``, ``PAUSED``, ``COMPLETED``,
@@ -52,7 +52,7 @@ to find which one). The legacy ``ix_campaigns_status`` is retained so
 the ``PAUSED``-only operator query (rare but real) still has index
 support and so existing query plans are unaffected for that subset.
 
-References
+References:
 ==========
 
 * PostgreSQL "Partial Indexes":

@@ -1,4 +1,4 @@
-"""Periodic GC of the idempotency_cache (TODO 8.23).
+"""Periodic GC of the idempotency_cache.
 
 The opportunistic per-key purge in
 :func:`bo_mcp_server.idempotency._read_existing` only fires when that

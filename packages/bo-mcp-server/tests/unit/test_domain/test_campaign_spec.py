@@ -411,7 +411,7 @@ class TestOptionMappingImmutability:
         )
         assert param.parameter_options is not None
         with pytest.raises(TypeError):
-            param.parameter_options["botorch"] = {  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment, call-non-callable]
+            param.parameter_options["botorch"] = {  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment]
                 "k": "v",
             }
 
@@ -425,7 +425,7 @@ class TestOptionMappingImmutability:
         )
         assert param.parameter_options is not None
         with pytest.raises(TypeError):
-            param.parameter_options["baybe"]["encoding"] = "int"  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment, call-non-callable]
+            param.parameter_options["baybe"]["encoding"] = "int"  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment]
 
     def test_input_parameter_options_deeply_nested_mapping_is_read_only(self):
         """A mapping nested below the first-level inner dict must also be frozen."""
@@ -437,7 +437,7 @@ class TestOptionMappingImmutability:
         )
         assert param.parameter_options is not None
         with pytest.raises(TypeError):
-            param.parameter_options["baybe"]["nested"]["a"] = 2  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment, call-non-callable]
+            param.parameter_options["baybe"]["nested"]["a"] = 2  # type: ignore[index]  # pyright: ignore[reportIndexIssue]
 
     def test_input_parameter_options_deeply_nested_list_is_read_only(self):
         """A list nested inside an inner option dict must also be frozen (tuple)."""
@@ -452,7 +452,7 @@ class TestOptionMappingImmutability:
         # Lists are recursively converted to tuples so ``append`` is gone.
         assert isinstance(items, tuple)
         with pytest.raises(AttributeError):
-            items.append(4)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # ty: ignore[unresolved-attribute]
+            items.append(4)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
 
     def test_input_parameter_hash_is_stable_through_attempted_deep_mutation(self):
         """Hash before and after attempted deep mutation must be identical.
@@ -470,9 +470,9 @@ class TestOptionMappingImmutability:
         original_hash = hash(param)
         assert param.parameter_options is not None
         with pytest.raises(TypeError):
-            param.parameter_options["baybe"]["nested"]["a"] = 99  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment, call-non-callable]
+            param.parameter_options["baybe"]["nested"]["a"] = 99  # type: ignore[index]  # pyright: ignore[reportIndexIssue]
         with pytest.raises(AttributeError):
-            param.parameter_options["baybe"]["items"].append(3)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # ty: ignore[unresolved-attribute]
+            param.parameter_options["baybe"]["items"].append(3)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
         assert hash(param) == original_hash
 
     def test_input_parameter_options_source_dict_cannot_mutate_frozen_view(self):
@@ -539,7 +539,7 @@ class TestOptionMappingImmutability:
         )
         assert spec.backend_options is not None
         with pytest.raises(TypeError):
-            spec.backend_options["botorch"]["acquisition_optimizer"] = "scipy"  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment, call-non-callable]
+            spec.backend_options["botorch"]["acquisition_optimizer"] = "scipy"  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment]
 
     def test_campaign_spec_backend_options_deeply_nested_is_read_only(
         self,
@@ -557,11 +557,11 @@ class TestOptionMappingImmutability:
         )
         assert spec.backend_options is not None
         with pytest.raises(TypeError):
-            spec.backend_options["botorch"]["nested"]["a"] = 99  # type: ignore[index]  # pyright: ignore[reportIndexIssue]  # ty: ignore[invalid-assignment, call-non-callable]
+            spec.backend_options["botorch"]["nested"]["a"] = 99  # type: ignore[index]  # pyright: ignore[reportIndexIssue]
         items = spec.backend_options["botorch"]["items"]
         assert isinstance(items, tuple)
         with pytest.raises(AttributeError):
-            items.append(30)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # ty: ignore[unresolved-attribute]
+            items.append(30)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
 
     def test_campaign_spec_backend_options_serializes_back_to_lists(
         self,
@@ -667,8 +667,7 @@ class TestTurboConfigValidation:
 
     The schema is the only place where REST / MCP clients can be stopped
     before garbage propagates into the engine. Each test pins one failure
-    mode that the previous schema accepted silently — see the regression
-    note in TODO 1.49 follow-up.
+    mode that the previous schema accepted silently.
 
     Reference: Eriksson et al., NeurIPS 2019, Algorithm 1. The trust-region
     operating band requires ``length_min < initial_length <= length_max``

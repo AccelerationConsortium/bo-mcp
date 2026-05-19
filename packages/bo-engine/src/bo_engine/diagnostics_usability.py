@@ -13,7 +13,7 @@ modules share one diversity definition.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
 
 import torch
 from botorch.models import ModelListGP, SingleTaskGP
@@ -174,7 +174,7 @@ def compute_exploration_exploitation_metrics(
     """
     # Import locally so a future re-export shuffle does not create a
     # cycle on the diversity helper.
-    from bo_engine.diagnostics import compute_suggestion_diversity  # noqa: PLC0415
+    from bo_engine.diagnostics import compute_suggestion_diversity
 
     diversity = compute_suggestion_diversity(suggestions)
 
@@ -232,22 +232,23 @@ def _classify_exploration_balance(
 
 
 def _extract_gp_kernel_info(
-    gp: Any,
+    gp: SingleTaskGP,
 ) -> tuple[str, Tensor, float, float]:
     """Extract kernel type, lengthscales, noise variance, and output scale from a single GP."""
     covar = gp.covar_module
     kernel = getattr(covar, "base_kernel", covar)
     kernel_type = type(kernel).__name__
 
-    ls = kernel.lengthscale.detach().squeeze()
+    lengthscale_attr = cast("Tensor", kernel.lengthscale)
+    ls = lengthscale_attr.detach().squeeze()
 
     noise_variance = 0.0
     if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
-        noise_variance = float(gp.likelihood.noise.item())
+        noise_variance = float(cast("Tensor", gp.likelihood.noise).item())
 
     output_scale = 1.0
     if hasattr(covar, "outputscale"):
-        output_scale = float(covar.outputscale.item())
+        output_scale = float(cast("Tensor", covar.outputscale).item())
 
     return kernel_type, ls, noise_variance, output_scale
 
@@ -282,7 +283,7 @@ def extract_hyperparameters(
     model_type = type(model).__name__
 
     if isinstance(model, ModelListGP):
-        all_info = [_extract_gp_kernel_info(gp) for gp in model.models]
+        all_info = [_extract_gp_kernel_info(cast("SingleTaskGP", gp)) for gp in model.models]
         kernel_type = all_info[-1][0] if all_info else "Unknown"
         all_ls = [info[1] for info in all_info]
         avg_ls = torch.stack(all_ls).mean(dim=0) if all_ls else torch.tensor([])

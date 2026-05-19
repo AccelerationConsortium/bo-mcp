@@ -9,7 +9,7 @@ longer need a manual mapping layer.
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from bo_engine.types import (
     LEGACY_ACQUISITION_VALUES as _LEGACY_ACQUISITION_VALUES,
@@ -29,7 +29,7 @@ from pydantic import (
 )
 
 
-def _freeze_option_value(value: Any) -> Any:
+def _freeze_option_value(value: object) -> object:
     """Recursively convert an option value into a deeply immutable shape.
 
     Mappings become :class:`types.MappingProxyType` over a freshly-copied
@@ -68,12 +68,11 @@ def _freeze_backend_options(
     """
     if value is None:
         return None
-    return MappingProxyType(
-        {k: _freeze_option_value(v) for k, v in value.items()},
-    )
+    frozen = {k: cast("Mapping[str, Any]", _freeze_option_value(v)) for k, v in value.items()}
+    return MappingProxyType(frozen)
 
 
-def _thaw_option_value(value: Any) -> Any:
+def _thaw_option_value(value: object) -> object:
     """Recursively materialize a frozen option value back to plain dict / list.
 
     Inverse of :func:`_freeze_option_value`: ``MappingProxyType`` becomes
@@ -95,10 +94,10 @@ def _serialize_backend_options(
     """Convert a deeply frozen option mapping back to a plain nested dict."""
     if value is None:
         return None
-    return {k: _thaw_option_value(v) for k, v in value.items()}
+    return {k: cast("dict[str, Any]", _thaw_option_value(v)) for k, v in value.items()}
 
 
-def _hashable_option_value(value: Any) -> Any:
+def _hashable_option_value(value: object) -> object:
     """Recursively project an opaque option value into a hashable form.
 
     Lists / tuples become tuples; mappings become frozensets of
@@ -176,7 +175,7 @@ class InputParameter(BaseModel):
 
     @field_validator("bounds", mode="before")
     @classmethod
-    def normalize_bounds(cls, value: Any) -> Any:
+    def normalize_bounds(cls, value: object) -> object:
         """Accept legacy [lower, upper] payloads in addition to object form."""
         if value is None:
             return None
@@ -209,14 +208,14 @@ class InputParameter(BaseModel):
             if self.bounds is None:
                 msg = "Continuous parameter requires bounds"
                 raise ValueError(msg)
-        elif self.type == ParameterType.DISCRETE:
-            if self.values is None and self.bounds is None:
-                msg = "Discrete parameter requires values or bounds"
-                raise ValueError(msg)
-        elif self.type == ParameterType.CATEGORICAL:
-            if self.categories is None or len(self.categories) < 2:
-                msg = "Categorical parameter requires at least 2 categories"
-                raise ValueError(msg)
+        elif self.type == ParameterType.DISCRETE and (self.values is None and self.bounds is None):
+            msg = "Discrete parameter requires values or bounds"
+            raise ValueError(msg)
+        elif self.type == ParameterType.CATEGORICAL and (
+            self.categories is None or len(self.categories) < 2
+        ):
+            msg = "Categorical parameter requires at least 2 categories"
+            raise ValueError(msg)
         return self
 
     def __hash__(self) -> int:
@@ -297,6 +296,7 @@ class Constraint(BaseModel):
 
     @model_validator(mode="after")
     def validate_constraint_shape(self) -> "Constraint":
+        """Validate parameter references, coefficient cardinality and type-specific fields."""
         if not self.parameters:
             msg = f"Constraint of type {self.type.value} must reference at least one parameter"
             raise ValueError(msg)
@@ -357,7 +357,7 @@ class FidelityParameter(BaseModel):
 
     @field_validator("bounds", mode="before")
     @classmethod
-    def normalize_bounds(cls, value: Any) -> Any:
+    def normalize_bounds(cls, value: object) -> object:
         """Accept legacy [lower, upper] payloads in addition to object form."""
         if isinstance(value, (list, tuple)):
             if len(value) != 2:
@@ -412,18 +412,20 @@ class TurboConfig(BaseModel):
     @model_validator(mode="after")
     def _check_length_invariants(self) -> "TurboConfig":
         if self.length_min >= self.length_max:
-            raise ValueError(
+            msg = (
                 f"length_min ({self.length_min}) must be strictly less than "
                 f"length_max ({self.length_max}); without a gap the trust "
                 "region cannot expand or contract."
             )
+            raise ValueError(msg)
         if not (self.length_min <= self.initial_length <= self.length_max):
-            raise ValueError(
+            msg = (
                 f"initial_length ({self.initial_length}) must lie in "
                 f"[length_min, length_max] = [{self.length_min}, "
                 f"{self.length_max}]; otherwise the trust region either "
                 "triggers an immediate restart or starts above the cap."
             )
+            raise ValueError(msg)
         return self
 
 
@@ -537,7 +539,7 @@ class CampaignSpec(BaseModel):
 
     @field_validator("acquisition_method", mode="before")
     @classmethod
-    def normalize_acquisition_method(cls, value: Any) -> Any:
+    def normalize_acquisition_method(cls, value: object) -> object:
         """Accept legacy BoTorch class-name values for backward compat."""
         if isinstance(value, str) and value in _LEGACY_ACQUISITION_VALUES:
             return _LEGACY_ACQUISITION_VALUES[value]

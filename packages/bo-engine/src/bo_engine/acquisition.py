@@ -62,23 +62,25 @@ def _assert_minimization_form(minimize: bool) -> None:
     factory.  See :mod:`bo_engine.types` for the convention.
     """
     if not minimize:
-        raise ValueError(
+        msg = (
             "bo_engine acquisition factories operate in minimization form "
             "(lower = better).  Negate maximization objectives at the call "
             "site and pass ``minimize=True``.  See the sign-convention note "
             "in bo_engine.types for details."
         )
+        raise ValueError(msg)
 
 
 def _assert_minimization_mask(minimize_mask: Tensor) -> None:
     """Multi-objective counterpart of :func:`_assert_minimization_form`."""
     if not bool(minimize_mask.all()):
-        raise ValueError(
+        msg = (
             "bo_engine multi-objective factories operate in minimization "
             "form (every objective treated as lower = better).  Negate any "
             "maximization columns at the call site before building the "
             "acquisition function.  See bo_engine.types for details."
         )
+        raise ValueError(msg)
 
 
 def create_single_objective_acquisition(
@@ -171,13 +173,14 @@ def create_single_objective_acquisition(
     # only when a direct caller wires a multi-output model into the
     # analytic path.
     if isinstance(model, ModelListGP):
-        raise ValueError(
+        msg = (
             "Analytic EXPECTED_IMPROVEMENT (qLogExpectedImprovement) does "
             "not support ModelListGP / multi-output models without an "
             "explicit objective. Either pass a single-output SingleTaskGP "
             "or switch to use_noisy=True (NOISY_EI) which accepts a "
             "GenericMCObjective channel selector."
         )
+        raise TypeError(msg)
     if best_f is None:
         # train_y is in minimization form (lower = better); min() is best.
         best_f = train_y.min().item()
@@ -358,11 +361,12 @@ def create_acquisition(
 
     if n_objectives == 1:
         if minimize is None:
-            raise ValueError(
+            msg = (
                 "create_acquisition requires ``minimize`` for "
                 "single-objective problems; see bo_engine.types for the "
                 "sign convention."
             )
+            raise ValueError(msg)
         return _create_single_objective_dispatch(
             model=model,
             train_x=train_x,
@@ -375,11 +379,12 @@ def create_acquisition(
         )
 
     if minimize_mask is None:
-        raise ValueError(
+        msg = (
             "create_acquisition requires ``minimize_mask`` for "
             "multi-objective problems; see bo_engine.types for the sign "
             "convention."
         )
+        raise ValueError(msg)
     return _create_multi_objective_dispatch(
         model=model,
         ref_point=ref_point,
@@ -438,7 +443,8 @@ def _create_single_objective_dispatch(
     elif isinstance(model, ModelListGP) and len(model.models) == 1:
         objective_gp = cast(SingleTaskGP, model.models[0])
     else:
-        raise ValueError("Single-objective requires SingleTaskGP model")
+        msg = "Single-objective requires SingleTaskGP model"
+        raise ValueError(msg)
 
     if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
         # EIpu path keeps its own constraint handling — it does not benefit
@@ -548,7 +554,8 @@ def _create_multi_objective_dispatch(
         Multi-objective acquisition function
     """
     if ref_point is None:
-        raise ValueError("Reference point required for multi-objective optimization")
+        msg = "Reference point required for multi-objective optimization"
+        raise ValueError(msg)
 
     objective_model: ModelListGP
     if isinstance(model, ModelListGP):
@@ -556,7 +563,8 @@ def _create_multi_objective_dispatch(
     else:
         # Single-task model in the multi-objective path is a programming
         # error upstream; surface it loudly here.
-        raise ValueError("Multi-objective requires ModelListGP model")
+        msg = "Multi-objective requires ModelListGP model"
+        raise TypeError(msg)
 
     acq_model: ModelListGP = objective_model
     all_constraints = list(constraints) if constraints else []
@@ -784,28 +792,35 @@ def _validate_linear_constraint_entry(
     iterate without exceeding cognitive-complexity limits.
     """
     if not isinstance(entry, tuple) or len(entry) != 3:
-        raise ValueError(f"{label} must be a (indices, coefficients, rhs) tuple")
+        msg = f"{label} must be a (indices, coefficients, rhs) tuple"
+        raise ValueError(msg)
     indices, coefficients, rhs = entry
     if not isinstance(indices, Tensor) or indices.dim() != 1:
-        raise ValueError(f"{label}.indices must be a 1-D tensor")
+        msg = f"{label}.indices must be a 1-D tensor"
+        raise ValueError(msg)
     if not isinstance(coefficients, Tensor) or coefficients.dim() != 1:
-        raise ValueError(f"{label}.coefficients must be a 1-D tensor")
+        msg = f"{label}.coefficients must be a 1-D tensor"
+        raise ValueError(msg)
     if indices.numel() != coefficients.numel():
-        raise ValueError(
+        msg = (
             f"{label} indices ({indices.numel()}) and "
             f"coefficients ({coefficients.numel()}) must have the same length"
         )
+        raise ValueError(msg)
     if indices.numel() == 0:
-        raise ValueError(f"{label} must reference at least one parameter")
+        msg = f"{label} must reference at least one parameter"
+        raise ValueError(msg)
     if not torch.isfinite(torch.as_tensor(rhs, dtype=torch.float64)).item():
-        raise ValueError(f"{label}.rhs must be finite, got {rhs!r}")
+        msg = f"{label}.rhs must be finite, got {rhs!r}"
+        raise ValueError(msg)
     index_min = int(indices.min().item())
     index_max = int(indices.max().item())
     if index_min < 0 or index_max >= n_dims:
-        raise ValueError(
+        msg = (
             f"{label} references parameter index out of range "
             f"[0, {n_dims}); got min={index_min}, max={index_max}"
         )
+        raise ValueError(msg)
 
 
 def _validate_linear_constraints(
@@ -858,7 +873,7 @@ def optimize_acquisition(
     num_restarts: int | None = None,
     raw_samples: int | None = None,
     spec: OptimizationSpec | None = None,
-    x_avoid: Tensor | None = None,  # noqa: N803
+    x_avoid: Tensor | None = None,
     inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     X_pending: Tensor | None = None,  # noqa: N803
@@ -938,31 +953,31 @@ def optimize_acquisition(
     if space_type == SearchSpaceType.PURELY_CATEGORICAL:
         merged_avoid = _merge_avoid_tensors(x_avoid, X_pending)
         return _optimize_discrete(acqf, spec, batch_size, merged_avoid)
-    elif space_type == SearchSpaceType.MIXED:
+    if space_type == SearchSpaceType.MIXED:
         n_combos = count_categorical_combinations(spec)
         if n_combos > MIXED_CATEGORICAL_COMBO_THRESHOLD:
-            raise NotImplementedError(
+            msg = (
                 f"Mixed spaces with more than {MIXED_CATEGORICAL_COMBO_THRESHOLD} "
                 f"categorical combinations are not yet supported (this space has "
                 f"{n_combos}). Consider reducing the number of categories. "
                 "A future version will support optimize_acqf_mixed_alternating "
                 "with integer encoding for larger mixed spaces."
             )
+            raise NotImplementedError(msg)
         _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_mixed(
             acqf, bounds, spec, batch_size, effective_restarts, effective_samples
         )
-    else:
-        _apply_pending_to_acqf(acqf, X_pending)
-        return _optimize_continuous(
-            acqf,
-            bounds,
-            batch_size,
-            effective_restarts,
-            effective_samples,
-            inequality_constraints=inequality_constraints,
-            equality_constraints=equality_constraints,
-        )
+    _apply_pending_to_acqf(acqf, X_pending)
+    return _optimize_continuous(
+        acqf,
+        bounds,
+        batch_size,
+        effective_restarts,
+        effective_samples,
+        inequality_constraints=inequality_constraints,
+        equality_constraints=equality_constraints,
+    )
 
 
 def _apply_pending_to_acqf(
@@ -989,7 +1004,7 @@ def _apply_pending_to_acqf(
 
 
 def _merge_avoid_tensors(
-    x_avoid: Tensor | None,  # noqa: N803
+    x_avoid: Tensor | None,
     X_pending: Tensor | None,  # noqa: N803
 ) -> Tensor | None:
     """Concatenate pending rows into an ``x_avoid`` tensor.
@@ -1220,5 +1235,4 @@ def get_best_observed_value(
 
     if minimize:
         return train_y.min().item()
-    else:
-        return train_y.max().item()
+    return train_y.max().item()

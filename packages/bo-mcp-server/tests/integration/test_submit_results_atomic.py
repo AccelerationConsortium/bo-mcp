@@ -55,12 +55,13 @@ async def _build_campaign_with_suggestions(
     return campaign_id, generated["suggestions"], owner_id
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSubmitResultsAtomicPreValidation:
     """Atomic mode must pre-validate before any DB write leaks out."""
 
     @pytest.mark.asyncio
     async def test_atomic_failure_does_not_complete_earlier_suggestions(
-        self, setup_database
+        self,
     ) -> None:
         """A validation failure on a later result keeps earlier suggestions PENDING.
 
@@ -128,7 +129,7 @@ class TestSubmitResultsAtomicPreValidation:
             )
 
     @pytest.mark.asyncio
-    async def test_atomic_success_commits_everything(self, setup_database) -> None:
+    async def test_atomic_success_commits_everything(self) -> None:
         """When atomic validation passes, all writes commit together.
 
         Counter-test to guard against over-rejection: a clean batch should
@@ -176,7 +177,7 @@ class TestSubmitResultsAtomicPreValidation:
 
     @pytest.mark.asyncio
     async def test_non_atomic_without_continue_on_error_does_not_persist_partial_data(
-        self, setup_database
+        self,
     ) -> None:
         """``atomic=False, continue_on_error=False`` must not commit partial rows.
 
@@ -220,7 +221,7 @@ class TestSubmitResultsAtomicPreValidation:
         )
 
     @pytest.mark.asyncio
-    async def test_atomic_exact_duplicate_returns_duplicate_envelope(self, setup_database) -> None:
+    async def test_atomic_exact_duplicate_returns_duplicate_envelope(self) -> None:
         """Atomic exact duplicates must return ``DUPLICATE_RESULT`` shape.
 
         Before the fix, ``_check_duplicates_for_result`` appended a generic
@@ -279,7 +280,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert result["duplicates_detected"], "duplicates_detected must be populated"
 
     @pytest.mark.asyncio
-    async def test_non_atomic_continue_on_error_drops_exact_duplicate(self, setup_database) -> None:
+    async def test_non_atomic_continue_on_error_drops_exact_duplicate(self) -> None:
         """Non-atomic + continue_on_error: duplicate row dropped, others persisted.
 
         Before the fix, ``_check_duplicates_for_result`` only produced a row
@@ -342,7 +343,7 @@ class TestSubmitResultsAtomicPreValidation:
 
     @pytest.mark.asyncio
     async def test_non_atomic_no_continue_on_error_rejects_exact_duplicate(
-        self, setup_database
+        self,
     ) -> None:
         """Non-atomic + continue_on_error=False: exact duplicate aborts batch.
 
@@ -396,7 +397,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert stored["total_count"] == 1
 
     @pytest.mark.asyncio
-    async def test_non_atomic_force_true_persists_exact_duplicate(self, setup_database) -> None:
+    async def test_non_atomic_force_true_persists_exact_duplicate(self) -> None:
         """``force=True`` is the documented override for exact duplicates.
 
         The recovery_action surfaced on ``ErrorCode.DUPLICATE_RESULT`` tells
@@ -445,7 +446,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert stored["total_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_atomic_rejects_in_batch_exact_duplicate(self, setup_database) -> None:
+    async def test_atomic_rejects_in_batch_exact_duplicate(self) -> None:
         """Two same-batch rows with identical ``parameter_values`` are rejected.
 
         The previous duplicate-detection baseline was a snapshot of stored
@@ -498,7 +499,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert stored["total_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_non_atomic_continue_drops_in_batch_exact_duplicate(self, setup_database) -> None:
+    async def test_non_atomic_continue_drops_in_batch_exact_duplicate(self) -> None:
         """Non-atomic + continue: the in-batch duplicate is dropped, first row commits."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -531,7 +532,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert stored["total_count"] == 1
 
     @pytest.mark.asyncio
-    async def test_force_true_persists_in_batch_exact_duplicate(self, setup_database) -> None:
+    async def test_force_true_persists_in_batch_exact_duplicate(self) -> None:
         """``force=True`` overrides in-batch duplicate detection too."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -561,7 +562,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert stored["total_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_stale_first_row_does_not_shadow_later_valid_row(self, setup_database) -> None:
+    async def test_stale_first_row_does_not_shadow_later_valid_row(self) -> None:
         """A stale-id row must not pollute the duplicate baseline.
 
         Reviewer's scenario: row 0 has duplicate parameter values *and* a
@@ -620,7 +621,7 @@ class TestSubmitResultsAtomicPreValidation:
 
     @pytest.mark.asyncio
     async def test_budget_dropped_row_does_not_shadow_actionable_duplicate(
-        self, setup_database
+        self,
     ) -> None:
         """A manual row dropped by the budget guard must not shadow an actionable duplicate.
 
@@ -714,7 +715,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert stored["total_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_duplicate_row_does_not_consume_budget_slack(self, setup_database) -> None:
+    async def test_duplicate_row_does_not_consume_budget_slack(self) -> None:
         """Duplicate rows do not reduce the slack available to a later unique row.
 
         Reviewer's scenario: ``max_observations=2``, no reservations, batch
@@ -766,7 +767,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert stored["total_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_reservation_wins_duplicate_tie_with_slack(self, setup_database) -> None:
+    async def test_reservation_wins_duplicate_tie_with_slack(self) -> None:
         """A reserved row beats an earlier free-floating duplicate, even when slack exists.
 
         Slack=1 means a free-floating row would otherwise be admitted, so
@@ -841,7 +842,7 @@ class TestSubmitResultsAtomicPreValidation:
         assert statuses[target["id"]] == "completed"
 
     @pytest.mark.asyncio
-    async def test_non_atomic_continues_on_error(self, setup_database) -> None:
+    async def test_non_atomic_continues_on_error(self) -> None:
         """Non-atomic mode persists valid rows and skips invalid ones.
 
         Guards the fix against the opposite regression: we must preserve the

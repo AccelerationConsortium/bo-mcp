@@ -14,8 +14,7 @@ Delegates to bo_engine only for what BayBE doesn't provide:
 hypervolume computation, near-duplicate detection, batch diversity metrics.
 
 The implementation has been split across companion modules so each file
-owns one concern and stays well under the 1k LOC cognitive-load ceiling
-(TODO 8.54):
+owns one concern and stays well under the 1k LOC cognitive-load ceiling:
 
 * :mod:`bo_engine_baybe.state` — campaign construction, state envelope
   serialization, and stable-identity measurement reconciliation.
@@ -37,7 +36,7 @@ without modification.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 import pydantic
@@ -146,10 +145,10 @@ _MIN_DATA_PARAM_MULTIPLIER = 2
 # Moving the implementations to dedicated submodules must not break
 # ``from bo_engine_baybe.backend import _observation_fingerprint`` etc.
 __all__ = [
-    "BayBEBackend",
     "_BAYBE_SAFE_EXCEPTIONS",
     "_CHEMISTRY_AVAILABLE",
     "_CHEMISTRY_UNAVAILABLE_REASON",
+    "BayBEBackend",
     "_build_observation_identity",
     "_observation_fingerprint",
 ]
@@ -166,18 +165,21 @@ class BayBEBackend(BaseBackend):
 
     @property
     def name(self) -> str:
+        """Backend identifier used by the registry."""
         return "baybe"
 
     @property
     def supported_features(self) -> frozenset[Feature]:
+        """Capability set this backend exposes via :class:`BOBackend`."""
         return _SUPPORTED_FEATURES
 
     @property
     def conditional_features(self) -> dict[Feature, str]:
+        """Features supported only under additional conditions, keyed by capability."""
         return dict(_CONDITIONAL_FEATURES)
 
     # -- Spec features that BayBE does NOT support --------------------------
-    _UNSUPPORTED_OPTIONS: list[tuple[str, str]] = [
+    _UNSUPPORTED_OPTIONS: ClassVar[list[tuple[str, str]]] = [
         ("turbo_config", "TuRBO trust-region optimization"),
         ("saasbo_config", "SAASBO high-dimensional optimization"),
         ("fidelity_parameter", "Multi-fidelity optimization"),
@@ -192,9 +194,9 @@ class BayBEBackend(BaseBackend):
 
         ``Feature.CONSTRAINTS`` is reported per-constraint so hybrid /
         categorical-arithmetic constraints route ``backend="auto"`` away
-        from BayBE instead of failing inside SearchSpace construction
-        (TODO 1.64). ``Feature.TRANSFER_LEARNING`` is supported only when
-        the campaign uses BayBE-native ``TaskParameter``s (TODO 1.65) —
+        from BayBE instead of failing inside SearchSpace construction.
+        ``Feature.TRANSFER_LEARNING`` is supported only when
+        the campaign uses BayBE-native ``TaskParameter``s —
         the BoTorch RGPE flavour exposed by ``OptimizationSpec.transfer_learning``
         remains an ignored option for BayBE. Misshaped
         ``parameter_options['baybe']`` and ``backend_options['baybe']``
@@ -480,6 +482,7 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         n_points: int,
     ) -> list[dict[str, Any]]:
+        """Recommend an initial batch of suggestions before any observations exist."""
         from bo_engine_baybe.state import _build_campaign
 
         campaign = _build_campaign(spec)
@@ -496,6 +499,7 @@ class BayBEBackend(BaseBackend):
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
+        """Recommend the next batch and translate BayBE/BoTorch errors to backend exceptions."""
         try:
             return self._generate_suggestions_unwrapped(
                 spec=spec,
@@ -540,7 +544,7 @@ class BayBEBackend(BaseBackend):
         inner_state = self.unwrap_state(backend_state)
         campaign = _restore_or_build_campaign(spec, inner_state)
 
-        # Reconcile measurements by stable identity (TODO 1.63). Run the
+        # Reconcile measurements by stable identity. Run the
         # reconciliation even when observations is empty so a restored
         # campaign with stale measurements is rebuilt instead of carrying
         # forward data the storage layer no longer owns.
@@ -603,7 +607,7 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         pending_points: list[dict[str, Any]] | None,
     ) -> tuple[pd.DataFrame | None, list[str]]:
-        """Translate neutral pending dicts to BayBE's dataframe shape (TODO 1.62).
+        """Translate neutral pending dicts to BayBE's dataframe shape.
 
         Validation failures are downgraded to warnings rather than
         raising — pending points are an optimization hint, not a
@@ -627,7 +631,7 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         n_observations: int,
     ) -> dict[str, Any]:
-        """Source method metadata from the active campaign (TODO 1.67).
+        """Source method metadata from the active campaign.
 
         Falls back to the previous static labels only when BayBE cannot
         provide live introspection (e.g. before the first recommend or
@@ -679,6 +683,7 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> float | None:
+        """Return the hypervolume of observed Pareto front, or ``None`` if not applicable."""
         if spec.n_objectives < 2 or len(observations) < 2:
             return None
 
@@ -738,6 +743,7 @@ class BayBEBackend(BaseBackend):
         sections: frozenset[str] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
+        """Compute diagnostic sections (objectives, model, outliers, suggestions tensor)."""
         all_sections = frozenset(["objectives", "model", "outliers", "suggestions_tensor"])
         requested = all_sections if sections is None else sections
         _ = progress_callback  # BayBE diagnostics phases are not granular yet
@@ -862,16 +868,15 @@ class BayBEBackend(BaseBackend):
                 "noise_variance": model_info.get("noise_variance"),
                 "output_scale": model_info.get("output_scale"),
             }
-
-            return {
-                "model_correlation": corr,
-                "feature_importance": fi,
-                "loo_cv_metrics": None,
-                "hyperparameters": hp,
-            }
         except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
             logger.debug("BayBE model diagnostics failed: %s", e)
             return empty
+        return {
+            "model_correlation": corr,
+            "feature_importance": fi,
+            "loo_cv_metrics": None,
+            "hyperparameters": hp,
+        }
 
     def _compute_outlier_diagnostics(
         self,

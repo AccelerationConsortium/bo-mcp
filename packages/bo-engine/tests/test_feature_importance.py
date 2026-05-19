@@ -12,10 +12,11 @@ from bo_engine.feature_importance import (
 from bo_engine.models import create_and_fit_model
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestFeatureImportance:
     """Tests for feature importance functions."""
 
-    def test_extract_lengthscales(self, torch_rng):
+    def test_extract_lengthscales(self):
         """extract_lengthscales returns lengthscales from fitted model."""
         # Simple 2D problem with 1 objective
         X = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
@@ -80,8 +81,8 @@ class TestFeatureImportance:
         finite, the warning surface keeps a poorly-conditioned GP fit
         visible to operators.
 
-        Reference: numerical-safety guidance in the project CLAUDE.md
-        (do not hardcode bare zero comparisons; clamp before reciprocal).
+        Numerical-safety rule: do not hardcode bare zero comparisons on
+        computed floats; clamp to ``NUMERICAL_EPSILON`` before reciprocal.
         """
         lengthscales = {
             "objective_0": torch.tensor([0.0, 1.0]),
@@ -96,7 +97,7 @@ class TestFeatureImportance:
         # Clamp fires a warning that explicitly names the objective.
         assert any("objective_0" in rec.message for rec in caplog.records)
 
-    def test_end_to_end_importance(self, torch_rng):
+    def test_end_to_end_importance(self):
         """Full pipeline: fit model and compute importance."""
         # Create data where x1 clearly matters more than x2
         X = torch.tensor(

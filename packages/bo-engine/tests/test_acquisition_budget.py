@@ -1,4 +1,4 @@
-"""Tests for dimension-adaptive acquisition-optimization budgets (TODO 1.43).
+"""Tests for dimension-adaptive acquisition-optimization budgets.
 
 The L-BFGS-B multi-start used by ``optimize_acqf`` has a known failure mode in
 high-dimensional and multimodal acquisition landscapes: a fixed restart count

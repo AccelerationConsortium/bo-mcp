@@ -1,4 +1,4 @@
-"""MCP progress-bridge wiring (TODO 1.48).
+"""MCP progress-bridge wiring.
 
 Background: bo-engine emits :class:`bo_engine.progress.ProgressEvent`
 via a synchronous callback because most of its work runs under
@@ -111,7 +111,7 @@ async def test_callback_logs_warning_and_bumps_counter_when_loop_closed(
 ) -> None:
     """A dropped event surfaces at WARNING, on the metric, and on the status snapshot.
 
-    Reference: the audit (TODO 8.59) flags the original ``DEBUG`` swallow
+    Reference: the audit flags the original ``DEBUG`` swallow
     as silently hiding a stuck ETA/cancellation surface from operators.
     """
 
@@ -168,7 +168,8 @@ async def test_callback_records_async_sink_exception(
 
     async def raising_sink(progress: float, total: float | None, message: str | None) -> None:
         _ = progress, total, message
-        raise RuntimeError("transport hangup")
+        msg = "transport hangup"
+        raise RuntimeError(msg)
 
     loop = asyncio.get_running_loop()
     status = ProgressStatus()

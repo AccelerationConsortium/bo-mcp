@@ -10,8 +10,8 @@ response keyed by ``(tool_name, idempotency_key)``; on later calls with
 the same key the server returns the cached response instead of
 re-executing.
 
-Atomicity / race-safety (TODO 1.46 review pass)
------------------------------------------------
+Atomicity / race-safety
+-----------------------
 
 A naive look-up-then-execute-then-store pattern is racy: two concurrent
 retries with the same key both miss the cache, both run the executor,
@@ -68,6 +68,7 @@ from typing import Any
 from sqlalchemy import case, delete, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.dml import Update
 
 from bo_mcp_server.domain.utils import utcnow
 from bo_mcp_server.errors import ErrorCode, make_error_response, retry_hint_for
@@ -119,7 +120,7 @@ DEFAULT_RESERVATION_TTL_SECONDS = get_idempotency_reservation_ttl_seconds()
 _PENDING_SENTINEL = ""
 
 # Heartbeat cadence and per-tick TTL extension for the long-running
-# operation path (TODO 8.24). The cadence is shorter than the extension
+# operation path. The cadence is shorter than the extension
 # so a single missed tick (event-loop hiccup, slow DB roundtrip) does
 # not let the reservation slot lapse — the next tick still lands well
 # inside the prior extension window.
@@ -184,7 +185,7 @@ class IdempotencyLookup:
 
 
 # Non-semantic field names that must never participate in the
-# idempotency hash (TODO 8.25). Each entry is a transport- or telemetry-
+# idempotency hash. Each entry is a transport- or telemetry-
 # layer artefact that the client may regenerate on every retry; hashing
 # them would surface spurious ``IDEMPOTENCY_CONFLICT`` envelopes on
 # what is logically the same call.
@@ -198,7 +199,7 @@ class IdempotencyLookup:
 # - ``idempotency_key``: never include the key in its own hash; it lives
 #   on the row's primary key, not in the request_hash column.
 #
-# Path contract (TODO 8.25 / second review pass): these keys are
+# Path contract: these keys are
 # stripped ONLY at the top of ``request_payload``. They are transport /
 # telemetry artefacts that the wrapper layers above the idempotency
 # call site add (REST request id, MCP trace id, server-side
@@ -240,7 +241,7 @@ NON_SEMANTIC_PAYLOAD_KEYS: frozenset[str] = frozenset(
 def strip_non_semantic_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``payload`` with top-level non-semantic keys removed.
 
-    Top-level-only contract (TODO 8.25 / second review pass): nested
+    Top-level-only contract: nested
     dicts and lists are walked through verbatim. The domain layer
     permits arbitrary user-defined keys inside ``parameter_values`` /
     ``objective_values`` (and inside ``parameters`` / ``objectives``
@@ -284,7 +285,7 @@ def canonical_request_hash(payload: dict[str, Any]) -> str:
     transport / telemetry artefacts (``created_at``, ``request_id``,
     ``trace_id``, …) so a retry that regenerates those fields still
     replays the cached response instead of triggering a spurious
-    :class:`ErrorCode.IDEMPOTENCY_CONFLICT` envelope (TODO 8.25).
+    :class:`ErrorCode.IDEMPOTENCY_CONFLICT` envelope.
 
     No size cap is applied: SHA256 is O(n) and even multi-megabyte
     payloads hash in milliseconds. Tools that carry genuinely large
@@ -406,7 +407,7 @@ async def purge_expired_cache_rows() -> int:
     (the lifespan-managed sweep) can publish it as a metric. The
     opportunistic per-key purge in :func:`_read_existing` only fires
     when that key is queried; rows for never-retried calls accumulate
-    until this sweep runs. See TODO 8.23.
+    until this sweep runs.
 
     Safe to call concurrently with operation traffic: the ``DELETE``
     uses the same primary-key predicate as a fresh reservation, so a
@@ -513,7 +514,7 @@ def _finalize_statement(
     reservation_token: str,
     response: dict[str, Any],
     ttl_seconds: int,
-) -> Any:
+) -> Update:
     """Build the parameterised UPDATE used by both finalize helpers.
 
     Centralising the statement keeps the ``WHERE`` clause in one place
@@ -677,7 +678,7 @@ def _attach_metadata(response: dict[str, Any]) -> dict[str, Any]:
     ``idempotency → response_formatter → idempotency`` cycle that the
     heavy imports inside ``response_formatter`` would otherwise force.
     """
-    from bo_mcp_server.response_formatter import (  # noqa: PLC0415
+    from bo_mcp_server.response_formatter import (
         attach_response_metadata,
     )
 
@@ -700,7 +701,7 @@ def _refresh_response_metadata_trace_id(response: dict[str, Any]) -> None:
     (response_formatter pulls in :mod:`bo_mcp_server.backend`, which
     transitively imports operations that depend on this module).
     """
-    from bo_mcp_server.trace_context import get_trace_id  # noqa: PLC0415
+    from bo_mcp_server.trace_context import get_trace_id
 
     metadata = response.get("_metadata")
     if not isinstance(metadata, dict):
@@ -754,7 +755,7 @@ async def _reserve_or_short_circuit(
 
 
 @asynccontextmanager
-async def session_scope(session: AsyncSession | None):
+async def session_scope(session: AsyncSession | None) -> AsyncGenerator[AsyncSession]:
     """Provide a session: re-use the caller's if given, else open a new one.
 
     Operation-layer callers can hand a session through (the same-
@@ -832,7 +833,9 @@ async def apply_idempotency(
     )
     if outcome.short_circuit is not None:
         return outcome.short_circuit
-    assert outcome.reservation_token is not None
+    if outcome.reservation_token is None:
+        msg = "Reservation outcome must carry either short_circuit or reservation_token"
+        raise RuntimeError(msg)
     token = outcome.reservation_token
 
     return await _run_session_aware(
@@ -853,7 +856,7 @@ def _is_transient_error(response: dict[str, Any]) -> bool:
     TTL elapsed even though a successful outcome is possible
     immediately. This covers the historical ``CONCURRENT_MODIFICATION``
     case and every newer addition to the typed backend hierarchy
-    (notably ``BACKEND_TRANSIENT_ERROR``) introduced in TODO 8.13/8.14
+    (notably ``BACKEND_TRANSIENT_ERROR``)
     without having to re-list each code here.
 
     Other operation errors (validation failures, missing campaign,
@@ -931,7 +934,7 @@ async def _extend_reservation_ttl(
 ) -> bool:
     """Push the pending reservation's ``expires_at`` forward by ``extra_seconds``.
 
-    Used by the heartbeat (TODO 8.24) so a legitimately slow operation
+    Used by the heartbeat so a legitimately slow operation
     (SAASBO MCMC, large-batch generation) does not lose its slot to a
     concurrent retry. The ``WHERE`` clause is intentionally tight:
 
@@ -941,7 +944,7 @@ async def _extend_reservation_ttl(
       has already been finalized; that would silently delay the response
       cache expiry past the 24h TTL contract.
 
-    Monotonic-expiry contract (TODO 8.24 review pass): the heartbeat is
+    Monotonic-expiry contract: the heartbeat is
     "extend if the proposed deadline is later than the current one",
     never "set deadline to now + extra". Without this guard the first
     heartbeat after 60s would *shorten* a 10-min initial reservation
@@ -1089,6 +1092,10 @@ async def _run_session_aware(
         reservation_token=reservation_token,
     )
     handle = _active_reservation.set(reservation)
+
+    def _signal_stale_reservation() -> None:
+        raise _StaleReservationError
+
     try:
         try:
             async with get_session() as session:
@@ -1113,7 +1120,7 @@ async def _run_session_aware(
                             idempotency_key,
                             reservation_token,
                         )
-                        raise _StaleReservationError
+                        _signal_stale_reservation()
         except _StaleReservationError:
             # The session rolled back via get_session's exception handler,
             # so no operation writes survive. The cache row is owned by
@@ -1121,7 +1128,7 @@ async def _run_session_aware(
             # token-matched drop would no-op anyway, but skipping the call
             # makes the intent explicit). Return a retryable envelope.
             return _attach_metadata(_stale_reservation_envelope(tool_name, idempotency_key))
-        except Exception:  # noqa: BLE001 - cleanup-then-reraise for any operation failure
+        except Exception:
             # The async with already rolled back the session; drop our
             # reservation so a future retry can claim the slot. We do
             # not narrow the catch because the operation can raise any

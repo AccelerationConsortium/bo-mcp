@@ -43,7 +43,7 @@ async def session() -> AsyncGenerator[AsyncSession]:
 
 def _counter_value(backend: str) -> float:
     """Return the current value of the campaigns-created counter for ``backend``."""
-    return float(CAMPAIGNS_CREATED.labels(backend)._value.get())  # noqa: SLF001
+    return float(CAMPAIGNS_CREATED.labels(backend)._value.get())
 
 
 @pytest.mark.asyncio
@@ -322,7 +322,7 @@ async def test_savepoint_release_does_not_bump_when_outer_rolls_back() -> None:
             await test_session.begin_nested()
 
             @event.listens_for(test_session.sync_session, "after_transaction_end")
-            def _restart_savepoint(_sync_session, _transaction) -> None:  # noqa: ARG001
+            def _restart_savepoint(_sync_session, _transaction) -> None:
                 # Mirror the test-fixture's restart-savepoint hook so
                 # the application's ``commit()`` can repeatedly release
                 # and re-open SAVEPOINTs inside the outer transaction.

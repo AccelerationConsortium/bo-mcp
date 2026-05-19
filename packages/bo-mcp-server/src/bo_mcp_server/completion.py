@@ -50,9 +50,9 @@ input render it as a static dropdown.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
 
 from bo_engine.types import AcquisitionMethod
+from mcp.server.fastmcp import FastMCP
 from mcp.types import (
     Completion,
     CompletionArgument,
@@ -165,7 +165,7 @@ async def handle_completion(
     )
 
 
-def register_completion_handler(mcp_instance: Any) -> None:
+def register_completion_handler(mcp_instance: FastMCP) -> None:
     """Wire :func:`handle_completion` into the FastMCP instance.
 
     Implemented as a function so :mod:`bo_mcp_server.server` can call it

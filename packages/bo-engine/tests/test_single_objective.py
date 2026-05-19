@@ -136,10 +136,11 @@ class TestSingleObjectiveGeneration:
         assert all(s.acquisition_value is not None for s in suggestions)
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestSingleObjectiveModel:
     """Test single-objective model creation and fitting."""
 
-    def test_create_and_fit_single_task_model(self, torch_rng) -> None:
+    def test_create_and_fit_single_task_model(self) -> None:
         """Test SingleTaskGP creation and fitting."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -155,7 +156,7 @@ class TestSingleObjectiveModel:
             assert posterior.mean.shape == (5, 1)
             assert posterior.variance.shape == (5, 1)
 
-    def test_create_single_task_model_with_1d_y(self, torch_rng) -> None:
+    def test_create_single_task_model_with_1d_y(self) -> None:
         """Test SingleTaskGP creation with 1D y."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, dtype=torch.double)  # 1D
@@ -167,10 +168,11 @@ class TestSingleObjectiveModel:
         assert model is not None
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestSingleObjectiveAcquisition:
     """Test single-objective acquisition functions."""
 
-    def test_create_single_objective_acquisition_qlognei(self, torch_rng) -> None:
+    def test_create_single_objective_acquisition_qlognei(self) -> None:
         """Test qLogNEI acquisition creation."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -364,10 +366,11 @@ class TestSingleObjectiveIntegration:
         assert sugg_qlognei[0].acquisition_function == "noisy_expected_improvement"
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestModelActuallyLearns:
     """Test that GP models actually learn from data."""
 
-    def test_model_learns_simple_quadratic(self, torch_rng) -> None:
+    def test_model_learns_simple_quadratic(self) -> None:
         """Model should approximate y = (x - 0.5)^2."""
         # Create training data from quadratic function
         train_x = torch.linspace(0, 1, 15).unsqueeze(-1).double()

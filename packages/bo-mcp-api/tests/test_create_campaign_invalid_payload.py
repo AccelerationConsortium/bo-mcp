@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("persisted_user")
+
 
 @pytest.mark.asyncio
-async def test_malformed_turbo_config_returns_422(api_client, auth_headers, persisted_user):
+async def test_malformed_turbo_config_returns_422(api_client, auth_headers):
     """Non-numeric ``turbo_config.initial_length`` → 422 not 500."""
     payload = {
         "intake": {
@@ -40,7 +42,7 @@ async def test_malformed_turbo_config_returns_422(api_client, auth_headers, pers
 
 
 @pytest.mark.asyncio
-async def test_malformed_saasbo_config_returns_422(api_client, auth_headers, persisted_user):
+async def test_malformed_saasbo_config_returns_422(api_client, auth_headers):
     """Wrong type for a nested SAASBO field → 422 not 500."""
     payload = {
         "intake": {
@@ -55,7 +57,7 @@ async def test_malformed_saasbo_config_returns_422(api_client, auth_headers, per
 
 
 @pytest.mark.asyncio
-async def test_malformed_outcome_constraint_returns_422(api_client, auth_headers, persisted_user):
+async def test_malformed_outcome_constraint_returns_422(api_client, auth_headers):
     """Missing required key inside an outcome constraint → 422 not 500."""
     payload = {
         "intake": {
@@ -70,7 +72,7 @@ async def test_malformed_outcome_constraint_returns_422(api_client, auth_headers
 
 
 @pytest.mark.asyncio
-async def test_malformed_fidelity_parameter_returns_422(api_client, auth_headers, persisted_user):
+async def test_malformed_fidelity_parameter_returns_422(api_client, auth_headers):
     """Invalid bounds inside fidelity_parameter → 422 not 500."""
     payload = {
         "intake": {
@@ -89,7 +91,7 @@ async def test_malformed_fidelity_parameter_returns_422(api_client, auth_headers
 
 
 @pytest.mark.asyncio
-async def test_unknown_field_returns_422(api_client, auth_headers, persisted_user):
+async def test_unknown_field_returns_422(api_client, auth_headers):
     """An unknown top-level intake key fails at the REST schema (``extra=forbid``)."""
     payload = {
         "intake": {
@@ -104,7 +106,7 @@ async def test_unknown_field_returns_422(api_client, auth_headers, persisted_use
 
 
 @pytest.mark.asyncio
-async def test_inverted_parameter_bounds_returns_422(api_client, auth_headers, persisted_user):
+async def test_inverted_parameter_bounds_returns_422(api_client, auth_headers):
     """Inverted ``bounds=[upper, lower]`` on a parameter returns 422, not 500.
 
     The bounds validator on the domain :class:`Bounds` model raises
@@ -122,7 +124,6 @@ async def test_inverted_parameter_bounds_returns_422(api_client, auth_headers, p
     error reaches the client as the proper 422 with a structured
     detail.
     """
-    _ = persisted_user
     payload = {
         "intake": {
             "name": "Inverted parameter bounds",

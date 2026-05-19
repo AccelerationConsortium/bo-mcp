@@ -113,16 +113,15 @@ async def main() -> None:
     n_params = 25
     print(f"\n[3] Defining {n_params}-dimensional optimization problem...")
 
-    parameters = []
-    for i in range(n_params):
-        parameters.append(
-            {
-                "name": f"x{i}",
-                "type": "continuous",
-                "bounds": [-5.0, 10.0],
-                "description": f"Parameter {i}",
-            }
-        )
+    parameters = [
+        {
+            "name": f"x{i}",
+            "type": "continuous",
+            "bounds": [-5.0, 10.0],
+            "description": f"Parameter {i}",
+        }
+        for i in range(n_params)
+    ]
 
     campaign_config = {
         "name": "High-Dimensional TuRBO Optimization",

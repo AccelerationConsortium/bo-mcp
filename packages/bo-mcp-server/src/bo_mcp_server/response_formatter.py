@@ -16,7 +16,7 @@ documented keys (``success``, ``campaign_id``, …) stay present even
 when the underlying value is missing, so agent code can address them
 unconditionally. This addresses the "weak ``TypedDict``" pattern where
 the formatter previously cast arbitrary ``dict[str, Any]`` into a
-declared shape with no runtime guarantee — see TODO 1.20.
+declared shape with no runtime guarantee.
 
 Usage:
     from bo_mcp_server.response_formatter import (
@@ -42,7 +42,7 @@ from bo_mcp_server import __version__
 _METADATA_FIELD = "_metadata"
 _SCHEMA_VERSION_FIELD = "schema_version"
 
-# Top-level response-envelope schema version (TODO 8.55).
+# Top-level response-envelope schema version.
 #
 # Every MCP-tool / REST response carries ``schema_version`` so older
 # clients (including older LLM tool descriptions) can detect a
@@ -83,8 +83,8 @@ def get_response_metadata(protocol: str = "mcp") -> ResponseMetadata:
     Returns:
         Metadata with backend, protocol, and server version.
     """
-    from bo_mcp_server.backend import get_backend  # noqa: PLC0415 - lazy import
-    from bo_mcp_server.trace_context import get_trace_id  # noqa: PLC0415 - lazy import
+    from bo_mcp_server.backend import get_backend
+    from bo_mcp_server.trace_context import get_trace_id
 
     backend = get_backend()
     return ResponseMetadata(
@@ -138,7 +138,7 @@ def with_response_metadata(
     """
 
     @functools.wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    async def wrapper(*args: object, **kwargs: object) -> dict[str, Any]:
         return attach_response_metadata(await fn(*args, **kwargs))
 
     return wrapper
@@ -155,7 +155,7 @@ def _with_metadata(
     """
 
     @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    def wrapper(*args: object, **kwargs: object) -> dict[str, Any]:
         result = fn(*args, **kwargs)
         metadata_dump = get_response_metadata().model_dump()
         # Strip ``trace_id`` when no workflow is active so the metadata
@@ -215,6 +215,8 @@ class _PassthroughResponse(BaseModel):
 
 
 class DiagnosticsMinimalResponse(_StrictResponse):
+    """MINIMAL projection of the diagnostics response."""
+
     success: bool | None = None
     status: str | None = None
     iteration: int | None = None
@@ -255,6 +257,8 @@ class DiagnosticsResponse(_PassthroughResponse):
 
 
 class SuggestionsMinimalResponse(_StrictResponse):
+    """MINIMAL projection of the generate-suggestions response."""
+
     success: bool | None = None
     iteration: int | None = None
     suggestion_ids: list[str | None] = Field(default_factory=list)
@@ -263,6 +267,8 @@ class SuggestionsMinimalResponse(_StrictResponse):
 
 
 class SuggestionsResponse(_PassthroughResponse):
+    """STANDARD / DETAILED projection of the generate-suggestions response."""
+
     success: bool | None = None
     iteration: int | None = None
     suggestions: list[dict[str, Any]] = Field(default_factory=list)
@@ -275,6 +281,8 @@ class SuggestionsResponse(_PassthroughResponse):
 
 
 class CompareCampaignsMinimalResponse(_StrictResponse):
+    """MINIMAL projection of the compare-campaigns response."""
+
     success: bool | None = None
     n_campaigns: int = 0
     best_performer: str | None = None
@@ -283,6 +291,8 @@ class CompareCampaignsMinimalResponse(_StrictResponse):
 
 
 class CompareCampaignsResponse(_PassthroughResponse):
+    """STANDARD / DETAILED projection of the compare-campaigns response."""
+
     success: bool | None = None
     campaigns: list[dict[str, Any]] = Field(default_factory=list)
     comparison: dict[str, Any] | None = None
@@ -293,6 +303,8 @@ class CompareCampaignsResponse(_PassthroughResponse):
 
 
 class TransferCandidatesMinimalResponse(_StrictResponse):
+    """MINIMAL projection of the discover-transfer-candidates response."""
+
     success: bool | None = None
     n_candidates: int = 0
     top_candidate_id: str | None = None
@@ -302,6 +314,8 @@ class TransferCandidatesMinimalResponse(_StrictResponse):
 
 
 class TransferCandidatesResponse(_PassthroughResponse):
+    """STANDARD / DETAILED projection of the discover-transfer-candidates response."""
+
     success: bool | None = None
     target_campaign: dict[str, Any] | None = None
     candidates: list[dict[str, Any]] = Field(default_factory=list)
@@ -313,6 +327,8 @@ class TransferCandidatesResponse(_PassthroughResponse):
 
 
 class CreateCampaignMinimalResponse(_StrictResponse):
+    """MINIMAL projection of the create-campaign response."""
+
     success: bool | None = None
     campaign_id: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -321,6 +337,8 @@ class CreateCampaignMinimalResponse(_StrictResponse):
 
 
 class CreateCampaignStandardResponse(_StrictResponse):
+    """STANDARD projection of the create-campaign response."""
+
     success: bool | None = None
     campaign_id: str | None = None
     spec_id: str | None = None
@@ -331,6 +349,8 @@ class CreateCampaignStandardResponse(_StrictResponse):
 
 
 class CreateCampaignDetailedResponse(_PassthroughResponse):
+    """DETAILED projection of the create-campaign response."""
+
     success: bool | None = None
     campaign_id: str | None = None
     spec_id: str | None = None
@@ -344,6 +364,8 @@ class CreateCampaignDetailedResponse(_PassthroughResponse):
 
 
 class SubmitResultsMinimalResponse(_StrictResponse):
+    """MINIMAL projection of the submit-results response."""
+
     success: bool | None = None
     n_submitted: int = 0
     errors: list[str] = Field(default_factory=list)
@@ -351,6 +373,8 @@ class SubmitResultsMinimalResponse(_StrictResponse):
 
 
 class SubmitResultsStandardResponse(_StrictResponse):
+    """STANDARD projection of the submit-results response."""
+
     success: bool | None = None
     result_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
@@ -360,6 +384,8 @@ class SubmitResultsStandardResponse(_StrictResponse):
 
 
 class SubmitResultsDetailedResponse(_PassthroughResponse):
+    """DETAILED projection of the submit-results response."""
+
     success: bool | None = None
     result_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
@@ -372,12 +398,16 @@ class SubmitResultsDetailedResponse(_PassthroughResponse):
 
 
 class ValidateIntakeMinimalResponse(_StrictResponse):
+    """MINIMAL projection of the validate-intake response."""
+
     valid: bool | None = None
     errors: list[str] = Field(default_factory=list)
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class ValidateIntakeSpecSummary(_StrictResponse):
+    """Summary of a campaign spec returned by validate-intake."""
+
     name: str | None = None
     n_parameters: int = 0
     n_objectives: int = 0
@@ -386,6 +416,8 @@ class ValidateIntakeSpecSummary(_StrictResponse):
 
 
 class ValidateIntakeStandardResponse(_StrictResponse):
+    """STANDARD projection of the validate-intake response."""
+
     valid: bool | None = None
     errors: list[str] = Field(default_factory=list)
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
@@ -394,6 +426,8 @@ class ValidateIntakeStandardResponse(_StrictResponse):
 
 
 class ValidateIntakeDetailedResponse(_PassthroughResponse):
+    """DETAILED projection of the validate-intake response."""
+
     valid: bool | None = None
     errors: list[str] = Field(default_factory=list)
     field_errors: dict[str, list[str]] = Field(default_factory=dict)

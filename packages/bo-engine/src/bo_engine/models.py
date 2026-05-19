@@ -76,6 +76,7 @@ class ModelFittingError(RuntimeError):
     """
 
     def __init__(self, message: str, original_error: Exception) -> None:
+        """Record the user-facing message and the underlying optimizer failure."""
         super().__init__(message)
         self.original_error = original_error
 
@@ -146,18 +147,20 @@ def _assert_positive_for_log_transform(train_y: Tensor, objective_index: int) ->
     and surfaces as an opaque BoTorch fit error.
     """
     if not bool(torch.isfinite(train_y).all()):
-        raise ValueError(
+        msg = (
             f"log_transform=True requires finite targets; objective[{objective_index}] "
             "has NaN or inf values. Drop or impute those rows before fitting."
         )
+        raise ValueError(msg)
     if not bool((train_y > 0).all()):
         min_value = float(train_y.min().item())
-        raise ValueError(
+        msg = (
             f"log_transform=True requires strictly positive targets for "
             f"objective[{objective_index}]; got min={min_value}. Either drop "
             "non-positive observations, pre-shift the target, or disable "
             "log_transform for this objective."
         )
+        raise ValueError(msg)
 
 
 def _build_likelihood(noise_prior: Prior | None) -> GaussianLikelihood:
@@ -238,10 +241,11 @@ def build_mixed_kernel(
         ValueError: If the categorical indices fall outside ``[0, n_total_dims)``.
     """
     if any(i < 0 or i >= n_total_dims for i in categorical_dim_indices):
-        raise ValueError(
+        msg = (
             "categorical_dim_indices must all lie in "
             f"[0, {n_total_dims}); got {categorical_dim_indices}."
         )
+        raise ValueError(msg)
     cont_indices = [i for i in range(n_total_dims) if i not in set(categorical_dim_indices)]
 
     parts: list[Kernel] = []
@@ -492,6 +496,9 @@ def create_model(
             dimension to enable it per-objective; objectives with
             multi-decade magnitudes (e.g. concentrations) typically
             benefit while bounded ones (yield in [0, 1]) do not.
+        categorical_dim_indices: Indices of categorical (one-hot) dimensions
+            in ``train_x``. Used to route those columns through the
+            ``CategoricalKernel`` instead of the default Matérn.
 
     Returns:
         ModelListGP with one GP per objective
@@ -508,10 +515,11 @@ def create_model(
         log_flags = [log_transform] * n_objectives
     else:
         if len(log_transform) != n_objectives:
-            raise ValueError(
+            msg = (
                 "log_transform list length must match the number of objectives; "
                 f"got {len(log_transform)} flag(s) for {n_objectives} objective(s)."
             )
+            raise ValueError(msg)
         log_flags = list(log_transform)
 
     models = []
@@ -567,7 +575,7 @@ def fit_single_task_model(model: SingleTaskGP) -> SingleTaskGP:
             f"GP model fitting failed: {e}. "
             "Consider adding more observations or reducing parameter count."
         )
-        logger.error(msg)
+        logger.exception(msg)
         raise ModelFittingError(msg, original_error=e) from e
     _log_fitted_noise(model, fixed_noise=_has_fixed_noise(model))
     return model
@@ -593,7 +601,7 @@ def fit_model(model: ModelListGP) -> ModelListGP:
             f"Multi-output GP model fitting failed: {e}. "
             "Consider adding more observations or reducing parameter count."
         )
-        logger.error(msg)
+        logger.exception(msg)
         raise ModelFittingError(msg, original_error=e) from e
     _log_fitted_noise(model, fixed_noise=_has_fixed_noise(model))
     return model

@@ -57,7 +57,7 @@ def install_request_id_log_factory() -> None:
     assignment, and the first wrap traps the *original* factory under the
     new one — re-wrapping would cause unbounded recursion.
     """
-    global _INSTALLED_FACTORY  # noqa: PLW0603
+    global _INSTALLED_FACTORY
     with _FACTORY_INSTALL_LOCK:
         current = logging.getLogRecordFactory()
         if current is _INSTALLED_FACTORY:
@@ -79,6 +79,7 @@ class RequestIdLogFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Attach the active ``request_id`` to the record if it's not already set."""
         if not hasattr(record, "request_id"):
             record.request_id = request_id_var.get()
         return True

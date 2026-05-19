@@ -131,7 +131,9 @@ def demo_turbo_dynamics() -> None:
 
     # Simulate failures
     print("Simulating failures (no improvement):")
-    assert state.failure_tolerance is not None
+    if state.failure_tolerance is None:
+        msg = "TuRBO state requires a failure_tolerance for this demo"
+        raise ValueError(msg)
     for i in range(state.failure_tolerance + 1):
         # No improvement
         new_y = torch.tensor([state.best_value - 1.0])  # Worse than best

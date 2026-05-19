@@ -26,7 +26,7 @@ Doing the check in middleware is the only way to reject the body
 raised by ``receive`` and converts it to a generic 400, which would
 mask the real cause.
 
-References
+References:
 ----------
 * RFC 9110 §15.5.14 (413 Content Too Large)
 * ASGI specification, "Receive" / "Send" event shapes
@@ -79,6 +79,7 @@ class BodySizeLimitMiddleware:
         max_body_size: int,
         upload_paths: Iterable[str],
     ) -> None:
+        """Wrap the inner ASGI ``app`` and configure the body-size cap and exemption list."""
         self.app = app
         self.max_body_size = max_body_size
         self.upload_paths = tuple(upload_paths)

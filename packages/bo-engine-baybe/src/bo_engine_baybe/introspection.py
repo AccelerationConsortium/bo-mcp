@@ -11,7 +11,7 @@ payloads and diagnostic envelopes.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import cast
 
 import pandas as pd
 import torch
@@ -19,6 +19,7 @@ from baybe import Campaign
 from bo_engine.device import get_device, get_dtype
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.types import ObservationData, OptimizationSpec
+from botorch.models import ModelListGP, SingleTaskGP
 
 from bo_engine_baybe.converters import observations_to_dataframe
 from bo_engine_baybe.state import _BAYBE_SAFE_EXCEPTIONS, _build_campaign
@@ -52,8 +53,8 @@ def _observations_to_minimization_tensor(
 
 def _compute_reference_point(y_bo: torch.Tensor) -> torch.Tensor:
     """Compute a reference point from minimization-convention objective values."""
-    worst = y_bo.max(dim=0).values
-    ranges = worst - y_bo.min(dim=0).values
+    worst = y_bo.max(dim=0).values  # noqa: PD011
+    ranges = worst - y_bo.min(dim=0).values  # noqa: PD011
     abs_scale = worst.abs().clamp(min=1e-6)
     ranges = torch.where(ranges < 1e-6, abs_scale, ranges)
     return worst + 0.1 * ranges
@@ -69,7 +70,7 @@ def _extract_posterior_stats(
     Returns ``(predictions, warning)`` where ``warning`` is a short
     message explaining why posterior_stats was unavailable for the active
     recommender phase, or ``None`` when extraction succeeded. The warning
-    is forwarded to :class:`SuggestionBatch.warnings` (TODO 1.67) so users
+    is forwarded to :class:`SuggestionBatch.warnings` so users
     see "no posterior in random-warmup phase" instead of a silent ``None``.
     """
     obj_names = [o.name for o in spec.objectives]
@@ -116,7 +117,7 @@ def _extract_acquisition_values(
     """Extract per-suggestion acquisition function values from BayBE.
 
     Pending experiments are forwarded so the acquisition values reflect
-    the same conditioning BayBE used during ``recommend`` (TODO 1.62). A
+    the same conditioning BayBE used during ``recommend``. A
     short warning message is returned alongside the values when
     extraction is impossible in the current recommender phase so the
     backend can surface it via :class:`SuggestionBatch.warnings`.
@@ -126,7 +127,7 @@ def _extract_acquisition_values(
             candidates=rec_df,
             pending_experiments=pending_df,
         )
-        return [float(v) for v in acq_series.values], None
+        return [float(v) for v in acq_series.to_numpy()], None
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
         logger.debug("Acquisition value extraction failed: %s", e)
         return [None] * len(rec_df), str(e)
@@ -142,14 +143,14 @@ def _extract_model_info(
     first sub-model's hyperparameters are reported (BayBE composes one
     GP per target). The ``kernel_type`` key is always present so callers
     can distinguish "fitted" (string class name) from "not available"
-    (``None``) — surfacing only the latter as a method warning (TODO 1.67).
+    (``None``) — surfacing only the latter as a method warning.
     """
     info: dict[str, str | list[float] | float | None] = {
         "kernel_type": None,
     }
     try:
         surrogate = campaign.get_surrogate()
-        botorch_model = surrogate.to_botorch()
+        botorch_model = cast("SingleTaskGP | ModelListGP", surrogate.to_botorch())
         model_for_kernel = _select_kernel_model(botorch_model)
         covar = getattr(model_for_kernel, "covar_module", None)
         if covar is None:
@@ -157,7 +158,7 @@ def _extract_model_info(
         kernel = getattr(covar, "base_kernel", covar)
         info["kernel_type"] = type(kernel).__name__
 
-        ls = kernel.lengthscale.detach().squeeze()
+        ls = cast("torch.Tensor", kernel.lengthscale).detach().squeeze()
         if ls.numel() == 1:
             info["lengthscales"] = [round(float(ls.item()), 4)]
         else:
@@ -166,18 +167,18 @@ def _extract_model_info(
         if hasattr(model_for_kernel, "likelihood") and hasattr(
             model_for_kernel.likelihood, "noise"
         ):
-            noise = model_for_kernel.likelihood.noise.item()
+            noise = cast("torch.Tensor", model_for_kernel.likelihood.noise).item()
             info["noise_variance"] = round(float(noise), 6)
         if hasattr(covar, "outputscale"):
-            oscale = covar.outputscale.item()
+            oscale = cast("torch.Tensor", covar.outputscale).item()
             info["output_scale"] = round(float(oscale), 4)
-        return info, None
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
         logger.debug("Model info extraction failed: %s", e)
         return info, str(e)
+    return info, None
 
 
-def _select_kernel_model(botorch_model: Any) -> Any:
+def _select_kernel_model(botorch_model: SingleTaskGP | ModelListGP) -> SingleTaskGP:
     """Pick the BoTorch model whose hyperparameters we report.
 
     ``ModelListGP`` (used by multi-target/multi-objective BayBE campaigns)
@@ -186,10 +187,9 @@ def _select_kernel_model(botorch_model: Any) -> Any:
     breakdown can be reconstructed from BayBE's posterior_stats output
     when finer granularity is needed.
     """
-    sub_models = getattr(botorch_model, "models", None)
-    if sub_models is not None and len(sub_models) > 0:
-        return sub_models[0]
-    return botorch_model
+    if isinstance(botorch_model, ModelListGP) and len(botorch_model.models) > 0:
+        return cast("SingleTaskGP", botorch_model.models[0])
+    return cast("SingleTaskGP", botorch_model)
 
 
 def _extract_feature_importance(campaign: Campaign) -> dict[str, float] | None:
@@ -198,7 +198,7 @@ def _extract_feature_importance(campaign: Campaign) -> dict[str, float] | None:
         from baybe.insights.shap import SHAPInsight
 
         insight = SHAPInsight.from_campaign(campaign)
-        values = insight.explanation.values  # ty: ignore[unresolved-attribute]
+        values = insight.explanation.values  # noqa: PD011  # ty: ignore[unresolved-attribute]
         feature_names = insight.explanation.feature_names  # ty: ignore[unresolved-attribute]
         if values is not None and feature_names is not None:
             mean_abs = [float(abs(v).mean()) for v in values.T]
@@ -226,7 +226,7 @@ def _build_fitted_campaign(
     return campaign
 
 
-def _active_recommender(campaign: Campaign):
+def _active_recommender(campaign: Campaign) -> object:
     """Return the active non-meta recommender of the campaign, if exposed.
 
     BayBE's meta-recommender flow advances state during ``recommend``; the
@@ -244,7 +244,7 @@ def _active_recommender(campaign: Campaign):
     return getattr(campaign, "recommender", None)
 
 
-def _active_acquisition_label(recommender: Any) -> str | None:
+def _active_acquisition_label(recommender: object) -> str | None:
     """Read the acquisition function class name from a BayBE recommender, if any."""
     acq_fn = getattr(recommender, "acquisition_function", None)
     if acq_fn is None:
@@ -285,7 +285,7 @@ def _strategy_and_model(
 
 
 def _acquisition_label(
-    recommender: Any,
+    recommender: object,
     is_nonpredictive: bool,
     is_multi: bool,
 ) -> tuple[str, bool]:
@@ -294,7 +294,7 @@ def _acquisition_label(
     Returns ``(label, inferred)``. ``inferred=True`` signals that the
     label was guessed from the static fallback table because the live
     recommender did not expose an acquisition function attribute. The
-    caller stamps the flag onto the structured ``method_info`` (TODO 8.51)
+    caller stamps the flag onto the structured ``method_info``
     so downstream consumers can distinguish "BayBE told us qLogNEI" from
     "we couldn't read the acq function and assumed qLogNEI"; the legacy
     ``(fallback)`` suffix on the label itself is removed because the
@@ -330,14 +330,14 @@ def _baybe_model_correlation(
                 return 0.0
             mean_col = mean_cols[0]
 
-        predicted = stats_df[mean_col].values
-        actual = obs_df[obj_name].values
+        predicted = stats_df[mean_col].to_numpy()
+        actual = obs_df[obj_name].to_numpy()
         result = scipy_stats.spearmanr(predicted, actual)
         corr = float(result.statistic)
-        return corr if corr == corr else 0.0  # Handle NaN  # noqa: PLR0124
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
         logger.debug("BayBE model correlation failed: %s", e)
         return 0.0
+    return corr if corr == corr else 0.0  # Handle NaN
 
 
 def _prepare_tensors(

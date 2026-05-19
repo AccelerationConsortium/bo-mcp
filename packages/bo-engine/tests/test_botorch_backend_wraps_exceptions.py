@@ -1,4 +1,4 @@
-"""BoTorch backend wraps library exceptions before the boundary (TODO 8.13).
+"""BoTorch backend wraps library exceptions before the boundary.
 
 The audit text: ``packages/bo-engine/src/bo_engine/botorch_backend.py``
 lets library exceptions propagate. The server-layer code has nothing
@@ -51,17 +51,19 @@ def test_value_error_in_generate_is_wrapped() -> None:
     """
     backend = BoTorchBackend()
     spec = _two_param_spec()
-    with patch(
-        "bo_engine.botorch_backend.generate_next_batch",
-        side_effect=ValueError("NaN observation"),
+    with (
+        patch(
+            "bo_engine.botorch_backend.generate_next_batch",
+            side_effect=ValueError("NaN observation"),
+        ),
+        pytest.raises(BackendInputError) as exc_info,
     ):
-        with pytest.raises(BackendInputError) as exc_info:
-            backend.generate_suggestions(
-                spec=spec,
-                observations=[],
-                batch_size=1,
-                iteration=0,
-            )
+        backend.generate_suggestions(
+            spec=spec,
+            observations=[],
+            batch_size=1,
+            iteration=0,
+        )
     assert exc_info.value.retryable is False
     # The original ValueError is preserved on __cause__ so operators
     # can still triage the underlying library exception.
@@ -77,17 +79,19 @@ def test_runtime_error_in_generate_maps_to_internal_error() -> None:
     """
     backend = BoTorchBackend()
     spec = _two_param_spec()
-    with patch(
-        "bo_engine.botorch_backend.generate_next_batch",
-        side_effect=RuntimeError("CUDA out of memory"),
+    with (
+        patch(
+            "bo_engine.botorch_backend.generate_next_batch",
+            side_effect=RuntimeError("CUDA out of memory"),
+        ),
+        pytest.raises(BackendInternalError) as exc_info,
     ):
-        with pytest.raises(BackendInternalError) as exc_info:
-            backend.generate_suggestions(
-                spec=spec,
-                observations=[],
-                batch_size=1,
-                iteration=0,
-            )
+        backend.generate_suggestions(
+            spec=spec,
+            observations=[],
+            batch_size=1,
+            iteration=0,
+        )
     assert exc_info.value.retryable is False
     assert isinstance(exc_info.value.__cause__, RuntimeError)
 
@@ -110,11 +114,13 @@ def test_search_space_exhausted_propagates_unwrapped() -> None:
             n_total_combinations=4,
         )
 
-    with patch("bo_engine.botorch_backend.generate_next_batch", side_effect=_exhausted):
-        with pytest.raises(SearchSpaceExhaustedError):
-            backend.generate_suggestions(
-                spec=spec,
-                observations=[],
-                batch_size=10,
-                iteration=0,
-            )
+    with (
+        patch("bo_engine.botorch_backend.generate_next_batch", side_effect=_exhausted),
+        pytest.raises(SearchSpaceExhaustedError),
+    ):
+        backend.generate_suggestions(
+            spec=spec,
+            observations=[],
+            batch_size=10,
+            iteration=0,
+        )

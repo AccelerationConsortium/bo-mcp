@@ -1,4 +1,4 @@
-"""Contract tests for the ORM lazy-relationship audit (TODO 8.47).
+"""Contract tests for the ORM lazy-relationship audit.
 
 Background
 ==========
@@ -77,6 +77,8 @@ from bo_mcp_server.storage.models import (
     SuggestionModel,
     UserModel,
 )
+
+pytestmark = pytest.mark.usefixtures("fresh_database")
 
 
 @pytest_asyncio.fixture
@@ -193,18 +195,19 @@ def test_every_orm_relationship_declares_lazy_raise() -> None:
 
     A future contributor adding a new relationship without explicitly
     setting ``lazy="raise"`` would re-introduce the latent N+1 risk that
-    TODO 8.47 closed. The contract is: every relationship on every ORM
+    the audit closed. The contract is: every relationship on every ORM
     model loads via ``raise``; production reads cross-table data through
     explicit batch fetches in the repository layer.
     """
     models = [UserModel, CampaignSpecModel, CampaignModel, SuggestionModel, ResultModel]
-    offenders: list[str] = []
-    for model in models:
-        for rel in model.__mapper__.relationships:
-            if rel.lazy != "raise":
-                offenders.append(f"{model.__name__}.{rel.key} lazy={rel.lazy!r}")
+    offenders: list[str] = [
+        f"{model.__name__}.{rel.key} lazy={rel.lazy!r}"
+        for model in models
+        for rel in model.__mapper__.relationships
+        if rel.lazy != "raise"
+    ]
     assert not offenders, (
-        f"ORM relationships must declare lazy='raise' (TODO 8.47). Offending entries: {offenders}"
+        f"ORM relationships must declare lazy='raise'. Offending entries: {offenders}"
     )
 
 
@@ -214,10 +217,10 @@ def test_every_orm_relationship_declares_lazy_raise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_accidental_relationship_traversal_raises(fresh_database: None) -> None:
+async def test_accidental_relationship_traversal_raises() -> None:
     """An unmodified ``select(CampaignModel)`` cannot silently lazy-load ``.spec``.
 
-    Reproducer for the failure mode TODO 8.47 closes: a caller fetches a
+    Reproducer for the failure mode the audit closes: a caller fetches a
     campaign row, walks ``.spec``, and a per-row SELECT fires. With
     ``lazy="raise"`` the access is loud, so the regression shows up in
     tests instead of in production latency dashboards.
@@ -241,7 +244,7 @@ async def test_accidental_relationship_traversal_raises(fresh_database: None) ->
 
 
 @pytest.mark.asyncio
-async def test_list_campaigns_is_constant_query_count(fresh_database: None) -> None:
+async def test_list_campaigns_is_constant_query_count() -> None:
     """List path remains O(1) queries — spec/result counts already batch.
 
     Adding 5x more campaigns must not multiply the query count.
@@ -274,7 +277,7 @@ async def test_list_campaigns_is_constant_query_count(fresh_database: None) -> N
 
 
 @pytest.mark.asyncio
-async def test_export_campaign_constant_query_count(fresh_database: None) -> None:
+async def test_export_campaign_constant_query_count() -> None:
     """Export uses explicit repo calls — query count is independent of N(results)."""
     from bo_mcp_server.operations.export_campaign import export_campaign_operation
 
@@ -283,7 +286,7 @@ async def test_export_campaign_constant_query_count(fresh_database: None) -> Non
         with _count_select_statements() as counter:
             response = await export_campaign_operation(
                 campaign_id=str(campaigns[0]),
-                format="csv",
+                output_format="csv",
             )
         assert response.get("success") is True, response
         return counter[0]
@@ -297,7 +300,7 @@ async def test_export_campaign_constant_query_count(fresh_database: None) -> Non
 
 
 @pytest.mark.asyncio
-async def test_compare_campaigns_batches_specs(fresh_database: None) -> None:
+async def test_compare_campaigns_batches_specs() -> None:
     """Compare batches specs via ``get_by_ids`` — query count is constant."""
     from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
 

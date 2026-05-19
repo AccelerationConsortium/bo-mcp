@@ -44,7 +44,7 @@ def test_env_override_is_observed(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_invalid_use_alembic_value_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     """Typoed alembic-mode values raise instead of being silently coerced."""
     monkeypatch.setenv("USE_ALEMBIC", "maybe")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="USE_ALEMBIC"):
         Settings()
 
 
@@ -81,7 +81,7 @@ def test_repr_does_not_leak_database_credentials(monkeypatch: pytest.MonkeyPatch
     import re
 
     fake_user = "fake-user"  # synthetic fixture — never matches a real account
-    fake_pw = "fake-password-not-a-secret"  # noqa: S105 - test fixture only
+    fake_pw = "fake-password-not-a-secret"
     url = f"postgresql+asyncpg://{fake_user}:{fake_pw}@db.host/bo"
     monkeypatch.setenv("DATABASE_URL", url)
     settings = Settings()

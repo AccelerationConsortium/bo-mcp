@@ -1,4 +1,4 @@
-"""Partial-index contract for ``campaigns.status`` (TODO 8.49).
+"""Partial-index contract for ``campaigns.status``.
 
 The per-status partial indexes added in migration
 ``015_campaigns_status_partials`` only deliver the planner benefit if
@@ -82,6 +82,9 @@ _EXPECTED_PARTIAL_INDEXES: tuple[tuple[str, str], ...] = (
 )
 
 
+pytestmark = pytest.mark.usefixtures("fresh_database")
+
+
 @pytest_asyncio.fixture
 async def fresh_database() -> AsyncGenerator[None]:
     """Reset the engine + session factory between tests."""
@@ -126,9 +129,7 @@ async def _seed_campaign(status: CampaignStatus) -> str:
 
 
 @pytest.mark.asyncio
-async def test_partial_indexes_exist_with_expected_predicates(
-    fresh_database: None,
-) -> None:
+async def test_partial_indexes_exist_with_expected_predicates() -> None:
     """All four per-status partial indexes are created with the right predicates."""
     async with get_session() as session:
         rows = (
@@ -149,9 +150,7 @@ async def test_partial_indexes_exist_with_expected_predicates(
 
 
 @pytest.mark.asyncio
-async def test_active_partial_index_filters_to_matching_status(
-    fresh_database: None,
-) -> None:
+async def test_active_partial_index_filters_to_matching_status() -> None:
     """Per-status partial indexes only contain the matching status's rows.
 
     The application-side soft-delete filter and the partial predicate
@@ -181,9 +180,7 @@ async def test_active_partial_index_filters_to_matching_status(
 
 
 @pytest.mark.asyncio
-async def test_single_status_equality_query_uses_partial_index(
-    fresh_database: None,
-) -> None:
+async def test_single_status_equality_query_uses_partial_index() -> None:
     """The application's ``WHERE status = X`` shape picks the partial index.
 
     This is the load-bearing assertion: the repository emits single-status
@@ -218,9 +215,7 @@ async def test_single_status_equality_query_uses_partial_index(
 
 
 @pytest.mark.asyncio
-async def test_terminal_status_equality_query_uses_partial_index(
-    fresh_database: None,
-) -> None:
+async def test_terminal_status_equality_query_uses_partial_index() -> None:
     """Terminal-state equality queries also pick the matching partial index.
 
     Mirrors the active-poll assertion for the reporting / archive

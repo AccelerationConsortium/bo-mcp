@@ -62,12 +62,13 @@ def upgrade() -> None:
     duplicates = bind.execute(_DUPLICATE_PREFLIGHT_SQL).fetchall()
     if duplicates:
         listing = ", ".join(f"{row.api_key_hash}={row.n}" for row in duplicates)
-        raise DuplicateApiKeyHashError(
+        msg = (
             "Cannot create ix_users_api_key_hash_unique: "
             f"{len(duplicates)} api_key_hash value(s) appear more than once "
             f"in `users` ({listing}). Retire all but one account per hash, "
             "then re-run this migration."
         )
+        raise DuplicateApiKeyHashError(msg)
     op.drop_index("ix_users_api_key_hash", table_name="users")
     op.create_index(
         "ix_users_api_key_hash_unique",

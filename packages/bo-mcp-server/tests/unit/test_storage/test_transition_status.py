@@ -1,6 +1,6 @@
 """Atomic suggestion-status transition contract.
 
-TODO 8.11 follow-up: status updates used to read the row, validate
+Follow-up: status updates used to read the row, validate
 the transition in Python, then write through ``SuggestionRepository.save``.
 Two concurrent transitions from the same source state (e.g.
 ``PENDING -> ACCEPTED`` and ``PENDING -> REJECTED``) could both pass
@@ -50,12 +50,12 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 @pytest_asyncio.fixture
 async def session() -> AsyncGenerator[AsyncSession]:
     """Per-test session with FK enforcement enabled."""
-    from sqlalchemy import event  # noqa: PLC0415
+    from sqlalchemy import event
 
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
     @event.listens_for(engine.sync_engine, "connect")
-    def _enable_fks(dbapi_connection, _record) -> None:  # noqa: ANN001
+    def _enable_fks(dbapi_connection, _record) -> None:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")

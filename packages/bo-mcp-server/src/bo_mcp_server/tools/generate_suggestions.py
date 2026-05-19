@@ -45,6 +45,8 @@ async def generate_suggestions(
             with ``idempotency_replay: True`` if the same key + payload
             was seen in the last 24 hours, instead of producing a fresh
             batch of suggestions.
+        ctx: FastMCP request context used for progress notifications and
+            cancellation. Supplied automatically by the MCP runtime.
         dry_run: If True, validate the campaign is generation-ready and
             return a cheap preview (next iteration + planned batch
             size) without running the BO algorithm or persisting any

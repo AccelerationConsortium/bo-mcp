@@ -1,6 +1,6 @@
 """Restrict the ``results.suggestion_id`` unique index to active rows.
 
-Audit follow-up to TODO 8.11: the partial unique index introduced in
+Audit follow-up: the partial unique index introduced in
 migration ``012_results_suggestion_id_unique`` keyed only on
 ``suggestion_id IS NOT NULL``. After the soft-delete column landed in
 ``013_soft_delete``, that predicate kept a *soft-deleted* result row
@@ -91,7 +91,7 @@ def downgrade() -> None:
     duplicates = bind.execute(_DUPLICATE_PREFLIGHT_SQL).fetchall()
     if duplicates:
         listing = ", ".join(f"{row.suggestion_id}={row.n}" for row in duplicates)
-        raise DuplicateSuggestionIdError(
+        msg = (
             "Cannot restore the legacy ix_results_suggestion_id_unique "
             f"predicate: {len(duplicates)} suggestion_id value(s) reference "
             f"more than one results row ({listing}). The upgrade allowed a "
@@ -99,6 +99,7 @@ def downgrade() -> None:
             "same suggestion; hard-delete the superseded soft-deleted rows "
             "before re-running this downgrade."
         )
+        raise DuplicateSuggestionIdError(msg)
     op.drop_index(_INDEX_NAME, table_name="results")
     op.create_index(
         _INDEX_NAME,

@@ -10,6 +10,7 @@ module. :mod:`bo_engine.suggestions` calls
 from __future__ import annotations
 
 import torch
+from gpytorch.priors import GammaPrior
 from torch import Tensor
 
 from bo_engine.acquisition import (
@@ -138,6 +139,8 @@ def _create_multi_objective_suggestions(
         iteration: Current iteration number
         random_seed: Random seed for reproducibility
         method: Acquisition method used
+        model_warnings: Non-fatal warnings produced during model fitting that
+            should be threaded into each suggestion's provenance.
 
     Returns:
         List of SuggestionResult objects
@@ -180,7 +183,7 @@ def _create_multi_objective_suggestions(
 def _generate_multi_objective_batch(
     ctx: GenerationContext,
     *,
-    noise_prior=None,
+    noise_prior: GammaPrior | None = None,
 ) -> list[SuggestionResult]:
     """Generate suggestions for multi-objective optimization.
 
@@ -212,12 +215,13 @@ def _generate_multi_objective_batch(
     log_flags = [obj.log_transform for obj in spec.objectives]
     for idx, (flag, mini) in enumerate(zip(log_flags, minimize_mask.tolist(), strict=True)):
         if flag and not mini:
-            raise ValueError(
+            msg = (
                 f"ObjectiveSpec.log_transform=True is only supported for "
                 f"minimize=True objectives (objective[{idx}] "
                 f"'{spec.objectives[idx].name}' is maximize). Flip the "
                 "objective definition or pre-transform the data."
             )
+            raise ValueError(msg)
 
     # ``auto_shift_for_log`` is a single-objective-only opt-in. The
     # multi-objective factory builds per-objective sub-models but doesn't
@@ -225,11 +229,12 @@ def _generate_multi_objective_batch(
     # Refusing the combination at the boundary keeps the contract honest
     # rather than silently fitting half the campaign on shifted data.
     if spec.auto_shift_for_log and any(log_flags):
-        raise ValueError(
+        msg = (
             "OptimizationSpec.auto_shift_for_log=True is only supported on "
             "single-objective campaigns. Drop the flag or pre-shift the "
             "non-positive observations before submitting the campaign."
         )
+        raise ValueError(msg)
 
     # Negate maximization objectives (BoTorch assumes minimization). Variance
     # is sign-invariant, so ``train_yvar`` flows through unchanged.

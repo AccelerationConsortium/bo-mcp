@@ -39,6 +39,7 @@ class NotFoundError(ClientError):
     """The requested entity does not exist."""
 
     def __init__(self, resource: str, identifier: str) -> None:
+        """Record the missing resource type and its identifier."""
         super().__init__(f"{resource} {identifier} not found")
         self.resource = resource
         self.identifier = identifier
@@ -48,6 +49,7 @@ class NotAuthorizedError(ClientError):
     """The caller is not authorized to access the requested entity."""
 
     def __init__(self, resource: str, identifier: str) -> None:
+        """Record the unauthorized resource type and identifier."""
         super().__init__(f"Not authorized to access {resource} {identifier}")
         self.resource = resource
         self.identifier = identifier
@@ -57,6 +59,7 @@ class InvalidIdentifierError(ClientError):
     """The supplied string cannot be parsed as a UUID."""
 
     def __init__(self, name: str, value: str) -> None:
+        """Record the identifier's label and the offending value."""
         super().__init__(f"Invalid {name} format: {value!r}")
         self.name = name
         self.value = value
@@ -85,9 +88,11 @@ async def authorize_campaign(campaign_id: str, user_id: UUID) -> Campaign:
         campaign = await repo.get(campaign_uuid)
 
     if campaign is None:
-        raise NotFoundError("Campaign", campaign_id)
+        msg = "Campaign"
+        raise NotFoundError(msg, campaign_id)
     if campaign.owner_id != user_id:
-        raise NotAuthorizedError("campaign", campaign_id)
+        msg = "campaign"
+        raise NotAuthorizedError(msg, campaign_id)
     return campaign
 
 
@@ -101,13 +106,16 @@ async def authorize_suggestion(suggestion_id: str, user_id: UUID) -> Suggestion:
 
         suggestion = await suggestion_repo.get(suggestion_uuid)
         if suggestion is None:
-            raise NotFoundError("Suggestion", suggestion_id)
+            msg = "Suggestion"
+            raise NotFoundError(msg, suggestion_id)
 
         campaign = await campaign_repo.get(suggestion.campaign_id)
         if campaign is None:
-            raise NotFoundError("Campaign", str(suggestion.campaign_id))
+            msg = "Campaign"
+            raise NotFoundError(msg, str(suggestion.campaign_id))
         if campaign.owner_id != user_id:
-            raise NotAuthorizedError("suggestion", suggestion_id)
+            msg = "suggestion"
+            raise NotAuthorizedError(msg, suggestion_id)
     return suggestion
 
 
@@ -129,7 +137,8 @@ async def ensure_owned_campaigns(campaign_ids: list[str], user_id: UUID) -> None
             if campaign is None:
                 continue
             if campaign.owner_id != user_id:
-                raise NotAuthorizedError("campaign", campaign_id)
+                msg = "campaign"
+                raise NotAuthorizedError(msg, campaign_id)
 
 
 async def get_campaign_with_spec(campaign_id: str, user_id: UUID) -> tuple[Campaign, CampaignSpec]:
@@ -147,7 +156,8 @@ async def get_campaign_with_spec(campaign_id: str, user_id: UUID) -> tuple[Campa
         spec_repo = CampaignSpecRepository(session)
         spec = await spec_repo.get(campaign.spec_id)
     if spec is None:
-        raise NotFoundError("Campaign spec", str(campaign.spec_id))
+        msg = "Campaign spec"
+        raise NotFoundError(msg, str(campaign.spec_id))
     return campaign, spec
 
 
@@ -167,7 +177,8 @@ async def get_campaign_spec_by_id(spec_id: str) -> CampaignSpec:
         spec_repo = CampaignSpecRepository(session)
         spec = await spec_repo.get(spec_uuid)
     if spec is None:
-        raise NotFoundError("Spec", spec_id)
+        msg = "Spec"
+        raise NotFoundError(msg, spec_id)
     return spec
 
 
@@ -191,11 +202,13 @@ async def get_spec_for_user(spec_id: str, user_id: UUID) -> CampaignSpec:
         campaign_repo = CampaignRepository(session)
         spec = await spec_repo.get(spec_uuid)
         if spec is None:
-            raise NotFoundError("Spec", spec_id)
+            msg = "Spec"
+            raise NotFoundError(msg, spec_id)
         campaigns_for_owner, _ = await campaign_repo.list_filtered(owner_id=user_id)
     owns_campaign_with_spec = any(c.spec_id == spec_uuid for c in campaigns_for_owner)
     if not owns_campaign_with_spec:
-        raise NotFoundError("Spec", spec_id)
+        msg = "Spec"
+        raise NotFoundError(msg, spec_id)
     return spec
 
 

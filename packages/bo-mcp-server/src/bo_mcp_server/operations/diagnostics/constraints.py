@@ -14,9 +14,11 @@ from bo_engine.outcome_constraints import (
     compute_outcome_constraint_calibration,
 )
 from bo_engine.transforms import get_bounds_tensor, stack_encoded_values
+from bo_engine.types import OptimizationSpec
 
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result
+from bo_mcp_server.domain.campaign_spec import OutcomeConstraint
 
 logger = logging.getLogger(__name__)
 
@@ -65,18 +67,17 @@ def _interpret_constraint_satisfaction(metrics: ConstraintSatisfactionMetrics) -
     """Provide agent-friendly interpretation of constraint satisfaction."""
     if metrics.satisfaction_rate >= 0.95:
         return "Excellent constraint satisfaction. Almost all suggestions are feasible."
-    elif metrics.satisfaction_rate >= 0.8:
+    if metrics.satisfaction_rate >= 0.8:
         return "Good constraint satisfaction. Most suggestions are feasible."
-    elif metrics.satisfaction_rate >= 0.5:
+    if metrics.satisfaction_rate >= 0.5:
         return (
             "Moderate constraint satisfaction. Consider reviewing constraint values "
             "or expanding the feasible region."
         )
-    else:
-        return (
-            "Low constraint satisfaction. The constraints may be too restrictive. "
-            "Consider relaxing constraints or using a different optimization approach."
-        )
+    return (
+        "Low constraint satisfaction. The constraints may be too restrictive. "
+        "Consider relaxing constraints or using a different optimization approach."
+    )
 
 
 CALIBRATION_MIN_ROWS = 2
@@ -123,9 +124,9 @@ def compute_outcome_constraint_calibration_metrics(
     try:
         opt_spec = campaign_spec_to_optimization_spec(spec)
         bounds = get_bounds_tensor(opt_spec)
-        reports: list[dict[str, Any]] = []
-        for oc in spec.outcome_constraints:
-            reports.append(_per_constraint_report(oc, results, opt_spec, bounds))
+        reports: list[dict[str, Any]] = [
+            _per_constraint_report(oc, results, opt_spec, bounds) for oc in spec.outcome_constraints
+        ]
         diagnostics["outcome_constraint_calibration"] = reports
         _emit_calibration_warning(reports, diagnostics)
     except (RuntimeError, ValueError, TypeError) as exc:
@@ -137,9 +138,9 @@ def compute_outcome_constraint_calibration_metrics(
 
 
 def _per_constraint_report(
-    oc: Any,
+    oc: OutcomeConstraint,
     results: list[Result],
-    opt_spec: Any,
+    opt_spec: OptimizationSpec,
     bounds: torch.Tensor,
 ) -> dict[str, Any]:
     """Build one calibration entry for a single outcome constraint.

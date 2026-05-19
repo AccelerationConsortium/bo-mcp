@@ -10,16 +10,18 @@ suggestion-batch, and state-envelope assertions in
   way is the regression net the protocol's per-method contract relies
   on — accidental drift in any default implementation will fail here.
 * A pure-:class:`BOBackend` plugin (``_ProtocolOnlyBackend``) that does
-  not inherit from :class:`BaseBackend`. This is the entry-point
-  smoke test promised by TODO 1.69: third-party backends must remain
-  usable without :class:`BaseBackend`.
-
-Reference: TODO.md item 1.69 ("Backend plugin contract is too heavyweight").
+  not inherit from :class:`BaseBackend`. Third-party backends must
+  remain usable without :class:`BaseBackend` — :class:`BOBackend` stays
+  a structural protocol, while :class:`BaseBackend` only provides
+  default implementations of shared behavior (Sobol initial design,
+  duplicate detection, batch diversity, JSON-validated state envelope,
+  capability validation backed by ``required_features``). This file is
+  the entry-point smoke test that guards both extension paths.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from bo_engine import (
     CURRENT_STATE_ENVELOPE_VERSION,
@@ -106,7 +108,7 @@ class _FakeBackend(BaseBackend):
 class _ProtocolOnlyBackend:
     """Pure ``BOBackend`` implementation, not derived from BaseBackend.
 
-    Validates the TODO 1.69 promise that third-party plugins can satisfy
+    Validates the promise that third-party plugins can satisfy
     the protocol without inheriting from :class:`BaseBackend`. The class
     is intentionally minimal: only the members the protocol marks as
     required are filled in.
@@ -118,7 +120,7 @@ class _ProtocolOnlyBackend:
     # 8.15) so static and runtime discovery stay aligned. A backend
     # with no conditional features still has to declare the empty
     # mapping to satisfy the Protocol's ``isinstance`` check.
-    conditional_features: dict[Feature, str] = {}
+    conditional_features: ClassVar[dict[Feature, str]] = {}
 
     def validate_spec(self, spec: OptimizationSpec) -> list[str]:
         _ = spec
@@ -159,7 +161,7 @@ class _ProtocolOnlyBackend:
 
     def compute_hypervolume(self, spec, observations):  # type: ignore[no-untyped-def]
         _ = spec, observations
-        return None
+        return
 
     def detect_duplicates(self, new_params, existing_params, tolerance):  # type: ignore[no-untyped-def]
         _ = new_params, existing_params, tolerance
@@ -171,7 +173,7 @@ class _ProtocolOnlyBackend:
 
     def compute_batch_diversity(self, spec, candidates):  # type: ignore[no-untyped-def]
         _ = spec, candidates
-        return None
+        return
 
     def select_methods(self, spec, n_observations):  # type: ignore[no-untyped-def]
         _ = spec, n_observations

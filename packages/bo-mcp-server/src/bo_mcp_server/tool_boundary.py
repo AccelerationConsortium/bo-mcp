@@ -17,7 +17,7 @@ boolean flags) to be revalidated by hand. Instead, this module wraps
 ValidationError-caused ToolError into the same envelope the tool
 body would have produced if validation had been deferred.
 
-TODO 8.45: envelope wrapping is now on by default for every
+Envelope wrapping is now on by default for every
 registered tool. The previous opt-in model required new tool authors
 to remember to register in ``_TOOL_ENVELOPE_DEFAULTS`` or their
 boundary failures would leak as opaque ``ToolError`` text. The
@@ -47,6 +47,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
@@ -101,7 +102,7 @@ _DEFAULT_EXTRA: dict[str, Any] = {}
 _WRAPPED_MARKER = "_bo_mcp_envelope_wrapped"
 
 
-def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
+def install_validation_envelope_wrapper(mcp_instance: FastMCP) -> None:
     """Wrap ``mcp_instance._tool_manager.call_tool`` to convert ToolError → envelope.
 
     Idempotent: a wrapper already installed by an earlier call sets a
@@ -112,9 +113,9 @@ def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
 
     The wrapper applies to every registered tool: tools listed in
     :data:`_TOOL_ENVELOPE_OVERRIDES` get their extra polish merged in;
-    others still get the canonical envelope (TODO 8.45 — default-on).
+    others still get the canonical envelope.
     """
-    tool_manager = mcp_instance._tool_manager  # noqa: SLF001 -- the FastMCP seam
+    tool_manager = mcp_instance._tool_manager
     original = tool_manager.call_tool
     if getattr(original, _WRAPPED_MARKER, False):
         return
@@ -122,9 +123,9 @@ def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
     async def wrapped(
         name: str,
         arguments: dict[str, Any],
-        context: Any = None,
+        context: Context | None = None,
         convert_result: bool = False,
-    ) -> Any:
+    ) -> object:
         extras = _TOOL_ENVELOPE_OVERRIDES.get(name, _DEFAULT_EXTRA)
         try:
             return await original(
@@ -154,11 +155,11 @@ def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
 
     # ``setattr`` keeps ty happy: the attribute is dynamic and we
     # never type-narrow against it, just probe for it on re-entry.
-    setattr(wrapped, _WRAPPED_MARKER, True)  # noqa: B010
-    tool_manager.call_tool = wrapped
+    setattr(wrapped, _WRAPPED_MARKER, True)
+    tool_manager.call_tool = wrapped  # ty: ignore[invalid-assignment]
 
 
-def assert_all_tools_routed_through_wrapper(mcp_instance: Any) -> None:
+def assert_all_tools_routed_through_wrapper(mcp_instance: FastMCP) -> None:
     """Startup invariant: every registered tool sees the envelope wrapper.
 
     The previous opt-in model could silently regress when a new tool
@@ -171,14 +172,15 @@ def assert_all_tools_routed_through_wrapper(mcp_instance: Any) -> None:
     start so the regression surfaces in the boot log rather than on
     the first failing tool call.
     """
-    tool_manager = mcp_instance._tool_manager  # noqa: SLF001
+    tool_manager = mcp_instance._tool_manager
     call_tool = getattr(tool_manager, "call_tool", None)
     if call_tool is None or not getattr(call_tool, _WRAPPED_MARKER, False):
-        raise RuntimeError(
+        msg = (
             "MCP tool boundary wrapper is not installed; "
             "call install_validation_envelope_wrapper() before serving."
         )
-    if not getattr(tool_manager, "_tools", None):  # noqa: SLF001
+        raise RuntimeError(msg)
+    if not getattr(tool_manager, "_tools", None):
         # No tools registered yet — nothing to enforce.
         return
 

@@ -37,7 +37,8 @@ async def test_snapshot_returns_empty_without_engine(monkeypatch: pytest.MonkeyP
     # Sentinel: if anything inside ``snapshot_db_pool`` calls
     # ``_get_engine`` we'd see the engine slot mutated.
     def _fail_if_called() -> None:
-        raise AssertionError("snapshot_db_pool must not call _get_engine")
+        msg = "snapshot_db_pool must not call _get_engine"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(database, "_get_engine", _fail_if_called)
 

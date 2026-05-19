@@ -24,6 +24,7 @@ from typing import Any
 
 from bo_engine.backend import BOBackend, Feature
 from bo_engine.backend_base import required_features
+from bo_engine.types import OptimizationSpec
 
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec
@@ -51,7 +52,7 @@ _discovered_entry_points: tuple[EntryPoint, ...] = _scan_entry_points()
 
 def _refresh_discovered_backends() -> None:
     """Re-run entry-point discovery; intended for tests that mock entry points."""
-    global _discovered_entry_points  # noqa: PLW0603
+    global _discovered_entry_points
     _discovered_entry_points = _scan_entry_points()
 
 
@@ -135,7 +136,7 @@ def _assert_backend_discovered() -> None:
 _assert_backend_discovered()
 
 
-def _spec_dict_to_optimization_spec(spec_dict: dict[str, Any]):
+def _spec_dict_to_optimization_spec(spec_dict: dict[str, Any]) -> OptimizationSpec | None:
     """Best-effort coercion of a raw spec dict to an OptimizationSpec.
 
     Used by :func:`resolve_backend_name` so the backend can answer

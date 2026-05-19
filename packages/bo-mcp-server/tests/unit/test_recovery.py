@@ -1,4 +1,4 @@
-"""ID-hallucination recovery helpers (TODO 8.40).
+"""ID-hallucination recovery helpers.
 
 Background: when an LLM client supplies a typo'd UUID, the standard
 ``CAMPAIGN_NOT_FOUND`` envelope's generic recovery_action forces the

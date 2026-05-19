@@ -23,11 +23,12 @@ def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestFragmentLifecycleE2E:
     """End-to-end lifecycle test for donor/acceptor categorical campaign."""
 
     @pytest.mark.asyncio
-    async def test_fragment_campaign_should_complete_six_cycles_without_force(self, setup_database):
+    async def test_fragment_campaign_should_complete_six_cycles_without_force(self):
         """Desired behavior: normal run completes 6 cycles and returns a best pair."""
 
         owner_id = str(uuid4())

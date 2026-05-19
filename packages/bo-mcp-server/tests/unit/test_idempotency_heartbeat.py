@@ -1,10 +1,10 @@
-"""Reservation heartbeat for slow idempotent operations (TODO 8.24).
+"""Reservation heartbeat for slow idempotent operations.
 
 The pending-reservation TTL defaults to 10 minutes. SAASBO MCMC and
 large-batch generation can plausibly exceed that, at which point a
 concurrent retry would reclaim the slot and the original operation
 would surface its writes as a ``stale_owner`` envelope (the existing
-TODO 8.11 / 8.12 conflict path).
+conflict path).
 
 The heartbeat extends ``expires_at`` from inside the active context
 so the legitimately-slow caller keeps its slot. The mechanism is
@@ -93,7 +93,7 @@ async def test_extend_reservation_ttl_moves_expiry_forward() -> None:
 
 @pytest.mark.asyncio
 async def test_extend_reservation_never_shortens_existing_expiry() -> None:
-    """A heartbeat tick cannot pull ``expires_at`` backward (TODO 8.24 review).
+    """A heartbeat tick cannot pull ``expires_at`` backward.
 
     Reproducer for the off-by-design bug: the initial reservation is
     seeded 10 minutes out; a heartbeat at ~60 s with a short extension

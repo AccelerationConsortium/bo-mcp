@@ -154,9 +154,12 @@ class TestPostgresUserRepository:
             api_key_hash="hash2",
         )
 
-        with pytest.raises(IntegrityError):
+        async def _save_and_flush() -> None:
             await repo.save(user2)
             await postgres_session.flush()
+
+        with pytest.raises(IntegrityError):
+            await _save_and_flush()
 
     @pytest.mark.asyncio
     async def test_get_by_email(

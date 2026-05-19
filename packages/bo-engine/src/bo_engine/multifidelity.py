@@ -91,14 +91,12 @@ def create_multifidelity_model(
     if train_y.dim() == 1:
         train_y = train_y.unsqueeze(-1)
 
-    model = SingleTaskMultiFidelityGP(
+    return SingleTaskMultiFidelityGP(
         train_X=train_x,
         train_Y=train_y,
         outcome_transform=Standardize(m=1),
         data_fidelities=[fidelity_dim],
     )
-
-    return model
 
 
 def fit_multifidelity_model(

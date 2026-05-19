@@ -1,7 +1,7 @@
 """Tests for the outcome-constraint calibration diagnostics helper.
 
 The helper plumbs ``bo_engine.compute_outcome_constraint_calibration`` into
-the server-side diagnostics payload (TODO 1.52). These tests pin both the
+the server-side diagnostics payload. These tests pin both the
 happy-path emission and the threshold-driven WARN behaviour so agents see
 a single, actionable signal when the feasibility GP is overconfident.
 
@@ -68,25 +68,24 @@ def _balanced_results(*, campaign_id, submitted_by, threshold: float = 0.5) -> l
     """8 feasible / 8 infeasible 1-D rows that the constraint GP can separate."""
     feasible_xs = [round(0.05 * (i + 1), 4) for i in range(8)]
     infeasible_xs = [round(0.55 + 0.05 * i, 4) for i in range(8)]
-    rows = []
-    for x in feasible_xs:
-        rows.append(
-            _make_result(
-                x=x,
-                y=threshold - 0.25,
-                campaign_id=campaign_id,
-                submitted_by=submitted_by,
-            )
+    rows = [
+        _make_result(
+            x=x,
+            y=threshold - 0.25,
+            campaign_id=campaign_id,
+            submitted_by=submitted_by,
         )
-    for x in infeasible_xs:
-        rows.append(
-            _make_result(
-                x=x,
-                y=threshold + 0.25,
-                campaign_id=campaign_id,
-                submitted_by=submitted_by,
-            )
+        for x in feasible_xs
+    ]
+    rows.extend(
+        _make_result(
+            x=x,
+            y=threshold + 0.25,
+            campaign_id=campaign_id,
+            submitted_by=submitted_by,
         )
+        for x in infeasible_xs
+    )
     return rows
 
 

@@ -1,6 +1,6 @@
 """Backend auto-resolution consults :class:`BackendValidationResult`.
 
-Covers TODO 1.69's "spec-aware ``resolve_backend_name``" requirement:
+Covers the "spec-aware ``resolve_backend_name``" requirement:
 ``backend="auto"`` must ask candidate backends whether the *concrete*
 spec is compatible, not just whether the flat ``supported_features``
 set covers the coarse feature requirements.
@@ -73,7 +73,8 @@ class _RejectingBackend(BaseBackend):
             pending_points,
             progress_callback,
         )
-        raise AssertionError("rejected backend should not be invoked")
+        msg = "rejected backend should not be invoked"
+        raise AssertionError(msg)
 
 
 @pytest.fixture
@@ -86,7 +87,7 @@ def patched_backend_cache(monkeypatch):
     # Force only the env default to be discoverable so the fallback path
     # is actually exercised.
     monkeypatch.setattr(backend_module, "_get_available_backend_names", lambda: ["rejecting"])
-    yield rejecting
+    return rejecting
 
 
 def _simple_spec_dict() -> dict:
@@ -99,7 +100,8 @@ def _simple_spec_dict() -> dict:
     }
 
 
-def test_auto_resolution_consults_validate_capabilities(patched_backend_cache):
+@pytest.mark.usefixtures("patched_backend_cache")
+def test_auto_resolution_consults_validate_capabilities():
     """When the env default reports unsupported, auto falls back to BoTorch.
 
     Pre-1.69 the selector only checked ``required <= supported_features``.
@@ -126,7 +128,7 @@ def test_auto_selects_env_default_when_compatible(monkeypatch):
 
 
 def test_auto_routes_baybe_hybrid_constraint_to_botorch(monkeypatch):
-    """TODO 1.64 — BayBE rejects hybrid constraints, so ``auto`` falls back.
+    """BayBE rejects hybrid constraints, so ``auto`` falls back.
 
     A constraint over a mixed continuous/discrete parameter set is not
     expressible as a BayBE ``ContinuousLinearConstraint`` (numerical_only)

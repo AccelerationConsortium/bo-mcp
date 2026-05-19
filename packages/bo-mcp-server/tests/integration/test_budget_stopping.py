@@ -1,4 +1,4 @@
-"""Integration tests for budget / convergence-based stopping (TODO 1.44).
+"""Integration tests for budget / convergence-based stopping.
 
 The server-side ``generate_suggestions`` operation must respect three
 ``OptimizationSpec`` budgets:
@@ -26,13 +26,15 @@ import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
 
+pytestmark = pytest.mark.usefixtures("setup_database")
+
 
 def _to_result_inputs(results: list[dict[str, Any]]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
 @pytest.mark.asyncio
-async def test_max_iterations_stops_after_budget(setup_database) -> None:
+async def test_max_iterations_stops_after_budget() -> None:
     """``max_iterations=2`` returns BUDGET_EXCEEDED on the third request.
 
     The campaign runs two normal iterations, then the third call to
@@ -88,7 +90,7 @@ async def test_max_iterations_stops_after_budget(setup_database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_max_observations_stops_at_cap(setup_database) -> None:
+async def test_max_observations_stops_at_cap() -> None:
     """Reaching ``max_observations`` blocks the next suggestion request.
 
     Observation cap is decoupled from iteration grouping, so a single
@@ -141,7 +143,7 @@ async def test_max_observations_stops_at_cap(setup_database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_suggestions_count_against_max_observations(setup_database, caplog) -> None:
+async def test_pending_suggestions_count_against_max_observations(caplog) -> None:
     """Generated-but-unsubmitted suggestions consume budget reservations.
 
     Two invariants:
@@ -222,7 +224,7 @@ async def test_pending_suggestions_count_against_max_observations(setup_database
 
 
 @pytest.mark.asyncio
-async def test_submit_results_rejects_overflow_in_atomic_mode(setup_database) -> None:
+async def test_submit_results_rejects_overflow_in_atomic_mode() -> None:
     """Atomic submissions exceeding ``max_observations`` are rejected wholesale.
 
     With cap=2 and 1 stored result, submitting two more results in atomic
@@ -295,7 +297,7 @@ async def test_submit_results_rejects_overflow_in_atomic_mode(setup_database) ->
 
 
 @pytest.mark.asyncio
-async def test_submit_results_keeps_in_budget_rows_in_non_atomic_mode(setup_database) -> None:
+async def test_submit_results_keeps_in_budget_rows_in_non_atomic_mode() -> None:
     """Non-atomic submission accepts rows up to the cap, rejects the rest."""
     from bo_mcp_server.operations.list_results import list_results_operation
     from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -356,7 +358,7 @@ async def test_submit_results_keeps_in_budget_rows_in_non_atomic_mode(setup_data
 
 
 @pytest.mark.asyncio
-async def test_submit_protects_pending_reservation_atomic(setup_database) -> None:
+async def test_submit_protects_pending_reservation_atomic() -> None:
     """Free-floating rows cannot consume a slot reserved by a pending suggestion.
 
     Scenario reported by review: ``max_observations=3``, two suggestions
@@ -443,7 +445,7 @@ async def test_submit_protects_pending_reservation_atomic(setup_database) -> Non
 
 
 @pytest.mark.asyncio
-async def test_submit_protects_pending_reservation_non_atomic(setup_database) -> None:
+async def test_submit_protects_pending_reservation_non_atomic() -> None:
     """Non-atomic mode accepts free-floating rows up to unreserved slack only."""
     from bo_mcp_server.operations.list_results import list_results_operation
     from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -500,7 +502,7 @@ async def test_submit_protects_pending_reservation_non_atomic(setup_database) ->
 
 
 @pytest.mark.asyncio
-async def test_submit_pending_suggestion_consumes_its_reservation(setup_database) -> None:
+async def test_submit_pending_suggestion_consumes_its_reservation() -> None:
     """Submitting a pending suggestion does not double-count its reservation.
 
     With cap=2, 0 existing, 2 pending, submitting *both* pending rows in a
@@ -546,7 +548,7 @@ async def test_submit_pending_suggestion_consumes_its_reservation(setup_database
 
 
 @pytest.mark.asyncio
-async def test_submit_protects_accepted_reservation(setup_database) -> None:
+async def test_submit_protects_accepted_reservation() -> None:
     """ACCEPTED suggestions reserve budget just like PENDING ones.
 
     ``Suggestion.is_actionable`` treats both PENDING and ACCEPTED as live
@@ -637,7 +639,7 @@ async def test_submit_protects_accepted_reservation(setup_database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_budget_stop_surfaces_pending_vs_accepted_breakdown(setup_database) -> None:
+async def test_budget_stop_surfaces_pending_vs_accepted_breakdown() -> None:
     """Stop response splits actionable count into pending vs accepted.
 
     A client reading only ``n_pending`` could misread an ACCEPTED reservation
@@ -690,7 +692,7 @@ async def test_budget_stop_surfaces_pending_vs_accepted_breakdown(setup_database
 
 
 @pytest.mark.asyncio
-async def test_generate_treats_accepted_suggestions_as_reservations(setup_database) -> None:
+async def test_generate_treats_accepted_suggestions_as_reservations() -> None:
     """Generation cannot evict ACCEPTED suggestions from the observation budget."""
     from bo_mcp_server.operations.submit_results import submit_results_operation
     from bo_mcp_server.operations.update_suggestion_status import (
@@ -739,9 +741,7 @@ async def test_generate_treats_accepted_suggestions_as_reservations(setup_databa
 
 
 @pytest.mark.asyncio
-async def test_mixed_batch_protects_reservation_regardless_of_order_atomic(
-    setup_database,
-) -> None:
+async def test_mixed_batch_protects_reservation_regardless_of_order_atomic() -> None:
     """A manual row ordered *before* an actionable row cannot steal its slot.
 
     Reproduces the reviewer's race: cap=2, two PENDING suggestions, no
@@ -797,9 +797,7 @@ async def test_mixed_batch_protects_reservation_regardless_of_order_atomic(
 
 
 @pytest.mark.asyncio
-async def test_mixed_batch_protects_reservation_regardless_of_order_non_atomic(
-    setup_database,
-) -> None:
+async def test_mixed_batch_protects_reservation_regardless_of_order_non_atomic() -> None:
     """Non-atomic: actionable row commits, manual row is rejected even if listed first."""
     from bo_mcp_server.operations.list_results import list_results_operation
     from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
@@ -858,7 +856,7 @@ async def test_mixed_batch_protects_reservation_regardless_of_order_non_atomic(
 
 
 @pytest.mark.asyncio
-async def test_batch_size_clamps_to_remaining_observation_budget(setup_database) -> None:
+async def test_batch_size_clamps_to_remaining_observation_budget() -> None:
     """When ``remaining_budget < batch_size`` the batch is clamped, not skipped.
 
     Reproduces the friend's report: campaign with ``max_observations=3`` and
@@ -909,7 +907,7 @@ async def test_batch_size_clamps_to_remaining_observation_budget(setup_database)
 
 
 @pytest.mark.asyncio
-async def test_no_budget_runs_indefinitely(setup_database) -> None:
+async def test_no_budget_runs_indefinitely() -> None:
     """Without budget fields the campaign behaves like the legacy path.
 
     Guards against a regression where the stopping check is wired with a

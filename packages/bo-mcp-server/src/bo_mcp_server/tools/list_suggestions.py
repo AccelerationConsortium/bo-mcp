@@ -8,7 +8,7 @@ from bo_mcp_server.tools.annotations import READ_ONLY
 
 # ``Literal`` mirrors :class:`bo_mcp_server.domain.SuggestionStatus` so the
 # generated MCP tool schema declares an ``enum`` constraint on
-# ``status_filter`` (TODO 1.54). Agents see the valid values directly
+# ``status_filter``. Agents see the valid values directly
 # from the schema instead of failing requests to discover them. Keep
 # this list aligned with ``SuggestionStatus``.
 SuggestionStatusFilter = Literal[

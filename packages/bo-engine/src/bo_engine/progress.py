@@ -74,7 +74,7 @@ def emit(callback: ProgressCallback | None, event: ProgressEvent) -> None:
         return
     try:
         callback(event)
-    except Exception:  # noqa: BLE001 — progress reporting must never crash optimization
+    except Exception:
         # A bug in the consumer (e.g. broken MCP session) must not
         # propagate into the BO loop. Log via the standard logger so
         # the failure is observable without taking the operation down.

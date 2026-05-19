@@ -58,7 +58,7 @@ jobs:
   # These tests must always pass and run quickly (< 5 min total).
   # The marker expression deselects integration/slow/docker/postgres/nightly
   # suites so the PR gate stays under the 5-minute budget. Integration tests
-  # are exercised in a separate matrix below; see TESTING.md.
+  # are exercised in a separate matrix below.
   testing-fast:
     name: Fast Tests (${{ matrix.package }}, py${{ matrix.python-version }})
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -190,7 +190,7 @@ jobs:
           echo "- Multi-objective optimization statistical properties" >> $GITHUB_STEP_SUMMARY
           echo "- TuRBO trust region dynamics" >> $GITHUB_STEP_SUMMARY
   # =============================================================================
-  # Nightly tolerance calibration drift gate (TODO 8.56)
+  # Nightly tolerance calibration drift gate
   # =============================================================================
   # Re-runs the Monte-Carlo calibration and fails the nightly build when
   # the recommended CI tolerances have drifted past the configured band

@@ -56,9 +56,10 @@ async def _reset_registry() -> AsyncGenerator[None]:
     await reset_for_tests()
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestLifecycleNotifications:
     @pytest.mark.asyncio
-    async def test_pause_emits_resource_updated(self, setup_database) -> None:
+    async def test_pause_emits_resource_updated(self) -> None:
         from bo_mcp_server.operations.campaign_lifecycle import (
             manage_campaign_lifecycle_operation,
         )
@@ -73,7 +74,7 @@ class TestLifecycleNotifications:
         assert subscriber.delivered == [campaign_uri(campaign_uuid)]
 
     @pytest.mark.asyncio
-    async def test_terminate_emits_resource_updated(self, setup_database) -> None:
+    async def test_terminate_emits_resource_updated(self) -> None:
         from bo_mcp_server.operations.campaign_lifecycle import (
             manage_campaign_lifecycle_operation,
         )
@@ -87,7 +88,7 @@ class TestLifecycleNotifications:
         assert subscriber.delivered == [campaign_uri(campaign_uuid)]
 
     @pytest.mark.asyncio
-    async def test_subscribers_to_other_campaign_are_not_notified(self, setup_database) -> None:
+    async def test_subscribers_to_other_campaign_are_not_notified(self) -> None:
         """A pause on campaign A must not leak into campaign B's subscribers."""
         from bo_mcp_server.operations.campaign_lifecycle import (
             manage_campaign_lifecycle_operation,
@@ -104,7 +105,7 @@ class TestLifecycleNotifications:
         assert subscriber_b.delivered == []
 
     @pytest.mark.asyncio
-    async def test_invalid_state_transition_does_not_notify(self, setup_database) -> None:
+    async def test_invalid_state_transition_does_not_notify(self) -> None:
         """Failed transitions must not push misleading notifications.
 
         Resuming a CREATED-but-never-RUNNING campaign is rejected with
@@ -135,6 +136,7 @@ class TestLifecycleNotifications:
         assert subscriber.delivered == []
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestPostCommitOrdering:
     """Notifications fire only after the campaign-status commit is durable.
 
@@ -145,7 +147,7 @@ class TestPostCommitOrdering:
     """
 
     @pytest.mark.asyncio
-    async def test_lifecycle_notification_does_not_fire_before_commit(self, setup_database) -> None:
+    async def test_lifecycle_notification_does_not_fire_before_commit(self) -> None:
         """The pause notification must not fire while the lifecycle session is open."""
         import asyncio as _asyncio
 
@@ -167,7 +169,7 @@ class TestPostCommitOrdering:
         assert subscriber.delivered == [campaign_uri(campaign_uuid)]
 
     @pytest.mark.asyncio
-    async def test_rollback_does_not_fire_after_commit_hook(self, setup_database) -> None:
+    async def test_rollback_does_not_fire_after_commit_hook(self) -> None:
         """An armed post-commit hook must not fire when the session rolls back.
 
         This is the contract that protects subscribers from seeing a
@@ -195,22 +197,27 @@ class TestPostCommitOrdering:
         subscriber = _FakeSession()
         await get_registry().subscribe(campaign_uri(cid), subscriber)
 
-        with pytest.raises(SQLAlchemyError):
+        async def _rollback_path() -> None:
             async with get_session() as session:
                 notify_campaign_updated_after_commit(session, cid)
                 # Raising a SQLAlchemyError sends ``get_session``
                 # straight to its ``rollback`` branch, skipping the
                 # commit. The post-commit listener therefore never
                 # fires.
-                raise SQLAlchemyError("simulated transactional failure")
+                msg = "simulated transactional failure"
+                raise SQLAlchemyError(msg)
+
+        with pytest.raises(SQLAlchemyError):
+            await _rollback_path()
         await _asyncio.sleep(0)
 
         assert subscriber.delivered == []
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestGenerateSuggestionsTransitionsToRunning:
     @pytest.mark.asyncio
-    async def test_first_suggestion_call_emits_resource_updated(self, setup_database) -> None:
+    async def test_first_suggestion_call_emits_resource_updated(self) -> None:
         """The CREATED→RUNNING transition during ``generate_suggestions`` notifies."""
         from bo_mcp_server.subscriptions import campaign_uri, get_registry
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -233,7 +240,7 @@ class TestGenerateSuggestionsTransitionsToRunning:
         assert subscriber.delivered == [campaign_uri(campaign_uuid)]
 
     @pytest.mark.asyncio
-    async def test_second_suggestion_call_does_not_notify(self, setup_database) -> None:
+    async def test_second_suggestion_call_does_not_notify(self) -> None:
         """Subscribers do not get pinged on every iteration bump.
 
         Once the campaign is already RUNNING, additional suggestion

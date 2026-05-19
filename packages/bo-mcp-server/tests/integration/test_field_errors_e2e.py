@@ -39,11 +39,12 @@ async def _build_campaign(batch_size: int = 3) -> tuple[str, list[dict[str, Any]
     return created["campaign_id"], gen["suggestions"], owner_id
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSubmitResultsFieldErrors:
     """``submit_results`` populates ``field_errors`` for row failures."""
 
     @pytest.mark.asyncio
-    async def test_missing_objective_pins_row_and_field(self, setup_database) -> None:
+    async def test_missing_objective_pins_row_and_field(self) -> None:
         from bo_mcp_server.operations.submit_results import submit_results_operation
 
         campaign_id, suggestions, owner_id = await _build_campaign(batch_size=3)
@@ -80,7 +81,7 @@ class TestSubmitResultsFieldErrors:
         assert "results[1].objective_values" not in field_errors
 
     @pytest.mark.asyncio
-    async def test_negative_uncertainty_pins_objective_key(self, setup_database) -> None:
+    async def test_negative_uncertainty_pins_objective_key(self) -> None:
         from bo_mcp_server.operations.submit_results import submit_results_operation
 
         campaign_id, suggestions, owner_id = await _build_campaign(batch_size=2)
@@ -114,7 +115,7 @@ class TestSubmitResultsFieldErrors:
         )
 
     @pytest.mark.asyncio
-    async def test_minimal_verbosity_still_carries_field_errors(self, setup_database) -> None:
+    async def test_minimal_verbosity_still_carries_field_errors(self) -> None:
         """``minimal`` verbosity exposes the field_errors map for token-budget callers.
 
         The point of field_errors is that an agent on a tight token
@@ -143,6 +144,7 @@ class TestSubmitResultsFieldErrors:
         assert "results[0].objective_values" in result["field_errors"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestValidateIntakeFieldErrors:
     """``validate_intake`` mirrors Pydantic ``loc`` into ``field_errors``."""
 
@@ -188,11 +190,12 @@ class TestValidateIntakeFieldErrors:
         assert result["field_errors"] == {}
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestCreateCampaignFieldErrors:
     """``create_campaign`` propagates field_errors from intake validation."""
 
     @pytest.mark.asyncio
-    async def test_intake_validation_failure_surfaces_field_errors(self, setup_database) -> None:
+    async def test_intake_validation_failure_surfaces_field_errors(self) -> None:
         from bo_mcp_server.tools.create_campaign import create_campaign
 
         owner_id = str(uuid4())

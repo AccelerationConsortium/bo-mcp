@@ -1,4 +1,4 @@
-"""``ResultMetadata`` schema enforcement (TODO 1.12).
+"""``ResultMetadata`` schema enforcement.
 
 Background: ``Result.metadata`` was previously a free-form ``dict[str,
 Any]`` — agents could not introspect the expected keys, and a typo

@@ -87,7 +87,8 @@ class TestValidationErrorsToFieldErrors:
             )
         except ValidationError as e:
             return e
-        raise AssertionError("expected ValidationError")
+        msg = "expected ValidationError"
+        raise AssertionError(msg)
 
     def test_groups_by_field_path(self) -> None:
         error = self._build_error()

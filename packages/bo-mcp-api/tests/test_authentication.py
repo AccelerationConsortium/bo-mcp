@@ -22,6 +22,8 @@ from __future__ import annotations
 import pytest
 from bo_mcp_server.tools.create_campaign import create_campaign
 
+pytestmark = pytest.mark.usefixtures("persisted_user")
+
 
 async def _create_campaign_for_owner(owner_id: str, name: str) -> str:
     """Create a minimal campaign via the MCP operation path.
@@ -45,7 +47,7 @@ class TestApiKeyChallenge:
     """Missing or unknown API keys must yield a generic 401 challenge."""
 
     @pytest.mark.asyncio
-    async def test_missing_api_key_returns_401(self, api_client, persisted_user) -> None:
+    async def test_missing_api_key_returns_401(self, api_client) -> None:
         response = await api_client.get("/api/campaigns")
 
         assert response.status_code == 401
@@ -53,7 +55,7 @@ class TestApiKeyChallenge:
         assert "Authentication required" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_blank_api_key_returns_401(self, api_client, persisted_user) -> None:
+    async def test_blank_api_key_returns_401(self, api_client) -> None:
         """A whitespace-only header must not be treated as a valid principal."""
         response = await api_client.get("/api/campaigns", headers={"X-API-Key": "   "})
 
@@ -61,7 +63,7 @@ class TestApiKeyChallenge:
         assert response.headers.get("www-authenticate", "").lower().startswith("apikey")
 
     @pytest.mark.asyncio
-    async def test_unknown_api_key_returns_401(self, api_client, persisted_user) -> None:
+    async def test_unknown_api_key_returns_401(self, api_client) -> None:
         response = await api_client.get(
             "/api/campaigns", headers={"X-API-Key": "no-such-key-exists"}
         )
@@ -74,14 +76,13 @@ class TestApiKeyAcceptance:
     """A valid API key must resolve the matching persisted user."""
 
     @pytest.mark.asyncio
-    async def test_valid_api_key_returns_200(
-        self, api_client, auth_headers, persisted_user
-    ) -> None:
+    async def test_valid_api_key_returns_200(self, api_client, auth_headers) -> None:
         response = await api_client.get("/api/campaigns", headers=auth_headers)
 
         assert response.status_code == 200
         data = response.json()
-        assert "campaigns" in data and "total" in data
+        assert "campaigns" in data
+        assert "total" in data
 
     @pytest.mark.asyncio
     async def test_secondary_user_key_returns_only_own_campaigns(
@@ -115,7 +116,6 @@ class TestCrossTenantAccess:
         self,
         api_client,
         auth_headers,
-        persisted_user,
         persisted_another_user,
     ) -> None:
         foreign_id = await _create_campaign_for_owner(

@@ -60,7 +60,7 @@ _RESULTS_BOUNDARY_DEFAULTS: dict[str, Any] = {
 
 
 def _validate_result_rows(
-    rows: Any,
+    rows: object,
 ) -> list[ResultSubmissionInput] | dict[str, Any]:
     """Convert a raw ``results`` payload into validated rows or an envelope.
 
@@ -120,22 +120,21 @@ def _rebase_row_validation_error(error: ValidationError, row_index: int) -> Vali
     the resulting ``field_errors`` keys read ``results[i].<field>``
     just like the operation-layer paths.
     """
-    line_errors = []
-    for err in error.errors():
-        # Pydantic's ``InitErrorDetails`` accepts a tuple ``loc`` only
-        # via the dict-based ``from_exception_data`` constructor.
-        line_errors.append(
-            {
-                "type": err["type"],
-                "loc": ("results", row_index, *err.get("loc", ())),
-                "msg": err.get("msg", ""),
-                "input": err.get("input"),
-                "ctx": err.get("ctx", {}),
-            }
-        )
+    # Pydantic's ``InitErrorDetails`` accepts a tuple ``loc`` only via the
+    # dict-based ``from_exception_data`` constructor.
+    line_errors = [
+        {
+            "type": err["type"],
+            "loc": ("results", row_index, *err.get("loc", ())),
+            "msg": err.get("msg", ""),
+            "input": err.get("input"),
+            "ctx": err.get("ctx", {}),
+        }
+        for err in error.errors()
+    ]
     return ValidationError.from_exception_data(
         title=error.title,
-        line_errors=line_errors,  # type: ignore[arg-type]
+        line_errors=line_errors,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     )
 
 

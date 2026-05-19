@@ -41,7 +41,8 @@ def alloy_strength(fe: float, ni: float, cr: float) -> float:
     # Validate constraint
     total = fe + ni + cr
     if abs(total - 1.0) > 0.01:
-        raise ValueError(f"Composition must sum to 1, got {total}")
+        msg = f"Composition must sum to 1, got {total}"
+        raise ValueError(msg)
 
     # Base strength model (simplified metallurgy)
     # Iron provides base strength
@@ -76,7 +77,8 @@ def paint_coverage(pigment: float, binder: float, solvent: float, additive: floa
     """
     total = pigment + binder + solvent + additive
     if abs(total - 1.0) > 0.01:
-        raise ValueError(f"Formulation must sum to 1, got {total}")
+        msg = f"Formulation must sum to 1, got {total}"
+        raise ValueError(msg)
 
     # Pigment provides opacity
     pigment_effect = 8 * pigment

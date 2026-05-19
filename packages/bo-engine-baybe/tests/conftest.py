@@ -11,7 +11,7 @@ from bo_engine.types import (
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def simple_spec() -> OptimizationSpec:
     """A simple 2D single-objective spec."""
     return OptimizationSpec(
@@ -24,7 +24,7 @@ def simple_spec() -> OptimizationSpec:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def categorical_spec() -> OptimizationSpec:
     """A spec with categorical and continuous parameters."""
     return OptimizationSpec(
@@ -41,7 +41,7 @@ def categorical_spec() -> OptimizationSpec:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def constrained_spec() -> OptimizationSpec:
     """A spec with a sum constraint."""
     return OptimizationSpec(

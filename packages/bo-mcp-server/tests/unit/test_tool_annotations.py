@@ -1,4 +1,4 @@
-"""MCP tools carry the right safety-hint annotations (TODO 1.45).
+"""MCP tools carry the right safety-hint annotations.
 
 Background: ``ToolAnnotations`` are advisory hints that let agents pick
 a retry policy without trial-and-error. ``readOnlyHint=True`` marks

@@ -2,7 +2,7 @@
 
 Persists a 24-hour cache of ``(tool, key) -> response`` so retries of a
 state-mutating MCP tool with the same ``idempotency_key`` return the
-prior response instead of re-executing the side effect (TODO 1.46).
+prior response instead of re-executing the side effect.
 
 The ``request_hash`` column stores a SHA256 of the canonical request
 payload so a deliberately-repeated key with a different payload is

@@ -1,4 +1,4 @@
-"""REST/MCP ``random_seed`` parity (TODO 1.66, step 1).
+"""REST/MCP ``random_seed`` parity.
 
 REST ``IntakeData`` previously defaulted ``random_seed`` to ``None``,
 while MCP ``CampaignIntakeInput`` defaulted it to ``42``. The same

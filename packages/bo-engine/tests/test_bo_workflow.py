@@ -52,7 +52,7 @@ def create_branin_currin_spec(batch_size: int = 2) -> OptimizationSpec:
     )
 
 
-def evaluate_branin_currin(spec: OptimizationSpec, suggestions: list) -> list[ObservationData]:
+def evaluate_branin_currin(suggestions: list) -> list[ObservationData]:
     """Evaluate Branin-Currin function for given suggestions."""
     observations = []
     for sugg in suggestions:
@@ -213,7 +213,7 @@ class TestMultiObjectiveWorkflow:
             suggestions, _ = generate_next_batch(
                 spec, observations, batch_size=3, iteration=iteration
             )
-            new_obs = evaluate_branin_currin(spec, suggestions)
+            new_obs = evaluate_branin_currin(suggestions)
             observations.extend(new_obs)
 
         # Compute final Pareto front
@@ -243,7 +243,7 @@ class TestMultiObjectiveWorkflow:
             suggestions, _ = generate_next_batch(
                 spec, observations, batch_size=3, iteration=iteration
             )
-            new_obs = evaluate_branin_currin(spec, suggestions)
+            new_obs = evaluate_branin_currin(suggestions)
             observations.extend(new_obs)
 
             # Compute hypervolume
@@ -290,7 +290,7 @@ class TestMultiObjectiveWorkflow:
                 assert 0.0 <= s.parameter_values["x0"] <= 1.0
                 assert 0.0 <= s.parameter_values["x1"] <= 1.0
 
-            new_obs = evaluate_branin_currin(spec, suggestions)
+            new_obs = evaluate_branin_currin(suggestions)
             observations.extend(new_obs)
 
             # Track hypervolume
@@ -354,7 +354,7 @@ class TestMultiObjectiveWorkflow:
         for run in range(n_runs):
             seed = 42 + run
             random.seed(seed)
-            np.random.seed(seed)
+            np.random.seed(seed)  # noqa: NPY002
             torch.manual_seed(seed)
             rng = np.random.default_rng(seed)
             spec = create_branin_currin_spec(batch_size=3)
@@ -365,7 +365,7 @@ class TestMultiObjectiveWorkflow:
                 suggestions, _ = generate_next_batch(
                     spec, observations, batch_size=3, iteration=iteration, rng=rng
                 )
-                new_obs = evaluate_branin_currin(spec, suggestions)
+                new_obs = evaluate_branin_currin(suggestions)
                 observations.extend(new_obs)
 
             # Get Pareto front
@@ -400,7 +400,8 @@ class TestSuggestionProvenance:
         for s in suggestions:
             assert s.generation_method == "initial_design"
             assert s.random_seed > 0
-            assert s.explanation is not None and "Sobol" in s.explanation
+            assert s.explanation is not None
+            assert "Sobol" in s.explanation
 
     def test_bo_suggestion_provenance(self):
         """BO suggestions have model and acquisition info."""
@@ -469,7 +470,7 @@ class TestEdgeCases:
                 spec, observations, batch_size=1, iteration=iteration
             )
             assert len(suggestions) == 1
-            new_obs = evaluate_branin_currin(spec, suggestions)
+            new_obs = evaluate_branin_currin(suggestions)
             observations.extend(new_obs)
 
         assert len(observations) == 3

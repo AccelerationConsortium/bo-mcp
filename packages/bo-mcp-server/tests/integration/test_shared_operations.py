@@ -65,9 +65,10 @@ async def _create_single_objective_campaign(owner_id: str, name: str) -> str:
     return result["campaign_id"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSharedOperations:
     @pytest.mark.asyncio
-    async def test_lifecycle_operation_matches_tool(self, setup_database):
+    async def test_lifecycle_operation_matches_tool(self):
         owner_id = str(uuid4())
         operation_campaign_id = await _create_single_objective_campaign(
             owner_id,
@@ -93,7 +94,7 @@ class TestSharedOperations:
         assert tool_result["previous_status"] == operation_result["previous_status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_suggestion_explanation_operation_matches_tool(self, setup_database):
+    async def test_suggestion_explanation_operation_matches_tool(self):
         owner_id = str(uuid4())
         campaign_id = await _create_single_objective_campaign(
             owner_id,
@@ -108,7 +109,7 @@ class TestSharedOperations:
         assert operation_result == tool_result
 
     @pytest.mark.asyncio
-    async def test_batch_status_operation_matches_tool(self, setup_database):
+    async def test_batch_status_operation_matches_tool(self):
         owner_id = str(uuid4())
         campaign_ids = [
             await _create_single_objective_campaign(owner_id, "Batch Shared Op Test A"),
@@ -121,7 +122,7 @@ class TestSharedOperations:
         assert operation_result == tool_result
 
     @pytest.mark.asyncio
-    async def test_compare_operation_matches_tool(self, setup_database):
+    async def test_compare_operation_matches_tool(self):
         owner_id = str(uuid4())
         campaign_a = await _create_single_objective_campaign(owner_id, "Compare Shared Op Test A")
         campaign_b = await _create_single_objective_campaign(owner_id, "Compare Shared Op Test B")
@@ -148,7 +149,7 @@ class TestSharedOperations:
         assert operation_result == tool_result
 
     @pytest.mark.asyncio
-    async def test_transfer_candidates_operation_matches_tool(self, setup_database):
+    async def test_transfer_candidates_operation_matches_tool(self):
         owner_id = str(uuid4())
         source = await create_campaign(
             {
@@ -209,7 +210,7 @@ class TestSharedOperations:
         assert operation_result == tool_result
 
     @pytest.mark.asyncio
-    async def test_list_campaigns_operation_matches_tool(self, setup_database):
+    async def test_list_campaigns_operation_matches_tool(self):
         owner_id = str(uuid4())
         await _create_single_objective_campaign(owner_id, "List Op Test A")
         await _create_single_objective_campaign(owner_id, "List Op Test B")
@@ -227,7 +228,7 @@ class TestSharedOperations:
         assert operation_result["total_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_list_results_operation_matches_tool(self, setup_database):
+    async def test_list_results_operation_matches_tool(self):
         owner_id = str(uuid4())
         campaign_id = await _create_single_objective_campaign(owner_id, "ListResults Op Test")
         await generate_suggestions(campaign_id)
@@ -244,7 +245,7 @@ class TestSharedOperations:
         assert operation_result["total_count"] == 1
 
     @pytest.mark.asyncio
-    async def test_list_suggestions_operation_matches_tool(self, setup_database):
+    async def test_list_suggestions_operation_matches_tool(self):
         owner_id = str(uuid4())
         campaign_id = await _create_single_objective_campaign(owner_id, "ListSugg Op Test")
         await generate_suggestions(campaign_id)
@@ -256,7 +257,7 @@ class TestSharedOperations:
         assert operation_result["total_count"] > 0
 
     @pytest.mark.asyncio
-    async def test_export_campaign_operation_matches_tool(self, setup_database):
+    async def test_export_campaign_operation_matches_tool(self):
         owner_id = str(uuid4())
         campaign_id = await _create_single_objective_campaign(owner_id, "Export Op Test")
         await generate_suggestions(campaign_id)
@@ -274,7 +275,7 @@ class TestSharedOperations:
         assert "param_x" in operation_result["content"]
 
     @pytest.mark.asyncio
-    async def test_update_suggestion_status_operation_matches_tool(self, setup_database):
+    async def test_update_suggestion_status_operation_matches_tool(self):
         owner_id = str(uuid4())
 
         # Create two campaigns with suggestions for independent testing
@@ -294,7 +295,7 @@ class TestSharedOperations:
         assert operation_result["previous_status"] == tool_result["previous_status"] == "pending"
 
     @pytest.mark.asyncio
-    async def test_update_suggestion_status_transition_matrix(self, setup_database):
+    async def test_update_suggestion_status_transition_matrix(self):
         """Test all valid and invalid status transitions."""
         owner_id = str(uuid4())
 
@@ -327,7 +328,7 @@ class TestSharedOperations:
         assert result["success"] is False
 
     @pytest.mark.asyncio
-    async def test_lifecycle_dry_run_returns_preview_without_mutating(self, setup_database):
+    async def test_lifecycle_dry_run_returns_preview_without_mutating(self):
         """``dry_run`` validates the transition and returns a preview only.
 
         Reference: the dry-run / planning idiom mirrors ``terraform plan`` and
@@ -358,7 +359,7 @@ class TestSharedOperations:
         assert committed["previous_status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_update_suggestion_status_dry_run_preserves_pending(self, setup_database):
+    async def test_update_suggestion_status_dry_run_preserves_pending(self):
         """Dry-run keeps the suggestion at ``pending`` so the real call still applies."""
         owner_id = str(uuid4())
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Status")
@@ -382,7 +383,7 @@ class TestSharedOperations:
         assert committed["status"] == "accepted"
 
     @pytest.mark.asyncio
-    async def test_create_campaign_dry_run_persists_nothing(self, setup_database):
+    async def test_create_campaign_dry_run_persists_nothing(self):
         """``dry_run=True`` validates the intake and emits a preview without writing."""
         owner_id = str(uuid4())
         intake = {
@@ -404,7 +405,7 @@ class TestSharedOperations:
         assert listed["total_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_dry_run_does_not_advance_state(self, setup_database):
+    async def test_generate_suggestions_dry_run_does_not_advance_state(self):
         """Dry-run reports next iteration but leaves campaign + suggestions untouched."""
         owner_id = str(uuid4())
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Generate")
@@ -425,7 +426,7 @@ class TestSharedOperations:
         assert len(first_real["suggestions"]) >= 1
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_dry_run_surfaces_pending_count(self, setup_database):
+    async def test_generate_suggestions_dry_run_surfaces_pending_count(self):
         """Dry-run reports actionable-pending count instead of pretending none exist.
 
         Previously the dry-run preview ignored ``X_pending`` and the
@@ -445,7 +446,7 @@ class TestSharedOperations:
         assert preview["preview"]["actionable_breakdown"]["pending"] == 1
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_dry_run_routes_budget_stop(self, setup_database):
+    async def test_generate_suggestions_dry_run_routes_budget_stop(self):
         """Dry-run surfaces the same stopping envelope as a real call would.
 
         Reference: ``terraform plan`` mirrors apply-time refusals; an
@@ -481,7 +482,7 @@ class TestSharedOperations:
         assert details.get("next_action_recommendation") == "terminate_campaign"
 
     @pytest.mark.asyncio
-    async def test_wrapper_validation_envelope_echoes_trace_id(self, setup_database):
+    async def test_wrapper_validation_envelope_echoes_trace_id(self):
         """Tool-wrapper validation envelopes also carry the bound trace id.
 
         ``bo_create_campaign`` runs a shape check before delegating to
@@ -510,7 +511,7 @@ class TestSharedOperations:
         assert response.get("_metadata", {}).get("trace_id") == "trace-bad-intake"
 
     @pytest.mark.asyncio
-    async def test_lifecycle_response_echoes_trace_id_metadata(self, setup_database):
+    async def test_lifecycle_response_echoes_trace_id_metadata(self):
         """Raw-dict lifecycle responses still echo trace_id in ``_metadata``.
 
         Before the operation-level decorator was added, only
@@ -534,7 +535,7 @@ class TestSharedOperations:
         assert response["_metadata"]["trace_id"] == "trace-lifecycle-echo"
 
     @pytest.mark.asyncio
-    async def test_update_suggestion_status_tool_trace_id_reaches_audit(self, setup_database):
+    async def test_update_suggestion_status_tool_trace_id_reaches_audit(self):
         """The MCP tool's ``trace_id`` arg lands on the audit event input_summary.
 
         Drives the real :func:`bo_mcp_server.tools.update_suggestion_status`
@@ -573,7 +574,7 @@ class TestSharedOperations:
         )
 
     @pytest.mark.asyncio
-    async def test_submit_results_dry_run_does_not_mutate_suggestion(self, setup_database):
+    async def test_submit_results_dry_run_does_not_mutate_suggestion(self):
         """``dry_run=True`` must leave the linked suggestion in ``pending``.
 
         Reference: the dry-run / planning idiom commits no state changes —
@@ -632,7 +633,7 @@ class TestSharedOperations:
         assert statuses_after[suggestion_id] == "completed"
 
     @pytest.mark.asyncio
-    async def test_list_campaigns_pagination(self, setup_database):
+    async def test_list_campaigns_pagination(self):
         """Test that pagination works correctly."""
         owner_id = str(uuid4())
         for i in range(5):

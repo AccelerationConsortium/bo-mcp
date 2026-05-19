@@ -1,6 +1,7 @@
 """Tests for input warping with Kumaraswamy CDF (v1.1)."""
 
 import numpy as np
+import pytest
 import torch
 
 from bo_engine import (
@@ -35,14 +36,15 @@ class TestInputTransformCreation:
 
         # Should be ChainedInputTransform
         assert hasattr(transform, "keys")  # ChainedInputTransform has keys()
-        assert "normalize" in transform.keys()  # ty: ignore[call-non-callable]
-        assert "warp" in transform.keys()  # ty: ignore[call-non-callable]
+        assert "normalize" in transform  # ty: ignore[unsupported-operator]
+        assert "warp" in transform  # ty: ignore[unsupported-operator]
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestSingleTaskModelWithWarping:
     """Test SingleTaskGP with input warping."""
 
-    def test_create_model_with_warping(self, torch_rng) -> None:
+    def test_create_model_with_warping(self) -> None:
         """Test SingleTaskGP creation with warping enabled."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -53,7 +55,7 @@ class TestSingleTaskModelWithWarping:
         # Should have ChainedInputTransform
         assert hasattr(model.input_transform, "keys")
 
-    def test_create_and_fit_model_with_warping(self, torch_rng) -> None:
+    def test_create_and_fit_model_with_warping(self) -> None:
         """Test creating and fitting SingleTaskGP with warping."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -68,7 +70,7 @@ class TestSingleTaskModelWithWarping:
             posterior = model.posterior(test_x)
             assert posterior.mean.shape == (5, 1)
 
-    def test_get_warping_parameters(self, torch_rng) -> None:
+    def test_get_warping_parameters(self) -> None:
         """Test extracting warping parameters from model."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -83,7 +85,7 @@ class TestSingleTaskModelWithWarping:
         assert params["concentration0"].shape[-1] == 2  # 2 dimensions
         assert params["concentration1"].shape[-1] == 2
 
-    def test_no_warping_parameters_without_warping(self, torch_rng) -> None:
+    def test_no_warping_parameters_without_warping(self) -> None:
         """Test that no warping parameters are returned without warping."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -95,10 +97,11 @@ class TestSingleTaskModelWithWarping:
         assert params is None
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestModelListGPWithWarping:
     """Test ModelListGP with input warping."""
 
-    def test_create_model_list_with_warping(self, torch_rng) -> None:
+    def test_create_model_list_with_warping(self) -> None:
         """Test ModelListGP creation with warping enabled."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 2, dtype=torch.double)

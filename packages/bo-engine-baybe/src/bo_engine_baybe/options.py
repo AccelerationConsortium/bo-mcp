@@ -1,4 +1,4 @@
-"""Typed BayBE-specific option schemas (TODO 1.65).
+"""Typed BayBE-specific option schemas.
 
 The neutral :class:`bo_engine.types.ParameterSpec` and
 :class:`bo_engine.types.OptimizationSpec` carry per-backend metadata via

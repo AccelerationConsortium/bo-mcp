@@ -19,6 +19,8 @@ from __future__ import annotations
 import pytest
 from bo_mcp_server.tools.create_campaign import create_campaign
 
+pytestmark = pytest.mark.usefixtures("persisted_user")
+
 
 async def _create_campaign_returning_spec(owner_id: str, name: str) -> tuple[str, str]:
     """Create a campaign and return ``(campaign_id, spec_id)`` for the caller."""
@@ -52,7 +54,6 @@ class TestSpecLookupOwnership:
         self,
         api_client,
         auth_headers,
-        persisted_user,
         persisted_another_user,
     ) -> None:
         """A foreign caller must not be able to read another tenant's spec.
@@ -77,7 +78,7 @@ class TestSpecLookupOwnership:
         assert owner_view is not None
 
     @pytest.mark.asyncio
-    async def test_missing_spec_returns_404(self, api_client, auth_headers, persisted_user) -> None:
+    async def test_missing_spec_returns_404(self, api_client, auth_headers) -> None:
         import uuid
 
         response = await api_client.get(f"/api/campaigns/spec/{uuid.uuid4()}", headers=auth_headers)
@@ -85,9 +86,7 @@ class TestSpecLookupOwnership:
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_invalid_spec_id_returns_400(
-        self, api_client, auth_headers, persisted_user
-    ) -> None:
+    async def test_invalid_spec_id_returns_400(self, api_client, auth_headers) -> None:
         response = await api_client.get("/api/campaigns/spec/not-a-uuid", headers=auth_headers)
 
         assert response.status_code == 400

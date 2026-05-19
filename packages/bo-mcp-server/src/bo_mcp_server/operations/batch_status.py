@@ -244,9 +244,7 @@ async def batch_get_status_operation(
         uuid_list = list(id_str_map.keys())
         campaigns = await campaign_repo.get_by_ids(uuid_list)
 
-        for uuid in uuid_list:
-            if uuid not in campaigns:
-                failed_ids.append(id_str_map[uuid])
+        failed_ids.extend(id_str_map[uuid] for uuid in uuid_list if uuid not in campaigns)
 
         found_uuids = list(campaigns.keys())
         spec_ids = list({c.spec_id for c in campaigns.values()})

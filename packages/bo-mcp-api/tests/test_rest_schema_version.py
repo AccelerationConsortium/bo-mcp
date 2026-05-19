@@ -1,4 +1,4 @@
-"""REST success envelopes carry ``schema_version`` (TODO 8.55 review pass).
+"""REST success envelopes carry ``schema_version``.
 
 The MCP envelope already advertises the top-level ``schema_version`` so
 older clients can detect a backwards-incompatible contract change
@@ -150,9 +150,11 @@ def _collect_route_response_models() -> list[tuple[str, type]]:
         if response_model is None:
             continue
         path = getattr(route, "path", "<unknown>")
-        for inner in _unwrap_container(response_model):
-            if isinstance(inner, type) and issubclass(inner, BaseModel):
-                pairs.append((path, inner))
+        pairs.extend(
+            (path, inner)
+            for inner in _unwrap_container(response_model)
+            if isinstance(inner, type) and issubclass(inner, BaseModel)
+        )
     return pairs
 
 
@@ -213,11 +215,12 @@ def test_resource_view_allowlist_matches_real_classes() -> None:
     from api.schemas import suggestion as suggestion_schemas
     from api.schemas.common import RESOURCE_VIEW_MODEL_NAMES
 
-    all_models: dict[str, type] = {}
-    for module in (campaign_schemas, result_schemas, suggestion_schemas):
-        for name, obj in inspect.getmembers(module):
-            if inspect.isclass(obj) and issubclass(obj, BaseModel):
-                all_models[name] = obj
+    all_models: dict[str, type] = {
+        name: obj
+        for module in (campaign_schemas, result_schemas, suggestion_schemas)
+        for name, obj in inspect.getmembers(module)
+        if inspect.isclass(obj) and issubclass(obj, BaseModel)
+    }
 
     missing = sorted(name for name in RESOURCE_VIEW_MODEL_NAMES if name not in all_models)
     assert not missing, (
@@ -245,11 +248,12 @@ def test_exempt_resource_models_do_not_inherit_envelope() -> None:
     from api.schemas import suggestion as suggestion_schemas
     from api.schemas.common import RESOURCE_VIEW_MODEL_NAMES, ResponseEnvelope
 
-    name_to_model: dict[str, type] = {}
-    for module in (campaign_schemas, result_schemas, suggestion_schemas):
-        for member_name, obj in inspect.getmembers(module):
-            if inspect.isclass(obj) and issubclass(obj, BaseModel):
-                name_to_model[member_name] = obj
+    name_to_model: dict[str, type] = {
+        member_name: obj
+        for module in (campaign_schemas, result_schemas, suggestion_schemas)
+        for member_name, obj in inspect.getmembers(module)
+        if inspect.isclass(obj) and issubclass(obj, BaseModel)
+    }
 
     for name in RESOURCE_VIEW_MODEL_NAMES:
         model = name_to_model[name]

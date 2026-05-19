@@ -1,6 +1,6 @@
 """``update_suggestion_status`` surfaces a CMR envelope on a soft-deleted row.
 
-TODO 8.11 follow-up: previously the storage layer silently no-op'd a
+Follow-up: previously the storage layer silently no-op'd a
 save against a tombstoned suggestion, so a race between an active read
 and a concurrent soft-delete could return ``success=True`` to the
 caller even though the persisted row never changed. ``SuggestionRepository.save``
@@ -35,7 +35,7 @@ from bo_mcp_server.storage.models import CampaignSpecModel
 
 async def _seed_pending_suggestion() -> Suggestion:
     """Create the user + spec + campaign + a PENDING suggestion in storage."""
-    from bo_mcp_server.domain import Campaign, CampaignStatus  # noqa: PLC0415
+    from bo_mcp_server.domain import Campaign, CampaignStatus
 
     user = User(
         name="Owner",

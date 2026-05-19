@@ -1,4 +1,4 @@
-"""Tests for TODO 8.15: ``supported_features`` ↔ runtime validation alignment.
+"""Tests: ``supported_features`` ↔ runtime validation alignment.
 
 The static ``supported_features`` set must contain only features
 the backend supports *unconditionally* (no spec-shape preconditions).
@@ -12,7 +12,7 @@ References:
 - Baybe TaskParameter behaviour:
   https://emdgroup.github.io/baybe/stable/userguide/parameters.html#TaskParameter
 - The capability tristate (SUPPORTED / IGNORED / UNSUPPORTED)
-  introduced in TODO 1.69 to replace the flat boolean set.
+  introduced to replace the flat boolean set.
 """
 
 from __future__ import annotations
@@ -132,7 +132,7 @@ class TestListCapabilitiesExposesConditionalSurface:
         """The operation must echo the backend's conditional surface."""
         # Local import to avoid any module-load-order surprises when
         # the BayBE plugin is auto-discovered.
-        from bo_mcp_server.operations.list_capabilities import (  # noqa: PLC0415
+        from bo_mcp_server.operations.list_capabilities import (
             list_capabilities_operation,
         )
 
@@ -157,8 +157,8 @@ class TestListCapabilitiesExposesConditionalSurface:
         Mirrors the strategy used by ``test_backend_resolution.py``
         which monkeypatches the same registry.
         """
-        from bo_mcp_server import backend as backend_module  # noqa: PLC0415
-        from bo_mcp_server.operations.list_capabilities import (  # noqa: PLC0415
+        from bo_mcp_server import backend as backend_module
+        from bo_mcp_server.operations.list_capabilities import (
             list_capabilities_operation,
         )
 

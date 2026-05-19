@@ -1,4 +1,4 @@
-"""Global error sanitization for the REST transport (TODO 8.18).
+"""Global error sanitization for the REST transport.
 
 The audit found two leak surfaces:
 
@@ -89,19 +89,21 @@ class _ExplodingError(RuntimeError):
 
 
 @pytest_asyncio.fixture
-async def exploding_api_client(setup_database) -> AsyncGenerator[AsyncClient]:
+async def exploding_api_client(request: pytest.FixtureRequest) -> AsyncGenerator[AsyncClient]:
     """API client whose ``/explode`` route always raises.
 
     The fixture mounts a fresh app with an extra router so the
     global :class:`Exception` handler is exercised end-to-end without
     needing to corrupt a real route in production code.
     """
+    request.getfixturevalue("setup_database")
     app = create_app()
     router = APIRouter()
 
     @router.get("/explode")
     async def explode() -> dict:
-        raise _ExplodingError("leak-me: /Users/secret/path/to/file.py line 42 openpyxl=3.1.2")
+        msg = "leak-me: /Users/secret/path/to/file.py line 42 openpyxl=3.1.2"
+        raise _ExplodingError(msg)
 
     app.include_router(router)
     async with AsyncClient(

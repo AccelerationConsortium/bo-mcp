@@ -47,10 +47,7 @@ def get_device() -> torch.device:
         return _DEVICE_CACHE
 
     # Only use CUDA for GPU acceleration (MPS doesn't support float64)
-    if torch.cuda.is_available():
-        _DEVICE_CACHE = torch.device("cuda")
-    else:
-        _DEVICE_CACHE = torch.device("cpu")
+    _DEVICE_CACHE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     return _DEVICE_CACHE
 

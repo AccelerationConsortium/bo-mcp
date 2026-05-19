@@ -1,9 +1,9 @@
-"""Resource handlers raise typed errors instead of returning text envelopes (TODO 8.43).
+"""Resource handlers raise typed errors instead of returning text envelopes.
 
 Background: MCP resources previously returned bare ``"Error: ..."``
 strings while MCP tools returned ``{"success": false, "error": {...}}``.
 Agents had to maintain two parsers; mixed-format errors are a known
-failure mode for LLM agents. An earlier pass (TODO 1.9) unified the
+failure mode for LLM agents. An earlier pass unified the
 shape by returning the JSON envelope as the resource body — but
 clients that route on the MCP protocol's success/error flag still saw
 the read as successful and missed the failure.

@@ -57,7 +57,7 @@ def compute_loo_cv_metrics(
     """
     # Import locally to break the cyclic import between this module and
     # :mod:`bo_engine.diagnostics` (which re-exports these functions).
-    from bo_engine.diagnostics import LOOCVMetrics  # noqa: PLC0415
+    from bo_engine.diagnostics import LOOCVMetrics
 
     train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
 
@@ -115,7 +115,7 @@ def compute_loo_cv_metrics(
             std_err = (pred_mean - test_y_fold).abs() / (pred_var.sqrt() + NUMERICAL_EPSILON)
             standardized_errors.append(std_err.item())
 
-        except (RuntimeError, ValueError, TypeError) as e:  # noqa: S112 - intentionally skip failed folds
+        except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("LOO-CV fold %d failed to fit: %s: %s", fold_idx, type(e).__name__, e)
             continue
 
@@ -186,7 +186,7 @@ def compute_loo_cv_for_model(
         LOOCVMetrics for single-objective models, or
         Dictionary mapping objective index to LOOCVMetrics for multi-objective
     """
-    from bo_engine.diagnostics import LOOCVMetrics  # noqa: PLC0415
+    from bo_engine.diagnostics import LOOCVMetrics
 
     if isinstance(model, SingleTaskGP):
         cv_folds = gen_loo_cv_folds(train_X=train_x, train_Y=train_y)

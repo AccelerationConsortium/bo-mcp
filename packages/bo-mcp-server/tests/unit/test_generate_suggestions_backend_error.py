@@ -1,4 +1,4 @@
-"""Generation operation maps :class:`BackendError` to typed envelopes (TODO 8.13).
+"""Generation operation maps :class:`BackendError` to typed envelopes.
 
 When the backend raises one of the typed
 :class:`bo_engine.backend_base.BackendError` subclasses, the

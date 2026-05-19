@@ -106,7 +106,7 @@ def create_branin_currin_spec(batch_size: int = DEFAULT_BATCH_SIZE) -> Optimizat
     )
 
 
-def evaluate_branin_currin(spec: OptimizationSpec, suggestions: list[Any]) -> list[ObservationData]:
+def evaluate_branin_currin(suggestions: list[Any]) -> list[ObservationData]:
     """Evaluate Branin-Currin function for given suggestions."""
     observations = []
     for sugg in suggestions:
@@ -139,7 +139,7 @@ def run_single_calibration(
         suggestions, _ = generate_next_batch(
             spec, observations, batch_size=batch_size, iteration=iteration
         )
-        new_obs = evaluate_branin_currin(spec, suggestions)
+        new_obs = evaluate_branin_currin(suggestions)
         observations.extend(new_obs)
 
         # Compute metrics
@@ -169,7 +169,6 @@ def run_single_calibration(
 
 
 def compute_tolerance_report(
-    results: list[CalibrationResult],
     metric_name: str,
     values: list[float],
     is_upper_bound: bool = True,
@@ -191,10 +190,7 @@ def compute_tolerance_report(
             recommended_ci = percentile_values[1] * 0.9
         else:
             recommended_ci = values_array.min() * 0.9
-        if 5 in percentile_values:
-            recommended_nightly = percentile_values[5]
-        else:
-            recommended_nightly = values_array.min()
+        recommended_nightly = percentile_values[5] if 5 in percentile_values else values_array.min()
 
     return ToleranceReport(
         metric_name=metric_name,
@@ -235,22 +231,19 @@ def run_calibration(
         print()
 
     # Compute reports for each metric
-    reports = {
+    return {
         "pareto_max": compute_tolerance_report(
-            results, "pareto_max", [r.pareto_max for r in results], is_upper_bound=True
+            "pareto_max", [r.pareto_max for r in results], is_upper_bound=True
         ),
         "pareto_size": compute_tolerance_report(
-            results, "pareto_size", [float(r.pareto_size) for r in results], is_upper_bound=False
+            "pareto_size", [float(r.pareto_size) for r in results], is_upper_bound=False
         ),
         "final_hypervolume": compute_tolerance_report(
-            results,
             "final_hypervolume",
             [r.final_hypervolume for r in results],
             is_upper_bound=False,
         ),
     }
-
-    return reports
 
 
 def print_report(reports: dict[str, ToleranceReport]) -> None:
@@ -260,7 +253,7 @@ def print_report(reports: dict[str, ToleranceReport]) -> None:
     print("=" * 70)
     print()
 
-    for _name, report in reports.items():
+    for report in reports.values():
         print(f"Metric: {report.metric_name}")
         print("-" * 40)
         print(f"  Mean:   {report.mean:.4f}")
@@ -313,7 +306,7 @@ def save_report(reports: dict[str, ToleranceReport], output_path: Path) -> None:
         for name, report in reports.items()
     }
 
-    with open(output_path, "w") as f:
+    with Path(output_path).open("w") as f:
         json.dump(data, f, indent=2)
 
     print(f"Report saved to: {output_path}")

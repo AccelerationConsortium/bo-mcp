@@ -50,8 +50,8 @@ async def _build_campaign_with_suggestions(
     batch_size: int = 2,
 ) -> tuple[str, list[dict[str, Any]], str]:
     """Create a campaign and generate ``batch_size`` PENDING suggestions."""
-    from bo_mcp_server.tools.create_campaign import create_campaign  # noqa: PLC0415
-    from bo_mcp_server.tools.generate_suggestions import generate_suggestions  # noqa: PLC0415
+    from bo_mcp_server.tools.create_campaign import create_campaign
+    from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
     owner_id = str(uuid4())
     intake = {
@@ -75,7 +75,7 @@ def _patch_transition_to_fail_for(
     phase-2 atomic UPDATE. Other suggestions still transition
     normally so the ``continue_on_error`` path can be exercised.
     """
-    from bo_mcp_server.storage.repositories import SuggestionRepository  # noqa: PLC0415
+    from bo_mcp_server.storage.repositories import SuggestionRepository
 
     original = SuggestionRepository.transition_status
 
@@ -103,7 +103,7 @@ def _patch_get_to_simulate_soft_delete(
     filter ``deleted_at IS NULL``, so the production behaviour after
     a real soft-delete is exactly this: ``get()`` returns ``None``.
     """
-    from bo_mcp_server.storage.repositories import SuggestionRepository  # noqa: PLC0415
+    from bo_mcp_server.storage.repositories import SuggestionRepository
 
     original = SuggestionRepository.get
 
@@ -124,11 +124,11 @@ class TestSubmitResultsTransitionRace:
     ) -> None:
         """Strict mode treats a lost transition as a full-batch conflict."""
         _ = setup_database
-        from bo_mcp_server.operations.list_results import list_results_operation  # noqa: PLC0415
-        from bo_mcp_server.operations.list_suggestions import (  # noqa: PLC0415
+        from bo_mcp_server.operations.list_results import list_results_operation
+        from bo_mcp_server.operations.list_suggestions import (
             list_suggestions_operation,
         )
-        from bo_mcp_server.operations.submit_results import (  # noqa: PLC0415
+        from bo_mcp_server.operations.submit_results import (
             submit_results_operation,
         )
 
@@ -169,8 +169,8 @@ class TestSubmitResultsTransitionRace:
     ) -> None:
         """``continue_on_error`` records the rest of the batch and skips the conflict."""
         _ = setup_database
-        from bo_mcp_server.operations.list_results import list_results_operation  # noqa: PLC0415
-        from bo_mcp_server.operations.submit_results import (  # noqa: PLC0415
+        from bo_mcp_server.operations.list_results import list_results_operation
+        from bo_mcp_server.operations.submit_results import (
             submit_results_operation,
         )
 
@@ -227,8 +227,8 @@ class TestSubmitResultsSoftDeleteBetweenPhases:
     ) -> None:
         """Strict mode rejects the whole batch and persists nothing."""
         _ = setup_database
-        from bo_mcp_server.operations.list_results import list_results_operation  # noqa: PLC0415
-        from bo_mcp_server.operations.submit_results import (  # noqa: PLC0415
+        from bo_mcp_server.operations.list_results import list_results_operation
+        from bo_mcp_server.operations.submit_results import (
             submit_results_operation,
         )
 
@@ -270,8 +270,8 @@ class TestSubmitResultsSoftDeleteBetweenPhases:
         acknowledgement via ``continue_on_error``.
         """
         _ = setup_database
-        from bo_mcp_server.operations.list_results import list_results_operation  # noqa: PLC0415
-        from bo_mcp_server.operations.submit_results import (  # noqa: PLC0415
+        from bo_mcp_server.operations.list_results import list_results_operation
+        from bo_mcp_server.operations.submit_results import (
             submit_results_operation,
         )
 

@@ -14,7 +14,7 @@ the same structured envelope MCP tools already use
 correlated server-side log carrying the request id so operators can
 pivot from the sanitized client response back to the full traceback.
 
-References
+References:
 ----------
 * RFC 9110 §15.6.1 (500 Internal Server Error): the appropriate
   status for unhandled server-side failures.
@@ -82,7 +82,12 @@ async def handle_corrupted_json_column(request: Request, exc: Exception) -> JSON
     intact: the response carries the column name but never the raw
     payload bytes, and the full excerpt stays in the server log.
     """
-    assert isinstance(exc, CorruptedJsonColumnError)
+    if not isinstance(exc, CorruptedJsonColumnError):
+        msg = (
+            f"corrupted_json_column_handler dispatched on unexpected type "
+            f"{type(exc).__name__}; registered routing is broken."
+        )
+        raise TypeError(msg)
     request_id = _current_request_id(request)
     logger.error(
         "Corrupted JSON column on %s %s (request_id=%s, column=%s)",
@@ -149,7 +154,12 @@ async def handle_http_exception(request: Request, exc: Exception) -> JSONRespons
     only dispatches :class:`~starlette.exceptions.HTTPException`
     subclasses here, so the cast inside is safe.
     """
-    assert isinstance(exc, StarletteHTTPException)
+    if not isinstance(exc, StarletteHTTPException):
+        msg = (
+            f"http_exception_handler dispatched on unexpected type "
+            f"{type(exc).__name__}; registered routing is broken."
+        )
+        raise TypeError(msg)
     request_id = _current_request_id(request)
     response = JSONResponse(
         status_code=exc.status_code,
@@ -183,7 +193,12 @@ async def handle_request_validation_error(request: Request, exc: Exception) -> J
     only dispatches :class:`RequestValidationError` here, so the cast
     inside is safe.
     """
-    assert isinstance(exc, RequestValidationError)
+    if not isinstance(exc, RequestValidationError):
+        msg = (
+            f"validation_exception_handler dispatched on unexpected type "
+            f"{type(exc).__name__}; registered routing is broken."
+        )
+        raise TypeError(msg)
     request_id = _current_request_id(request)
     response = JSONResponse(
         status_code=422,

@@ -182,13 +182,12 @@ def compute_sensitivity(
     robustness_score = 1.0 - min(overall_sensitivity, 1.0)
 
     # Generate warnings and recommendations
-    warnings: list[str] = []
     high_sens_params = [p for p in param_sensitivities if p.sensitivity_level == "high"]
-    for p in high_sens_params:
-        warnings.append(
-            f"Parameter '{p.name}' is highly sensitive (effect size: {p.effect_size:.4f}). "
-            f"Precise control is important."
-        )
+    warnings: list[str] = [
+        f"Parameter '{p.name}' is highly sensitive (effect size: {p.effect_size:.4f}). "
+        f"Precise control is important."
+        for p in high_sens_params
+    ]
 
     recommendation = _generate_sensitivity_recommendation(overall_sensitivity, high_sens_params)
 
@@ -457,7 +456,8 @@ def _compute_local_sensitivity(
     mean.backward()
     grad = x.grad
     if grad is None:
-        raise RuntimeError("Gradient computation failed - x.grad is None")
+        msg = "Gradient computation failed - x.grad is None"
+        raise RuntimeError(msg)
     gradients = grad.detach()
 
     # Normalize by parameter ranges
@@ -484,7 +484,7 @@ def _generate_sensitivity_recommendation(
             "The solution is highly robust. Parameter variations within typical "
             "experimental tolerances should have minimal impact on the objective."
         )
-    elif overall_sensitivity < 0.3:
+    if overall_sensitivity < 0.3:
         return (
             "The solution has moderate sensitivity. Focus precision efforts on "
             f"'{high_sens_params[0].name}' if any high-sensitivity parameters exist."
@@ -492,10 +492,9 @@ def _generate_sensitivity_recommendation(
             else "The solution has moderate sensitivity. No individual parameter "
             "dominates, so general precision is recommended."
         )
-    else:
-        high_names = ", ".join(p.name for p in high_sens_params[:3])
-        return (
-            f"The solution is sensitive to parameter variations. Prioritize precise "
-            f"control of: {high_names}. Consider exploring nearby configurations "
-            f"for more robust alternatives."
-        )
+    high_names = ", ".join(p.name for p in high_sens_params[:3])
+    return (
+        f"The solution is sensitive to parameter variations. Prioritize precise "
+        f"control of: {high_names}. Consider exploring nearby configurations "
+        f"for more robust alternatives."
+    )

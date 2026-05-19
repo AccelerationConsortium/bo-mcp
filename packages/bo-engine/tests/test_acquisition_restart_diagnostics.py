@@ -1,6 +1,6 @@
 """Tests for per-restart diagnostics in ``optimize_acquisition``.
 
-Captures the contract from TODO 1.51: the multi-start optimizer must
+Captures the contract: the multi-start optimizer must
 expose per-restart acquisition values so we can detect "widespread local
 minima" — the failure mode where every restart converges to the same
 acquisition basin and the BO loop loses its exploration safety net.

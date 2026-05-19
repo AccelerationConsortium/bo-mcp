@@ -243,7 +243,7 @@ class TestMultiFidelitySuggestions:
             raw_samples=64,
         )
 
-        candidates, _, metadata = generate_multifidelity_suggestions(
+        candidates, _, _metadata = generate_multifidelity_suggestions(
             train_x,
             train_y,
             bounds,
@@ -254,7 +254,8 @@ class TestMultiFidelitySuggestions:
         # Note: During optimization, MF methods may suggest lower fidelities
         # This test just verifies the generation runs successfully
         assert candidates.shape == (2, 7)
-        assert (candidates >= 0).all() and (candidates <= 1).all()
+        assert (candidates >= 0).all()
+        assert (candidates <= 1).all()
 
     @pytest.mark.slow
     def test_mfkg_exploits_cheap_evaluations(self) -> None:
@@ -294,7 +295,8 @@ class TestMultiFidelitySuggestions:
         # With 4 suggestions, at least one might be low fidelity
         # But this is not guaranteed, so just verify valid output
         fidelities = candidates[:, 6]
-        assert (fidelities >= 0).all() and (fidelities <= 1).all()
+        assert (fidelities >= 0).all()
+        assert (fidelities <= 1).all()
 
 
 @pytest.mark.tutorial

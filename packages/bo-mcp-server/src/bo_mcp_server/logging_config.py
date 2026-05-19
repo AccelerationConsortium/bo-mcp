@@ -150,10 +150,12 @@ class PiiRedactionFilter(logging.Filter):
     """
 
     def __init__(self, redact: bool = True) -> None:
+        """Configure whether the filter redacts sensitive structured-extra keys."""
         super().__init__()
         self._redact = redact
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Redact structured-extra keys flagged in :data:`_REDACTED_KEYS` on the record."""
         if not self._redact:
             return True
         for key in record.__dict__:
@@ -181,6 +183,7 @@ class CorrelationIdFilter(logging.Filter):
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Ensure correlation-id fields exist on the record, defaulting to ``None``."""
         for key in self._FIELDS:
             if not hasattr(record, key):
                 setattr(record, key, None)
@@ -214,9 +217,7 @@ def _should_redact_sensitive_fields() -> bool:
     """
     if _env_bool(_LOG_DISABLE_PII_REDACTION_ENV):
         return False
-    if _env_bool(_LEGACY_LOG_INCLUDE_PARAMETER_NAMES_ENV):
-        return False
-    return True
+    return not _env_bool(_LEGACY_LOG_INCLUDE_PARAMETER_NAMES_ENV)
 
 
 def _build_json_handler() -> logging.Handler:
@@ -260,7 +261,7 @@ def configure_logging(
     # should not accumulate emitters and double-print every record.
     # The list() snapshot is required: ``removeHandler`` mutates
     # ``root.handlers`` and iterating it directly skips entries.
-    for existing in list(root.handlers):  # noqa: S7504 - mutation-safe snapshot
+    for existing in list(root.handlers):
         root.removeHandler(existing)
     root.addHandler(handler)
     root.setLevel(log_level)
@@ -282,9 +283,9 @@ def get_logger(name: str) -> logging.Logger:
 
 
 __all__: list[Any] = [
-    "CorrelationIdFilter",
     "DEFAULT_LOG_FORMAT",
     "DEFAULT_LOG_LEVEL",
+    "CorrelationIdFilter",
     "PiiRedactionFilter",
     "configure_logging",
     "get_logger",

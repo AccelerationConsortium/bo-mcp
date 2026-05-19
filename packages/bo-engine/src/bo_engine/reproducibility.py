@@ -143,9 +143,11 @@ class ReproducibilityManager:
         numpy_seed = _derive_seed(master, "numpy")
         python_seed = _derive_seed(master, "python")
 
-        # Set seeds
+        # Set seeds. ``np.random.seed`` (global state) is intentional —
+        # downstream libraries (BoTorch, scipy) still consume the global
+        # numpy RNG, so a ``Generator`` instance would not seed them.
         torch.manual_seed(torch_seed)
-        np.random.seed(numpy_seed)
+        np.random.seed(numpy_seed)  # noqa: NPY002
         random.seed(python_seed)
 
         # Set CUDA seeds if available
@@ -227,9 +229,8 @@ class ReproducibilityManager:
         if not self._config.deterministic_algorithms:
             warnings.append("Deterministic algorithms disabled. Results may vary between runs.")
 
-        if torch.cuda.is_available():
-            if not torch.backends.cudnn.deterministic:
-                warnings.append("cuDNN deterministic mode not set. GPU operations may vary.")
+        if torch.cuda.is_available() and not torch.backends.cudnn.deterministic:
+            warnings.append("cuDNN deterministic mode not set. GPU operations may vary.")
 
         device = get_device()
         if device.type == "cuda" and not os.environ.get("CUBLAS_WORKSPACE_CONFIG"):
@@ -300,9 +301,7 @@ def create_reproducible_sobol(
     # Scale to bounds
     lower = bounds[0]
     upper = bounds[1]
-    samples = lower + samples * (upper - lower)
-
-    return samples
+    return lower + samples * (upper - lower)
 
 
 def verify_reproducibility(
@@ -377,19 +376,18 @@ def get_reproducibility_summary(report: ReproducibilityReport) -> str:
     if report.warnings:
         lines.append("")
         lines.append("Warnings:")
-        for w in report.warnings:
-            lines.append(f"  - {w}")
+        lines.extend(f"  - {w}" for w in report.warnings)
 
     if report.seed_log:
         lines.append("")
         lines.append("Recent Seeds (last 3 iterations):")
-        for seeds in report.seed_log[-3:]:
-            lines.append(
-                f"  Iter {seeds.iteration}: "
-                f"init={seeds.initial_design_seed}, "
-                f"model={seeds.model_fit_seed}, "
-                f"acq={seeds.acquisition_opt_seed}"
-            )
+        lines.extend(
+            f"  Iter {seeds.iteration}: "
+            f"init={seeds.initial_design_seed}, "
+            f"model={seeds.model_fit_seed}, "
+            f"acq={seeds.acquisition_opt_seed}"
+            for seeds in report.seed_log[-3:]
+        )
 
     return "\n".join(lines)
 

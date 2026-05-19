@@ -56,6 +56,7 @@ class OperationError(Exception):
         message: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
+        """Record the structured error code, human-readable message and detail dict."""
         self.code = code
         self.error_message = message  # avoid shadowing Exception.args
         self.details = details
@@ -74,6 +75,7 @@ class CampaignNotFoundError(OperationError):
     """Raised when a campaign is not found."""
 
     def __init__(self, campaign_id: str) -> None:
+        """Build a CAMPAIGN_NOT_FOUND error for the given campaign id."""
         super().__init__(
             ErrorCode.CAMPAIGN_NOT_FOUND,
             message=f"Campaign {campaign_id} not found",
@@ -369,7 +371,7 @@ def make_error_response(
     # Lazy import to break the otherwise-circular dependency: the
     # response_formatter pulls ``__version__`` from the package init,
     # which (transitively) imports this module via tool registration.
-    from bo_mcp_server.response_formatter import (  # noqa: PLC0415 - cycle break
+    from bo_mcp_server.response_formatter import (
         RESPONSE_SCHEMA_VERSION,
     )
 
@@ -613,6 +615,7 @@ class ResourceOperationError(Exception):
         message: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
+        """Build the structured envelope and JSON-serialize it for the FastMCP layer."""
         self.code = code
         self.error_message = message
         self.details = details

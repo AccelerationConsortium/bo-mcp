@@ -7,9 +7,11 @@ existing bo-engine modules without duplicating logic.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import torch
+from botorch.models import SingleTaskGP
+from botorch.models.model_list_gp_regression import ModelListGP
 
 from bo_engine.backend import (
     Feature,
@@ -99,6 +101,7 @@ class BoTorchBackend(BaseBackend):
 
     @property
     def name(self) -> str:
+        """Backend identifier used by the registry."""
         return "botorch"
 
     @property
@@ -148,6 +151,7 @@ class BoTorchBackend(BaseBackend):
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
+        """Build a GP, optimize the acquisition function and return the next batch."""
         # Accept either the new envelope or a legacy bare payload.
         inner_state = self.unwrap_state(backend_state)
         turbo_state = None
@@ -183,7 +187,7 @@ class BoTorchBackend(BaseBackend):
             )
         except SearchSpaceExhaustedError:
             raise
-        except Exception as exc:  # noqa: BLE001 — re-raised after typed wrap
+        except Exception as exc:
             raise wrap_backend_exception(exc, backend_name=self.name) from exc
 
         emit(
@@ -254,6 +258,7 @@ class BoTorchBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> float | None:
+        """Return the hypervolume of the observed Pareto front, or ``None`` if not applicable."""
         if spec.n_objectives < 2:
             return None
         if len(observations) < 2:
@@ -289,6 +294,7 @@ class BoTorchBackend(BaseBackend):
         new_observations: list[ObservationData],
         backend_state: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
+        """Advance the TuRBO trust-region state given newly observed results."""
         if spec.n_objectives != 1 or backend_state is None:
             return None
 
@@ -308,6 +314,7 @@ class BoTorchBackend(BaseBackend):
         spec: OptimizationSpec,
         n_observations: int,
     ) -> dict[str, Any]:
+        """Return method metadata (model type, acquisition, transforms) for diagnostics."""
         ms = select_methods(spec, n_observations)
         return {
             "model_type": ms.model_type,
@@ -500,19 +507,18 @@ class BoTorchBackend(BaseBackend):
                 include_shap=False,
             )
             loo = self._loo_cv(model, train_x, train_y, obj_names, len(observations))
-
-            return {
-                "model_correlation": corr,
-                "feature_importance": fi,
-                "loo_cv_metrics": loo,
-            }
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Model diagnostics failed: %s", e)
             return empty
+        return {
+            "model_correlation": corr,
+            "feature_importance": fi,
+            "loo_cv_metrics": loo,
+        }
 
     def _model_correlation(
         self,
-        model: Any,
+        model: SingleTaskGP | ModelListGP,
         train_x: torch.Tensor,
         train_y: torch.Tensor,
         is_single: bool,
@@ -531,7 +537,7 @@ class BoTorchBackend(BaseBackend):
 
     def _loo_cv(
         self,
-        model: Any,
+        model: SingleTaskGP | ModelListGP,
         train_x: torch.Tensor,
         train_y: torch.Tensor,
         obj_names: list[str],
@@ -544,15 +550,16 @@ class BoTorchBackend(BaseBackend):
             loo = compute_loo_cv_for_model(model, train_x, train_y)
             loo_by_obj: dict[str, dict[str, float]] = {}
             if isinstance(loo, dict):
+                loo_dict = cast("dict[int, LOOCVMetrics]", loo)
                 for idx, name in enumerate(obj_names):
-                    if idx in loo:
-                        loo_by_obj[name] = self._loo_to_dict(loo[idx])
+                    if idx in loo_dict:
+                        loo_by_obj[name] = self._loo_to_dict(loo_dict[idx])
             elif obj_names:
                 loo_by_obj[obj_names[0]] = self._loo_to_dict(loo)
-            return loo_by_obj
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("LOO-CV failed: %s", e)
             return None
+        return loo_by_obj
 
     def _compute_outlier_diagnostics(
         self,
@@ -576,28 +583,29 @@ class BoTorchBackend(BaseBackend):
                 bounds=bounds,
                 objective_names=obj_names,
             )
-            if outliers:
-                info = [
-                    {
-                        "result_index": o.index,
-                        "standardized_error": round(o.standardized_error, 2),
-                        "actual_value": round(o.actual_value, 4),
-                        "predicted_value": round(o.predicted_value, 4),
-                        "objective": o.objective_name,
-                        "parameter_values": observations[o.index].parameter_values,
-                    }
-                    for o in outliers
-                ]
-                return {
-                    "outliers": {
-                        "count": len(outliers),
-                        "outlier_results": info,
-                    }
-                }
-            return {"outliers": {"count": 0, "outlier_results": []}}
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Outlier detection failed: %s", e)
             return {"outliers": None}
+
+        if outliers:
+            info = [
+                {
+                    "result_index": o.index,
+                    "standardized_error": round(o.standardized_error, 2),
+                    "actual_value": round(o.actual_value, 4),
+                    "predicted_value": round(o.predicted_value, 4),
+                    "objective": o.objective_name,
+                    "parameter_values": observations[o.index].parameter_values,
+                }
+                for o in outliers
+            ]
+            return {
+                "outliers": {
+                    "count": len(outliers),
+                    "outlier_results": info,
+                }
+            }
+        return {"outliers": {"count": 0, "outlier_results": []}}
 
     def _compute_hyperparameters(
         self,
@@ -629,18 +637,18 @@ class BoTorchBackend(BaseBackend):
                     use_input_warping=spec.use_input_warping,
                 )
             hp = extract_hyperparameters(model, param_names)
-            return {
-                "hyperparameters": {
-                    "lengthscales": hp.lengthscales,
-                    "noise_variance": hp.noise_variance,
-                    "output_scale": hp.output_scale,
-                    "kernel_type": hp.kernel_type,
-                    "model_type": hp.model_type,
-                }
-            }
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Hyperparameter extraction failed: %s", e)
             return {"hyperparameters": None}
+        return {
+            "hyperparameters": {
+                "lengthscales": hp.lengthscales,
+                "noise_variance": hp.noise_variance,
+                "output_scale": hp.output_scale,
+                "kernel_type": hp.kernel_type,
+                "model_type": hp.model_type,
+            }
+        }
 
     def _prepare_training_data(
         self,

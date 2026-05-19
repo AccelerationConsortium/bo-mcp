@@ -71,7 +71,8 @@ class TestCampaignsRecentResource:
 
         idx_a = rendered.find("Campaign A")
         idx_b = rendered.find("Campaign B")
-        assert idx_a != -1 and idx_b != -1
+        assert idx_a != -1
+        assert idx_b != -1
         assert idx_b < idx_a, "Newest campaign must appear first"
 
     @pytest.mark.asyncio
@@ -428,7 +429,7 @@ class TestToolBoundaryDefaults:
                 self._tool_manager = _DummyManager()
 
         with pytest.raises(RuntimeError, match="not installed"):
-            assert_all_tools_routed_through_wrapper(_DummyMcp())
+            assert_all_tools_routed_through_wrapper(_DummyMcp())  # ty: ignore[invalid-argument-type]
 
     @pytest.mark.asyncio
     async def test_unregistered_tool_still_gets_envelope_on_validation_error(self) -> None:
@@ -444,7 +445,7 @@ class TestToolBoundaryDefaults:
         from bo_mcp_server.server import create_mcp_server
 
         mcp = create_mcp_server()
-        result = await mcp._tool_manager.call_tool(  # noqa: SLF001
+        result = await mcp._tool_manager.call_tool(
             "bo_list_campaigns",
             arguments={"limit": "not-an-int"},
         )

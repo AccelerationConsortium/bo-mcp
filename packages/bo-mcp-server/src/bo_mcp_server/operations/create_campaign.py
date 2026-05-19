@@ -4,6 +4,7 @@ import logging
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+from bo_engine.backend_base import BackendValidationResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.backend import get_backend, resolve_backend_name
@@ -70,7 +71,7 @@ def _intake_validation_error_response(validation: dict[str, Any]) -> dict[str, A
 
 def _capability_error_response(
     spec: CampaignSpec,
-    capabilities: Any,
+    capabilities: BackendValidationResult,
     warnings: list[str],
 ) -> dict[str, Any]:
     """Build the structured-error response for a backend capability rejection.
@@ -253,7 +254,7 @@ async def create_campaign_operation(
     # operation-owns-the-session path *and* the idempotency-owns-the-
     # session path, where the outer caller commits and a downstream
     # rollback would otherwise leave the counter inflated.
-    from bo_mcp_server.metrics import record_campaign_created_after_commit  # noqa: PLC0415
+    from bo_mcp_server.metrics import record_campaign_created_after_commit
 
     async with session_scope(session) as db:
         spec_repo = CampaignSpecRepository(db)

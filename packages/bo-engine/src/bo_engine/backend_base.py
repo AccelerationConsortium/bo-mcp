@@ -71,6 +71,7 @@ class BackendError(Exception):
     retryable: bool = False
 
     def __init__(self, message: str = "", *, cause: BaseException | None = None) -> None:
+        """Initialize the error with a message and optional underlying ``cause``."""
         super().__init__(message)
         if cause is not None:
             self.__cause__ = cause
@@ -301,10 +302,12 @@ class NormalizedProblem:
 
     @property
     def parameter_names(self) -> list[str]:
+        """Ordered list of normalized parameter names."""
         return [p.name for p in self.parameters]
 
     @property
     def objective_names(self) -> list[str]:
+        """Ordered list of normalized objective names."""
         return [o.name for o in self.objectives]
 
     def minimize_mask(self) -> torch.Tensor:
@@ -324,18 +327,17 @@ def build_normalized_problem(spec: OptimizationSpec) -> NormalizedProblem:
     ``options`` dict so per-backend parameter metadata survives the
     normalization step.
     """
-    norm_params: list[NormalizedParameter] = []
-    for p in spec.parameters:
-        norm_params.append(
-            NormalizedParameter(
-                name=p.name,
-                type=str(p.type),
-                bounds=p.bounds,
-                values=tuple(float(v) for v in p.values) if p.values is not None else None,
-                categories=tuple(p.categories) if p.categories is not None else None,
-                options=dict(p.parameter_options or {}),
-            )
+    norm_params: list[NormalizedParameter] = [
+        NormalizedParameter(
+            name=p.name,
+            type=str(p.type),
+            bounds=p.bounds,
+            values=tuple(float(v) for v in p.values) if p.values is not None else None,
+            categories=tuple(p.categories) if p.categories is not None else None,
+            options=dict(p.parameter_options or {}),
         )
+        for p in spec.parameters
+    ]
     norm_objs = tuple(
         NormalizedObjective(name=o.name, minimize=o.minimize) for o in spec.objectives
     )
@@ -366,6 +368,7 @@ class BackendStateEnvelope:
     payload: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the envelope to a plain JSON-compatible dict."""
         return {
             "backend": self.backend,
             "schema_version": int(self.schema_version),
@@ -374,6 +377,7 @@ class BackendStateEnvelope:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackendStateEnvelope:
+        """Reconstruct a :class:`BackendStateEnvelope` from a dict, validating shape."""
         if not isinstance(data, dict):
             msg = "BackendStateEnvelope expects a dict payload"
             raise TypeError(msg)
@@ -537,11 +541,11 @@ class BaseBackend(ABC):
         Backends override this to mark unsupported knobs (e.g. BayBE's
         ``turbo_config``-is-ignored behavior).
         """
-        reports: list[CapabilityReport] = []
-        for option_name in _SPEC_OPTION_KEYS:
-            if option_is_active(spec, option_name):
-                reports.append(CapabilityReport(key=option_name, status=CapabilityStatus.SUPPORTED))
-        return reports
+        return [
+            CapabilityReport(key=option_name, status=CapabilityStatus.SUPPORTED)
+            for option_name in _SPEC_OPTION_KEYS
+            if option_is_active(spec, option_name)
+        ]
 
     def validate_spec(self, spec: OptimizationSpec) -> list[str]:
         """Backward-compatible string-warning surface backed by capabilities.

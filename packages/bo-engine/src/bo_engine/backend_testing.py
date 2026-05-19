@@ -27,7 +27,7 @@ from bo_engine.backend_base import (
 from bo_engine.types import ObservationData, OptimizationSpec
 
 
-def assert_json_serializable(value: Any, *, context: str = "value") -> None:
+def assert_json_serializable(value: object, *, context: str = "value") -> None:
     """Raise ``AssertionError`` if ``value`` cannot survive ``json.dumps``."""
     try:
         json.dumps(value)
@@ -40,8 +40,10 @@ def assert_validate_capabilities(
     backend: BOBackend,
     spec: OptimizationSpec,
 ) -> BackendValidationResult:
-    """Check that ``validate_capabilities`` returns a typed
-    :class:`BackendValidationResult` and surfaces its identity field.
+    """Verify ``validate_capabilities`` returns a typed result with the expected identity.
+
+    Asserts that the call yields a :class:`BackendValidationResult` and that
+    its ``backend`` field matches ``backend.name``.
     """
     result = backend.validate_capabilities(spec)
     assert isinstance(result, BackendValidationResult), (

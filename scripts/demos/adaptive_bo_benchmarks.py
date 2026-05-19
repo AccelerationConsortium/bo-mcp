@@ -435,7 +435,8 @@ def get_benchmark(name: str, n_dims: int | None = None) -> BenchmarkFunction:
 
     if resolved_name not in BENCHMARKS:
         available = list(BENCHMARKS.keys()) + list(BENCHMARK_ALIASES.keys())
-        raise ValueError(f"Unknown benchmark '{name}'. Available benchmarks: {sorted(available)}")
+        msg = f"Unknown benchmark '{name}'. Available benchmarks: {sorted(available)}"
+        raise ValueError(msg)
 
     benchmark_class = BENCHMARKS[resolved_name]
 

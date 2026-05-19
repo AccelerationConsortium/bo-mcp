@@ -359,7 +359,8 @@ class TestAcquisitionComparison:
 
         # Both should produce valid candidates in bounds
         assert candidates_noisy.shape == (1, 2)
-        assert (candidates_noisy >= 0).all() and (candidates_noisy <= 1).all()
+        assert (candidates_noisy >= 0).all()
+        assert (candidates_noisy <= 1).all()
 
         # Acquisition value should be non-negative (EI >= 0)
         # Note: Log-EI can be negative since log(small_positive) < 0

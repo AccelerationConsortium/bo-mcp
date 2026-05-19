@@ -15,11 +15,11 @@ class Repository(ABC, Generic[T]):
     """
 
     @abstractmethod
-    async def get(self, id: UUID) -> T | None:
+    async def get(self, entity_id: UUID) -> T | None:
         """Get entity by ID.
 
         Args:
-            id: Entity UUID
+            entity_id: Entity UUID
 
         Returns:
             Entity if found, None otherwise
@@ -39,11 +39,11 @@ class Repository(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    async def delete(self, id: UUID) -> bool:
+    async def delete(self, entity_id: UUID) -> bool:
         """Delete entity by ID.
 
         Args:
-            id: Entity UUID to delete
+            entity_id: Entity UUID to delete
 
         Returns:
             True if entity was deleted, False if not found
@@ -73,7 +73,8 @@ def str_id(uuid: UUID) -> str:
 class ConcurrentModificationError(Exception):
     """Raised when optimistic locking detects a conflict."""
 
-    def __init__(self, entity_type: str, entity_id: UUID, expected_version: int):
+    def __init__(self, entity_type: str, entity_id: UUID, expected_version: int) -> None:
+        """Record the conflicting entity type, id and expected optimistic-lock version."""
         self.entity_type = entity_type
         self.entity_id = entity_id
         self.expected_version = expected_version

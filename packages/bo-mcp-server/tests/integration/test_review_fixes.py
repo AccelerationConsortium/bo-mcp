@@ -138,10 +138,7 @@ async def test_mcp_tool_schema_advertises_result_metadata_keys() -> None:
     schema = submit.inputSchema
     defs = schema.get("$defs", {})
     items = schema["properties"]["results"]["items"]
-    if "$ref" in items:
-        item_schema = defs[items["$ref"].split("/")[-1]]
-    else:
-        item_schema = items
+    item_schema = defs[items["$ref"].split("/")[-1]] if "$ref" in items else items
 
     metadata_schema = item_schema["properties"]["metadata"]
     documented_keys = {
@@ -463,7 +460,7 @@ async def test_upload_results_file_replays_idempotent_response_for_large_csv(
     n_invocations = 0
     expected_campaign = await _make_campaign(name="Upload-large-csv campaign")
 
-    async def _stub_inner(**kwargs: Any) -> dict[str, Any]:
+    async def _stub_inner(**_kwargs: Any) -> dict[str, Any]:
         nonlocal n_invocations
         n_invocations += 1
         return {"success": True, "results_created": 1, "errors": []}
@@ -514,7 +511,8 @@ def _inject_lost_race(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         if expected_version is not None:
             state["updates_triggered"] += 1
             if state["updates_triggered"] == 1:
-                raise ConcurrentModificationError("Campaign", campaign.id, expected_version)
+                msg = "Campaign"
+                raise ConcurrentModificationError(msg, campaign.id, expected_version)
         return await original_save(self, campaign, expected_version=expected_version)
 
     monkeypatch.setattr(repo_mod.CampaignRepository, "save", lost_race_save)

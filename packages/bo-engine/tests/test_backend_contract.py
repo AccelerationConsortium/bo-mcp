@@ -19,7 +19,7 @@ Reference: TODO.md item 1.69 ("Backend plugin contract is too heavyweight").
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from bo_engine import (
     CURRENT_STATE_ENVELOPE_VERSION,
@@ -118,7 +118,7 @@ class _ProtocolOnlyBackend:
     # 8.15) so static and runtime discovery stay aligned. A backend
     # with no conditional features still has to declare the empty
     # mapping to satisfy the Protocol's ``isinstance`` check.
-    conditional_features: dict[Feature, str] = {}
+    conditional_features: ClassVar[dict[Feature, str]] = {}
 
     def validate_spec(self, spec: OptimizationSpec) -> list[str]:
         _ = spec
@@ -159,7 +159,7 @@ class _ProtocolOnlyBackend:
 
     def compute_hypervolume(self, spec, observations):  # type: ignore[no-untyped-def]
         _ = spec, observations
-        return None
+        return
 
     def detect_duplicates(self, new_params, existing_params, tolerance):  # type: ignore[no-untyped-def]
         _ = new_params, existing_params, tolerance
@@ -171,7 +171,7 @@ class _ProtocolOnlyBackend:
 
     def compute_batch_diversity(self, spec, candidates):  # type: ignore[no-untyped-def]
         _ = spec, candidates
-        return None
+        return
 
     def select_methods(self, spec, n_observations):  # type: ignore[no-untyped-def]
         _ = spec, n_observations

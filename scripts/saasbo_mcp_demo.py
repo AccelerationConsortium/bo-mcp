@@ -102,16 +102,15 @@ async def main():
     n_params = 20  # Reduced for faster demo; use 50+ for real applications
     print(f"\n[3] Defining {n_params}-dimensional optimization problem...")
 
-    parameters = []
-    for i in range(n_params):
-        parameters.append(
-            {
-                "name": f"x{i}",
-                "type": "continuous",
-                "bounds": [0.0, 1.0],
-                "description": f"Parameter {i} (x0-x2 are important, rest are decoys)",
-            }
-        )
+    parameters = [
+        {
+            "name": f"x{i}",
+            "type": "continuous",
+            "bounds": [0.0, 1.0],
+            "description": f"Parameter {i} (x0-x2 are important, rest are decoys)",
+        }
+        for i in range(n_params)
+    ]
 
     campaign_config = {
         "name": "SAASBO High-Dimensional Optimization",

@@ -29,7 +29,7 @@ Design notes
   the legacy bare ``{id}`` -- so SDK quirks around URI normalization do
   not silently break subscription matching.
 
-References
+References:
 ----------
 - MCP resource-subscription spec
   https://modelcontextprotocol.io/specification/2025-06-18/server/resources#subscriptions
@@ -45,9 +45,14 @@ import weakref
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
+from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel import Server as LowlevelServer
+from mcp.server.lowlevel.server import NotificationOptions
+from mcp.types import ServerCapabilities
 from pydantic import AnyUrl
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from bo_mcp_server.metrics import SUBSCRIPTION_DROPPED, SUBSCRIPTION_SEND_RETRIES
 
@@ -199,6 +204,12 @@ class _SubscriptionRegistry:
 
 _registry = _SubscriptionRegistry()
 
+# Strong refs to fire-and-forget notification tasks. ``loop.create_task``
+# only holds a weak reference, so without anchoring the task can be GC'd
+# before it runs. ``add_done_callback(_BACKGROUND_TASKS.discard)`` removes
+# the ref once the task completes so this set stays bounded.
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
 
 def get_registry() -> _SubscriptionRegistry:
     """Module-level accessor used by server wiring and tests."""
@@ -324,7 +335,7 @@ def notify_campaign_updated_after_commit(
     sync_session = session.sync_session
     fired = False
 
-    def _on_after_commit(_: Any) -> None:
+    def _on_after_commit(_: Session) -> None:
         nonlocal fired
         if fired:
             # The hook is one-shot per arming: once a listener has
@@ -347,18 +358,20 @@ def notify_campaign_updated_after_commit(
             # synchronous test fixtures.
             asyncio.run(notify_campaign_updated(campaign_id))
             return
-        loop.create_task(notify_campaign_updated(campaign_id))
+        task = loop.create_task(notify_campaign_updated(campaign_id))
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     event.listen(sync_session, "after_commit", _on_after_commit)
 
 
 async def reset_for_tests() -> None:
     """Clear all subscriptions. Test-only helper."""
-    async with _registry._lock:  # noqa: SLF001 -- intentional test reach-in
-        _registry._subscribers.clear()  # noqa: SLF001
+    async with _registry._lock:
+        _registry._subscribers.clear()
 
 
-def _patch_subscribe_capability(server: Any) -> None:
+def _patch_subscribe_capability(server: LowlevelServer) -> None:
     """Force ``ResourcesCapability.subscribe = True`` on the lowlevel server.
 
     The MCP lowlevel server hardcodes ``subscribe=False`` in
@@ -372,16 +385,19 @@ def _patch_subscribe_capability(server: Any) -> None:
     """
     original = server.get_capabilities
 
-    def patched(*args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
-        capabilities = original(*args, **kwargs)
+    def patched(
+        notification_options: NotificationOptions,
+        experimental_capabilities: dict[str, dict[str, Any]],
+    ) -> ServerCapabilities:
+        capabilities = original(notification_options, experimental_capabilities)
         if capabilities.resources is not None:
             capabilities.resources = capabilities.resources.model_copy(update={"subscribe": True})
         return capabilities
 
-    server.get_capabilities = patched  # type: ignore[method-assign]
+    server.get_capabilities = patched  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
 
-def register_subscription_handlers(mcp_instance: Any) -> None:
+def register_subscription_handlers(mcp_instance: FastMCP) -> None:
     """Wire subscribe / unsubscribe handlers into a FastMCP instance.
 
     Registers the lowlevel handlers and patches the capability flag so
@@ -390,7 +406,7 @@ def register_subscription_handlers(mcp_instance: Any) -> None:
     behaviour the lowlevel server already provides via
     ``request_handlers[...] = handler``.
     """
-    lowlevel = mcp_instance._mcp_server  # noqa: SLF001 -- FastMCP exposes only this seam
+    lowlevel = mcp_instance._mcp_server
     registry = get_registry()
 
     @lowlevel.subscribe_resource()

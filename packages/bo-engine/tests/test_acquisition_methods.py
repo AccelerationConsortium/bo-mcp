@@ -24,18 +24,20 @@ from bo_engine import (
 
 
 @pytest.fixture
-def train_data(torch_rng) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def train_data(request: pytest.FixtureRequest) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Create sample training data."""
+    request.getfixturevalue("torch_rng")
     train_x = torch.rand(10, 2, dtype=torch.double)
     train_y = torch.rand(10, 2, dtype=torch.double)
     bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
     return train_x, train_y, bounds
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestSingleObjectiveAcquisitionMethods:
     """Test single-objective acquisition methods."""
 
-    def test_qlognei_acquisition(self, torch_rng) -> None:
+    def test_qlognei_acquisition(self) -> None:
         """Test qLogNEI (Noisy Expected Improvement) acquisition."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -55,7 +57,7 @@ class TestSingleObjectiveAcquisitionMethods:
         values = acqf(test_x)
         assert values.shape == (5,)
 
-    def test_qlogei_acquisition(self, torch_rng) -> None:
+    def test_qlogei_acquisition(self) -> None:
         """Test qLogEI (Expected Improvement) acquisition."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -129,10 +131,11 @@ class TestMultiObjectiveAcquisitionMethods:
         assert values.shape == (5,)
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestUnifiedAcquisitionCreation:
     """Test unified acquisition creation function."""
 
-    def test_auto_selects_single_objective(self, torch_rng) -> None:
+    def test_auto_selects_single_objective(self) -> None:
         """Test that AUTO selects qLogNEI for single-objective."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -197,10 +200,11 @@ class TestUnifiedAcquisitionCreation:
         assert acqf is not None
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestAcquisitionOptimization:
     """Test acquisition function optimization."""
 
-    def test_optimize_single_objective_acquisition(self, torch_rng) -> None:
+    def test_optimize_single_objective_acquisition(self) -> None:
         """Test optimization of single-objective acquisition."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -214,7 +218,7 @@ class TestAcquisitionOptimization:
             minimize=True,
         )
 
-        candidates, values = optimize_acquisition(
+        candidates, _values = optimize_acquisition(
             acqf=acqf,
             bounds=bounds,
             batch_size=3,
@@ -223,7 +227,8 @@ class TestAcquisitionOptimization:
         )
 
         assert candidates.shape == (3, 2)
-        assert torch.all(candidates >= 0) and torch.all(candidates <= 1)
+        assert torch.all(candidates >= 0)
+        assert torch.all(candidates <= 1)
 
     def test_optimize_multi_objective_acquisition(
         self, train_data: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
@@ -243,7 +248,7 @@ class TestAcquisitionOptimization:
             minimize_mask=minimize_mask,
         )
 
-        candidates, values = optimize_acquisition(
+        candidates, _values = optimize_acquisition(
             acqf=acqf,
             bounds=bounds,
             batch_size=3,
@@ -252,7 +257,8 @@ class TestAcquisitionOptimization:
         )
 
         assert candidates.shape == (3, 2)
-        assert torch.all(candidates >= 0) and torch.all(candidates <= 1)
+        assert torch.all(candidates >= 0)
+        assert torch.all(candidates <= 1)
 
 
 class TestLinearConstraintValidation:
@@ -418,6 +424,7 @@ class TestAcquisitionInWorkflow:
         assert all(s.acquisition_function == "hypervolume_improvement" for s in suggestions)
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestSignConventionGuards:
     """Verify that the minimization-form contract is enforced at construction.
 
@@ -433,7 +440,7 @@ class TestSignConventionGuards:
     internally (``botorch.utils.multi_objective.hypervolume.Hypervolume``).
     """
 
-    def test_single_objective_rejects_non_minimization_form(self, torch_rng) -> None:
+    def test_single_objective_rejects_non_minimization_form(self) -> None:
         """Passing ``minimize=False`` to the single-objective factory must raise.
 
         The engine convention is that the caller negates maximization
@@ -470,7 +477,7 @@ class TestSignConventionGuards:
                 minimize_mask=minimize_mask,
             )
 
-    def test_create_acquisition_requires_minimize_for_single_objective(self, torch_rng) -> None:
+    def test_create_acquisition_requires_minimize_for_single_objective(self) -> None:
         """Dispatcher must require ``minimize`` when ``n_objectives == 1``."""
         train_x = torch.rand(5, 2, dtype=torch.double)
         train_y = torch.rand(5, 1, dtype=torch.double)

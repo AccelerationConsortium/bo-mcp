@@ -53,7 +53,7 @@ _VALIDATE_INTAKE_BOUNDARY_DEFAULTS: dict[str, Any] = {
 }
 
 
-def _check_intake_shape(intake_data: Any) -> dict[str, Any] | None:
+def _check_intake_shape(intake_data: object) -> dict[str, Any] | None:
     """Return a structured envelope iff ``intake_data`` is not object-shaped.
 
     Mirrors :func:`bo_mcp_server.tools.create_campaign._check_intake_shape`
@@ -61,7 +61,7 @@ def _check_intake_shape(intake_data: Any) -> dict[str, Any] | None:
     create-campaign contract -- a single dotted ``intake_data`` key
     in ``field_errors`` instead of Pydantic-internal noise.
     """
-    if isinstance(intake_data, Mapping) or isinstance(intake_data, BaseModel):
+    if isinstance(intake_data, (Mapping, BaseModel)):
         return None
     return shape_envelope(
         "intake_data",

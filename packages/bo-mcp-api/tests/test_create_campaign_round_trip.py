@@ -15,6 +15,8 @@ from uuid import UUID
 import pytest
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 
+pytestmark = pytest.mark.usefixtures("persisted_user")
+
 
 def _intake_payload() -> dict:
     return {
@@ -41,9 +43,7 @@ def _intake_payload() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_rest_create_campaign_persists_advanced_fields(
-    api_client, auth_headers, persisted_user
-):
+async def test_rest_create_campaign_persists_advanced_fields(api_client, auth_headers):
     """Advanced fields survive REST request → DB persistence → reload."""
     response = await api_client.post(
         "/api/campaigns",
@@ -96,7 +96,7 @@ def _baybe_acknowledged_intake() -> dict:
 
 @pytest.mark.asyncio
 async def test_rest_create_campaign_accepts_acknowledged_baybe_degradation(
-    api_client, auth_headers, persisted_user
+    api_client, auth_headers
 ):
     """REST ``acknowledge_degradations`` must reach the domain intake.
 
@@ -106,7 +106,6 @@ async def test_rest_create_campaign_accepts_acknowledged_baybe_degradation(
     even though the caller asked for the degraded run. This regression
     test pins both the round-trip and the resulting success.
     """
-    _ = persisted_user
     response = await api_client.post(
         "/api/campaigns",
         json={"intake": _baybe_acknowledged_intake()},
@@ -132,7 +131,7 @@ async def test_rest_create_campaign_accepts_acknowledged_baybe_degradation(
 
 @pytest.mark.asyncio
 async def test_rest_create_campaign_rejects_unacknowledged_baybe_degradation(
-    api_client, auth_headers, persisted_user
+    api_client, auth_headers
 ):
     """Without acknowledgement the same payload must be rejected at create-time.
 
@@ -144,7 +143,6 @@ async def test_rest_create_campaign_rejects_unacknowledged_baybe_degradation(
     returns 4xx. Pin both halves so a future route change cannot
     silently downgrade the contract.
     """
-    _ = persisted_user
     intake = _baybe_acknowledged_intake()
     intake.pop("acknowledge_degradations")
     response = await api_client.post(

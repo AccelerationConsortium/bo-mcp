@@ -33,7 +33,7 @@ from bo_mcp_server.operations import generate_suggestions as gs
 
 async def _create_minimal_campaign() -> str:
     """Create a single-objective continuous campaign and return its ID."""
-    from bo_mcp_server.tools.create_campaign import create_campaign  # noqa: PLC0415
+    from bo_mcp_server.tools.create_campaign import create_campaign
 
     owner_id = str(uuid4())
     intake = {
@@ -69,14 +69,14 @@ async def test_compute_runs_with_no_session_or_transaction_in_flight(
     _ = setup_database
     campaign_id = await _create_minimal_campaign()
 
-    from sqlalchemy import event  # noqa: PLC0415
-    from sqlalchemy.orm import Session  # noqa: PLC0415
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
 
     open_sessions: set[int] = set()
     active_transactions: set[int] = set()
 
     @event.listens_for(Session, "after_begin")
-    def _on_begin(session: Session, transaction: Any, _connection: Any) -> None:  # noqa: ARG001
+    def _on_begin(session: Session, transaction: Any, _connection: Any) -> None:
         open_sessions.add(id(session))
         active_transactions.add(id(transaction))
 
@@ -85,7 +85,7 @@ async def test_compute_runs_with_no_session_or_transaction_in_flight(
         active_transactions.discard(id(transaction))
 
     @event.listens_for(Session, "after_soft_rollback")
-    def _on_close(session: Session, _previous: Any) -> None:  # noqa: ARG001
+    def _on_close(session: Session, _previous: Any) -> None:
         open_sessions.discard(id(session))
 
     original_compute = gs._compute_generation_batch
@@ -108,7 +108,7 @@ async def test_compute_runs_with_no_session_or_transaction_in_flight(
 
     monkeypatch.setattr(gs, "_compute_generation_batch", probing_compute)
 
-    from bo_mcp_server.tools.generate_suggestions import generate_suggestions  # noqa: PLC0415
+    from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
     response = await generate_suggestions(campaign_id=campaign_id)
     assert response["success"] is True, response
@@ -143,8 +143,8 @@ async def test_concurrent_modification_during_compute_returns_structured_envelop
         progress_callback: Any,
     ) -> gs._GenerationComputeResult:
         """Simulate a concurrent state change while phase 2 is running."""
-        from bo_mcp_server.domain import CampaignStatus  # noqa: PLC0415
-        from bo_mcp_server.storage import (  # noqa: PLC0415
+        from bo_mcp_server.domain import CampaignStatus
+        from bo_mcp_server.storage import (
             CampaignRepository,
             get_session,
         )
@@ -170,7 +170,7 @@ async def test_concurrent_modification_during_compute_returns_structured_envelop
 
     monkeypatch.setattr(gs, "_compute_generation_batch", mutating_compute)
 
-    from bo_mcp_server.tools.generate_suggestions import generate_suggestions  # noqa: PLC0415
+    from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
     response = await generate_suggestions(campaign_id=campaign_id)
     assert sentinel["hit_compute"] is True
@@ -198,7 +198,7 @@ async def test_single_objective_submit_during_compute_returns_conflict(
     re-counts results and discovers the snapshot is stale.
     """
     _ = setup_database
-    from datetime import datetime as _dt  # noqa: PLC0415
+    from datetime import datetime as _dt
 
     campaign_id = await _create_minimal_campaign()
     original_compute = gs._compute_generation_batch
@@ -210,8 +210,8 @@ async def test_single_objective_submit_during_compute_returns_conflict(
         progress_callback: Any,
     ) -> gs._GenerationComputeResult:
         """Simulate a single-objective submit_results that does not bump campaign.version."""
-        from bo_mcp_server.domain import Result, ResultSource  # noqa: PLC0415
-        from bo_mcp_server.storage import ResultRepository, get_session  # noqa: PLC0415
+        from bo_mcp_server.domain import Result, ResultSource
+        from bo_mcp_server.storage import ResultRepository, get_session
 
         async with get_session() as side_session:
             await ResultRepository(side_session).save(
@@ -234,7 +234,7 @@ async def test_single_objective_submit_during_compute_returns_conflict(
 
     monkeypatch.setattr(gs, "_compute_generation_batch", inserting_compute)
 
-    from bo_mcp_server.tools.generate_suggestions import generate_suggestions  # noqa: PLC0415
+    from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
     response = await generate_suggestions(campaign_id=campaign_id)
     assert response["success"] is False
@@ -265,23 +265,23 @@ async def test_stale_pending_accepted_during_compute_returns_conflict(
     generation transaction.
     """
     _ = setup_database
-    from datetime import UTC, timedelta  # noqa: PLC0415
+    from datetime import UTC, timedelta
     from datetime import datetime as _dt
 
-    from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS  # noqa: PLC0415
+    from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
 
-    from bo_mcp_server.domain import (  # noqa: PLC0415
+    from bo_mcp_server.domain import (
         Suggestion,
         SuggestionProvenance,
         SuggestionStatus,
     )
-    from bo_mcp_server.operations.update_suggestion_status import (  # noqa: PLC0415
+    from bo_mcp_server.operations.update_suggestion_status import (
         update_suggestion_status_operation,
     )
-    from bo_mcp_server.storage import SuggestionRepository, get_session  # noqa: PLC0415
+    from bo_mcp_server.storage import SuggestionRepository, get_session
 
     campaign_id = await _create_minimal_campaign()
-    from uuid import UUID  # noqa: PLC0415
+    from uuid import UUID
 
     campaign_uuid = UUID(campaign_id)
 
@@ -323,7 +323,7 @@ async def test_stale_pending_accepted_during_compute_returns_conflict(
 
     monkeypatch.setattr(gs, "_compute_generation_batch", accepting_compute)
 
-    from bo_mcp_server.tools.generate_suggestions import generate_suggestions  # noqa: PLC0415
+    from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
     response = await generate_suggestions(campaign_id=campaign_id)
     assert response["success"] is False, response
@@ -353,14 +353,14 @@ async def test_campaign_soft_deleted_during_compute_returns_conflict(
     means no suggestion rows are persisted either.
     """
     _ = setup_database
-    from bo_mcp_server.storage import (  # noqa: PLC0415
+    from bo_mcp_server.storage import (
         CampaignRepository,
         SuggestionRepository,
         get_session,
     )
 
     campaign_id = await _create_minimal_campaign()
-    from uuid import UUID  # noqa: PLC0415
+    from uuid import UUID
 
     campaign_uuid = UUID(campaign_id)
     original_compute = gs._compute_generation_batch
@@ -383,7 +383,7 @@ async def test_campaign_soft_deleted_during_compute_returns_conflict(
 
     monkeypatch.setattr(gs, "_compute_generation_batch", deleting_compute)
 
-    from bo_mcp_server.tools.generate_suggestions import generate_suggestions  # noqa: PLC0415
+    from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
     response = await generate_suggestions(campaign_id=campaign_id)
     assert response["success"] is False, response
@@ -427,7 +427,7 @@ async def test_event_loop_responsive_during_slow_compute(
 
     monkeypatch.setattr(gs, "_generate_via_backend", slow_backend)
 
-    from bo_mcp_server.tools.generate_suggestions import generate_suggestions  # noqa: PLC0415
+    from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
     started = time.perf_counter()
     gen_task = asyncio.create_task(generate_suggestions(campaign_id=campaign_id))

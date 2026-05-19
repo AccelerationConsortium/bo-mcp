@@ -12,6 +12,8 @@ from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.submit_results import submit_results
 
+pytestmark = pytest.mark.usefixtures("persisted_user")
+
 
 def _to_result_inputs(rows: list[dict]) -> list[ResultSubmissionInput]:
     return [
@@ -82,7 +84,6 @@ class TestCampaignParityRoutes:
         self,
         api_client,
         auth_headers,
-        persisted_user,
         persisted_another_user,
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
@@ -308,7 +309,6 @@ class TestSuggestionParityRoutes:
         self,
         api_client,
         auth_headers,
-        persisted_user,
         persisted_another_user,
     ):
         campaign_id = await _create_campaign_for_owner(
@@ -329,7 +329,7 @@ class TestSuggestionParityRoutes:
 
 class TestValidateIntakeRoute:
     @pytest.mark.asyncio
-    async def test_validate_valid_intake(self, api_client, auth_headers, persisted_user):
+    async def test_validate_valid_intake(self, api_client, auth_headers):
         response = await api_client.post(
             "/api/campaigns/validate",
             json={
@@ -350,7 +350,7 @@ class TestValidateIntakeRoute:
         assert data["spec_summary"]["name"] == "Validate Test"
 
     @pytest.mark.asyncio
-    async def test_validate_invalid_intake(self, api_client, auth_headers, persisted_user):
+    async def test_validate_invalid_intake(self, api_client, auth_headers):
         response = await api_client.post(
             "/api/campaigns/validate",
             json={
@@ -369,7 +369,7 @@ class TestValidateIntakeRoute:
 
 class TestCapabilitiesRoute:
     @pytest.mark.asyncio
-    async def test_list_capabilities(self, api_client, auth_headers, persisted_user):
+    async def test_list_capabilities(self, api_client, auth_headers):
         response = await api_client.get(
             "/api/capabilities",
             headers=auth_headers,
@@ -408,7 +408,7 @@ class TestExportCampaignRoute:
 
     @pytest.mark.asyncio
     async def test_export_campaign_enforces_ownership(
-        self, api_client, auth_headers, persisted_user, persisted_another_user
+        self, api_client, auth_headers, persisted_another_user
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
             str(persisted_another_user.id), "Foreign Export Test"
@@ -444,7 +444,7 @@ class TestSuggestionStatusRoute:
 
     @pytest.mark.asyncio
     async def test_update_suggestion_status_enforces_ownership(
-        self, api_client, auth_headers, persisted_user, persisted_another_user
+        self, api_client, auth_headers, persisted_another_user
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
             str(persisted_another_user.id), "Foreign Status Test"
@@ -618,7 +618,7 @@ class TestResultQueryRoute:
 
     @pytest.mark.asyncio
     async def test_query_results_enforces_ownership(
-        self, api_client, auth_headers, persisted_user, persisted_another_user
+        self, api_client, auth_headers, persisted_another_user
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
             str(persisted_another_user.id), "Foreign Result Query"
@@ -685,7 +685,7 @@ class TestSuggestionQueryRoute:
 
     @pytest.mark.asyncio
     async def test_query_suggestions_enforces_ownership(
-        self, api_client, auth_headers, persisted_user, persisted_another_user
+        self, api_client, auth_headers, persisted_another_user
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
             str(persisted_another_user.id), "Foreign Sugg Query"
@@ -781,7 +781,7 @@ class TestMcpHttpParity:
     """Run the same scenario through MCP operations and HTTP, compare meaningful fields."""
 
     @pytest.mark.asyncio
-    async def test_validate_intake_parity(self, api_client, auth_headers, persisted_user):
+    async def test_validate_intake_parity(self, api_client, auth_headers):
         intake = {
             "name": "Parity Validate",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -804,7 +804,7 @@ class TestMcpHttpParity:
         assert mcp_result["warnings"] == http_result["warnings"]
 
     @pytest.mark.asyncio
-    async def test_list_capabilities_parity(self, api_client, auth_headers, persisted_user):
+    async def test_list_capabilities_parity(self, api_client, auth_headers):
         # MCP path (operation directly)
         mcp_result = list_capabilities_operation()
 

@@ -392,7 +392,7 @@ def generate_diverse_thompson_batch(
                 best_sample = batch.samples[0]
                 best_min_dist = min_dist
                 break
-            elif min_dist > best_min_dist:
+            if min_dist > best_min_dist:
                 best_sample = batch.samples[0]
                 best_min_dist = min_dist
 
@@ -449,10 +449,8 @@ def _thompson_via_max_posterior_sampling(
                 best_idx = sampled_values.argmin()
                 samples.append(candidates[best_idx : best_idx + 1])
         return torch.cat(samples, dim=0)
-    else:
-        # Maximization: use MPS directly
-        selected = mps(candidates, num_samples=n_samples)
-        return selected
+    # Maximization: use MPS directly
+    return mps(candidates, num_samples=n_samples)
 
 
 def _thompson_manual(
@@ -475,10 +473,7 @@ def _thompson_manual(
             sampled_values = posterior.rsample().squeeze()
 
             # Find optimum of this sample
-            if minimize:
-                best_idx = sampled_values.argmin()
-            else:
-                best_idx = sampled_values.argmax()
+            best_idx = sampled_values.argmin() if minimize else sampled_values.argmax()
 
             samples.append(candidates[best_idx : best_idx + 1])
 
@@ -501,9 +496,7 @@ def _generate_sobol_candidates(
     # Scale to bounds
     lower = bounds[0]
     upper = bounds[1]
-    candidates = lower + candidates * (upper - lower)
-
-    return candidates
+    return lower + candidates * (upper - lower)
 
 
 def _compute_batch_diversity(samples: Tensor, bounds: Tensor) -> float:

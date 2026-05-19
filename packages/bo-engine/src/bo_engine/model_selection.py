@@ -244,7 +244,7 @@ def compare_models(
             results.append(result)
 
         except (RuntimeError, ValueError, TypeError) as e:
-            logger.warning(f"Failed to fit model '{candidate.name}': {e}")
+            logger.warning("Failed to fit model '%s': %s", candidate.name, e)
             # Create failed result
             results.append(
                 ModelComparisonResult(
@@ -539,24 +539,21 @@ def get_model_selection_summary(result: ModelSelectionResult) -> dict[str, Any]:
     Returns:
         Dictionary suitable for inclusion in diagnostics output
     """
-    comparison_table = []
-    for r in result.all_results:
-        comparison_table.append(
-            {
-                "model": r.candidate.name,
-                "rank": r.rank,
-                "cv_rmse": round(r.cv_metrics.rmse, 4)
-                if r.cv_metrics.rmse != float("inf")
-                else None,
-                "cv_r_squared": round(r.cv_metrics.r_squared, 4)
-                if r.cv_metrics.r_squared != float("-inf")
-                else None,
-                "bic": round(r.bic, 2) if r.bic != float("inf") else None,
-                "log_mll": round(r.log_marginal_likelihood, 2)
-                if r.log_marginal_likelihood != float("-inf")
-                else None,
-            }
-        )
+    comparison_table = [
+        {
+            "model": r.candidate.name,
+            "rank": r.rank,
+            "cv_rmse": round(r.cv_metrics.rmse, 4) if r.cv_metrics.rmse != float("inf") else None,
+            "cv_r_squared": round(r.cv_metrics.r_squared, 4)
+            if r.cv_metrics.r_squared != float("-inf")
+            else None,
+            "bic": round(r.bic, 2) if r.bic != float("inf") else None,
+            "log_mll": round(r.log_marginal_likelihood, 2)
+            if r.log_marginal_likelihood != float("-inf")
+            else None,
+        }
+        for r in result.all_results
+    ]
 
     return {
         "selected_model": result.best_candidate.name,

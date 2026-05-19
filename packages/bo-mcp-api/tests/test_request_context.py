@@ -20,6 +20,8 @@ from api.request_context import (
     request_id_var,
 )
 
+pytestmark = pytest.mark.usefixtures("persisted_user")
+
 
 def test_factory_emits_dash_outside_request() -> None:
     """No request bound -> records carry the sentinel ``"-"``."""
@@ -104,7 +106,7 @@ def test_legacy_filter_still_decorates_when_attached() -> None:
 
 @pytest.mark.asyncio
 async def test_request_id_threads_into_log_records_end_to_end(
-    api_client, persisted_user, auth_headers, caplog
+    api_client, auth_headers, caplog
 ) -> None:
     """An end-to-end request emits log records tagged with its X-Request-ID.
 

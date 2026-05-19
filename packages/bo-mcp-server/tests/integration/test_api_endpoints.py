@@ -463,7 +463,7 @@ if __name__ == "__main__":
         except AssertionError as e:
             print(f"✗ {test_func.__name__} FAILED: {e}")
             failed += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"✗ {test_func.__name__} ERROR: {e}")
             failed += 1
 

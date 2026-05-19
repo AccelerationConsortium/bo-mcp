@@ -239,7 +239,7 @@ class PendingPointTracker:
     def __init__(
         self,
         max_age_hours: float = PENDING_SUGGESTION_MAX_AGE_HOURS,
-    ):
+    ) -> None:
         """Initialize tracker.
 
         Args:

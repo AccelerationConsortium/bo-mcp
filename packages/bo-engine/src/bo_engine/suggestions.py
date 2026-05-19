@@ -44,6 +44,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from gpytorch.priors import GammaPrior
 
 from bo_engine.constants import (
     MAX_RANDOM_SEED,
@@ -109,9 +110,6 @@ __all__ = [
     # Public surface
     "MultiFidelityNotSupportedError",
     "OutcomeConstraintConfigurationError",
-    "generate_initial_design",
-    "generate_next_batch",
-    "update_turbo_after_evaluation",
     # Re-exported private helpers — test suite imports these by name.
     "_apply_constraints_to_samples",
     "_build_multi_objective_explanation",
@@ -136,6 +134,9 @@ __all__ = [
     "_prepare_training_data",
     "_resolve_acquisition_seed",
     "_resolve_noise_prior",
+    "generate_initial_design",
+    "generate_next_batch",
+    "update_turbo_after_evaluation",
 ]
 
 
@@ -153,7 +154,7 @@ class MultiFidelityNotSupportedError(ValueError):
     """
 
 
-def _resolve_noise_prior(spec: OptimizationSpec) -> Any | None:
+def _resolve_noise_prior(spec: OptimizationSpec) -> GammaPrior | None:
     """Build a :class:`GammaPrior` from ``spec.noise_prior_params`` when set.
 
     Returns ``None`` when the spec does not override the prior so the
@@ -164,16 +165,14 @@ def _resolve_noise_prior(spec: OptimizationSpec) -> Any | None:
     """
     if spec.noise_prior_params is None:
         return None
-    # Import locally to avoid a top-level gpytorch dependency in the
-    # suggestion module (keeps import time low for diagnostic-only callers).
-    from gpytorch.priors import GammaPrior
 
     concentration, rate = spec.noise_prior_params
     if concentration <= 0 or rate <= 0:
-        raise ValueError(
+        msg = (
             "noise_prior_params must be positive (concentration, rate); "
             f"got {(concentration, rate)}."
         )
+        raise ValueError(msg)
     return GammaPrior(float(concentration), float(rate))
 
 
@@ -278,7 +277,7 @@ def generate_next_batch(
         spec.fidelity_parameter is not None
         or spec.acquisition_method == AcquisitionMethod.MULTI_FIDELITY_KG
     ):
-        raise MultiFidelityNotSupportedError(
+        msg = (
             "Multi-fidelity dispatch (qMFKG / SingleTaskMultiFidelityGP) is "
             "not wired into generate_next_batch. Remove "
             "spec.fidelity_parameter and acquisition_method="
@@ -286,6 +285,7 @@ def generate_next_batch(
             "standalone helpers in bo_engine.multifidelity remain available "
             "for direct multi-fidelity workflows."
         )
+        raise MultiFidelityNotSupportedError(msg)
 
     random_seed = _resolve_acquisition_seed(spec, iteration, rng)
 

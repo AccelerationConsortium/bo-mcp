@@ -55,7 +55,7 @@ class CampaignCreateResponse(ResponseEnvelope):
     success: bool
     campaign_id: str | None = None
     spec_id: str | None = None
-    warnings: list[str] = []
+    warnings: list[str] = Field(default_factory=list)
     errors: list[str]
     idempotency_replay: bool = False
 
@@ -80,7 +80,7 @@ class ValidateIntakeResponse(ResponseEnvelope):
 
     valid: bool
     errors: list[str]
-    warnings: list[str] = []
+    warnings: list[str] = Field(default_factory=list)
     spec_summary: dict[str, Any] | None = None
 
 
@@ -98,7 +98,7 @@ class CapabilitiesResponse(ResponseEnvelope):
 
     backend: str
     supported_features: list[str]
-    conditional_features: dict[str, str] = {}
+    conditional_features: dict[str, str] = Field(default_factory=dict)
     server_version: str
 
 

@@ -14,7 +14,7 @@ This module provides validation that:
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
 
 import torch
 from botorch.models import SingleTaskGP
@@ -140,15 +140,13 @@ def validate_model_health(
     )
 
 
-def _extract_noise_variance(gp: Any) -> float:
+def _extract_noise_variance(gp: SingleTaskGP) -> float:
     """Extract noise variance from a GP model's likelihood."""
     if not (hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise")):
         return 0.0
     noise = gp.likelihood.noise
-    if hasattr(noise, "item"):
-        return noise.item()
     if isinstance(noise, Tensor):
-        return noise.squeeze().item()
+        return float(noise.squeeze().item())
     return 0.0
 
 
@@ -176,7 +174,7 @@ def _check_lengthscale(
 
 
 def _validate_single_gp(
-    gp: Any,
+    gp: SingleTaskGP,
     param_ranges: list[float],
     param_names: list[str] | None = None,
     objective_idx: int | None = None,
@@ -199,7 +197,7 @@ def _validate_single_gp(
     # Extract lengthscales
     covar = gp.covar_module
     kernel = getattr(covar, "base_kernel", covar)
-    lengthscales = kernel.lengthscale.detach().squeeze()
+    lengthscales = cast("Tensor", kernel.lengthscale).detach().squeeze()
     if lengthscales.dim() == 0:
         lengthscales = lengthscales.unsqueeze(0)
 

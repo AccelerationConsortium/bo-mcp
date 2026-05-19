@@ -444,5 +444,6 @@ async def test_create_campaign_in_progress_reservation_returns_409(
     assert detail["code"] == "E014", detail
     assert detail["retryable"] is True
     # Backoff hint is positive so HTTP retry middleware can honour it.
-    assert detail["retry_after"] is not None and detail["retry_after"] > 0
+    assert detail["retry_after"] is not None
+    assert detail["retry_after"] > 0
     assert detail["details"]["idempotency_in_progress"] is True

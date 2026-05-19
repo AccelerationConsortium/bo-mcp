@@ -187,9 +187,13 @@ def _compare_metrics(
     }
 
 
-def _make_compare_error(code: ErrorCode, message: str, **kwargs: Any) -> dict[str, Any]:
+def _make_compare_error(
+    code: ErrorCode,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a compare-specific error response."""
-    response = make_error_response(code, message=message, **kwargs)
+    response = make_error_response(code, message=message, details=details)
     response.update({"campaigns": [], "comparison": None})
     return response
 
@@ -289,7 +293,7 @@ async def compare_campaigns_operation(
                 "success": False,
                 "campaigns": campaign_metrics,
                 "comparison": None,
-                "errors": errors + ["Need at least 2 valid campaigns to compare"],
+                "errors": [*errors, "Need at least 2 valid campaigns to compare"],
             }
 
         comparison = _compare_metrics(campaign_metrics, campaign_names)

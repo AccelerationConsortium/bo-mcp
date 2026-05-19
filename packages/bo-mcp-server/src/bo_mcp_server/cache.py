@@ -41,7 +41,6 @@ Regression coverage:
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from bo_mcp_server.settings import (
     get_diagnostics_cache_max_entries,
@@ -98,13 +97,13 @@ class ResponseCache:
         resolved_cap = (
             max_entries if max_entries is not None else get_diagnostics_cache_max_entries()
         )
-        self._cache: dict[str, tuple[datetime, Any]] = {}
+        self._cache: dict[str, tuple[datetime, object]] = {}
         self._ttl = timedelta(seconds=resolved_ttl)
         self._lock = asyncio.Lock()
         self._clock = clock
         self._max_entries = resolved_cap
 
-    async def get(self, key: str) -> Any | None:
+    async def get(self, key: str) -> object | None:
         """Get cached value if not expired.
 
         Args:
@@ -121,7 +120,7 @@ class ResponseCache:
                 del self._cache[key]
             return None
 
-    async def set(self, key: str, value: Any) -> None:
+    async def set(self, key: str, value: object) -> None:
         """Store value in cache, evicting oldest entries if at capacity.
 
         Args:

@@ -41,6 +41,7 @@ class BackendOutputError(ValueError):
         message: str,
         errors: Sequence[dict[str, Any]] | None = None,
     ) -> None:
+        """Record the human-readable message and structured per-field errors."""
         super().__init__(message)
         self.errors: list[dict[str, Any]] = list(errors) if errors else []
 

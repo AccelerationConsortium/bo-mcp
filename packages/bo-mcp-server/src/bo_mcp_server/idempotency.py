@@ -68,6 +68,7 @@ from typing import Any
 from sqlalchemy import case, delete, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.dml import Update
 
 from bo_mcp_server.domain.utils import utcnow
 from bo_mcp_server.errors import ErrorCode, make_error_response, retry_hint_for
@@ -513,7 +514,7 @@ def _finalize_statement(
     reservation_token: str,
     response: dict[str, Any],
     ttl_seconds: int,
-) -> Any:
+) -> Update:
     """Build the parameterised UPDATE used by both finalize helpers.
 
     Centralising the statement keeps the ``WHERE`` clause in one place
@@ -677,7 +678,7 @@ def _attach_metadata(response: dict[str, Any]) -> dict[str, Any]:
     ``idempotency → response_formatter → idempotency`` cycle that the
     heavy imports inside ``response_formatter`` would otherwise force.
     """
-    from bo_mcp_server.response_formatter import (  # noqa: PLC0415
+    from bo_mcp_server.response_formatter import (
         attach_response_metadata,
     )
 
@@ -700,7 +701,7 @@ def _refresh_response_metadata_trace_id(response: dict[str, Any]) -> None:
     (response_formatter pulls in :mod:`bo_mcp_server.backend`, which
     transitively imports operations that depend on this module).
     """
-    from bo_mcp_server.trace_context import get_trace_id  # noqa: PLC0415
+    from bo_mcp_server.trace_context import get_trace_id
 
     metadata = response.get("_metadata")
     if not isinstance(metadata, dict):
@@ -754,7 +755,7 @@ async def _reserve_or_short_circuit(
 
 
 @asynccontextmanager
-async def session_scope(session: AsyncSession | None):
+async def session_scope(session: AsyncSession | None) -> AsyncGenerator[AsyncSession]:
     """Provide a session: re-use the caller's if given, else open a new one.
 
     Operation-layer callers can hand a session through (the same-
@@ -832,7 +833,9 @@ async def apply_idempotency(
     )
     if outcome.short_circuit is not None:
         return outcome.short_circuit
-    assert outcome.reservation_token is not None
+    if outcome.reservation_token is None:
+        msg = "Reservation outcome must carry either short_circuit or reservation_token"
+        raise RuntimeError(msg)
     token = outcome.reservation_token
 
     return await _run_session_aware(
@@ -1089,6 +1092,10 @@ async def _run_session_aware(
         reservation_token=reservation_token,
     )
     handle = _active_reservation.set(reservation)
+
+    def _signal_stale_reservation() -> None:
+        raise _StaleReservationError
+
     try:
         try:
             async with get_session() as session:
@@ -1113,7 +1120,7 @@ async def _run_session_aware(
                             idempotency_key,
                             reservation_token,
                         )
-                        raise _StaleReservationError
+                        _signal_stale_reservation()
         except _StaleReservationError:
             # The session rolled back via get_session's exception handler,
             # so no operation writes survive. The cache row is owned by
@@ -1121,7 +1128,7 @@ async def _run_session_aware(
             # token-matched drop would no-op anyway, but skipping the call
             # makes the intent explicit). Return a retryable envelope.
             return _attach_metadata(_stale_reservation_envelope(tool_name, idempotency_key))
-        except Exception:  # noqa: BLE001 - cleanup-then-reraise for any operation failure
+        except Exception:
             # The async with already rolled back the session; drop our
             # reservation so a future retry can claim the slot. We do
             # not narrow the catch because the operation can raise any

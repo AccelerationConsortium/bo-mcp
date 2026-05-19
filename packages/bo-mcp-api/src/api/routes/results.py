@@ -1,6 +1,7 @@
 """Results routes."""
 
 import logging
+from uuid import UUID
 
 from bo_mcp_server.client import (
     CampaignSpec,
@@ -75,7 +76,6 @@ async def _read_upload_bounded(file: UploadFile) -> bytes:
 
 @router.post(
     "/{campaign_id}",
-    response_model=ResultSubmitResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def submit_campaign_results(
@@ -162,7 +162,7 @@ async def submit_campaign_results(
     )
 
 
-async def _resolve_upload_spec(campaign_id: str, user_id) -> CampaignSpec:
+async def _resolve_upload_spec(campaign_id: str, user_id: UUID) -> CampaignSpec:
     """Resolve the campaign spec for an upload, mapping facade errors to HTTP."""
     try:
         _, spec = await get_campaign_with_spec(campaign_id, user_id)
@@ -191,7 +191,6 @@ async def _resolve_upload_spec(campaign_id: str, user_id) -> CampaignSpec:
 
 @router.post(
     "/{campaign_id}/upload",
-    response_model=ResultSubmitResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_results_file(
@@ -301,7 +300,7 @@ async def upload_results_file(
     )
 
 
-@router.post("/{campaign_id}/query", response_model=ResultQueryResponse)
+@router.post("/{campaign_id}/query")
 async def query_campaign_results(
     campaign_id: str,
     request: ResultQueryRequest,
@@ -319,7 +318,7 @@ async def query_campaign_results(
     return ResultQueryResponse(**result)
 
 
-@router.get("/{campaign_id}", response_model=list[ResultResponse])
+@router.get("/{campaign_id}")
 async def list_campaign_results_route(
     campaign_id: str,
     current_user: CurrentUser,

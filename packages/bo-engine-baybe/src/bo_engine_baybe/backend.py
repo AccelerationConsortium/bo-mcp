@@ -37,7 +37,7 @@ without modification.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 import pydantic
@@ -146,10 +146,10 @@ _MIN_DATA_PARAM_MULTIPLIER = 2
 # Moving the implementations to dedicated submodules must not break
 # ``from bo_engine_baybe.backend import _observation_fingerprint`` etc.
 __all__ = [
-    "BayBEBackend",
     "_BAYBE_SAFE_EXCEPTIONS",
     "_CHEMISTRY_AVAILABLE",
     "_CHEMISTRY_UNAVAILABLE_REASON",
+    "BayBEBackend",
     "_build_observation_identity",
     "_observation_fingerprint",
 ]
@@ -166,18 +166,21 @@ class BayBEBackend(BaseBackend):
 
     @property
     def name(self) -> str:
+        """Backend identifier used by the registry."""
         return "baybe"
 
     @property
     def supported_features(self) -> frozenset[Feature]:
+        """Capability set this backend exposes via :class:`BOBackend`."""
         return _SUPPORTED_FEATURES
 
     @property
     def conditional_features(self) -> dict[Feature, str]:
+        """Features supported only under additional conditions, keyed by capability."""
         return dict(_CONDITIONAL_FEATURES)
 
     # -- Spec features that BayBE does NOT support --------------------------
-    _UNSUPPORTED_OPTIONS: list[tuple[str, str]] = [
+    _UNSUPPORTED_OPTIONS: ClassVar[list[tuple[str, str]]] = [
         ("turbo_config", "TuRBO trust-region optimization"),
         ("saasbo_config", "SAASBO high-dimensional optimization"),
         ("fidelity_parameter", "Multi-fidelity optimization"),
@@ -480,6 +483,7 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         n_points: int,
     ) -> list[dict[str, Any]]:
+        """Recommend an initial batch of suggestions before any observations exist."""
         from bo_engine_baybe.state import _build_campaign
 
         campaign = _build_campaign(spec)
@@ -496,6 +500,7 @@ class BayBEBackend(BaseBackend):
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
+        """Recommend the next batch and translate BayBE/BoTorch errors to backend exceptions."""
         try:
             return self._generate_suggestions_unwrapped(
                 spec=spec,
@@ -679,6 +684,7 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> float | None:
+        """Return the hypervolume of observed Pareto front, or ``None`` if not applicable."""
         if spec.n_objectives < 2 or len(observations) < 2:
             return None
 
@@ -738,6 +744,7 @@ class BayBEBackend(BaseBackend):
         sections: frozenset[str] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
+        """Compute diagnostic sections (objectives, model, outliers, suggestions tensor)."""
         all_sections = frozenset(["objectives", "model", "outliers", "suggestions_tensor"])
         requested = all_sections if sections is None else sections
         _ = progress_callback  # BayBE diagnostics phases are not granular yet
@@ -862,16 +869,15 @@ class BayBEBackend(BaseBackend):
                 "noise_variance": model_info.get("noise_variance"),
                 "output_scale": model_info.get("output_scale"),
             }
-
-            return {
-                "model_correlation": corr,
-                "feature_importance": fi,
-                "loo_cv_metrics": None,
-                "hyperparameters": hp,
-            }
         except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
             logger.debug("BayBE model diagnostics failed: %s", e)
             return empty
+        return {
+            "model_correlation": corr,
+            "feature_importance": fi,
+            "loo_cv_metrics": None,
+            "hyperparameters": hp,
+        }
 
     def _compute_outlier_diagnostics(
         self,

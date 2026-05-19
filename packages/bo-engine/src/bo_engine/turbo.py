@@ -147,29 +147,36 @@ class TurboState:
         ``restart_triggered=False`` is incoherent and rejected.
         """
         if self.length <= 0:
-            raise ValueError(f"length must be positive, got {self.length}")
+            msg = f"length must be positive, got {self.length}"
+            raise ValueError(msg)
         if self.length_min <= 0:
-            raise ValueError(f"length_min must be positive, got {self.length_min}")
+            msg = f"length_min must be positive, got {self.length_min}"
+            raise ValueError(msg)
         if self.length_max <= 0:
-            raise ValueError(f"length_max must be positive, got {self.length_max}")
+            msg = f"length_max must be positive, got {self.length_max}"
+            raise ValueError(msg)
         if self.length_min >= self.length_max:
-            raise ValueError(
+            msg = (
                 f"length_min ({self.length_min}) must be strictly less than "
                 f"length_max ({self.length_max})"
             )
+            raise ValueError(msg)
         if self.length > self.length_max:
-            raise ValueError(
+            msg = (
                 f"length ({self.length}) must not exceed length_max "
                 f"({self.length_max}); expansion clamps at length_max."
             )
+            raise ValueError(msg)
         if self.length < self.length_min and not self.restart_triggered:
-            raise ValueError(
+            msg = (
                 f"length ({self.length}) is below length_min ({self.length_min}) "
                 "but restart_triggered is False; the only legitimate "
                 "below-min state is the post-contraction restart signal."
             )
+            raise ValueError(msg)
         if self.success_tolerance < 1:
-            raise ValueError(f"success_tolerance must be >= 1, got {self.success_tolerance}")
+            msg = f"success_tolerance must be >= 1, got {self.success_tolerance}"
+            raise ValueError(msg)
 
         if self.failure_tolerance is None:
             # Default: more tolerance for higher dimensions and smaller batches,
@@ -181,7 +188,8 @@ class TurboState:
                 min(raw, TURBO_MAX_FAILURE_TOLERANCE),
             )
         elif self.failure_tolerance < 1:
-            raise ValueError(f"failure_tolerance must be >= 1, got {self.failure_tolerance}")
+            msg = f"failure_tolerance must be >= 1, got {self.failure_tolerance}"
+            raise ValueError(msg)
 
 
 def assert_unit_scale_targets(train_y: Tensor) -> None:

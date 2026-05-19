@@ -30,6 +30,8 @@ References:
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 import torch
 
@@ -54,7 +56,7 @@ class TestBraninFixtureRespectsSeed:
     # one another. pytest creates a fresh class instance per test method but
     # the class object itself is shared, so the dict accumulates outputs
     # across the parametrize axis.
-    _outputs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+    _outputs: ClassVar[dict[int, tuple[torch.Tensor, torch.Tensor]]] = {}
 
     @classmethod
     def setup_class(cls) -> None:
@@ -120,7 +122,7 @@ class TestBraninFixtureRespectsSeed:
 class TestHartmann6FixtureRespectsSeed:
     """Hartmann6 training-data fixture must respond to the seed fixture."""
 
-    _outputs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+    _outputs: ClassVar[dict[int, tuple[torch.Tensor, torch.Tensor]]] = {}
 
     @classmethod
     def setup_class(cls) -> None:
@@ -185,13 +187,13 @@ class TestFixturesUseSetAllSeeds:
 
         set_all_seeds(123)
         torch_a = torch.rand(3)
-        np_a = np.random.rand(3)
-        py_a = [random.random() for _ in range(3)]  # noqa: S311 - test fixture
+        np_a = np.random.rand(3)  # noqa: NPY002
+        py_a = [random.random() for _ in range(3)]  # noqa: S311
 
         set_all_seeds(123)
         torch_b = torch.rand(3)
-        np_b = np.random.rand(3)
-        py_b = [random.random() for _ in range(3)]  # noqa: S311 - test fixture
+        np_b = np.random.rand(3)  # noqa: NPY002
+        py_b = [random.random() for _ in range(3)]  # noqa: S311
 
         assert torch.allclose(torch_a, torch_b)
         assert np.allclose(np_a, np_b)
@@ -216,8 +218,8 @@ class TestFixturesUseSetAllSeeds:
         from tests.conftest import set_all_seeds
 
         # After the fixture (default seed=42) ran, draw from numpy + random.
-        fixture_numpy_draw = np.random.rand(3)
-        fixture_python_draw = [random.random() for _ in range(3)]  # noqa: S311 - test fixture
+        fixture_numpy_draw = np.random.rand(3)  # noqa: NPY002
+        fixture_python_draw = [random.random() for _ in range(3)]  # noqa: S311
 
         # Replay the same seed manually and run an equivalent draw sequence
         # so the comparison only diverges if the fixture failed to seed numpy
@@ -226,8 +228,8 @@ class TestFixturesUseSetAllSeeds:
         # The fixture itself consumed: 10x2 torch.rand and the branin eval
         # internally (which does not touch numpy or python random). So a
         # matching post-state replay just re-seeds and immediately draws.
-        replay_numpy_draw = np.random.rand(3)
-        replay_python_draw = [random.random() for _ in range(3)]  # noqa: S311 - test fixture
+        replay_numpy_draw = np.random.rand(3)  # noqa: NPY002
+        replay_python_draw = [random.random() for _ in range(3)]  # noqa: S311
 
         assert np.allclose(fixture_numpy_draw, replay_numpy_draw)
         assert fixture_python_draw == replay_python_draw

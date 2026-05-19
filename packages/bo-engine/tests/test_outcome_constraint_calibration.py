@@ -73,12 +73,12 @@ class TestExpectedCalibrationError:
         assert _expected_calibration_error(probs, labels) == 0.0
 
 
-def _make_balanced_dataset(threshold: float = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
+def _make_balanced_dataset() -> tuple[torch.Tensor, torch.Tensor]:
     """Build a balanced (8 feasible / 8 infeasible) 1-D dataset.
 
     Returns a training tensor of inputs in [0, 1] and the corresponding
-    objective values straddling ``threshold`` so the constraint GP can fit
-    a non-degenerate boundary.
+    objective values straddling 0.5 so the constraint GP can fit a
+    non-degenerate boundary.
     """
     torch.manual_seed(0)
     feasible_x = torch.linspace(0.05, 0.45, steps=8, dtype=torch.float64).unsqueeze(-1)

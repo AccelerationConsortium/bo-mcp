@@ -50,9 +50,11 @@ class _FakeSession:
     async def send_resource_updated(self, uri: Any) -> None:
         self.attempts += 1
         if self.fail_on_send:
-            raise RuntimeError("simulated transport failure")
+            msg = "simulated transport failure"
+            raise RuntimeError(msg)
         if self.attempts <= self.fail_attempts:
-            raise RuntimeError(f"transient failure on attempt {self.attempts}")
+            msg = f"transient failure on attempt {self.attempts}"
+            raise RuntimeError(msg)
         self.delivered.append(str(uri))
 
 

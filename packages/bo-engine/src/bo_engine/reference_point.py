@@ -128,7 +128,8 @@ def get_reference_point_dynamic(
     # Dispatch to appropriate strategy
     if config.strategy == ReferencePointStrategy.USER_SPECIFIED:
         if config.user_reference_point is None:
-            raise ValueError("User-specified strategy requires user_reference_point")
+            msg = "User-specified strategy requires user_reference_point"
+            raise ValueError(msg)
         ref_point = torch.tensor(
             config.user_reference_point, dtype=train_y.dtype, device=train_y.device
         )
@@ -206,8 +207,7 @@ def _compute_static_reference_point(
     absolute_floor = torch.full_like(ranges, MIN_OBJECTIVE_RANGE)
     window = torch.maximum(torch.maximum(ranges, relative_floor), absolute_floor)
 
-    ref_point = worst + config.margin * window
-    return ref_point
+    return worst + config.margin * window
 
 
 def _compute_nadir_reference_point(
@@ -259,8 +259,7 @@ def _compute_nadir_reference_point(
     ranges = state.nadir_estimate - state.ideal_estimate
     ranges = torch.where(ranges < MIN_OBJECTIVE_RANGE, torch.ones_like(ranges), ranges)
 
-    ref_point = state.nadir_estimate + config.min_margin * ranges
-    return ref_point
+    return state.nadir_estimate + config.min_margin * ranges
 
 
 def _compute_dynamic_reference_point(

@@ -221,7 +221,8 @@ async def run_optimization(
 
     if not result["success"]:
         print(f"    ERROR: {result['errors']}")
-        raise ValueError(f"Failed to create campaign: {result['errors']}")
+        msg = f"Failed to create campaign: {result['errors']}"
+        raise ValueError(msg)
 
     campaign_id = result["campaign_id"]
     print(f"    Campaign ID: {campaign_id}")
@@ -287,7 +288,7 @@ async def run_optimization(
 
             # Track best (for single-objective)
             if not benchmark.is_multi_objective:
-                obj_value = list(obj_values.values())[0]
+                obj_value = next(iter(obj_values.values()))
                 iteration_best = min(iteration_best, obj_value)
 
                 if obj_value < best_value:

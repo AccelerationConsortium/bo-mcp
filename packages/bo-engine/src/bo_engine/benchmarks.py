@@ -485,7 +485,8 @@ def get_benchmark_spec(name: str) -> dict[str, Any]:
     }
 
     if name not in benchmarks:
-        raise ValueError(f"Unknown benchmark: {name}. Available: {list(benchmarks.keys())}")
+        msg = f"Unknown benchmark: {name}. Available: {list(benchmarks.keys())}"
+        raise ValueError(msg)
 
     return benchmarks[name]
 

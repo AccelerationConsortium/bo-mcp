@@ -52,10 +52,14 @@ typed way of producing one.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Iterable
 
 from mcp import types
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.resources.base import Resource
+from mcp.server.fastmcp.server import ReadResourceContents
 from mcp.shared.exceptions import McpError
+from pydantic import AnyUrl
 
 from bo_mcp_server.errors import ErrorCode, ResourceOperationError
 
@@ -119,7 +123,7 @@ def _to_mcp_error(roe: ResourceOperationError) -> McpError:
     )
 
 
-def install_resource_envelope_wrapper(mcp_instance: Any) -> None:
+def install_resource_envelope_wrapper(mcp_instance: FastMCP) -> None:
     """Patch ``read_resource`` + ``get_resource`` to surface envelopes cleanly.
 
     Idempotent. Safe to call multiple times.
@@ -128,15 +132,15 @@ def install_resource_envelope_wrapper(mcp_instance: Any) -> None:
     _wrap_resource_manager(mcp_instance)
 
 
-def _wrap_read_resource(mcp_instance: Any) -> None:
+def _wrap_read_resource(mcp_instance: FastMCP) -> None:
     original = mcp_instance.read_resource
     if getattr(original, _READ_WRAPPED, False):
         return
 
-    async def wrapped(uri: Any) -> Any:
+    async def wrapped(uri: AnyUrl | str) -> Iterable[ReadResourceContents]:
         try:
             return await original(uri)
-        except Exception as exc:  # noqa: BLE001 - intentional boundary translator
+        except Exception as exc:
             # Resource handlers can raise either ``ResourceOperationError``
             # (which we re-wrap) or any other exception (which we
             # re-raise unchanged). FastMCP's resource manager wraps the
@@ -148,20 +152,20 @@ def _wrap_read_resource(mcp_instance: Any) -> None:
                 raise
             raise _to_mcp_error(roe) from None
 
-    setattr(wrapped, _READ_WRAPPED, True)  # noqa: B010
-    mcp_instance.read_resource = wrapped  # type: ignore[method-assign]
+    setattr(wrapped, _READ_WRAPPED, True)
+    mcp_instance.read_resource = wrapped  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
 
-def _wrap_resource_manager(mcp_instance: Any) -> None:
-    manager = mcp_instance._resource_manager  # noqa: SLF001
+def _wrap_resource_manager(mcp_instance: FastMCP) -> None:
+    manager = mcp_instance._resource_manager
     original = manager.get_resource
     if getattr(original, _GET_WRAPPED, False):
         return
 
-    async def wrapped_get(uri: Any, context: Any = None) -> Any:
+    async def wrapped_get(uri: AnyUrl | str, context: Context | None = None) -> Resource | None:
         try:
             return await original(uri, context=context)
-        except Exception as exc:  # noqa: BLE001 - intentional boundary translator
+        except Exception as exc:
             # Resource handlers can raise either ``ResourceOperationError``
             # (which we re-wrap) or any other exception (which we
             # re-raise unchanged). FastMCP's resource manager wraps the
@@ -173,8 +177,8 @@ def _wrap_resource_manager(mcp_instance: Any) -> None:
                 raise
             raise _to_mcp_error(roe) from None
 
-    setattr(wrapped_get, _GET_WRAPPED, True)  # noqa: B010
-    manager.get_resource = wrapped_get  # type: ignore[method-assign]
+    setattr(wrapped_get, _GET_WRAPPED, True)
+    manager.get_resource = wrapped_get  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
 
 __all__ = ["install_resource_envelope_wrapper"]

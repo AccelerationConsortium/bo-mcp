@@ -25,6 +25,7 @@ import logging
 from typing import Any, Literal
 from uuid import UUID
 
+from bo_engine.backend import BOBackend
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.backend import get_backend
@@ -224,7 +225,7 @@ def _validate_submit_inputs(
 async def _update_campaign_state(
     campaign: Campaign,
     spec: CampaignSpec,
-    backend: Any,
+    backend: BOBackend,
     campaign_uuid: UUID,
     campaign_id: str,
     result_entities: list[Result],
@@ -462,6 +463,9 @@ async def submit_results_operation(
             valid rows are persisted (subject to ``continue_on_error``).
         continue_on_error: If True, continue after errors (ignored if atomic)
         verbosity: Response detail level
+        session: Optional AsyncSession to reuse (e.g. from a test or an
+            outer transaction). When ``None``, a fresh session scope is
+            opened via :func:`session_scope`.
         dry_run: If True, perform full validation and return a preview
             without persisting anything.
 

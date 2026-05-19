@@ -68,25 +68,24 @@ def _balanced_results(*, campaign_id, submitted_by, threshold: float = 0.5) -> l
     """8 feasible / 8 infeasible 1-D rows that the constraint GP can separate."""
     feasible_xs = [round(0.05 * (i + 1), 4) for i in range(8)]
     infeasible_xs = [round(0.55 + 0.05 * i, 4) for i in range(8)]
-    rows = []
-    for x in feasible_xs:
-        rows.append(
-            _make_result(
-                x=x,
-                y=threshold - 0.25,
-                campaign_id=campaign_id,
-                submitted_by=submitted_by,
-            )
+    rows = [
+        _make_result(
+            x=x,
+            y=threshold - 0.25,
+            campaign_id=campaign_id,
+            submitted_by=submitted_by,
         )
-    for x in infeasible_xs:
-        rows.append(
-            _make_result(
-                x=x,
-                y=threshold + 0.25,
-                campaign_id=campaign_id,
-                submitted_by=submitted_by,
-            )
+        for x in feasible_xs
+    ]
+    rows.extend(
+        _make_result(
+            x=x,
+            y=threshold + 0.25,
+            campaign_id=campaign_id,
+            submitted_by=submitted_by,
         )
+        for x in infeasible_xs
+    )
     return rows
 
 

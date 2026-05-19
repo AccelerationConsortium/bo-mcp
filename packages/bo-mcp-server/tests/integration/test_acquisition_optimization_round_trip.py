@@ -17,13 +17,15 @@ import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
 
+pytestmark = pytest.mark.usefixtures("setup_database")
+
 
 def _to_result_inputs(results: list[dict[str, Any]]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
 @pytest.mark.asyncio
-async def test_acquisition_optimization_overrides_round_trip(setup_database) -> None:
+async def test_acquisition_optimization_overrides_round_trip() -> None:
     """Custom restart count survives MCP create -> DB -> generate.
 
     Strategy: create a campaign with explicit
@@ -95,9 +97,7 @@ async def test_acquisition_optimization_overrides_round_trip(setup_database) -> 
 
 
 @pytest.mark.asyncio
-async def test_intake_without_override_uses_dimension_adaptive_defaults(
-    setup_database,
-) -> None:
+async def test_intake_without_override_uses_dimension_adaptive_defaults() -> None:
     """Omitting the field falls back to the dimension-adaptive formula."""
     from bo_engine.constants import (
         NUM_RESTARTS_BASE,

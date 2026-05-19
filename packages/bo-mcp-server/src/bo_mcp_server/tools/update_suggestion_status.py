@@ -52,6 +52,7 @@ async def update_suggestion_status(
             without committing. The response carries ``dry_run: True``
             and a ``preview`` block. Dry-runs bypass the idempotency
             cache so they never reserve a slot.
+        trace_id: Optional workflow trace id. See ``bo_create_campaign``.
 
     Returns:
         Dictionary with:

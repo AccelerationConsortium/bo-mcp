@@ -59,8 +59,10 @@ def _format_constraints_section(spec: CampaignSpec) -> list[str]:
     if not spec.constraints:
         return []
     lines = ["", "## Constraints", ""]
-    for constraint in spec.constraints:
-        lines.append(f"- {constraint.type.value}: {constraint.parameters} = {constraint.value}")
+    lines.extend(
+        f"- {constraint.type.value}: {constraint.parameters} = {constraint.value}"
+        for constraint in spec.constraints
+    )
     return lines
 
 
@@ -451,11 +453,11 @@ async def _render_campaigns_listing(
 
     header = f"# Campaigns (showing {len(campaigns)} of {total}, offset {offset}, limit {limit})"
     lines = [header, ""]
-    for c in campaigns:
-        lines.append(
-            f"- **{c['name']}** (ID: {c['campaign_id']}): {c['status']}, "
-            f"iteration {c.get('iteration', '?')}"
-        )
+    lines.extend(
+        f"- **{c['name']}** (ID: {c['campaign_id']}): {c['status']}, "
+        f"iteration {c.get('iteration', '?')}"
+        for c in campaigns
+    )
     if next_cursor:
         lines.append("")
         lines.append(f"**Next cursor:** `{next_cursor}`")

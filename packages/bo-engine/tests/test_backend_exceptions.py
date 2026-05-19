@@ -124,9 +124,16 @@ class TestBackendErrorRaiseChain:
         explicitly so backends do not have to repeat the boilerplate.
         """
         root = ValueError("NaN")
-        with pytest.raises(BackendInputError) as exc_info:
+
+        def _raise_root() -> None:
+            raise root
+
+        def _wrap_and_reraise() -> None:
             try:
-                raise root
-            except Exception as exc:  # noqa: BLE001 — test fixture
+                _raise_root()
+            except Exception as exc:
                 raise wrap_backend_exception(exc, backend_name="botorch") from exc
+
+        with pytest.raises(BackendInputError) as exc_info:
+            _wrap_and_reraise()
         assert exc_info.value.__cause__ is root

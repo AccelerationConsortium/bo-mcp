@@ -94,7 +94,8 @@ class TestConvenienceVsOperationDivergence:
         envelope = await list_suggestions_operation(campaign_id=campaign_id, verbosity="standard")
         assert envelope["success"] is True
         assert "suggestions" in envelope
-        assert "limit" in envelope and "offset" in envelope
+        assert "limit" in envelope
+        assert "offset" in envelope
 
     @pytest.mark.asyncio
     async def test_list_results_bare_entities_vs_envelope(self, persisted_user) -> None:

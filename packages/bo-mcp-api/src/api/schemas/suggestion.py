@@ -66,7 +66,7 @@ class SuggestionStatusUpdateResponse(ResponseEnvelope):
     suggestion_id: str | None = None
     status: str | None = None
     previous_status: str | None = None
-    errors: list[str] = []
+    errors: list[str] = Field(default_factory=list)
 
 
 class SuggestionQueryRequest(BaseModel):

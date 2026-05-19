@@ -177,7 +177,6 @@ class TestThompsonSamplingRngIsolation:
 
     def test_thompson_seed_does_not_leak(
         self,
-        single_obj_spec_seeded: OptimizationSpec,
         observations_dense: list[ObservationData],
     ) -> None:
         """Seeded Thompson sampling leaves the caller's RNG stream intact."""

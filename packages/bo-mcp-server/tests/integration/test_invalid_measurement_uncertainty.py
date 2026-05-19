@@ -38,6 +38,7 @@ async def _build_campaign(batch_size: int = 2) -> tuple[str, list[dict[str, Any]
     return campaign_id, gen["suggestions"], owner_id
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestAtomicRejection:
     """Atomic mode must reject the entire batch on a bad uncertainty value."""
 
@@ -47,9 +48,7 @@ class TestAtomicRejection:
         [-0.1, float("nan"), float("inf"), float("-inf")],
         ids=["negative", "nan", "inf", "-inf"],
     )
-    async def test_atomic_rejects_bad_value_for_declared_objective(
-        self, setup_database, bad_value: float
-    ) -> None:
+    async def test_atomic_rejects_bad_value_for_declared_objective(self, bad_value: float) -> None:
         """Negative/NaN/inf stddev on a declared objective fails the submission."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -84,11 +83,12 @@ class TestAtomicRejection:
         assert stored["total_count"] == 0
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestNonAtomicRejection:
     """Non-atomic mode drops the bad row but persists valid ones."""
 
     @pytest.mark.asyncio
-    async def test_non_atomic_drops_invalid_row_only(self, setup_database) -> None:
+    async def test_non_atomic_drops_invalid_row_only(self) -> None:
         """A bad uncertainty value blocks only its row; valid rows commit."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -125,12 +125,13 @@ class TestNonAtomicRejection:
         assert listed["total_count"] == 1
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestUnknownObjectiveKeysStillWarn:
     """Unknown objective keys remain warnings (they are dropped before the engine)."""
 
     @pytest.mark.asyncio
     async def test_unknown_objective_keyed_uncertainty_is_warning_only(
-        self, setup_database
+        self,
     ) -> None:
         """An odd value attached to a non-declared key does not fail submission.
 

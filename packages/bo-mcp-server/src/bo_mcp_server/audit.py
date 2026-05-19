@@ -104,6 +104,5 @@ async def log_tool_call(
             exc_info=True,
         )
         if get_audit_failures_fatal():
-            raise AuditPersistenceError(
-                f"Audit event for {tool_name} failed to persist: {type(exc).__name__}"
-            ) from exc
+            msg = f"Audit event for {tool_name} failed to persist: {type(exc).__name__}"
+            raise AuditPersistenceError(msg) from exc

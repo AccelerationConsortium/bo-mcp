@@ -271,7 +271,7 @@ class TestRGPESuggestionGeneration:
             num_samples=32,  # Reduced for speed
         )
 
-        candidates, acq_values, metadata = generate_rgpe_suggestions(
+        candidates, _acq_values, metadata = generate_rgpe_suggestions(
             target_x=target_x,
             target_y=target_y,
             prior_tasks=prior_tasks,
@@ -281,7 +281,8 @@ class TestRGPESuggestionGeneration:
         )
 
         assert candidates.shape == (2, 2)
-        assert (candidates >= 0).all() and (candidates <= 1).all()
+        assert (candidates >= 0).all()
+        assert (candidates <= 1).all()
         assert "weights" in metadata
 
     @pytest.mark.slow
@@ -315,7 +316,7 @@ class TestRGPESuggestionGeneration:
 
         config = RGPEConfig(num_samples=32)
 
-        candidates, _, metadata = generate_rgpe_suggestions(
+        candidates, _, _metadata = generate_rgpe_suggestions(
             target_x=target_x,
             target_y=target_y,
             prior_tasks=prior_tasks,

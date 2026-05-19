@@ -17,7 +17,7 @@ from torch import Tensor
 
 from bo_engine.device import get_device, get_dtype
 from bo_engine.models import create_and_fit_single_task_model
-from bo_engine.types import ObservationData, OptimizationSpec
+from bo_engine.types import ObservationData, OptimizationSpec, OutcomeConstraintSpec
 
 
 class OutcomeConstraintConfigurationError(ValueError):
@@ -87,10 +87,11 @@ def _build_outcome_constraint_models(
     objective_names = {obj.name for obj in spec.objectives}
     method = (spec.outcome_constraint_method or "continuous").lower()
     if method not in {"continuous", "binary"}:
-        raise OutcomeConstraintConfigurationError(
+        msg = (
             f"Unknown outcome_constraint_method={spec.outcome_constraint_method!r}; "
             "expected 'continuous' or 'binary'."
         )
+        raise OutcomeConstraintConfigurationError(msg)
 
     constraint_models: list[tuple[Any, float]] = []
     for oc in spec.outcome_constraints:
@@ -135,7 +136,7 @@ def _collect_constraint_values(
 
 
 def _fit_outcome_constraint_model(
-    oc: Any,
+    oc: OutcomeConstraintSpec,
     obj_tensor: Tensor,
     train_x: Tensor,
     bounds: Tensor,

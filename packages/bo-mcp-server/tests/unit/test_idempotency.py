@@ -266,7 +266,6 @@ async def test_stale_owner_envelope_carries_trace_metadata() -> None:
                 IdempotencyCacheModel.tool_name == tool,
                 IdempotencyCacheModel.idempotency_key == key,
             )
-            # noqa S106: literal is a test fixture token, not a credential
             .values(reservation_token="different-owner-token-32-chars-aa")  # noqa: S106
         )
         return {"success": True, "executed": True}
@@ -354,7 +353,8 @@ async def test_apply_idempotency_drops_reservation_on_exception() -> None:
         nonlocal n_calls
         n_calls += 1
         if n_calls == 1:
-            raise RuntimeError("simulated failure")
+            msg = "simulated failure"
+            raise RuntimeError(msg)
         return {"success": True, "attempt": n_calls}
 
     with pytest.raises(RuntimeError):
@@ -471,7 +471,8 @@ async def test_stale_reservation_is_reclaimed_when_pending_ttl_elapses() -> None
     # pending TTL: the reservation row is in the DB, response_json="",
     # expires_at already past.
     token = await _try_reserve(tool, key, request_hash, reservation_ttl_seconds=0)
-    assert token is not None and len(token) == 32  # uuid4().hex length
+    assert token is not None
+    assert len(token) == 32
 
     # Sanity-check: the row is "pending" the instant we insert it.
     # (We can't easily observe that without racing the purge, so we
@@ -648,7 +649,6 @@ async def test_stale_owner_session_aware_writes_roll_back() -> None:
                 IdempotencyCacheModel.tool_name == tool,
                 IdempotencyCacheModel.idempotency_key == key,
             )
-            # noqa S106: literal is a test fixture token, not a credential
             .values(reservation_token="different-owner-token-32-chars-aa")  # noqa: S106
         )
 
@@ -755,7 +755,8 @@ async def test_session_aware_executor_failure_rolls_back_writes() -> None:
 
     async def crasher(db: AsyncSession) -> dict[str, Any]:
         _ = db
-        raise RuntimeError("operation died mid-flight")
+        msg = "operation died mid-flight"
+        raise RuntimeError(msg)
 
     with pytest.raises(RuntimeError):
         await apply_idempotency(

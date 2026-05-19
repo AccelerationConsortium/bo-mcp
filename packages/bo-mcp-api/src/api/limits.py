@@ -7,7 +7,7 @@ doesn't have to chase the others through unrelated modules. Each
 limit's rationale is documented inline so a future bump (or
 reduction) is grounded in a use-case argument, not arbitrary.
 
-References
+References:
 ----------
 * RFC 9110 §15.5.14 (413 Content Too Large): the response status
   returned when a request payload exceeds a configured bound.

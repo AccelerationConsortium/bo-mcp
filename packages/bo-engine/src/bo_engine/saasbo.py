@@ -304,10 +304,11 @@ def compute_saasbo_importance_report(
     if parameter_names is None:
         parameter_names = [f"param_{i}" for i in range(n_params)]
     elif len(parameter_names) != n_params:
-        raise ValueError(
+        msg = (
             f"parameter_names length ({len(parameter_names)}) does not match "
             f"the model's input dimensionality ({n_params})."
         )
+        raise ValueError(msg)
 
     if q25 is None or q75 is None:
         # No posterior spread available — surface medians as the singleton
@@ -498,7 +499,6 @@ def estimate_saasbo_runtime(
 
     if estimated_seconds < 60:
         return f"~{int(estimated_seconds)} seconds"
-    elif estimated_seconds < 3600:
+    if estimated_seconds < 3600:
         return f"~{int(estimated_seconds / 60)} minutes"
-    else:
-        return f"~{int(estimated_seconds / 3600)} hours"
+    return f"~{int(estimated_seconds / 3600)} hours"

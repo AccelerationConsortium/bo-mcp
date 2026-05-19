@@ -114,7 +114,7 @@ def _exercise_env_helper(connection: _RecordingConnection, timeout_seconds: floa
 
 def _passthrough_text(s: str) -> Any:
     """Stand-in for ``sqlalchemy.text`` that just records the rendered SQL."""
-    return type("Text", (), {"text": s, "__str__": lambda self: s})()
+    return type("Text", (), {"text": s, "__str__": lambda _self: s})()
 
 
 def test_env_helper_sets_three_timeouts_on_postgresql(

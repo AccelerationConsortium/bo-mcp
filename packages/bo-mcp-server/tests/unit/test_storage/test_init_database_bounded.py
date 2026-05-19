@@ -53,7 +53,7 @@ async def test_unreachable_database_fails_fast_with_typed_error(
     # S6698: literal credentials are a deliberate test fixture, not a real secret.
     monkeypatch.setenv(
         "DATABASE_URL",
-        "postgresql+asyncpg://invalid:invalid@127.0.0.1:1/nonexistent",  # noqa: S106
+        "postgresql+asyncpg://invalid:invalid@127.0.0.1:1/nonexistent",
     )
     monkeypatch.setenv("DATABASE_INIT_CONNECT_TIMEOUT_SECONDS", "2.0")
     monkeypatch.setenv("USE_ALEMBIC", "true")
@@ -87,7 +87,8 @@ async def test_slow_alembic_upgrade_hits_typed_timeout(
         await asyncio.sleep(0)
 
     def _killed_subprocess(timeout_seconds: float) -> None:
-        raise TimeoutError(f"Alembic upgrade exceeded {timeout_seconds:.1f}s and was SIGKILLed")
+        msg = f"Alembic upgrade exceeded {timeout_seconds:.1f}s and was SIGKILLed"
+        raise TimeoutError(msg)
 
     monkeypatch.setattr(db_module, "_preflight_connectivity", _instant_preflight)
     monkeypatch.setattr(db_module, "_run_alembic_in_subprocess", _killed_subprocess)
@@ -118,7 +119,8 @@ async def test_alembic_failure_is_translated_to_typed_error(
         await asyncio.sleep(0)
 
     def _broken_upgrade(_timeout_seconds: float) -> None:
-        raise OperationalError("bad-migration", {}, RuntimeError("boom"))
+        msg = "bad-migration"
+        raise OperationalError(msg, {}, RuntimeError("boom"))
 
     monkeypatch.setattr(db_module, "_preflight_connectivity", _instant_preflight)
     monkeypatch.setattr(db_module, "_run_alembic_in_subprocess", _broken_upgrade)
@@ -210,7 +212,7 @@ def test_run_alembic_subprocess_sigkills_on_timeout(monkeypatch: pytest.MonkeyPa
     real_run = subprocess_mod.run
     captured_args: dict[str, object] = {}
 
-    def _spying_run(cmd, **kwargs):  # noqa: ANN001 - subprocess sig
+    def _spying_run(_cmd, **kwargs):
         captured_args["timeout"] = kwargs.get("timeout")
         # Force a sleep-much-longer-than-timeout child so the timeout
         # branch actually fires.
@@ -246,7 +248,7 @@ def test_run_alembic_subprocess_translates_nonzero_exit(monkeypatch: pytest.Monk
 
     real_run = subprocess_mod.run
 
-    def _failing_run(cmd, **kwargs):  # noqa: ANN001 - subprocess sig
+    def _failing_run(_cmd, **kwargs):
         # Substitute a child that exits 1 with a distinctive stderr.
         replacement = [
             sys.executable,

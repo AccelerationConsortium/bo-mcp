@@ -477,8 +477,7 @@ def get_calibration_summary(report: CalibrationReport) -> str:
     if report.warnings:
         lines.append("")
         lines.append("Warnings:")
-        for w in report.warnings:
-            lines.append(f"  - {w}")
+        lines.extend(f"  - {w}" for w in report.warnings)
 
     lines.append("")
     lines.append(f"Recommendation: {report.recommendation}")
@@ -509,13 +508,12 @@ def _generate_calibration_recommendation(
             f"{prefix}Model is systematically overconfident (intervals too narrow). "
             "Consider using input warping or checking for outliers."
         )
-    elif under_count > over_count * 2:
+    if under_count > over_count * 2:
         return (
             f"{prefix}Model is systematically underconfident (intervals too wide). "
             "This is safer for decision-making but may indicate poor model fit."
         )
-    else:
-        return (
-            f"{prefix}Calibration is inconsistent across confidence levels. "
-            "The model may need more training data or a different kernel."
-        )
+    return (
+        f"{prefix}Calibration is inconsistent across confidence levels. "
+        "The model may need more training data or a different kernel."
+    )

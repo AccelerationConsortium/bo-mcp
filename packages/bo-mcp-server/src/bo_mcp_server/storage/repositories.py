@@ -30,6 +30,7 @@ from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.domain.utils import utcnow
 from bo_mcp_server.storage.base import ConcurrentModificationError
 from bo_mcp_server.storage.models import (
+    Base,
     CampaignModel,
     CampaignSpecModel,
     EventModel,
@@ -84,7 +85,7 @@ def _advanced_options_kwargs(data: dict[str, Any]) -> dict[str, Any]:
     return {k: data[k] for k in _ADVANCED_SPEC_FIELDS if k in data and data[k] is not None}
 
 
-def _active_filter(model: Any, include_deleted: bool) -> list[Any]:
+def _active_filter(model: type[Base], include_deleted: bool) -> list[Any]:
     """Return WHERE-clauses that hide soft-deleted rows by default.
 
     TODO 8.11: every campaign / suggestion / result / event read goes
@@ -97,20 +98,22 @@ def _active_filter(model: Any, include_deleted: bool) -> list[Any]:
     """
     if include_deleted:
         return []
-    if not hasattr(model, "deleted_at"):
+    deleted_at = getattr(model, "deleted_at", None)
+    if deleted_at is None:
         return []
-    return [model.deleted_at.is_(None)]
+    return [deleted_at.is_(None)]
 
 
 class UserRepository:
     """Repository for User entities."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession) -> None:
+        """Bind this repository to the given async SQLAlchemy session."""
         self.session = session
 
-    async def get(self, id: UUID) -> User | None:
+    async def get(self, entity_id: UUID) -> User | None:
         """Get user by ID."""
-        result = await self.session.execute(select(UserModel).where(UserModel.id == str(id)))
+        result = await self.session.execute(select(UserModel).where(UserModel.id == str(entity_id)))
         model = result.scalar_one_or_none()
         if model is None:
             return None
@@ -148,9 +151,9 @@ class UserRepository:
         merged = await self.session.merge(model)
         return self._to_entity(merged)
 
-    async def delete(self, id: UUID) -> bool:
+    async def delete(self, entity_id: UUID) -> bool:
         """Delete user by ID."""
-        result = await self.session.execute(select(UserModel).where(UserModel.id == str(id)))
+        result = await self.session.execute(select(UserModel).where(UserModel.id == str(entity_id)))
         model = result.scalar_one_or_none()
         if model is None:
             return False
@@ -178,13 +181,14 @@ class UserRepository:
 class CampaignSpecRepository:
     """Repository for CampaignSpec entities."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession) -> None:
+        """Bind this repository to the given async SQLAlchemy session."""
         self.session = session
 
-    async def get(self, id: UUID) -> CampaignSpec | None:
+    async def get(self, entity_id: UUID) -> CampaignSpec | None:
         """Get campaign spec by ID."""
         result = await self.session.execute(
-            select(CampaignSpecModel).where(CampaignSpecModel.id == str(id))
+            select(CampaignSpecModel).where(CampaignSpecModel.id == str(entity_id))
         )
         model = result.scalar_one_or_none()
         if model is None:
@@ -225,10 +229,10 @@ class CampaignSpecRepository:
         merged = await self.session.merge(model)
         return self._to_entity(merged)
 
-    async def delete(self, id: UUID) -> bool:
+    async def delete(self, entity_id: UUID) -> bool:
         """Delete campaign spec by ID."""
         result = await self.session.execute(
-            select(CampaignSpecModel).where(CampaignSpecModel.id == str(id))
+            select(CampaignSpecModel).where(CampaignSpecModel.id == str(entity_id))
         )
         model = result.scalar_one_or_none()
         if model is None:
@@ -253,7 +257,7 @@ class CampaignSpecRepository:
         if not ids:
             return {}
 
-        str_ids = [str(id) for id in ids]
+        str_ids = [str(value) for value in ids]
         result = await self.session.execute(
             select(CampaignSpecModel).where(CampaignSpecModel.id.in_(str_ids))
         )
@@ -337,10 +341,11 @@ class CampaignSpecRepository:
 class CampaignRepository:
     """Repository for Campaign entities."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession) -> None:
+        """Bind this repository to the given async SQLAlchemy session."""
         self.session = session
 
-    async def get(self, id: UUID, *, include_deleted: bool = False) -> Campaign | None:
+    async def get(self, entity_id: UUID, *, include_deleted: bool = False) -> Campaign | None:
         """Get campaign by ID.
 
         Soft-deleted rows are hidden by default; set ``include_deleted=True``
@@ -349,7 +354,7 @@ class CampaignRepository:
         """
         result = await self.session.execute(
             select(CampaignModel).where(
-                CampaignModel.id == str(id),
+                CampaignModel.id == str(entity_id),
                 *_active_filter(CampaignModel, include_deleted),
             )
         )
@@ -417,7 +422,7 @@ class CampaignRepository:
             query = query.where(CampaignModel.status == status)
             count_query = count_query.where(CampaignModel.status == status)
         if exclude_ids:
-            str_ids = [str(id) for id in exclude_ids]
+            str_ids = [str(value) for value in exclude_ids]
             query = query.where(CampaignModel.id.notin_(str_ids))
             count_query = count_query.where(CampaignModel.id.notin_(str_ids))
 
@@ -513,7 +518,7 @@ class CampaignRepository:
         """
         if not ids:
             return {}
-        str_ids = [str(id) for id in ids]
+        str_ids = [str(value) for value in ids]
         result = await self.session.execute(
             select(CampaignModel).where(
                 CampaignModel.id.in_(str_ids),
@@ -618,7 +623,8 @@ class CampaignRepository:
 
         if is_update:
             if expected_version is None:
-                raise ConcurrentModificationError("Campaign", campaign.id, -1)
+                msg = "Campaign"
+                raise ConcurrentModificationError(msg, campaign.id, -1)
 
             # Atomic UPDATE … WHERE version = expected AND deleted_at IS NULL
             stmt = (
@@ -632,7 +638,8 @@ class CampaignRepository:
             )
             result = await self.session.execute(stmt)
             if result.rowcount == 0:  # ty: ignore[unresolved-attribute]
-                raise ConcurrentModificationError("Campaign", campaign.id, expected_version)
+                msg = "Campaign"
+                raise ConcurrentModificationError(msg, campaign.id, expected_version)
             await self.session.flush()
         else:
             model = CampaignModel(id=campaign_id_str, **values)
@@ -641,7 +648,7 @@ class CampaignRepository:
 
         return campaign
 
-    async def delete(self, id: UUID) -> bool:
+    async def delete(self, entity_id: UUID) -> bool:
         """Soft-delete a campaign by stamping ``deleted_at``.
 
         TODO 8.11 replaces hard-delete cascades with a soft-delete
@@ -654,14 +661,14 @@ class CampaignRepository:
         """
         stmt = (
             update(CampaignModel)
-            .where(CampaignModel.id == str(id), CampaignModel.deleted_at.is_(None))
+            .where(CampaignModel.id == str(entity_id), CampaignModel.deleted_at.is_(None))
             .values(deleted_at=utcnow())
         )
         result = await self.session.execute(stmt)
         await self.session.flush()
         return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
 
-    async def hard_delete(self, id: UUID) -> bool:
+    async def hard_delete(self, entity_id: UUID) -> bool:
         """Physically remove the row (admin / cleanup only).
 
         Fails with an integrity error when child rows (suggestions,
@@ -671,7 +678,7 @@ class CampaignRepository:
         cascade the children explicitly first.
         """
         result = await self.session.execute(
-            select(CampaignModel).where(CampaignModel.id == str(id))
+            select(CampaignModel).where(CampaignModel.id == str(entity_id))
         )
         model = result.scalar_one_or_none()
         if model is None:
@@ -699,14 +706,15 @@ class CampaignRepository:
 class SuggestionRepository:
     """Repository for Suggestion entities."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession) -> None:
+        """Bind this repository to the given async SQLAlchemy session."""
         self.session = session
 
-    async def get(self, id: UUID, *, include_deleted: bool = False) -> Suggestion | None:
+    async def get(self, entity_id: UUID, *, include_deleted: bool = False) -> Suggestion | None:
         """Get suggestion by ID (hides soft-deleted rows by default)."""
         result = await self.session.execute(
             select(SuggestionModel).where(
-                SuggestionModel.id == str(id),
+                SuggestionModel.id == str(entity_id),
                 *_active_filter(SuggestionModel, include_deleted),
             )
         )
@@ -906,7 +914,8 @@ class SuggestionRepository:
                     "concurrently with this save",
                     suggestion.id,
                 )
-                raise ConcurrentModificationError("Suggestion", suggestion.id, -1)
+                msg = "Suggestion"
+                raise ConcurrentModificationError(msg, suggestion.id, -1)
         else:
             self.session.add(SuggestionModel(id=suggestion_id_str, deleted_at=None, **values))
         await self.session.flush()
@@ -945,21 +954,21 @@ class SuggestionRepository:
         # Return the original entities (they already have the correct data)
         return suggestions
 
-    async def delete(self, id: UUID) -> bool:
+    async def delete(self, entity_id: UUID) -> bool:
         """Soft-delete a suggestion. See :meth:`CampaignRepository.delete`."""
         stmt = (
             update(SuggestionModel)
-            .where(SuggestionModel.id == str(id), SuggestionModel.deleted_at.is_(None))
+            .where(SuggestionModel.id == str(entity_id), SuggestionModel.deleted_at.is_(None))
             .values(deleted_at=utcnow())
         )
         result = await self.session.execute(stmt)
         await self.session.flush()
         return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
 
-    async def hard_delete(self, id: UUID) -> bool:
+    async def hard_delete(self, entity_id: UUID) -> bool:
         """Physically remove the row (admin / cleanup only)."""
         result = await self.session.execute(
-            select(SuggestionModel).where(SuggestionModel.id == str(id))
+            select(SuggestionModel).where(SuggestionModel.id == str(entity_id))
         )
         model = result.scalar_one_or_none()
         if model is None:
@@ -969,7 +978,7 @@ class SuggestionRepository:
 
     async def transition_status(
         self,
-        id: UUID,
+        entity_id: UUID,
         from_status: SuggestionStatus | Sequence[SuggestionStatus],
         to_status: SuggestionStatus,
     ) -> bool:
@@ -1014,7 +1023,7 @@ class SuggestionRepository:
         stmt = (
             update(SuggestionModel)
             .where(
-                SuggestionModel.id == str(id),
+                SuggestionModel.id == str(entity_id),
                 status_predicate,
                 SuggestionModel.deleted_at.is_(None),
             )
@@ -1024,7 +1033,7 @@ class SuggestionRepository:
         await self.session.flush()
         return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
 
-    async def expire_if_pending(self, id: UUID) -> bool:
+    async def expire_if_pending(self, entity_id: UUID) -> bool:
         """Atomically mark a still-``PENDING`` suggestion as ``EXPIRED``.
 
         Convenience wrapper around :meth:`transition_status` —
@@ -1032,7 +1041,9 @@ class SuggestionRepository:
         expiration path needs and naming it explicitly keeps the
         call site at that layer readable.
         """
-        return await self.transition_status(id, SuggestionStatus.PENDING, SuggestionStatus.EXPIRED)
+        return await self.transition_status(
+            entity_id, SuggestionStatus.PENDING, SuggestionStatus.EXPIRED
+        )
 
     async def list_all(self, *, include_deleted: bool = False) -> list[Suggestion]:
         """List all suggestions (hides soft-deleted by default)."""
@@ -1054,7 +1065,7 @@ class SuggestionRepository:
         """
         if not campaign_ids:
             return {}
-        str_ids = [str(id) for id in campaign_ids]
+        str_ids = [str(value) for value in campaign_ids]
         result = await self.session.execute(
             select(SuggestionModel.campaign_id, func.count())
             .where(SuggestionModel.campaign_id.in_(str_ids))
@@ -1098,14 +1109,15 @@ class SuggestionRepository:
 class ResultRepository:
     """Repository for Result entities."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession) -> None:
+        """Bind this repository to the given async SQLAlchemy session."""
         self.session = session
 
-    async def get(self, id: UUID, *, include_deleted: bool = False) -> Result | None:
+    async def get(self, entity_id: UUID, *, include_deleted: bool = False) -> Result | None:
         """Get result by ID (hides soft-deleted rows by default)."""
         result = await self.session.execute(
             select(ResultModel).where(
-                ResultModel.id == str(id),
+                ResultModel.id == str(entity_id),
                 *_active_filter(ResultModel, include_deleted),
             )
         )
@@ -1314,7 +1326,8 @@ class ResultRepository:
                     "Refusing to save result %s: row was soft-deleted concurrently with this save",
                     result.id,
                 )
-                raise ConcurrentModificationError("Result", result.id, -1)
+                msg = "Result"
+                raise ConcurrentModificationError(msg, result.id, -1)
         else:
             self.session.add(ResultModel(id=result_id_str, deleted_at=None, **values))
         await self.session.flush()
@@ -1375,20 +1388,22 @@ class ResultRepository:
         # Return the original entities (they already have the correct data)
         return results
 
-    async def delete(self, id: UUID) -> bool:
+    async def delete(self, entity_id: UUID) -> bool:
         """Soft-delete a result. See :meth:`CampaignRepository.delete`."""
         stmt = (
             update(ResultModel)
-            .where(ResultModel.id == str(id), ResultModel.deleted_at.is_(None))
+            .where(ResultModel.id == str(entity_id), ResultModel.deleted_at.is_(None))
             .values(deleted_at=utcnow())
         )
         result = await self.session.execute(stmt)
         await self.session.flush()
         return bool(result.rowcount)  # ty: ignore[unresolved-attribute]
 
-    async def hard_delete(self, id: UUID) -> bool:
+    async def hard_delete(self, entity_id: UUID) -> bool:
         """Physically remove the row (admin / cleanup only)."""
-        result = await self.session.execute(select(ResultModel).where(ResultModel.id == str(id)))
+        result = await self.session.execute(
+            select(ResultModel).where(ResultModel.id == str(entity_id))
+        )
         model = result.scalar_one_or_none()
         if model is None:
             return False
@@ -1415,7 +1430,7 @@ class ResultRepository:
         """
         if not campaign_ids:
             return {}
-        str_ids = [str(id) for id in campaign_ids]
+        str_ids = [str(value) for value in campaign_ids]
         result = await self.session.execute(
             select(ResultModel.campaign_id, func.count())
             .where(ResultModel.campaign_id.in_(str_ids))
@@ -1449,6 +1464,7 @@ class EventRepository:
     """Repository for audit Event entities."""
 
     def __init__(self, session: AsyncSession) -> None:
+        """Bind this repository to the given async SQLAlchemy session."""
         self.session = session
 
     async def save(self, event: Event) -> Event:
@@ -1460,7 +1476,7 @@ class EventRepository:
         that write Events directly — picks it up uniformly. Centralizing
         the splice here means future callers cannot forget it.
         """
-        from bo_mcp_server.trace_context import get_trace_id  # noqa: PLC0415
+        from bo_mcp_server.trace_context import get_trace_id
 
         enriched_input = dict(event.input_summary)
         trace_id = get_trace_id()

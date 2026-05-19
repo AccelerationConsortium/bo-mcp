@@ -13,7 +13,7 @@ from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
 
 # Re-export for backward compatibility
-__all__ = ["get_diagnostics", "ALL_SECTIONS"]
+__all__ = ["ALL_SECTIONS", "get_diagnostics"]
 
 
 @mcp.tool(name="bo_get_diagnostics", annotations=READ_ONLY)
@@ -44,6 +44,8 @@ async def get_diagnostics(
             - "outliers": outlier detection
             - "constraints": constraint satisfaction tracking
             Use ["health"] for fast status checks.
+        ctx: FastMCP request context used for progress notifications.
+            Supplied automatically by the MCP runtime.
 
     Returns:
         Dictionary with diagnostic fields based on requested sections.

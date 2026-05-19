@@ -85,6 +85,7 @@ class ProgressStatus:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def update_event(self, event: ProgressEvent) -> None:
+        """Atomically replace the latest progress event under the bridge lock."""
         with self._lock:
             self.progress = event.progress
             self.total = event.total
@@ -92,6 +93,7 @@ class ProgressStatus:
             self.phase = event.phase
 
     def record_failure(self, reason: str) -> None:
+        """Increment the failure counter and remember the latest reason."""
         with self._lock:
             self.failures += 1
             self.last_failure_reason = reason

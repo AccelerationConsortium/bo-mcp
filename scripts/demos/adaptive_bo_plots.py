@@ -13,6 +13,7 @@ Usage:
     dashboard.write_html("dashboard.html")
 """
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +55,7 @@ async def plot_optimization_progress(
 
     # All individual evaluations
     eval_iterations = [e["iteration"] for e in all_evals]
-    eval_values = [list(e["objective_values"].values())[0] for e in all_evals]
+    eval_values = [next(iter(e["objective_values"].values())) for e in all_evals]
 
     fig = go.Figure()
 
@@ -384,9 +385,8 @@ async def plot_parameter_exploration(
     if n_params == 2:
         # 2D scatter plot
         return await _plot_2d_exploration(all_evals)
-    else:
-        # Parallel coordinates for higher dimensions
-        return _plot_parallel_coordinates(all_evals)
+    # Parallel coordinates for higher dimensions
+    return _plot_parallel_coordinates(all_evals)
 
 
 async def _plot_2d_exploration(all_evals: list[dict[str, Any]]) -> go.Figure:
@@ -394,7 +394,7 @@ async def _plot_2d_exploration(all_evals: list[dict[str, Any]]) -> go.Figure:
     param_names = list(all_evals[0]["parameter_values"].keys())[:2]
     x_vals = [e["parameter_values"][param_names[0]] for e in all_evals]
     y_vals = [e["parameter_values"][param_names[1]] for e in all_evals]
-    obj_vals = [list(e["objective_values"].values())[0] for e in all_evals]
+    obj_vals = [next(iter(e["objective_values"].values())) for e in all_evals]
     iterations = [e["iteration"] for e in all_evals]
 
     fig = go.Figure()
@@ -450,7 +450,7 @@ async def _plot_2d_exploration(all_evals: list[dict[str, Any]]) -> go.Figure:
 def _plot_parallel_coordinates(all_evals: list[dict[str, Any]]) -> go.Figure:
     """Create parallel coordinates plot for high-dimensional exploration."""
     param_names = list(all_evals[0]["parameter_values"].keys())
-    obj_vals = [list(e["objective_values"].values())[0] for e in all_evals]
+    obj_vals = [next(iter(e["objective_values"].values())) for e in all_evals]
 
     dimensions = []
     for pname in param_names:
@@ -458,7 +458,7 @@ def _plot_parallel_coordinates(all_evals: list[dict[str, Any]]) -> go.Figure:
         dimensions.append({"label": pname, "values": values})
 
     # Add objective as the last dimension
-    obj_name = list(all_evals[0]["objective_values"].keys())[0]
+    obj_name = next(iter(all_evals[0]["objective_values"].keys()))
     dimensions.append({"label": obj_name, "values": obj_vals})
 
     fig = go.Figure(
@@ -535,7 +535,7 @@ async def create_dashboard(
     # Note: improvements data extracted but not used in dashboard (used in detailed progress plot)
 
     eval_iterations = [e["iteration"] for e in all_evals]
-    eval_values = [list(e["objective_values"].values())[0] for e in all_evals]
+    eval_values = [next(iter(e["objective_values"].values())) for e in all_evals]
 
     # Individual evaluations
     fig.add_trace(
@@ -649,7 +649,7 @@ async def create_dashboard(
         param_names = list(all_evals[0]["parameter_values"].keys())[:2]
         x_vals = [e["parameter_values"][param_names[0]] for e in all_evals]
         y_vals = [e["parameter_values"][param_names[1]] for e in all_evals]
-        obj_vals = [list(e["objective_values"].values())[0] for e in all_evals]
+        obj_vals = [next(iter(e["objective_values"].values())) for e in all_evals]
 
         fig.add_trace(
             go.Scatter(
@@ -722,7 +722,7 @@ async def save_plots(
     Returns:
         List of saved file paths.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
     saved_files: list[Path] = []
 
     # Optimization progress
@@ -796,7 +796,7 @@ if __name__ == "__main__":
         import aiosqlite
 
         db_path = Path("data/test_adaptive_bo.db")
-        if not db_path.exists():
+        if not await asyncio.to_thread(db_path.exists):
             print("No test database found. Run adaptive_bo_database.py first.")
             return
 

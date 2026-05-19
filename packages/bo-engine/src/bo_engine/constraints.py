@@ -42,7 +42,7 @@ def create_constraint_callable(
 
         return sum_equals
 
-    elif constraint.type == ConstraintType.SUM_LESS_THAN:
+    if constraint.type == ConstraintType.SUM_LESS_THAN:
 
         def sum_less_than(x: Tensor) -> Tensor:
             selected = x[..., param_indices]
@@ -52,7 +52,7 @@ def create_constraint_callable(
 
         return sum_less_than
 
-    elif constraint.type == ConstraintType.SUM_GREATER_THAN:
+    if constraint.type == ConstraintType.SUM_GREATER_THAN:
 
         def sum_greater_than(x: Tensor) -> Tensor:
             selected = x[..., param_indices]
@@ -62,7 +62,7 @@ def create_constraint_callable(
 
         return sum_greater_than
 
-    elif constraint.type == ConstraintType.LINEAR:
+    if constraint.type == ConstraintType.LINEAR:
 
         def linear_constraint(x: Tensor) -> Tensor:
             selected = x[..., param_indices]
@@ -74,9 +74,8 @@ def create_constraint_callable(
 
         return linear_constraint
 
-    else:
-        msg = f"Unknown constraint type: {constraint.type}"
-        raise ValueError(msg)
+    msg = f"Unknown constraint type: {constraint.type}"
+    raise ValueError(msg)
 
 
 def _get_parameter_indices(
@@ -92,7 +91,9 @@ def _get_parameter_indices(
 
     for param in spec.parameters:
         if param.type == ParameterType.CATEGORICAL:
-            assert param.categories is not None
+            if param.categories is None:
+                msg = f"Categorical parameter '{param.name}' has no categories"
+                raise ValueError(msg)
             n_cats = len(param.categories)
             if param.name in param_names:
                 # Include all one-hot indices for this categorical

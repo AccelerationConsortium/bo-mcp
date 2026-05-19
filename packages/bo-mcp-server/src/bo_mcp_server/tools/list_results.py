@@ -56,7 +56,7 @@ async def list_results(
 @mcp.tool(name="bo_export_campaign", annotations=READ_ONLY)
 async def export_campaign(
     campaign_id: str,
-    format: str = "csv",
+    output_format: str = "csv",
 ) -> dict[str, Any]:
     """Export all results for a campaign as CSV.
 
@@ -67,7 +67,7 @@ async def export_campaign(
 
     Args:
         campaign_id: UUID of the campaign.
-        format: Export format. Currently only "csv" is supported.
+        output_format: Export format. Currently only ``"csv"`` is supported.
 
     Returns:
         Dictionary with:
@@ -79,5 +79,5 @@ async def export_campaign(
     """
     return await export_campaign_operation(
         campaign_id=campaign_id,
-        format=format,
+        output_format=output_format,
     )

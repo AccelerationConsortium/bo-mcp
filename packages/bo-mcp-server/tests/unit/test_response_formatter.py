@@ -39,7 +39,7 @@ class TestVerbosityLevel:
 
     def test_verbosity_level_invalid_string(self) -> None:
         """Verify VerbosityLevel raises ValueError for invalid string."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="'invalid'"):
             VerbosityLevel("invalid")
 
 
@@ -523,12 +523,11 @@ class TestResponseContractValidation:
 
     def test_diagnostics_minimal_rejects_unknown_keys(self) -> None:
         """The strict Minimal model rejects extras when constructed directly."""
-        import pytest as _pytest
         from pydantic import ValidationError
 
         from bo_mcp_server.response_formatter import DiagnosticsMinimalResponse
 
-        with _pytest.raises(ValidationError):
+        with pytest.raises(ValidationError):
             DiagnosticsMinimalResponse(success=True, mystery_key="oops")  # ty: ignore[unknown-argument]
 
     def test_create_campaign_minimal_round_trip(self) -> None:

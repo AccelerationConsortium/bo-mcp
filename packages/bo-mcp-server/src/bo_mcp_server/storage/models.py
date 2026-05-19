@@ -22,7 +22,7 @@ import functools
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -57,13 +57,14 @@ class CorruptedJsonColumnError(RuntimeError):
     """
 
     def __init__(self, context: str, raw: str, original: Exception) -> None:
+        """Record the column context, an excerpt of the raw payload, and the cause."""
         self.context = context
         self.raw_excerpt = raw[:200]
         self.original = original
         super().__init__(f"Corrupted JSON in {context}: {original} (raw={self.raw_excerpt!r})")
 
 
-def _strict_json_loads(raw: str, *, context: str) -> Any:
+def _strict_json_loads(raw: str, *, context: str) -> object:
     """Parse JSON, raising :class:`CorruptedJsonColumnError` on failure.
 
     Replaces the legacy ``_safe_json_loads`` that swallowed
@@ -119,8 +120,6 @@ def _campaign_status_predicate(status: str) -> str:
 
 class Base(DeclarativeBase):
     """Base class for all ORM models."""
-
-    pass
 
 
 class UserModel(Base):
@@ -202,7 +201,7 @@ class CampaignSpecModel(Base):
         ``parameters_json`` and the returned list as read-only.
         """
         ctx = f"CampaignSpec({self.id}).parameters"
-        return _strict_json_loads(self.parameters_json, context=ctx)
+        return cast("list[dict[str, Any]]", _strict_json_loads(self.parameters_json, context=ctx))
 
     @functools.cached_property
     def parsed_objectives(self) -> list[dict[str, Any]]:
@@ -212,7 +211,7 @@ class CampaignSpecModel(Base):
         ``objectives_json`` and the returned list as read-only.
         """
         ctx = f"CampaignSpec({self.id}).objectives"
-        return _strict_json_loads(self.objectives_json, context=ctx)
+        return cast("list[dict[str, Any]]", _strict_json_loads(self.objectives_json, context=ctx))
 
     @functools.cached_property
     def parsed_constraints(self) -> list[dict[str, Any]]:
@@ -222,16 +221,19 @@ class CampaignSpecModel(Base):
         ``constraints_json`` and the returned list as read-only.
         """
         ctx = f"CampaignSpec({self.id}).constraints"
-        return _strict_json_loads(self.constraints_json, context=ctx)
+        return cast("list[dict[str, Any]]", _strict_json_loads(self.constraints_json, context=ctx))
 
     # Backward-compat aliases for code using the old method names
     def get_parameters(self) -> list[dict[str, Any]]:
+        """Return the parsed parameter list (alias for ``parsed_parameters``)."""
         return self.parsed_parameters
 
     def get_objectives(self) -> list[dict[str, Any]]:
+        """Return the parsed objective list (alias for ``parsed_objectives``)."""
         return self.parsed_objectives
 
     def get_constraints(self) -> list[dict[str, Any]]:
+        """Return the parsed constraint list (alias for ``parsed_constraints``)."""
         return self.parsed_constraints
 
 
@@ -311,7 +313,7 @@ class CampaignModel(Base):
         if self.turbo_state_json is None:
             return None
         ctx = f"Campaign({self.id}).turbo_state"
-        return _strict_json_loads(self.turbo_state_json, context=ctx)
+        return cast("dict[str, Any]", _strict_json_loads(self.turbo_state_json, context=ctx))
 
     @functools.cached_property
     def parsed_hypervolume_history(self) -> list[float]:
@@ -323,12 +325,14 @@ class CampaignModel(Base):
         if not self.hypervolume_history_json:
             return []
         ctx = f"Campaign({self.id}).hypervolume_history"
-        return _strict_json_loads(self.hypervolume_history_json, context=ctx)
+        return cast("list[float]", _strict_json_loads(self.hypervolume_history_json, context=ctx))
 
     def get_turbo_state(self) -> dict[str, Any] | None:
+        """Return the parsed TuRBO state (alias for ``parsed_turbo_state``)."""
         return self.parsed_turbo_state
 
     def get_hypervolume_history(self) -> list[float]:
+        """Return the parsed hypervolume history (alias for ``parsed_hypervolume_history``)."""
         return self.parsed_hypervolume_history
 
 
@@ -376,7 +380,7 @@ class SuggestionModel(Base):
         ``parameter_values_json`` and the returned dict as read-only.
         """
         ctx = f"Suggestion({self.id}).parameter_values"
-        return _strict_json_loads(self.parameter_values_json, context=ctx)
+        return cast("dict[str, Any]", _strict_json_loads(self.parameter_values_json, context=ctx))
 
     @functools.cached_property
     def parsed_provenance(self) -> dict[str, Any]:
@@ -386,12 +390,14 @@ class SuggestionModel(Base):
         ``provenance_json`` and the returned dict as read-only.
         """
         ctx = f"Suggestion({self.id}).provenance"
-        return _strict_json_loads(self.provenance_json, context=ctx)
+        return cast("dict[str, Any]", _strict_json_loads(self.provenance_json, context=ctx))
 
     def get_parameter_values(self) -> dict[str, Any]:
+        """Return the parsed parameter-value dict (alias for ``parsed_parameter_values``)."""
         return self.parsed_parameter_values
 
     def get_provenance(self) -> dict[str, Any]:
+        """Return the parsed provenance dict (alias for ``parsed_provenance``)."""
         return self.parsed_provenance
 
 
@@ -476,7 +482,7 @@ class ResultModel(Base):
         ``parameter_values_json`` and the returned dict as read-only.
         """
         ctx = f"Result({self.id}).parameter_values"
-        return _strict_json_loads(self.parameter_values_json, context=ctx)
+        return cast("dict[str, Any]", _strict_json_loads(self.parameter_values_json, context=ctx))
 
     @functools.cached_property
     def parsed_objective_values(self) -> dict[str, float]:
@@ -486,7 +492,7 @@ class ResultModel(Base):
         ``objective_values_json`` and the returned dict as read-only.
         """
         ctx = f"Result({self.id}).objective_values"
-        return _strict_json_loads(self.objective_values_json, context=ctx)
+        return cast("dict[str, float]", _strict_json_loads(self.objective_values_json, context=ctx))
 
     @functools.cached_property
     def parsed_metadata(self) -> dict[str, Any]:
@@ -496,7 +502,7 @@ class ResultModel(Base):
         ``metadata_json`` and the returned dict as read-only.
         """
         ctx = f"Result({self.id}).metadata"
-        return _strict_json_loads(self.metadata_json, context=ctx)
+        return cast("dict[str, Any]", _strict_json_loads(self.metadata_json, context=ctx))
 
     @functools.cached_property
     def parsed_suggestion_snapshot(self) -> dict[str, Any] | None:
@@ -508,18 +514,24 @@ class ResultModel(Base):
         if self.suggestion_snapshot_json is None:
             return None
         ctx = f"Result({self.id}).suggestion_snapshot"
-        return _strict_json_loads(self.suggestion_snapshot_json, context=ctx)
+        return cast(
+            "dict[str, Any]", _strict_json_loads(self.suggestion_snapshot_json, context=ctx)
+        )
 
     def get_parameter_values(self) -> dict[str, Any]:
+        """Return the parsed parameter values (alias for ``parsed_parameter_values``)."""
         return self.parsed_parameter_values
 
     def get_objective_values(self) -> dict[str, float]:
+        """Return the parsed objective values (alias for ``parsed_objective_values``)."""
         return self.parsed_objective_values
 
     def get_metadata(self) -> dict[str, Any]:
+        """Return the parsed metadata dict (alias for ``parsed_metadata``)."""
         return self.parsed_metadata
 
     def get_suggestion_snapshot(self) -> dict[str, Any] | None:
+        """Return the parsed suggestion snapshot (alias for ``parsed_suggestion_snapshot``)."""
         return self.parsed_suggestion_snapshot
 
 

@@ -215,7 +215,7 @@ def _envelope_from_field_errors(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shared rendering path for the two boundary-failure entry points."""
-    from bo_mcp_server.errors import ErrorCode, make_error_response  # noqa: PLC0415
+    from bo_mcp_server.errors import ErrorCode, make_error_response
 
     flat_errors = list(field_error_messages(field_errors))
     response = make_error_response(

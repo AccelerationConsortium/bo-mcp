@@ -75,7 +75,6 @@ def _get_confidence_level(uncertainty: float | None) -> str:
         return "medium"
     if uncertainty < CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD:
         return "high"
-    elif uncertainty < CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD:
+    if uncertainty < CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD:
         return "medium"
-    else:
-        return "low"
+    return "low"

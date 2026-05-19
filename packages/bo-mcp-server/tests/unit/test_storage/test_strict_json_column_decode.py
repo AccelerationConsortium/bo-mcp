@@ -82,6 +82,8 @@ from bo_mcp_server.storage.models import (
     SuggestionModel,
 )
 
+pytestmark = pytest.mark.usefixtures("fresh_database")
+
 
 @pytest_asyncio.fixture
 async def fresh_database() -> AsyncGenerator[None]:
@@ -195,10 +197,11 @@ async def _corrupt_column(table: str, column: str, row_id: str, payload: str) ->
     fast with ``ValueError`` before SQL is constructed.
     """
     if (table, column) not in _CORRUPTIBLE_COLUMNS:
-        raise ValueError(
+        msg = (
             f"Refusing to corrupt unlisted column: ({table!r}, {column!r}). "
             f"Add it to _CORRUPTIBLE_COLUMNS if the test legitimately needs it."
         )
+        raise ValueError(msg)
     # Identifiers come from the static ``_CORRUPTIBLE_COLUMNS`` allowlist
     # checked above, not from caller-supplied data; values stay
     # parameter-bound. The ``noqa: S608`` is intentional.
@@ -214,9 +217,7 @@ async def _corrupt_column(table: str, column: str, row_id: str, payload: str) ->
 
 
 @pytest.mark.asyncio
-async def test_campaign_spec_parameters_decode_raises_on_corruption(
-    fresh_database: None,
-) -> None:
+async def test_campaign_spec_parameters_decode_raises_on_corruption() -> None:
     """A non-JSON ``parameters_json`` value surfaces as the typed exception.
 
     Reproducer for the silent-empty-list hazard: previously the spec
@@ -240,9 +241,7 @@ async def test_campaign_spec_parameters_decode_raises_on_corruption(
 
 
 @pytest.mark.asyncio
-async def test_campaign_hypervolume_history_decode_raises_on_corruption(
-    fresh_database: None,
-) -> None:
+async def test_campaign_hypervolume_history_decode_raises_on_corruption() -> None:
     """Corrupted hypervolume history fails loud instead of returning ``[]``."""
     ids = await _seed_full_campaign()
     await _corrupt_column(
@@ -263,9 +262,7 @@ async def test_campaign_hypervolume_history_decode_raises_on_corruption(
 
 
 @pytest.mark.asyncio
-async def test_result_objective_values_decode_raises_on_corruption(
-    fresh_database: None,
-) -> None:
+async def test_result_objective_values_decode_raises_on_corruption() -> None:
     """Corrupted objective values fail loud instead of yielding an empty dict.
 
     Most consequential failure mode of the legacy ``_safe_json_loads``:
@@ -289,9 +286,7 @@ async def test_result_objective_values_decode_raises_on_corruption(
 
 
 @pytest.mark.asyncio
-async def test_suggestion_provenance_decode_raises_on_corruption(
-    fresh_database: None,
-) -> None:
+async def test_suggestion_provenance_decode_raises_on_corruption() -> None:
     """Suggestion provenance corruption surfaces loud, not as an empty dict."""
     ids = await _seed_full_campaign()
     await _corrupt_column(
@@ -317,9 +312,7 @@ async def test_suggestion_provenance_decode_raises_on_corruption(
 
 
 @pytest.mark.asyncio
-async def test_legitimate_writes_round_trip_through_strict_decoder(
-    fresh_database: None,
-) -> None:
+async def test_legitimate_writes_round_trip_through_strict_decoder() -> None:
     """The new strict decoder must not break the happy path."""
     ids = await _seed_full_campaign()
     async with get_session() as session:

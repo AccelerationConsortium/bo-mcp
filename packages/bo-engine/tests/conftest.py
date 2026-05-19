@@ -142,7 +142,7 @@ def set_all_seeds(seed: int = 42) -> None:
     try:
         import numpy as np
 
-        np.random.seed(seed)
+        np.random.seed(seed)  # noqa: NPY002
     except ImportError:
         pass
 
@@ -176,13 +176,13 @@ def seed() -> int:
 
 
 @pytest.fixture
-def seeded(seed: int) -> Generator[int]:
-    """Fixture that sets torch seed and yields it.
+def seeded(seed: int) -> int:
+    """Fixture that sets torch seed and returns it.
 
     Use this for tests that need reproducibility but not full determinism.
     """
     set_all_seeds(seed)
-    yield seed
+    return seed
 
 
 @pytest.fixture
@@ -196,14 +196,13 @@ def rng() -> np.random.Generator:
 
 
 @pytest.fixture
-def torch_rng() -> Generator[None]:
+def torch_rng() -> None:
     """Fixture that seeds torch for reproducible model fitting and tensor ops.
 
     Use this for tests that call torch.rand(), create_and_fit_model(), or
     other torch-level stochastic operations.
     """
     torch.manual_seed(42)
-    yield
 
 
 @pytest.fixture
@@ -420,9 +419,8 @@ def assert_tensor_in_bounds(tensor: torch.Tensor, bounds: torch.Tensor, msg: str
         msg: Optional message for assertion error
     """
     lower, upper = bounds[0], bounds[1]
-    assert (tensor >= lower - 1e-6).all() and (tensor <= upper + 1e-6).all(), (
-        f"Tensor values outside bounds. {msg}"
-    )
+    assert (tensor >= lower - 1e-6).all(), f"Tensor values below lower bound. {msg}"
+    assert (tensor <= upper + 1e-6).all(), f"Tensor values above upper bound. {msg}"
 
 
 def generate_sobol_points(

@@ -168,7 +168,8 @@ async def test_callback_records_async_sink_exception(
 
     async def raising_sink(progress: float, total: float | None, message: str | None) -> None:
         _ = progress, total, message
-        raise RuntimeError("transport hangup")
+        msg = "transport hangup"
+        raise RuntimeError(msg)
 
     loop = asyncio.get_running_loop()
     status = ProgressStatus()

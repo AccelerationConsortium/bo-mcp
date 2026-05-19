@@ -1,5 +1,7 @@
 """Campaign routes."""
 
+from typing import Annotated
+
 from bo_mcp_server.client import (
     CampaignIntakeInput,
     InvalidIdentifierError,
@@ -22,7 +24,7 @@ from bo_mcp_server.client import (
     run_idempotent_operation,
     validate_intake_operation,
 )
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +34,7 @@ from api.deps import (
     IdempotencyKey,
     ensure_owned_campaigns,
     get_authorized_campaign,
+    get_current_user,
     validate_uuid,
 )
 from api.schemas.campaign import (
@@ -118,7 +121,6 @@ def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
 
 @router.post(
     "",
-    response_model=CampaignCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_new_campaign(
@@ -212,7 +214,7 @@ def _raise_idempotency_envelope(result: dict) -> None:
     )
 
 
-@router.get("", response_model=CampaignListResponse)
+@router.get("")
 async def list_campaigns(current_user: CurrentUser) -> CampaignListResponse:
     """List campaigns for the current user.
 
@@ -239,10 +241,9 @@ async def list_campaigns(current_user: CurrentUser) -> CampaignListResponse:
     return CampaignListResponse(campaigns=responses, total=len(responses))
 
 
-@router.post("/validate", response_model=ValidateIntakeResponse)
+@router.post("/validate", dependencies=[Depends(get_current_user)])
 async def validate_campaign_intake(
     request: ValidateIntakeRequest,
-    current_user: CurrentUser,
 ) -> ValidateIntakeResponse:
     """Validate a campaign specification without creating a campaign (dry-run).
 
@@ -264,7 +265,7 @@ async def validate_campaign_intake(
     )
 
 
-@router.post("/query", response_model=CampaignQueryResponse)
+@router.post("/query")
 async def query_campaigns(
     request: CampaignQueryRequest,
     current_user: CurrentUser,
@@ -284,7 +285,7 @@ async def query_campaigns(
     # callers (who leave it at the default 0) do not see noise; the
     # warning still surfaces in the OpenAPI schema and on actual use
     # via the operation-level mutual-exclusion check.
-    import warnings  # noqa: PLC0415 -- scoped to this single suppression
+    import warnings
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
@@ -314,7 +315,7 @@ async def query_campaigns(
     return CampaignQueryResponse(**result)
 
 
-@router.post("/status/batch", response_model=BatchStatusResponse)
+@router.post("/status/batch")
 async def batch_campaign_status(
     request: BatchStatusRequest,
     current_user: CurrentUser,
@@ -329,7 +330,7 @@ async def batch_campaign_status(
     return BatchStatusResponse(**result)
 
 
-@router.post("/compare", response_model=CompareCampaignsResponse)
+@router.post("/compare")
 async def compare_campaign_group(
     request: CompareCampaignsRequest,
     current_user: CurrentUser,
@@ -344,10 +345,7 @@ async def compare_campaign_group(
     return CompareCampaignsResponse(**result)
 
 
-@router.post(
-    "/{campaign_id}/lifecycle",
-    response_model=CampaignLifecycleResponse,
-)
+@router.post("/{campaign_id}/lifecycle")
 async def manage_campaign(
     campaign_id: str,
     request: CampaignLifecycleRequest,
@@ -358,15 +356,12 @@ async def manage_campaign(
 
     result = await manage_campaign_lifecycle_operation(
         campaign_id=campaign_id,
-        action=request.action,  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type]
+        action=request.action,  # pyright: ignore[reportArgumentType]
     )
     return CampaignLifecycleResponse(**result)
 
 
-@router.post(
-    "/{campaign_id}/transfer-candidates",
-    response_model=TransferCandidatesResponse,
-)
+@router.post("/{campaign_id}/transfer-candidates")
 async def discover_campaign_transfer_candidates(
     campaign_id: str,
     request: TransferCandidatesRequest,
@@ -389,14 +384,14 @@ async def discover_campaign_transfer_candidates(
 async def export_campaign(
     campaign_id: str,
     current_user: CurrentUser,
-    format: str = Query(default="csv"),
+    output_format: Annotated[str, Query(alias="format")] = "csv",
 ) -> StreamingResponse:
     """Export all campaign results as a downloadable CSV file."""
     await get_authorized_campaign(campaign_id, current_user)
 
     result = await export_campaign_operation(
         campaign_id=campaign_id,
-        format=format,
+        output_format=output_format,
     )
 
     if not result.get("success", False):
@@ -454,7 +449,7 @@ async def get_campaign_spec(spec_id: str, current_user: CurrentUser) -> dict:
     }
 
 
-@router.get("/{campaign_id}", response_model=CampaignResponse)
+@router.get("/{campaign_id}")
 async def get_campaign(campaign_id: str, current_user: CurrentUser) -> CampaignResponse:
     """Get campaign details."""
     try:

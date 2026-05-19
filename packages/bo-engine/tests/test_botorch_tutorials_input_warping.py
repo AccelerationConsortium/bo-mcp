@@ -83,9 +83,8 @@ class TestKumaraswamyInputWarping:
         for a in [0.5, 1.0, 2.0]:
             for b in [0.5, 1.0, 2.0]:
                 warped = kumaraswamy_cdf(x, a, b)
-                assert (warped >= 0).all() and (warped <= 1).all(), (
-                    f"Warped values should be in [0, 1] for a={a}, b={b}"
-                )
+                assert (warped >= 0).all(), f"Warped values below 0 for a={a}, b={b}"
+                assert (warped <= 1).all(), f"Warped values above 1 for a={a}, b={b}"
 
     @pytest.mark.smoke
     def test_kumaraswamy_monotonic(self) -> None:

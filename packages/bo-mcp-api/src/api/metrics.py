@@ -194,7 +194,7 @@ async def _instrument(
     start = time.perf_counter()
     try:
         response = await call_next(request)
-    except BaseException:  # noqa: BLE001 - re-raised after recording metric
+    except BaseException:
         # We deliberately catch every escape — ``BaseException`` to cover
         # ``CancelledError`` / ``SystemExit`` too — so the latency
         # histogram and the ``5xx`` counter still reflect the failed

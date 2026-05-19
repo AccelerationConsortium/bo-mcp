@@ -50,12 +50,12 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 @pytest_asyncio.fixture
 async def session() -> AsyncGenerator[AsyncSession]:
     """Per-test session with FK enforcement enabled."""
-    from sqlalchemy import event  # noqa: PLC0415
+    from sqlalchemy import event
 
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
     @event.listens_for(engine.sync_engine, "connect")
-    def _enable_fks(dbapi_connection, _record) -> None:  # noqa: ANN001
+    def _enable_fks(dbapi_connection, _record) -> None:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")

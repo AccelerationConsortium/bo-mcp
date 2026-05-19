@@ -63,10 +63,7 @@ async def _sweep_loop(interval_seconds: float) -> None:
     """
     while True:
         await _sweep_once()
-        try:
-            await asyncio.sleep(interval_seconds)
-        except asyncio.CancelledError:
-            raise
+        await asyncio.sleep(interval_seconds)
 
 
 @asynccontextmanager

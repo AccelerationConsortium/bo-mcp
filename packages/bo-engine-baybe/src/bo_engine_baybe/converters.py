@@ -69,7 +69,13 @@ _DISCRETE_OPERATOR_MAP: dict[ConstraintType, str] = {
 
 def _build_baybe_parameter(
     p: ParameterSpec,
-) -> NumericalContinuousParameter | NumericalDiscreteParameter | CategoricalParameter:
+) -> (
+    NumericalContinuousParameter
+    | NumericalDiscreteParameter
+    | CategoricalParameter
+    | TaskParameter
+    | SubstanceParameter
+):
     """Build a single BayBE parameter, honoring typed BayBE parameter options."""
     opts = extract_baybe_parameter_options(p.parameter_options)
     if p.type == ParameterType.CONTINUOUS:
@@ -81,10 +87,10 @@ def _build_baybe_parameter(
             bounds=(p.bounds[0], p.bounds[1]),
         )
     if p.type == ParameterType.DISCRETE:
-        if p.values is None:
+        if p.values is None:  # noqa: PD011
             msg = f"Discrete parameter '{p.name}' requires values"
             raise ValueError(msg)
-        return NumericalDiscreteParameter(p.name, tuple(float(v) for v in p.values))
+        return NumericalDiscreteParameter(p.name, tuple(float(v) for v in p.values))  # noqa: PD011
     if p.type == ParameterType.CATEGORICAL:
         if p.categories is None:
             msg = f"Categorical parameter '{p.name}' requires categories"
@@ -97,7 +103,7 @@ def _build_baybe_parameter(
 def _build_categorical_parameter(
     p: ParameterSpec,
     opts: BayBEParameterOptions,
-) -> Any:
+) -> CategoricalParameter | TaskParameter | SubstanceParameter:
     """Build a BayBE categorical-family parameter, dispatching on the role.
 
     ``role=task`` produces a :class:`TaskParameter`; ``role=substance``
@@ -105,7 +111,9 @@ def _build_categorical_parameter(
     map; otherwise a vanilla :class:`CategoricalParameter` is returned
     with the requested encoding.
     """
-    assert p.categories is not None
+    if p.categories is None:
+        msg = f"Categorical parameter '{p.name}' requires categories"
+        raise ValueError(msg)
     categories = tuple(p.categories)
     if opts.role == BayBEParameterRole.TASK:
         active = tuple(opts.active_values) if opts.active_values else categories
@@ -137,7 +145,13 @@ def _build_categorical_parameter(
 
 def spec_to_parameters(
     spec: OptimizationSpec,
-) -> list[NumericalContinuousParameter | NumericalDiscreteParameter | CategoricalParameter]:
+) -> list[
+    NumericalContinuousParameter
+    | NumericalDiscreteParameter
+    | CategoricalParameter
+    | TaskParameter
+    | SubstanceParameter
+]:
     """Convert bo-engine ParameterSpecs to BayBE parameter objects.
 
     Honors ``parameter_options['baybe']`` to emit BayBE-native parameter

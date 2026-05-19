@@ -14,7 +14,7 @@ from bo_mcp_server.client import (
 )
 from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan
 from bo_mcp_server.trace_context import bind_trace_id
-from fastapi import FastAPI, Request, Response
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
@@ -73,7 +73,7 @@ def _assert_cors_safe(settings: ApiSettings) -> None:
         raise RuntimeError(msg)
 
 
-def _include_versioned_router(app: FastAPI, router, *, name: str, prefix: str) -> None:
+def _include_versioned_router(app: FastAPI, router: APIRouter, *, name: str, prefix: str) -> None:
     """Mount a router at both the versioned and the legacy alias path.
 
     The legacy alias keeps existing frontends working while clients
@@ -85,8 +85,13 @@ def _include_versioned_router(app: FastAPI, router, *, name: str, prefix: str) -
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    """Application lifespan handler."""
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    """Application lifespan handler.
+
+    The ``_app`` parameter is required by FastAPI's lifespan protocol but
+    this implementation does not need a reference to the application
+    instance — startup state lives in module-level singletons.
+    """
     settings = get_api_settings()
     _assert_dev_auth_safe(settings)
     await init_database()

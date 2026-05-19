@@ -29,6 +29,7 @@ References:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -257,23 +258,18 @@ def compute_constraint_probability(
 ) -> Tensor:
     """Compute probability of constraint satisfaction.
 
-    This function supports two signatures:
+    This function supports two signatures, dispatched on the first argument.
 
-    1. Simple signature for direct computation:
-       compute_constraint_probability(mean, std, bound, constraint_type)
-
-       Args:
-           mean: Predicted mean values
-           std: Predicted standard deviations
-           bound: Constraint threshold
-           constraint_type: "<=" for less-than, ">=" for greater-than
-
-    2. Model-based signature for GP models:
-       compute_constraint_probability(model_result, x)
-
-       Args:
-           model_result: Fitted constraint model result
-           x: Candidate points of shape (..., n_dims)
+    Args:
+        mean_or_model: Either the predicted mean tensor (direct signature)
+            *or* a fitted :class:`ConstraintModelResult` (model-based
+            signature).
+        std_or_x: Either the predicted-std tensor (direct) *or* candidate
+            points of shape ``(..., n_dims)`` (model-based).
+        bound: Constraint threshold (direct signature only; read from the
+            model spec otherwise).
+        constraint_type: ``"<="`` for less-than, ``">="`` for greater-than
+            (direct signature only; read from the model spec otherwise).
 
     Returns:
         Probability of feasibility
@@ -284,32 +280,28 @@ def compute_constraint_probability(
         mean = mean_or_model
         std = std_or_x
         if std is None:
-            raise ValueError("std is required when using the simple signature")
+            msg = "std is required when using the simple signature"
+            raise ValueError(msg)
         if constraint_type is None:
             constraint_type = "<="
 
         std = std.clamp(min=1e-6)
         z = (bound - mean) / std
 
-        if constraint_type == ">=":
-            # P(objective >= bound) = 1 - Phi((bound - mean) / std)
-            prob = 1.0 - _standard_normal_cdf(z)
-        else:
-            # P(objective <= bound) = Phi((bound - mean) / std)
-            prob = _standard_normal_cdf(z)
-
-        return prob
+        # `>=`: P(objective >= bound) = 1 - Phi((bound - mean) / std)
+        # `<=`: P(objective <= bound) = Phi((bound - mean) / std)
+        return 1.0 - _standard_normal_cdf(z) if constraint_type == ">=" else _standard_normal_cdf(z)
 
     # Model-based signature: compute_constraint_probability(model_result, x)
     model_result = mean_or_model
     x = std_or_x
 
     if not isinstance(model_result, ConstraintModelResult):
-        raise TypeError(
-            "First argument must be Tensor (for simple signature) or ConstraintModelResult"
-        )
+        msg = "First argument must be Tensor (for simple signature) or ConstraintModelResult"
+        raise TypeError(msg)
     if x is None:
-        raise ValueError("x is required when using the model-based signature")
+        msg = "x is required when using the model-based signature"
+        raise ValueError(msg)
 
     x = to_device(x)
     model = model_result.model
@@ -392,7 +384,7 @@ def compute_expected_constraint_violation(
 
 def create_constraint_callable_continuous(
     model_result: ConstraintModelResult,
-) -> Any:
+) -> Callable[[Tensor], Tensor]:
     """Create a constraint callable for use with BoTorch acquisition functions.
 
     This callable returns positive values when the constraint is satisfied
@@ -424,12 +416,10 @@ def create_constraint_callable_continuous(
                 # Want objective >= threshold
                 # Return positive when satisfied
                 return samples.squeeze(-1) - obj_threshold
-            else:
-                # Want objective <= threshold
-                return obj_threshold - samples.squeeze(-1)
-        else:
-            # For binary, samples are P(feasible) predictions
-            return samples.squeeze(-1) - threshold
+            # Want objective <= threshold
+            return obj_threshold - samples.squeeze(-1)
+        # For binary, samples are P(feasible) predictions
+        return samples.squeeze(-1) - threshold
 
     return constraint_callable
 
@@ -465,7 +455,8 @@ def build_outcome_constraint_models(
         obj_values = []
         for obs in observations:
             if spec.objective_name not in obs:
-                raise ValueError(f"Objective '{spec.objective_name}' not found in observations")
+                msg = f"Objective '{spec.objective_name}' not found in observations"
+                raise ValueError(msg)
             obj_values.append(obs[spec.objective_name])
 
         obj_tensor = torch.tensor(obj_values, dtype=get_dtype(), device=get_device())

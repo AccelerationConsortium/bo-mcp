@@ -418,8 +418,7 @@ def get_whatif_summary(report: WhatIfReport) -> str:
     if report.warnings:
         lines.append("")
         lines.append("Warnings:")
-        for w in report.warnings:
-            lines.append(f"  - {w}")
+        lines.extend(f"  - {w}" for w in report.warnings)
 
     return "\n".join(lines)
 
@@ -578,10 +577,9 @@ def _compute_pareto_impact(
     hyp_is_pareto = aug_pareto_mask[-1].item()
 
     # Find dominated points
-    dominated = []
-    for i in range(train_y.shape[0]):
-        if orig_pareto_mask[i] and not aug_pareto_mask[i]:
-            dominated.append(i)
+    dominated = [
+        i for i in range(train_y.shape[0]) if orig_pareto_mask[i] and not aug_pareto_mask[i]
+    ]
 
     # Compute hypervolume change
     ref_point = train_y.max(dim=0).values + 0.1 * (
@@ -608,13 +606,14 @@ def _is_pareto_efficient(objectives: Tensor) -> Tensor:
 
     for i in range(n):
         for j in range(n):
-            if i != j:
-                # j dominates i if j <= i in all objectives and j < i in at least one
-                if torch.all(objectives[j] <= objectives[i]) and torch.any(
-                    objectives[j] < objectives[i]
-                ):
-                    is_efficient[i] = False
-                    break
+            # j dominates i if j <= i in all objectives and j < i in at least one
+            if (
+                i != j
+                and torch.all(objectives[j] <= objectives[i])
+                and torch.any(objectives[j] < objectives[i])
+            ):
+                is_efficient[i] = False
+                break
 
     return is_efficient
 
@@ -687,18 +686,16 @@ def _generate_whatif_recommendation(
             "This experiment would provide high information value. "
             "Strongly recommend running this experiment."
         )
-    elif voi > 0.2:
+    if voi > 0.2:
         return (
             "This experiment would provide moderate information value. "
             "Consider running if resources permit."
         )
-    elif voi > 0.1:
+    if voi > 0.1:
         return (
             "This experiment would provide low information value. "
             "May not significantly advance optimization."
         )
-    else:
-        return (
-            "This experiment would provide minimal information value. "
-            "Consider alternative experiments."
-        )
+    return (
+        "This experiment would provide minimal information value. Consider alternative experiments."
+    )

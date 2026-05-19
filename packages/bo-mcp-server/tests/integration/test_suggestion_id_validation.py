@@ -41,11 +41,12 @@ async def _build_campaign_with_suggestions(
     return campaign_id, gen["suggestions"], owner_id
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestDuplicateSuggestionIdWithinBatch:
     """Two rows referencing the same actionable suggestion are rejected."""
 
     @pytest.mark.asyncio
-    async def test_atomic_rejects_duplicate_suggestion_id(self, setup_database) -> None:
+    async def test_atomic_rejects_duplicate_suggestion_id(self) -> None:
         """Atomic mode aborts the entire batch on a duplicate reference."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
@@ -83,7 +84,7 @@ class TestDuplicateSuggestionIdWithinBatch:
         assert statuses[suggestions[0]["id"]] == "pending"
 
     @pytest.mark.asyncio
-    async def test_non_atomic_keeps_first_drops_duplicate(self, setup_database) -> None:
+    async def test_non_atomic_keeps_first_drops_duplicate(self) -> None:
         """Non-atomic mode keeps the first reference, rejects subsequent ones."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -116,6 +117,7 @@ class TestDuplicateSuggestionIdWithinBatch:
         assert (await list_results_operation(campaign_id=campaign_id))["total_count"] == 1
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestNonActionableRepeatedReference:
     """Repeated warning-only ``suggestion_id`` values are not duplicate-id errors.
 
@@ -127,7 +129,7 @@ class TestNonActionableRepeatedReference:
     """
 
     @pytest.mark.asyncio
-    async def test_two_rows_with_unknown_uuid_commit_as_free_floating(self, setup_database) -> None:
+    async def test_two_rows_with_unknown_uuid_commit_as_free_floating(self) -> None:
         """Two rows sharing the same not-found ``suggestion_id`` both persist."""
         from uuid import uuid4 as _uuid4
 
@@ -162,7 +164,7 @@ class TestNonActionableRepeatedReference:
         assert (await list_results_operation(campaign_id=campaign_id))["total_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_two_rows_with_invalid_uuid_commit_as_free_floating(self, setup_database) -> None:
+    async def test_two_rows_with_invalid_uuid_commit_as_free_floating(self) -> None:
         """Invalid-format ``suggestion_id``s are warning-only and may repeat."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -194,7 +196,7 @@ class TestNonActionableRepeatedReference:
 
     @pytest.mark.asyncio
     async def test_two_rows_with_foreign_campaign_id_commit_as_free_floating(
-        self, setup_database
+        self,
     ) -> None:
         """``suggestion_id``s from a different campaign are warning-only and may repeat."""
         from bo_mcp_server.operations.list_results import list_results_operation
@@ -232,12 +234,13 @@ class TestNonActionableRepeatedReference:
         assert (await list_results_operation(campaign_id=campaign_b))["total_count"] == 2
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestStaleSuggestionReference:
     """Submitting against a non-actionable suggestion is rejected."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stale_status", ["rejected", "expired"])
-    async def test_atomic_rejects_stale_status(self, setup_database, stale_status: str) -> None:
+    async def test_atomic_rejects_stale_status(self, stale_status: str) -> None:
         """REJECTED / EXPIRED suggestions cannot be re-completed by a submission."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
@@ -276,7 +279,7 @@ class TestStaleSuggestionReference:
         assert (await list_results_operation(campaign_id=campaign_id))["total_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_atomic_rejects_already_completed(self, setup_database) -> None:
+    async def test_atomic_rejects_already_completed(self) -> None:
         """A COMPLETED suggestion cannot be re-completed by a second submission."""
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.submit_results import submit_results_operation

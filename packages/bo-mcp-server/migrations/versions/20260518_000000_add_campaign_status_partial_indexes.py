@@ -52,7 +52,7 @@ to find which one). The legacy ``ix_campaigns_status`` is retained so
 the ``PAUSED``-only operator query (rare but real) still has index
 support and so existing query plans are unaffected for that subset.
 
-References
+References:
 ==========
 
 * PostgreSQL "Partial Indexes":

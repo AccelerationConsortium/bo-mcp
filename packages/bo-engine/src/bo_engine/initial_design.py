@@ -78,6 +78,7 @@ class SearchSpaceExhaustedError(RuntimeError):
         n_available: int,
         n_total_combinations: int | None = None,
     ) -> None:
+        """Build an exhaustion error referencing the requested, available and total counts."""
         msg = (
             f"Cannot generate {n_requested} unique initial-design points: "
             f"only {n_available} unseen combinations remain"
@@ -92,14 +93,16 @@ class SearchSpaceExhaustedError(RuntimeError):
 
 
 def _values_match(
-    a: Any,
-    b: Any,
+    a: object,
+    b: object,
     is_continuous: bool,
     tolerance: float,
 ) -> bool:
     """Compare a single pair of parameter values by type semantics."""
     if not is_continuous:
         return a == b
+    if not isinstance(a, (int, float, str, bytes)) or not isinstance(b, (int, float, str, bytes)):
+        return False
     try:
         return abs(float(a) - float(b)) <= tolerance
     except (TypeError, ValueError):
@@ -144,11 +147,11 @@ def _exclude_known_designs(
     """
     if not excluded:
         return list(designs)
-    result: list[dict[str, Any]] = []
-    for d in designs:
-        if not any(_design_matches(d, other, spec, tolerance) for other in excluded):
-            result.append(d)
-    return result
+    return [
+        d
+        for d in designs
+        if not any(_design_matches(d, other, spec, tolerance) for other in excluded)
+    ]
 
 
 def _deduplicate_designs(
@@ -205,7 +208,8 @@ def _enumerate_unobserved_categorical_combinations(
     cat_axes: list[list[str]] = []
     for param in spec.parameters:
         if param.type != ParameterType.CATEGORICAL or param.categories is None:
-            raise ValueError("Enumeration fallback requires a purely-categorical space.")
+            msg = "Enumeration fallback requires a purely-categorical space."
+            raise ValueError(msg)
         cat_axes.append(list(param.categories))
 
     param_names = [p.name for p in spec.parameters]

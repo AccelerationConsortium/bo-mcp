@@ -109,7 +109,7 @@ class Campaign(BaseModel):
 
         Used for tracking multi-objective convergence over time.
         """
-        new_history = self.hypervolume_history + [hypervolume]
+        new_history = [*self.hypervolume_history, hypervolume]
         return self.model_copy(
             update={
                 "hypervolume_history": new_history,

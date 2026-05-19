@@ -24,7 +24,7 @@ from bo_engine.types import (
 from bo_engine_baybe.backend import BayBEBackend
 
 
-@pytest.fixture()
+@pytest.fixture
 def finite_discrete_spec() -> OptimizationSpec:
     """Tiny finite discrete spec where pending-aware behavior matters."""
     return OptimizationSpec(

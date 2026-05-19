@@ -35,7 +35,7 @@ from bo_mcp_server.storage.models import CampaignSpecModel
 
 async def _seed_pending_suggestion() -> Suggestion:
     """Create the user + spec + campaign + a PENDING suggestion in storage."""
-    from bo_mcp_server.domain import Campaign, CampaignStatus  # noqa: PLC0415
+    from bo_mcp_server.domain import Campaign, CampaignStatus
 
     user = User(
         name="Owner",

@@ -12,6 +12,7 @@ Reference: BO-MCP-UI Implementation Plan Step 5, Section 2.5.
 
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 
@@ -193,7 +194,7 @@ class TestResponseCache:
         }
 
         await cache.set("diagnostics:complex-test:5", complex_data)
-        result = await cache.get("diagnostics:complex-test:5")
+        result = cast("dict[str, Any] | None", await cache.get("diagnostics:complex-test:5"))
 
         assert result is not None
         assert result == complex_data

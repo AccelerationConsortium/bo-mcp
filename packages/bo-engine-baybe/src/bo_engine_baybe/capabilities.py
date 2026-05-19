@@ -17,7 +17,7 @@ from bo_engine.backend_base import (
     CapabilityReport,
     CapabilityStatus,
 )
-from bo_engine.types import OptimizationSpec, ParameterType
+from bo_engine.types import OptimizationSpec, ParameterSpec, ParameterType
 
 from bo_engine_baybe.options import (
     BayBEParameterOptions,
@@ -140,7 +140,7 @@ def _parameter_is_task(parameter_options: dict[str, dict[str, Any]] | None) -> b
 
 
 def _validate_parameter_role(
-    p: Any,
+    p: ParameterSpec,
     opts: BayBEParameterOptions,
 ) -> list[CapabilityReport]:
     """Cross-check parameter-spec type against the requested BayBE role.

@@ -1,6 +1,6 @@
 """Pydantic input models for MCP tool payloads."""
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -125,11 +125,13 @@ class CampaignIntakeInput(BaseModel):
 
         # Constraints reference declared parameters
         parameter_name_set = set(param_names)
-        invalid_params = []
+        invalid_params: list[str] = []
         for constraint in self.constraints:
-            for parameter in constraint.parameters:
-                if parameter not in parameter_name_set:
-                    invalid_params.append(parameter)
+            invalid_params.extend(
+                parameter
+                for parameter in constraint.parameters
+                if parameter not in parameter_name_set
+            )
 
         if invalid_params:
             unique_invalid = list(dict.fromkeys(invalid_params))
@@ -168,19 +170,20 @@ def inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
     """
     defs = schema.get(_DEFS_KEY, {})
 
-    def walk(node: Any) -> Any:
+    def walk(node: object) -> object:
         if isinstance(node, dict):
-            ref = node.get(_REF_KEY)
+            node_dict = cast("dict[str, Any]", node)
+            ref = node_dict.get(_REF_KEY)
             if isinstance(ref, str) and ref.startswith(_REF_PREFIX):
                 target = ref[len(_REF_PREFIX) :]
                 if target in defs:
                     return walk(defs[target])
-            return {k: walk(v) for k, v in node.items() if k != _DEFS_KEY}
+            return {k: walk(v) for k, v in node_dict.items() if k != _DEFS_KEY}
         if isinstance(node, list):
             return [walk(item) for item in node]
         return node
 
-    return walk(schema)
+    return cast("dict[str, Any]", walk(schema))
 
 
 # Back-compat private alias retained for any callers that imported the

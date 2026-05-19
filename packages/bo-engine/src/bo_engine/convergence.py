@@ -274,10 +274,7 @@ def detect_single_objective_convergence(
         ConvergenceReport with single-objective specific analysis
     """
     # For minimization, we negate so that improvement is positive
-    if minimize:
-        metric_history = [-v for v in best_value_history]
-    else:
-        metric_history = best_value_history
+    metric_history = [-v for v in best_value_history] if minimize else best_value_history
 
     return detect_convergence(
         metric_history=metric_history,
@@ -453,10 +450,11 @@ def estimate_remaining_iterations(
 
     # Compute recent improvement rate
     recent = metric_history[-5:]
-    improvements = []
-    for i in range(1, len(recent)):
-        if abs(recent[i - 1]) > 1e-10:
-            improvements.append((recent[i] - recent[i - 1]) / abs(recent[i - 1]))
+    improvements = [
+        (recent[i] - recent[i - 1]) / abs(recent[i - 1])
+        for i in range(1, len(recent))
+        if abs(recent[i - 1]) > 1e-10
+    ]
 
     if not improvements:
         return None

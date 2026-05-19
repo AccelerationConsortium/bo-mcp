@@ -143,7 +143,8 @@ class TestCheckAgainstBaseline:
         # 100% drift AND 4.0 absolute units — both gates trip.
         reports = {"pareto_max": _report("pareto_max", 8.0)}
         drifts = check_against_baseline(reports, baseline)
-        assert drifts and "drifted by" in drifts[0]
+        assert drifts
+        assert "drifted by" in drifts[0]
 
     def test_custom_floor_overrides_default_per_metric(self, tmp_path: Path) -> None:
         """Per-metric overrides win over the continuous default."""
@@ -174,7 +175,8 @@ class TestCheckAgainstBaseline:
             threshold=0.05,
             continuous_floor=0.001,
         )
-        assert drifts and "pareto_max" in drifts[0]
+        assert drifts
+        assert "pareto_max" in drifts[0]
 
     def test_missing_baseline_file_is_reported(self, tmp_path: Path) -> None:
         baseline = tmp_path / "nonexistent.json"
@@ -195,7 +197,7 @@ class TestCheckAgainstBaseline:
 
     def test_default_threshold_is_sensible(self) -> None:
         """The 25% default is the audit-prescribed band."""
-        assert DEFAULT_DRIFT_THRESHOLD == pytest.approx(0.25)
+        assert pytest.approx(0.25) == DEFAULT_DRIFT_THRESHOLD
 
     def test_default_pareto_size_floor_carries_one_unit(self) -> None:
         """The integer-valued metric gets a 1.0-unit floor by default."""

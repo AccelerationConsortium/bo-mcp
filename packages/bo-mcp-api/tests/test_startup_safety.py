@@ -27,6 +27,7 @@ from api.main import create_app
 from api.settings import get_api_settings
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestDevAuthProductionGate:
     """``DEV_AUTH=1`` is incompatible with a production deployment."""
 
@@ -51,7 +52,7 @@ class TestDevAuthProductionGate:
 
     @pytest.mark.asyncio
     async def test_dev_auth_lifespan_bootstraps_authenticatable_user(
-        self, monkeypatch: pytest.MonkeyPatch, setup_database
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``DEV_AUTH=1`` lifespan must bootstrap a user whose key the
         standard auth path accepts.
@@ -68,11 +69,11 @@ class TestDevAuthProductionGate:
         monkeypatch.delenv("CORS_ALLOWED_ORIGINS", raising=False)
 
         app = create_app()
-        async with app.router.lifespan_context(app):
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://testserver"
-            ) as client:
-                response = await client.get("/api/campaigns", headers={"X-API-Key": DEV_API_KEY})
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
+        ):
+            response = await client.get("/api/campaigns", headers={"X-API-Key": DEV_API_KEY})
 
         assert response.status_code == 200
         body = response.json()
@@ -80,7 +81,7 @@ class TestDevAuthProductionGate:
 
     @pytest.mark.asyncio
     async def test_dev_auth_off_does_not_bootstrap_dev_user(
-        self, monkeypatch: pytest.MonkeyPatch, setup_database
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without ``DEV_AUTH=1`` the lifespan must NOT seed the dev user."""
         from bo_mcp_server.client import DEV_API_KEY
@@ -90,11 +91,11 @@ class TestDevAuthProductionGate:
         monkeypatch.delenv("CORS_ALLOWED_ORIGINS", raising=False)
 
         app = create_app()
-        async with app.router.lifespan_context(app):
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://testserver"
-            ) as client:
-                response = await client.get("/api/campaigns", headers={"X-API-Key": DEV_API_KEY})
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
+        ):
+            response = await client.get("/api/campaigns", headers={"X-API-Key": DEV_API_KEY})
 
         assert response.status_code == 401
 
@@ -121,12 +122,13 @@ class TestCorsStartupGate:
         assert app is not None
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestCorsRuntime:
     """End-to-end CORS behaviour matches the configured allowlist."""
 
     @pytest.mark.asyncio
     async def test_default_config_emits_no_cors_headers(
-        self, monkeypatch: pytest.MonkeyPatch, setup_database
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without an explicit allowlist, the middleware is not mounted.
 
@@ -146,7 +148,7 @@ class TestCorsRuntime:
 
     @pytest.mark.asyncio
     async def test_allowed_origin_receives_cors_headers(
-        self, monkeypatch: pytest.MonkeyPatch, setup_database
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://app.example,http://other.example")
         monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "true")
@@ -166,9 +168,7 @@ class TestCorsRuntime:
         assert response.headers.get("access-control-allow-origin") != "*"
 
     @pytest.mark.asyncio
-    async def test_foreign_origin_is_not_echoed(
-        self, monkeypatch: pytest.MonkeyPatch, setup_database
-    ) -> None:
+    async def test_foreign_origin_is_not_echoed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://app.example")
         monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "true")
         monkeypatch.setenv("API_ENV", "development")
@@ -184,7 +184,7 @@ class TestCorsRuntime:
 
     @pytest.mark.asyncio
     async def test_preflight_for_allowed_origin_with_api_key(
-        self, monkeypatch: pytest.MonkeyPatch, setup_database
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Browsers preflight credentialed ``X-API-Key`` requests with ``OPTIONS``.
 
@@ -223,7 +223,7 @@ class TestCorsRuntime:
 
     @pytest.mark.asyncio
     async def test_preflight_for_foreign_origin_is_rejected(
-        self, monkeypatch: pytest.MonkeyPatch, setup_database
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A preflight from an unallowed origin must not be approved.
 

@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
+    Campaign,
     CampaignSpec,
     CampaignStatus,
     Suggestion,
@@ -141,7 +142,9 @@ def _build_stopping_response(
     ``next_action_recommendation == "terminate_campaign"`` without parsing
     free-form text.
     """
-    assert stopping.reason is not None  # narrows the optional for the type checker
+    if stopping.reason is None:
+        msg = "StoppingDecision must have a reason when rendered as a stopping envelope"
+        raise ValueError(msg)
     code = _STOPPING_REASON_TO_CODE[stopping.reason]
     details = {
         "campaign_id": campaign_id,
@@ -368,7 +371,7 @@ async def _run_three_phase_generation(
     on the success path so callers tracking ``observe_suggestion_latency``
     keep a clean histogram for "the compute actually ran".
     """
-    from bo_mcp_server.metrics import observe_suggestion_latency  # noqa: PLC0415
+    from bo_mcp_server.metrics import observe_suggestion_latency
 
     phase1 = await _load_generation_snapshot(campaign_id, campaign_uuid, batch_size)
     if not isinstance(phase1, _GenerationSnapshot):
@@ -545,7 +548,7 @@ class _GenerationSnapshot:
     mark ``EXPIRED``; phase 1 only classifies them and never writes.
     """
 
-    campaign: Any  # bo_mcp_server.domain.Campaign — typed Any to avoid the import dance.
+    campaign: Campaign
     campaign_version: int
     spec: CampaignSpec
     actual_batch_size: int
@@ -573,7 +576,7 @@ class _GenerationComputeResult:
 
 
 def _compute_preflight(
-    campaign: Any,
+    campaign: Campaign,
     spec: CampaignSpec,
     results: list[Any],
     pending: list[Suggestion],
@@ -746,9 +749,9 @@ async def _preview_generation(
 
 
 async def _save_campaign_after_generation(
-    campaign: Any,
+    campaign: Campaign,
     campaign_uuid: UUID,
-    new_backend_state: Any,
+    new_backend_state: dict[str, Any] | None,
     campaign_repo: CampaignRepository,
     db: AsyncSession,
 ) -> None:
@@ -1082,7 +1085,8 @@ async def _persist_generation_batch(
             snapshot_actionable_count,
             fresh_actionable_count,
         )
-        raise ConcurrentModificationError("Campaign", campaign_uuid, snapshot.campaign_version)
+        msg = "Campaign"
+        raise ConcurrentModificationError(msg, campaign_uuid, snapshot.campaign_version)
 
     # Expire stale pending suggestions. The classification was done in
     # phase 1 but the write is deferred to phase 3 so a failed compute
@@ -1112,7 +1116,8 @@ async def _persist_generation_batch(
                 "to let the caller retry with a fresh snapshot",
                 sugg.id,
             )
-            raise ConcurrentModificationError("Suggestion", sugg.id, snapshot.campaign_version)
+            msg = "Suggestion"
+            raise ConcurrentModificationError(msg, sugg.id, snapshot.campaign_version)
 
     suggestions = await _create_and_save_suggestions(
         compute.suggestion_data, campaign_uuid, repos.suggestion

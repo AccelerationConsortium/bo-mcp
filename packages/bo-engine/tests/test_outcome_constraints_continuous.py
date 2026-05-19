@@ -94,7 +94,8 @@ class TestContinuousModelFit:
 
         models = _build_outcome_constraint_models(spec, observations, train_x, bounds)
 
-        assert models is not None and len(models) == 1
+        assert models is not None
+        assert len(models) == 1
         model, threshold = models[0]
         # ``greater_than=True`` keeps the raw scale; threshold is the spec value.
         assert threshold == 0.5

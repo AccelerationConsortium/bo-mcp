@@ -709,15 +709,14 @@ class TestOutcomeConstraintDataDistribution:
         """
         spec = make_spec_with_constraint(threshold=0.1, greater_than=True)
 
-        observations = []
         # 19 feasible points
-        for i in range(19):
-            observations.append(
-                ObservationData(
-                    parameter_values={"x1": i / 20, "x2": i / 20},
-                    objective_values={"yield": 0.5 + i * 0.01},
-                )
+        observations = [
+            ObservationData(
+                parameter_values={"x1": i / 20, "x2": i / 20},
+                objective_values={"yield": 0.5 + i * 0.01},
             )
+            for i in range(19)
+        ]
         # 1 infeasible point
         observations.append(
             ObservationData(

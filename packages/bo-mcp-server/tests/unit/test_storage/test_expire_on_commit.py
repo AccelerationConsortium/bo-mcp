@@ -40,6 +40,8 @@ from bo_mcp_server.storage.models import (
     IdempotencyCacheModel,
 )
 
+pytestmark = pytest.mark.usefixtures("fresh_database")
+
 
 @pytest_asyncio.fixture
 async def fresh_database() -> AsyncGenerator[None]:
@@ -58,7 +60,7 @@ async def fresh_database() -> AsyncGenerator[None]:
 
 
 @pytest.mark.asyncio
-async def test_session_factory_uses_expire_on_commit_true(fresh_database: None) -> None:
+async def test_session_factory_uses_expire_on_commit_true() -> None:
     """Production sessions opt into SQLAlchemy's default expire-on-commit.
 
     Stale ORM-instance reads are silent — they return cached field
@@ -73,7 +75,7 @@ async def test_session_factory_uses_expire_on_commit_true(fresh_database: None) 
 
 
 @pytest.mark.asyncio
-async def test_second_session_observes_fresh_state_after_commit(fresh_database: None) -> None:
+async def test_second_session_observes_fresh_state_after_commit() -> None:
     """Two sessions see committed state, not pre-commit cached values.
 
     Reproducer for the stale-read hazard called out in TODO 8.10: a
@@ -102,9 +104,7 @@ async def test_second_session_observes_fresh_state_after_commit(fresh_database: 
 
 
 @pytest.mark.asyncio
-async def test_orm_attribute_access_after_session_close_raises(
-    fresh_database: None,
-) -> None:
+async def test_orm_attribute_access_after_session_close_raises() -> None:
     """Reading an ORM attribute outside its session is a programming bug.
 
     With ``expire_on_commit=True`` an instance loaded inside a session
@@ -131,7 +131,7 @@ async def test_orm_attribute_access_after_session_close_raises(
         )
 
     async with get_session() as session:
-        from sqlalchemy import select  # noqa: PLC0415
+        from sqlalchemy import select
 
         result = await session.execute(
             select(IdempotencyCacheModel).where(
@@ -145,9 +145,7 @@ async def test_orm_attribute_access_after_session_close_raises(
 
 
 @pytest.mark.asyncio
-async def test_apply_idempotency_replays_after_session_recycle(
-    fresh_database: None,
-) -> None:
+async def test_apply_idempotency_replays_after_session_recycle() -> None:
     """Cache hit on a retry must work even after the writer's session expired.
 
     Regression test for the ``DetachedInstanceError`` that
@@ -185,9 +183,7 @@ async def test_apply_idempotency_replays_after_session_recycle(
 
 
 @pytest.mark.asyncio
-async def test_campaign_repository_save_enforces_optimistic_concurrency(
-    fresh_database: None,
-) -> None:
+async def test_campaign_repository_save_enforces_optimistic_concurrency() -> None:
     """Mutating-entity repositories must guard against lost updates.
 
     The audit follow-up to TODO 8.10 asks for a contract test that
@@ -201,7 +197,7 @@ async def test_campaign_repository_save_enforces_optimistic_concurrency(
     without a similar guard it should grow its own contract test
     here.
     """
-    from bo_mcp_server.domain import (  # noqa: PLC0415
+    from bo_mcp_server.domain import (
         Campaign,
         CampaignSpec,
         CampaignStatus,
@@ -210,7 +206,7 @@ async def test_campaign_repository_save_enforces_optimistic_concurrency(
         ParameterType,
         User,
     )
-    from bo_mcp_server.storage import ConcurrentModificationError  # noqa: PLC0415
+    from bo_mcp_server.storage import ConcurrentModificationError
 
     user = User(name="Owner", email=f"owner-{uuid4()}@example.com", api_key_hash="hash")
     spec = CampaignSpec(
@@ -246,8 +242,8 @@ async def test_campaign_repository_save_enforces_optimistic_concurrency(
     # Second update against the original (now stale) version must lose.
     async with get_session() as session:
         repo = CampaignRepository(session)
+        stale = campaign.with_status(CampaignStatus.PAUSED)
         with pytest.raises(ConcurrentModificationError):
-            stale = campaign.with_status(CampaignStatus.PAUSED)
             await repo.save(stale, expected_version=1)
 
 

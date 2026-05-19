@@ -16,7 +16,7 @@ Library exceptions raised during parsing are converted to a typed
 without leaking ``openpyxl`` / ``csv`` stack frames or version
 fingerprints back to the client.
 
-References
+References:
 ----------
 * openpyxl "Optimised reader" documentation —
   https://openpyxl.readthedocs.io/en/stable/optimized.html
@@ -75,7 +75,8 @@ def parse_csv_rows(content: bytes) -> tuple[list[str], list[dict[str, Any]]]:
         headers = list(reader.fieldnames or ())
         rows = [_normalize_csv_row(row) for row in reader]
     except _PARSE_EXCEPTIONS as exc:
-        raise UploadParseError("Invalid CSV file: could not parse contents.") from exc
+        msg = "Invalid CSV file: could not parse contents."
+        raise UploadParseError(msg) from exc
     return headers, rows
 
 
@@ -90,11 +91,13 @@ def parse_xlsx_rows(content: bytes) -> tuple[list[str], list[dict[str, Any]]]:
     try:
         workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except _PARSE_EXCEPTIONS as exc:
-        raise UploadParseError("Invalid Excel file: could not parse contents.") from exc
+        msg = "Invalid Excel file: could not parse contents."
+        raise UploadParseError(msg) from exc
     try:
         worksheet = workbook.active
         if worksheet is None:
-            raise UploadParseError("Excel file does not contain a readable sheet.")
+            msg = "Excel file does not contain a readable sheet."
+            raise UploadParseError(msg)
         row_iter: Iterator[tuple[Any, ...]] = worksheet.iter_rows(values_only=True)
         try:
             header_row = next(row_iter)
@@ -103,7 +106,8 @@ def parse_xlsx_rows(content: bytes) -> tuple[list[str], list[dict[str, Any]]]:
         headers = [str(cell) if cell is not None else "" for cell in header_row]
         rows = [dict(zip(headers, row, strict=False)) for row in row_iter]
     except _PARSE_EXCEPTIONS as exc:
-        raise UploadParseError("Invalid Excel file: could not parse contents.") from exc
+        msg = "Invalid Excel file: could not parse contents."
+        raise UploadParseError(msg) from exc
     finally:
         workbook.close()
     return headers, rows
@@ -120,7 +124,8 @@ def parse_upload_rows(filename: str, content: bytes) -> tuple[list[str], list[di
         return parse_csv_rows(content)
     if lowered.endswith((".xlsx", ".xls")):
         return parse_xlsx_rows(content)
-    raise UploadParseError("Unsupported file format. Use CSV or Excel.")
+    msg = "Unsupported file format. Use CSV or Excel."
+    raise UploadParseError(msg)
 
 
 def _normalize_csv_row(row: dict[str | None, str | None]) -> dict[str, Any]:

@@ -57,13 +57,14 @@ def upgrade() -> None:
     duplicates = bind.execute(_DUPLICATE_PREFLIGHT_SQL).fetchall()
     if duplicates:
         listing = ", ".join(f"{row.suggestion_id}={row.n}" for row in duplicates)
-        raise DuplicateSuggestionIdError(
+        msg = (
             "Cannot create ix_results_suggestion_id_unique: "
             f"{len(duplicates)} suggestion_id value(s) appear more than once "
             f"in `results` ({listing}). Resolve duplicates -- typically by "
             "keeping the earliest result per suggestion and null-ing or "
             "deleting the others -- then re-run this migration."
         )
+        raise DuplicateSuggestionIdError(msg)
     op.create_index(
         "ix_results_suggestion_id_unique",
         "results",

@@ -72,20 +72,17 @@ def create_spec_from_benchmark(
     func = spec_info["function"]
 
     # Create parameter specs
-    parameters = []
-    for i in range(n_dims):
-        parameters.append(
-            ParameterSpec(
-                name=f"x{i}",
-                type=ParameterType.CONTINUOUS,
-                bounds=(bounds[0, i].item(), bounds[1, i].item()),
-            )
+    parameters = [
+        ParameterSpec(
+            name=f"x{i}",
+            type=ParameterType.CONTINUOUS,
+            bounds=(bounds[0, i].item(), bounds[1, i].item()),
         )
+        for i in range(n_dims)
+    ]
 
     # Create objective specs (minimize by default)
-    objectives = []
-    for i in range(n_objectives):
-        objectives.append(ObjectiveSpec(name=f"f{i}", minimize=True))
+    objectives = [ObjectiveSpec(name=f"f{i}", minimize=True) for i in range(n_objectives)]
 
     opt_spec = OptimizationSpec(
         parameters=parameters,
@@ -265,7 +262,7 @@ def run_benchmark(
             message="Completed successfully",
         )
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         elapsed = time.time() - start_time
         return BenchmarkResult(
             benchmark_name=benchmark_name,

@@ -229,7 +229,7 @@ class TestConstrainedMultiObjective:
         torch.manual_seed(42)
         x = torch.rand(100, 4, dtype=torch.float64)
 
-        f, c = c2_dtlz2(x, n_objectives=2, r=0.2)
+        _f, c = c2_dtlz2(x, n_objectives=2, r=0.2)
 
         # Should have both feasible (c >= 0) and infeasible (c < 0)
         n_feasible = (c >= 0).sum().item()
@@ -254,7 +254,7 @@ class TestConstrainedMultiObjective:
         from bo_engine import compute_pareto_front
 
         if len(f_feasible) > 0:
-            pareto_points, pareto_mask = compute_pareto_front(f_feasible, minimize=True)
+            pareto_points, _pareto_mask = compute_pareto_front(f_feasible, minimize=True)
 
             # All Pareto points should be feasible (by construction)
             assert len(pareto_points) <= len(f_feasible)

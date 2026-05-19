@@ -51,10 +51,10 @@ def check_uv_installed() -> tuple[bool, str]:
                 text=True,
                 timeout=5,
             )
-            version = result.stdout.strip()
-            return True, f"uv {version}"
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return True, f"uv found at {uv_path}"
+        version = result.stdout.strip()
+        return True, f"uv {version}"
     return False, "uv not found (install: curl -LsSf https://astral.sh/uv/install.sh | sh)"
 
 
@@ -69,10 +69,10 @@ def check_git_available() -> tuple[bool, str]:
                 text=True,
                 timeout=5,
             )
-            version = result.stdout.strip()
-            return True, version
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return True, f"git found at {git_path}"
+        version = result.stdout.strip()
+        return True, version
     return False, "git not found"
 
 
@@ -193,18 +193,17 @@ def main() -> int:
         print("  2. Run MCP server: uv run bo-mcp-server")
         print("  3. Or with SSE transport: uv run bo-mcp-server --transport sse --port 8001")
         return 0
-    elif all_passed:
+    if all_passed:
         print(f"{YELLOW}Core checks passed with warnings{RESET}")
         print("\nYou can proceed, but some ports may be in use.")
         print("If running SSE transport, ensure ports are free or use --port.")
         return 0
-    else:
-        print(f"{RED}Some checks failed - please fix issues above{RESET}")
-        print("\nCommon fixes:")
-        print("  - Python version: Use pyenv or asdf to install Python 3.11+")
-        print("  - uv not found: curl -LsSf https://astral.sh/uv/install.sh | sh")
-        print("  - Dependencies not synced: uv sync")
-        return 1
+    print(f"{RED}Some checks failed - please fix issues above{RESET}")
+    print("\nCommon fixes:")
+    print("  - Python version: Use pyenv or asdf to install Python 3.11+")
+    print("  - uv not found: curl -LsSf https://astral.sh/uv/install.sh | sh")
+    print("  - Dependencies not synced: uv sync")
+    return 1
 
 
 if __name__ == "__main__":

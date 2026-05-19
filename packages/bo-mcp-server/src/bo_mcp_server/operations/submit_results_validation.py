@@ -113,13 +113,16 @@ def _validate_parameter_value(
             )
         else:
             _check_numeric_bounds(param, value, index, warnings)
-    elif param.type == ParameterType.CATEGORICAL:
-        if param.categories is not None and value not in param.categories:
-            warnings.append(
-                f"Result {index}: parameter '{param.name}' value "
-                f"'{value}' is not in allowed categories "
-                f"{param.categories}"
-            )
+    elif (
+        param.type == ParameterType.CATEGORICAL
+        and param.categories is not None
+        and value not in param.categories
+    ):
+        warnings.append(
+            f"Result {index}: parameter '{param.name}' value "
+            f"'{value}' is not in allowed categories "
+            f"{param.categories}"
+        )
 
 
 def _validate_measurement_uncertainty(

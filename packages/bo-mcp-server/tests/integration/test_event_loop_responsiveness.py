@@ -75,12 +75,13 @@ def _patch_slow_initial_design(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestEventLoopResponsiveness:
     """Heavy BO calls must not block the asyncio event loop."""
 
     @pytest.mark.asyncio
     async def test_concurrent_probe_runs_while_backend_is_busy(
-        self, setup_database, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A lightweight probe must finish while the backend is mid-computation.
 
@@ -121,9 +122,7 @@ class TestEventLoopResponsiveness:
         )
 
     @pytest.mark.asyncio
-    async def test_concurrent_generate_calls_overlap(
-        self, setup_database, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_concurrent_generate_calls_overlap(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """N concurrent generate_suggestions calls must overlap in wall time.
 
         With the synchronous backend call offloaded to a worker thread, three

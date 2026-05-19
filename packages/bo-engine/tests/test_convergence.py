@@ -211,7 +211,7 @@ class TestDetectConvergence:
         history = [1e-12] * 15  # Very small values
         result = detect_convergence(history, min_observations=10)
         assert result is not None
-        assert not (result.avg_improvement != result.avg_improvement)  # Check for NaN
+        assert result.avg_improvement == result.avg_improvement  # Check for NaN
 
 
 class TestDetectHypervolumeConvergence:

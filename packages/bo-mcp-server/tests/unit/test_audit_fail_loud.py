@@ -23,11 +23,13 @@ from bo_mcp_server import audit as audit_module
 from bo_mcp_server.audit import AuditPersistenceError, log_tool_call
 from bo_mcp_server.metrics import AUDIT_FAILURES
 
+pytestmark = pytest.mark.usefixtures("setup_database")
+
 
 def _audit_failure_count(tool: str) -> float:
     """Read the ``AUDIT_FAILURES`` counter for ``tool``."""
     metric: Counter = AUDIT_FAILURES.labels(tool)
-    return metric._value.get()  # type: ignore[attr-defined]  # noqa: SLF001
+    return metric._value.get()  # type: ignore[attr-defined]
 
 
 class _BrokenRepo:
@@ -36,14 +38,14 @@ class _BrokenRepo:
     def __init__(self, *_args, **_kwargs) -> None:
         self.saved = False
 
-    async def save(self, _event):  # noqa: ANN001 - test stand-in
-        raise SQLAlchemyError("simulated audit-table outage")
+    async def save(self, _event):
+        msg = "simulated audit-table outage"
+        raise SQLAlchemyError(msg)
 
 
 @pytest.mark.asyncio
 async def test_audit_failure_increments_counter_and_tool_succeeds(
     monkeypatch: pytest.MonkeyPatch,
-    setup_database,
 ) -> None:
     """Default mode: failure is logged + counted, the parent tool succeeds."""
     monkeypatch.setenv("AUDIT_FAILURES_FATAL", "false")
@@ -64,7 +66,6 @@ async def test_audit_failure_increments_counter_and_tool_succeeds(
 @pytest.mark.asyncio
 async def test_audit_failure_propagates_when_fatal_flag_set(
     monkeypatch: pytest.MonkeyPatch,
-    setup_database,
 ) -> None:
     """Compliance mode: failure raises ``AuditPersistenceError`` and counter still bumps."""
     monkeypatch.setenv("AUDIT_FAILURES_FATAL", "true")
@@ -90,7 +91,6 @@ async def test_audit_failure_propagates_when_fatal_flag_set(
 @pytest.mark.asyncio
 async def test_audit_unexpected_exception_propagates(
     monkeypatch: pytest.MonkeyPatch,
-    setup_database,
 ) -> None:
     """Programming bugs (``AttributeError``, ``KeyError``) bypass the catch-and-count.
 
@@ -104,8 +104,9 @@ async def test_audit_unexpected_exception_propagates(
         def __init__(self, *_args, **_kwargs) -> None:
             self.saved = False
 
-        async def save(self, _event):  # noqa: ANN001 - test stand-in
-            raise AttributeError("missing required attribute on event")
+        async def save(self, _event):
+            msg = "missing required attribute on event"
+            raise AttributeError(msg)
 
     monkeypatch.setenv("AUDIT_FAILURES_FATAL", "false")
     monkeypatch.setattr(audit_module, "EventRepository", _ProgrammingBugRepo)

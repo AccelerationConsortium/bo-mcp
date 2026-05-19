@@ -182,37 +182,36 @@ async def _resolve_suggestion_id(
             # between phases. Treat it like the transition race:
             # under ``atomic`` the whole batch aborts, under
             # ``continue_on_error`` the row is skipped.
-            raise ConcurrentModificationError("Suggestion", suggestion_id, -1)
+            msg = "Suggestion"
+            raise ConcurrentModificationError(msg, suggestion_id, -1)
         warnings.append(f"Result {index}: suggestion {suggestion_id_str} not found")
         return None, None
     if suggestion.campaign_id != campaign_uuid:
         warnings.append(f"Result {index}: suggestion belongs to different campaign")
         return None, None
-    if not dry_run:
-        # Atomic ``UPDATE … WHERE status IN (PENDING, ACCEPTED) AND
-        # deleted_at IS NULL`` so a concurrent manual status update
-        # (PENDING → REJECTED / EXPIRED, ACCEPTED → REJECTED /
-        # EXPIRED), a competing ``submit_results`` already completing
-        # the same suggestion, or an admin soft-delete cannot be
-        # silently clobbered.
-        #
-        # ``False`` here means the suggestion is no longer actionable.
-        # We *cannot* silently link the new result to the now-stale
-        # suggestion: the uniqueness index would reject a duplicate
-        # COMPLETED→COMPLETED INSERT, and an EXPIRED/REJECTED/
-        # soft-deleted suggestion attached to a fresh active result
-        # makes the audit trail incoherent. Raising
-        # :class:`ConcurrentModificationError` lets the caller
-        # decide per submission mode: ``submit_results``'s phase-2
-        # loop maps it to a structured conflict envelope under
-        # ``atomic=True`` / ``continue_on_error=False``, and to a
-        # row-level skip-with-error under ``continue_on_error=True``.
-        if not await suggestion_repo.transition_status(
-            suggestion_id,
-            (SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED),
-            SuggestionStatus.COMPLETED,
-        ):
-            raise ConcurrentModificationError("Suggestion", suggestion_id, -1)
+    # Atomic ``UPDATE … WHERE status IN (PENDING, ACCEPTED) AND deleted_at
+    # IS NULL`` so a concurrent manual status update (PENDING → REJECTED /
+    # EXPIRED, ACCEPTED → REJECTED / EXPIRED), a competing ``submit_results``
+    # already completing the same suggestion, or an admin soft-delete cannot
+    # be silently clobbered.
+    #
+    # ``False`` here means the suggestion is no longer actionable. We
+    # *cannot* silently link the new result to the now-stale suggestion: the
+    # uniqueness index would reject a duplicate COMPLETED→COMPLETED INSERT,
+    # and an EXPIRED/REJECTED/soft-deleted suggestion attached to a fresh
+    # active result makes the audit trail incoherent. Raising
+    # :class:`ConcurrentModificationError` lets the caller decide per
+    # submission mode: ``submit_results``'s phase-2 loop maps it to a
+    # structured conflict envelope under ``atomic=True`` /
+    # ``continue_on_error=False``, and to a row-level skip-with-error under
+    # ``continue_on_error=True``.
+    if not dry_run and not await suggestion_repo.transition_status(
+        suggestion_id,
+        (SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED),
+        SuggestionStatus.COMPLETED,
+    ):
+        msg = "Suggestion"
+        raise ConcurrentModificationError(msg, suggestion_id, -1)
     snapshot = {
         "suggestion_id": str(suggestion.id),
         "parameter_values": dict(suggestion.parameter_values),

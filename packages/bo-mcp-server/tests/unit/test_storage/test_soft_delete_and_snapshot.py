@@ -73,12 +73,12 @@ async def session() -> AsyncGenerator[AsyncSession]:
     ``ON DELETE RESTRICT`` is exercised in the cascade-contract tests
     below; PostgreSQL enforces FKs unconditionally in production.
     """
-    from sqlalchemy import event  # noqa: PLC0415
+    from sqlalchemy import event
 
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
     @event.listens_for(engine.sync_engine, "connect")
-    def _enable_fks(dbapi_connection, _record) -> None:  # noqa: ANN001
+    def _enable_fks(dbapi_connection, _record) -> None:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
@@ -202,9 +202,12 @@ async def test_hard_delete_blocked_by_restrict_when_children_exist(
     campaign = await _seed_campaign(session, owner)
     await _seed_suggestion(session, campaign)
 
-    with pytest.raises(IntegrityError):
+    async def _hard_delete_and_commit() -> None:
         await CampaignRepository(session).hard_delete(campaign.id)
         await session.commit()
+
+    with pytest.raises(IntegrityError):
+        await _hard_delete_and_commit()
 
 
 @pytest.mark.asyncio
@@ -336,7 +339,7 @@ async def test_stale_suggestion_save_raises_and_preserves_row(
     conflict envelope instead of reporting a phantom success; the
     persisted row is byte-identical to its pre-tombstone snapshot.
     """
-    from bo_mcp_server.storage import ConcurrentModificationError  # noqa: PLC0415
+    from bo_mcp_server.storage import ConcurrentModificationError
 
     owner = await _seed_owner(session)
     campaign = await _seed_campaign(session, owner)
@@ -382,7 +385,7 @@ async def test_stale_result_save_raises_and_preserves_row(
     session: AsyncSession,
 ) -> None:
     """The same raise-and-preserve contract applies to ``Result``."""
-    from bo_mcp_server.storage import ConcurrentModificationError  # noqa: PLC0415
+    from bo_mcp_server.storage import ConcurrentModificationError
 
     owner = await _seed_owner(session)
     campaign = await _seed_campaign(session, owner)
@@ -441,10 +444,10 @@ async def test_suggestion_save_is_atomic_under_concurrent_delete(
     reports ``rowcount == 0`` — the exact race the friend's audit
     called out.
     """
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
 
-    from bo_mcp_server.domain.utils import utcnow  # noqa: PLC0415
-    from bo_mcp_server.storage import ConcurrentModificationError  # noqa: PLC0415
+    from bo_mcp_server.domain.utils import utcnow
+    from bo_mcp_server.storage import ConcurrentModificationError
 
     owner = await _seed_owner(session)
     campaign = await _seed_campaign(session, owner)
@@ -484,10 +487,10 @@ async def test_result_save_is_atomic_under_concurrent_delete(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same atomic-guard contract for ``ResultRepository.save``."""
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
 
-    from bo_mcp_server.domain.utils import utcnow  # noqa: PLC0415
-    from bo_mcp_server.storage import ConcurrentModificationError  # noqa: PLC0415
+    from bo_mcp_server.domain.utils import utcnow
+    from bo_mcp_server.storage import ConcurrentModificationError
 
     owner = await _seed_owner(session)
     campaign = await _seed_campaign(session, owner)
@@ -543,7 +546,7 @@ async def test_stale_campaign_save_raises_and_preserves_tombstone(
     :meth:`CampaignRepository.delete`. The persisted row must be
     byte-identical to its pre-tombstone snapshot.
     """
-    from bo_mcp_server.storage import ConcurrentModificationError  # noqa: PLC0415
+    from bo_mcp_server.storage import ConcurrentModificationError
 
     owner = await _seed_owner(session)
     campaign = await _seed_campaign(session, owner)

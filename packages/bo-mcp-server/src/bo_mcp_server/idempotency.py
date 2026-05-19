@@ -71,6 +71,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.domain.utils import utcnow
 from bo_mcp_server.errors import ErrorCode, make_error_response, retry_hint_for
+from bo_mcp_server.settings import (
+    get_idempotency_reservation_ttl_seconds,
+    get_idempotency_response_ttl_seconds,
+)
 from bo_mcp_server.storage import get_session
 from bo_mcp_server.storage.models import IdempotencyCacheModel
 
@@ -86,27 +90,28 @@ zero-arg executor would otherwise leave open.
 
 logger = logging.getLogger(__name__)
 
-# 24 hours. Chosen to cover same-day agent retry windows without
-# letting the cache grow unbounded. Override via the constructor only
-# in tests.
-DEFAULT_IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
-
-# How long a reservation can stay in the "pending" state before a
-# retrying caller is allowed to reclaim the slot. Without this bound, a
-# worker that dies between mutation-commit and cache-finalize would
-# poison the slot for the entire ``DEFAULT_IDEMPOTENCY_TTL_SECONDS``
-# window — every retry would see ``E014 IDEMPOTENCY_IN_PROGRESS`` until
-# the 24h TTL elapsed, at which point retries could finally execute
-# again and *duplicate* the mutation. With a short pending lifetime
-# (10 min, well above any normal BO operation), abandoned reservations
-# clear within minutes and retries can re-enter the reservation race.
+# Default response-replay and reservation TTLs. The literal values
+# live on :class:`bo_mcp_server.settings.Settings` so deployments can
+# tune them via env (``IDEMPOTENCY_RESPONSE_TTL_SECONDS`` /
+# ``IDEMPOTENCY_RESERVATION_TTL_SECONDS``) without editing source. The
+# module-level names below are read at import time and retained for
+# backwards-compat call sites and tests; the live ``apply_idempotency``
+# path re-reads the active settings on every call.
 #
-# Trade-off: an operation that genuinely runs longer than this timeout
-# may have its slot reclaimed by a concurrent retry — leading to two
-# executions of the same logical call. Tune up only if you intentionally
-# run very slow operations and prefer a longer block to a possible
-# duplicate. Document the choice for callers.
-DEFAULT_RESERVATION_TTL_SECONDS = 10 * 60
+# Response TTL trade-off: longer windows cover same-day agent retries
+# but grow the cache. The 24h default matches the IETF idempotency-key
+# draft.
+#
+# Reservation TTL trade-off: a worker that dies between mutation-
+# commit and cache-finalize poisons the slot for the entire response
+# TTL unless the reservation expires sooner. With a short pending
+# lifetime (10 min, well above any normal BO operation), abandoned
+# reservations clear within minutes and retries can re-enter the
+# reservation race. Operations that genuinely run longer than this
+# timeout may have their slot reclaimed by a concurrent retry —
+# leading to two executions of the same logical call.
+DEFAULT_IDEMPOTENCY_TTL_SECONDS = get_idempotency_response_ttl_seconds()
+DEFAULT_RESERVATION_TTL_SECONDS = get_idempotency_reservation_ttl_seconds()
 
 # Sentinel stored in ``response_json`` while the reservation winner is
 # executing the operation. Distinguishable from any real JSON response
@@ -815,8 +820,11 @@ async def apply_idempotency(
         async with get_session() as session:
             return await executor(session)
 
-    ttl = ttl_seconds or DEFAULT_IDEMPOTENCY_TTL_SECONDS
-    reservation_ttl = reservation_ttl_seconds or DEFAULT_RESERVATION_TTL_SECONDS
+    # Re-read the active settings on every call so a monkeypatched
+    # environment variable takes effect immediately. The module-level
+    # constants stay as snapshots for backwards-compatible callers.
+    ttl = ttl_seconds or get_idempotency_response_ttl_seconds()
+    reservation_ttl = reservation_ttl_seconds or get_idempotency_reservation_ttl_seconds()
     request_hash = canonical_request_hash(request_payload)
 
     outcome = await _reserve_or_short_circuit(
@@ -1113,9 +1121,15 @@ async def _run_session_aware(
             # token-matched drop would no-op anyway, but skipping the call
             # makes the intent explicit). Return a retryable envelope.
             return _attach_metadata(_stale_reservation_envelope(tool_name, idempotency_key))
-        except Exception:
+        except Exception:  # noqa: BLE001 - cleanup-then-reraise for any operation failure
             # The async with already rolled back the session; drop our
-            # reservation so a future retry can claim the slot.
+            # reservation so a future retry can claim the slot. We do
+            # not narrow the catch because the operation can raise any
+            # exception type (BackendError variants, ValidationError,
+            # third-party backend exceptions); the only thing we own
+            # at this point is reservation hygiene, so we re-raise
+            # unchanged and let the caller's exception routing handle
+            # the original error.
             await _drop_reservation(tool_name, idempotency_key, reservation_token)
             raise
 

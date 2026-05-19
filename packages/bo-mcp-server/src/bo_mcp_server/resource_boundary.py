@@ -136,7 +136,13 @@ def _wrap_read_resource(mcp_instance: Any) -> None:
     async def wrapped(uri: Any) -> Any:
         try:
             return await original(uri)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - intentional boundary translator
+            # Resource handlers can raise either ``ResourceOperationError``
+            # (which we re-wrap) or any other exception (which we
+            # re-raise unchanged). FastMCP's resource manager wraps the
+            # original exception in opaque chains, so we have to walk
+            # the whole chain via ``_find_resource_operation_error``;
+            # the catch-all is the only correct shape here.
             roe = _find_resource_operation_error(exc)
             if roe is None:
                 raise
@@ -155,7 +161,13 @@ def _wrap_resource_manager(mcp_instance: Any) -> None:
     async def wrapped_get(uri: Any, context: Any = None) -> Any:
         try:
             return await original(uri, context=context)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - intentional boundary translator
+            # Resource handlers can raise either ``ResourceOperationError``
+            # (which we re-wrap) or any other exception (which we
+            # re-raise unchanged). FastMCP's resource manager wraps the
+            # original exception in opaque chains, so we have to walk
+            # the whole chain via ``_find_resource_operation_error``;
+            # the catch-all is the only correct shape here.
             roe = _find_resource_operation_error(exc)
             if roe is None:
                 raise

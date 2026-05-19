@@ -33,6 +33,9 @@ from bo_mcp_server.settings import (
     get_database_init_connect_timeout_seconds,
     get_database_init_timeout_seconds,
     get_database_url,
+    get_db_max_overflow,
+    get_db_pool_recycle_seconds,
+    get_db_pool_size,
     get_sql_echo,
     get_use_alembic_mode,
 )
@@ -147,10 +150,10 @@ def _create_engine_with_options() -> AsyncEngine:
         # for the recommended pool_pre_ping + pool_recycle combination.
         return create_async_engine(
             database_url,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=get_db_pool_size(),
+            max_overflow=get_db_max_overflow(),
             pool_pre_ping=True,
-            pool_recycle=600,
+            pool_recycle=get_db_pool_recycle_seconds(),
             **common_options,
         )
     else:

@@ -3,6 +3,7 @@
 from bo_mcp_server.tools import (
     batch_operations,
     campaign_lifecycle,
+    check_progress,
     compare_campaigns,
     create_campaign,
     discover_transfer_candidates,
@@ -23,6 +24,7 @@ from bo_mcp_server.tools import (
 __all__ = [
     "batch_operations",
     "campaign_lifecycle",
+    "check_progress",
     "compare_campaigns",
     "create_campaign",
     "discover_transfer_candidates",

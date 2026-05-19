@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_RESULTS
+from api.schemas.common import ResponseEnvelope
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
@@ -75,7 +76,7 @@ class ResultQueryRequest(BaseModel):
     verbosity: str = "standard"
 
 
-class ResultQueryResponse(BaseModel):
+class ResultQueryResponse(ResponseEnvelope):
     """Result query response with pagination envelope."""
 
     success: bool
@@ -86,7 +87,7 @@ class ResultQueryResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
-class ResultSubmitResponse(BaseModel):
+class ResultSubmitResponse(ResponseEnvelope):
     """Response for result submission.
 
     ``field_errors`` mirrors the MCP envelope so REST callers can

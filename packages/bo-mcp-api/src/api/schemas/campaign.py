@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_CAMPAIGN_IDS, MAX_COMPARE_CAMPAIGN_IDS
-from api.schemas.common import VerbosityLevel
+from api.schemas.common import ResponseEnvelope, VerbosityLevel
 from api.schemas.intake import IntakeData
 
 # ``extra="forbid"`` is applied to every request schema in this module so
@@ -41,7 +41,7 @@ class CampaignResponse(BaseModel):
     n_objectives: int
 
 
-class CampaignCreateResponse(BaseModel):
+class CampaignCreateResponse(ResponseEnvelope):
     """Campaign creation response.
 
     ``idempotency_replay`` is ``True`` when the response was served
@@ -60,7 +60,7 @@ class CampaignCreateResponse(BaseModel):
     idempotency_replay: bool = False
 
 
-class CampaignListResponse(BaseModel):
+class CampaignListResponse(ResponseEnvelope):
     """Campaign list response."""
 
     campaigns: list[CampaignResponse]
@@ -75,7 +75,7 @@ class ValidateIntakeRequest(BaseModel):
     intake: IntakeData
 
 
-class ValidateIntakeResponse(BaseModel):
+class ValidateIntakeResponse(ResponseEnvelope):
     """Intake validation response."""
 
     valid: bool
@@ -84,7 +84,7 @@ class ValidateIntakeResponse(BaseModel):
     spec_summary: dict[str, Any] | None = None
 
 
-class CapabilitiesResponse(BaseModel):
+class CapabilitiesResponse(ResponseEnvelope):
     """Backend capabilities response.
 
     ``supported_features`` lists features the backend can honour for
@@ -136,7 +136,7 @@ class CampaignQueryRequest(BaseModel):
     verbosity: str = "standard"
 
 
-class CampaignQueryResponse(BaseModel):
+class CampaignQueryResponse(ResponseEnvelope):
     """Campaign query response with pagination envelope.
 
     ``next_cursor`` carries the opaque pagination pointer for the next
@@ -161,7 +161,7 @@ class CampaignLifecycleRequest(BaseModel):
     action: str = Field(pattern="^(pause|resume|terminate)$")
 
 
-class CampaignLifecycleResponse(BaseModel):
+class CampaignLifecycleResponse(ResponseEnvelope):
     """Lifecycle action response."""
 
     success: bool
@@ -185,7 +185,7 @@ class BatchStatusRequest(BaseModel):
     verbosity: VerbosityLevel = VerbosityLevel.MINIMAL
 
 
-class BatchStatusResponse(BaseModel):
+class BatchStatusResponse(ResponseEnvelope):
     """Batch status response."""
 
     success: bool
@@ -209,7 +209,7 @@ class CompareCampaignsRequest(BaseModel):
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD
 
 
-class CompareCampaignsResponse(BaseModel):
+class CompareCampaignsResponse(ResponseEnvelope):
     """Campaign comparison response."""
 
     success: bool
@@ -238,7 +238,7 @@ class TransferCandidatesRequest(BaseModel):
     parameter_aliases: dict[str, list[str]] | None = None
 
 
-class TransferCandidatesResponse(BaseModel):
+class TransferCandidatesResponse(ResponseEnvelope):
     """Transfer candidate discovery response."""
 
     success: bool

@@ -366,7 +366,15 @@ def make_error_response(
         details=details,
     )
 
+    # Lazy import to break the otherwise-circular dependency: the
+    # response_formatter pulls ``__version__`` from the package init,
+    # which (transitively) imports this module via tool registration.
+    from bo_mcp_server.response_formatter import (  # noqa: PLC0415 - cycle break
+        RESPONSE_SCHEMA_VERSION,
+    )
+
     return {
+        "schema_version": RESPONSE_SCHEMA_VERSION,
         "success": False,
         "error": error.to_dict(),
         "errors": [error_message],  # Backward compatibility

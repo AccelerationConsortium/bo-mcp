@@ -27,7 +27,7 @@ def test_default_values_when_env_unset(monkeypatch: pytest.MonkeyPatch, tmp_path
     # ``env_file`` via ``model_config``).
     monkeypatch.chdir(tmp_path)
     settings = Settings()
-    assert settings.database_url.startswith("sqlite+aiosqlite://")
+    assert settings.database_url.get_secret_value().startswith("sqlite+aiosqlite://")
     assert settings.use_alembic == "auto"
     assert settings.sql_echo is False
     assert settings.bo_backend == "botorch"
@@ -64,6 +64,38 @@ def test_get_settings_returns_fresh_object(monkeypatch: pytest.MonkeyPatch) -> N
     second = get_settings()
     assert first.bo_backend == "first"
     assert second.bo_backend == "second"
+
+
+def test_repr_does_not_leak_database_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``repr(Settings)`` masks the password component of a PostgreSQL URL.
+
+    Pydantic v2's ``SecretStr`` is the documented way to keep sensitive
+    fields out of ``repr`` / ``str`` output. Any incidental log line
+    that prints a ``Settings`` instance — common in startup tracebacks
+    or dashboard introspection — must not leak the username/password
+    embedded in a ``postgresql://user:pass@host`` URL.
+
+    Reference:
+        https://docs.pydantic.dev/latest/api/types/#pydantic.types.SecretStr
+    """
+    import re
+
+    fake_user = "fake-user"  # synthetic fixture — never matches a real account
+    fake_pw = "fake-password-not-a-secret"  # noqa: S105 - test fixture only
+    url = f"postgresql+asyncpg://{fake_user}:{fake_pw}@db.host/bo"
+    monkeypatch.setenv("DATABASE_URL", url)
+    settings = Settings()
+
+    rendered = repr(settings)
+    assert fake_pw not in rendered
+    assert fake_user not in rendered
+    assert "SecretStr" in rendered
+    # Belt-and-suspenders: no ``user:pass@host`` literal anywhere in the
+    # repr, regardless of how the underlying library decides to surface
+    # SecretStr.
+    assert re.search(r"://[^/\s']+:[^/\s']+@", rendered) is None
+    # The accessor still returns the raw URL for the storage layer.
+    assert settings.database_url.get_secret_value() == url
 
 
 def test_storage_engine_picks_up_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

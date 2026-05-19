@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.schemas.common import ResponseEnvelope
+
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
 # permissive because the MCP response formatter splices a ``_metadata``
@@ -40,7 +42,7 @@ class SuggestionResponse(BaseModel):
     created_at: datetime
 
 
-class SuggestionsGenerateResponse(BaseModel):
+class SuggestionsGenerateResponse(ResponseEnvelope):
     """Response for suggestion generation."""
 
     success: bool
@@ -57,7 +59,7 @@ class SuggestionStatusUpdateRequest(BaseModel):
     status: str = Field(pattern="^(accepted|rejected|expired)$")
 
 
-class SuggestionStatusUpdateResponse(BaseModel):
+class SuggestionStatusUpdateResponse(ResponseEnvelope):
     """Response for suggestion status update."""
 
     success: bool
@@ -78,7 +80,7 @@ class SuggestionQueryRequest(BaseModel):
     verbosity: str = "standard"
 
 
-class SuggestionQueryResponse(BaseModel):
+class SuggestionQueryResponse(ResponseEnvelope):
     """Suggestion query response with pagination envelope."""
 
     success: bool
@@ -89,7 +91,7 @@ class SuggestionQueryResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
-class SuggestionExplanationResponse(BaseModel):
+class SuggestionExplanationResponse(ResponseEnvelope):
     """Response for suggestion explanation."""
 
     success: bool

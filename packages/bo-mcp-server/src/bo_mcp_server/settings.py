@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,13 @@ class Settings(BaseSettings):
 
     All knobs are optional and have safe defaults so local / SQLite
     development works without any env vars set.
+
+    Sensitive fields (``database_url``) are wrapped in
+    :class:`pydantic.SecretStr` so any incidental ``repr(settings)`` —
+    log breadcrumb, error envelope, dashboard introspection — emits
+    ``database_url=SecretStr('**********')`` instead of leaking the
+    embedded credentials. Call ``get_secret_value()`` (or the
+    ``get_database_url`` accessor) when the live value is needed.
     """
 
     model_config = SettingsConfigDict(
@@ -36,11 +43,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = Field(
-        default="sqlite+aiosqlite:///./data/bo_mcp.db",
+    database_url: SecretStr = Field(
+        default=SecretStr("sqlite+aiosqlite:///./data/bo_mcp.db"),
         alias="DATABASE_URL",
         description="SQLAlchemy async URL. SQLite is used for local + tests; "
-        "production deployments override this with a PostgreSQL URL.",
+        "production deployments override this with a PostgreSQL URL. Wrapped "
+        "in SecretStr so credentials embedded in postgresql://user:pass@... "
+        "URLs are not leaked by accidental repr(settings) calls.",
     )
     use_alembic: Literal["auto", "true", "false"] = Field(
         default="auto",
@@ -107,6 +116,88 @@ class Settings(BaseSettings):
             "pg_cron)."
         ),
     )
+    db_pool_size: int = Field(
+        default=5,
+        ge=1,
+        alias="DB_POOL_SIZE",
+        description=(
+            "Steady-state SQLAlchemy connection-pool size for the production "
+            "PostgreSQL engine. Trade-off: too low and request bursts queue on "
+            "checkout; too high and PgBouncer / Postgres back-ends churn. The "
+            "default of 5 matches the SQLAlchemy stock guidance for a single "
+            "process serving moderate concurrency; bump via env when running "
+            "a larger process pool."
+        ),
+    )
+    db_max_overflow: int = Field(
+        default=10,
+        ge=0,
+        alias="DB_MAX_OVERFLOW",
+        description=(
+            "Burst capacity on top of ``db_pool_size``. Connections beyond "
+            "the steady-state pool are recycled after the request returns "
+            "them; the cap protects the DB from a stampede during a "
+            "synchronous fan-out."
+        ),
+    )
+    db_pool_recycle_seconds: int = Field(
+        default=600,
+        ge=1,
+        alias="DB_POOL_RECYCLE_SECONDS",
+        description=(
+            "Idle-connection recycle horizon. Kept below the typical "
+            "PostgreSQL/PgBouncer 1-hour idle timeout so SQLAlchemy retires "
+            "stale connections proactively instead of surfacing 'server "
+            "closed the connection unexpectedly' on the next checkout."
+        ),
+    )
+    diagnostics_cache_max_entries: int = Field(
+        default=200,
+        ge=1,
+        alias="DIAGNOSTICS_CACHE_MAX_ENTRIES",
+        description=(
+            "Upper bound on the in-process diagnostics cache. Version-aware "
+            "cache keys auto-invalidate after a mutation, so the cap mainly "
+            "prevents unbounded growth from a long-running process that "
+            "serves many distinct campaigns."
+        ),
+    )
+    diagnostics_cache_ttl_seconds: int = Field(
+        default=120,
+        ge=1,
+        alias="DIAGNOSTICS_CACHE_TTL_SECONDS",
+        description=(
+            "TTL for diagnostics-cache entries. The version-keyed scheme "
+            "means cache entries become unreachable on mutation, so a "
+            "relatively long TTL is safe and improves hit rate for "
+            "repeatedly-polled campaigns."
+        ),
+    )
+    idempotency_reservation_ttl_seconds: int = Field(
+        default=10 * 60,
+        ge=1,
+        alias="IDEMPOTENCY_RESERVATION_TTL_SECONDS",
+        description=(
+            "How long an in-flight idempotency reservation can stay 'pending' "
+            "before a retry is allowed to reclaim the slot. Without this "
+            "bound, a worker that dies between mutation-commit and cache-"
+            "finalize would poison the slot for the entire 24h response TTL. "
+            "Tune up only for intentionally-long operations and accept that a "
+            "longer block trades against possible duplicate execution."
+        ),
+    )
+    idempotency_response_ttl_seconds: int = Field(
+        default=24 * 60 * 60,
+        ge=1,
+        alias="IDEMPOTENCY_RESPONSE_TTL_SECONDS",
+        description=(
+            "How long a finalized idempotency response is retained for replay. "
+            "Matches the IETF idempotency-key draft's recommended 24-hour "
+            "window — clients retrying within this window get the cached "
+            "response; after expiry, the same key can be reused for a new "
+            "request."
+        ),
+    )
 
 
 def get_settings() -> Settings:
@@ -122,8 +213,15 @@ def get_settings() -> Settings:
 
 
 def get_database_url() -> str:
-    """Convenience accessor used by the storage layer."""
-    return get_settings().database_url
+    """Convenience accessor used by the storage layer.
+
+    Unwraps the ``SecretStr`` wrapper so callers receive the raw URL
+    string. The wrapper exists to keep ``repr(settings)`` from leaking
+    embedded credentials; downstream code that needs the actual URL
+    (engine creation, log breadcrumbs that intentionally mask
+    credentials themselves) reaches in through this accessor.
+    """
+    return get_settings().database_url.get_secret_value()
 
 
 def get_use_alembic_mode() -> str:
@@ -164,3 +262,38 @@ def get_idempotency_cache_gc_interval_seconds() -> float:
     that are actually queried.
     """
     return get_settings().idempotency_cache_gc_interval_seconds
+
+
+def get_db_pool_size() -> int:
+    """Return the steady-state SQLAlchemy pool size."""
+    return get_settings().db_pool_size
+
+
+def get_db_max_overflow() -> int:
+    """Return the SQLAlchemy pool overflow cap."""
+    return get_settings().db_max_overflow
+
+
+def get_db_pool_recycle_seconds() -> int:
+    """Return the idle-connection recycle horizon (seconds)."""
+    return get_settings().db_pool_recycle_seconds
+
+
+def get_diagnostics_cache_max_entries() -> int:
+    """Return the upper bound on the in-process diagnostics cache."""
+    return get_settings().diagnostics_cache_max_entries
+
+
+def get_diagnostics_cache_ttl_seconds() -> int:
+    """Return the diagnostics-cache entry TTL (seconds)."""
+    return get_settings().diagnostics_cache_ttl_seconds
+
+
+def get_idempotency_reservation_ttl_seconds() -> int:
+    """Return the idempotency reservation 'pending' TTL (seconds)."""
+    return get_settings().idempotency_reservation_ttl_seconds
+
+
+def get_idempotency_response_ttl_seconds() -> int:
+    """Return the idempotency response replay TTL (seconds)."""
+    return get_settings().idempotency_response_ttl_seconds

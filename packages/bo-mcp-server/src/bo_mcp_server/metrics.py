@@ -60,6 +60,14 @@ SUBSCRIPTION_DROPPED = Counter(
     "bo_mcp_subscription_dropped_total",
     "Subscriptions unregistered after exhausting the retry budget on push delivery.",
 )
+PROGRESS_NOTIFY_FAILURES = Counter(
+    "bo_mcp_progress_notify_failures_total",
+    "Progress events that could not be forwarded to the MCP session. "
+    "A sustained non-zero rate means clients waiting on progress for "
+    "ETAs or cancellation are hanging — the poll fallback "
+    "(bo_check_progress) is the supported workaround.",
+    labelnames=("reason",),
+)
 
 
 def record_campaign_created(backend: str | None) -> None:

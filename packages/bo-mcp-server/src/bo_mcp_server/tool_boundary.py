@@ -15,17 +15,25 @@ forces every scalar (``owner_id``, ``campaign_id``, ``submitted_by``,
 boolean flags) to be revalidated by hand. Instead, this module wraps
 ``ToolManager.call_tool`` once per server and converts the
 ValidationError-caused ToolError into the same envelope the tool
-body would have produced if validation had been deferred. Tools opt
-in by registering their canonical "extra" fields (``campaign_id:
-None``, ``result_ids: []``, etc.) so the envelope keeps the keys
-downstream consumers expect.
+body would have produced if validation had been deferred.
+
+TODO 8.45: envelope wrapping is now on by default for every
+registered tool. The previous opt-in model required new tool authors
+to remember to register in ``_TOOL_ENVELOPE_DEFAULTS`` or their
+boundary failures would leak as opaque ``ToolError`` text. The
+allowlist now only carries *overrides* — extra keys to merge into the
+envelope so the response shape matches a specific tool's success path
+(e.g. ``campaign_id: None`` so downstream consumers can index into
+the field unconditionally). Tools not listed in the override map
+still receive the canonical envelope; only the extra-keys polish is
+skipped. A startup invariant in :func:`assert_all_tools_routed_through_wrapper`
+catches accidental regressions if a future code path bypasses the
+wrapper.
 
 Notes:
     * Non-validation ``ToolError`` (tool body raised, ``Unknown tool``)
       are re-raised unchanged so the rest of the MCP stack still
       surfaces them as transport-level errors.
-    * Tools not registered in :data:`_TOOL_ENVELOPE_DEFAULTS` pass
-      through verbatim -- the wrapper is opt-in, not blanket.
 
 Reference: MCP tool error semantics
 https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-call-errors
@@ -48,11 +56,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
 
-# Canonical fields injected into the boundary-failure envelope per tool
-# so downstream consumers see the same shape as a tool-body-driven
-# failure. Tools register here by name; missing tools fall through to
-# the wrapped call unchanged.
-_TOOL_ENVELOPE_DEFAULTS: dict[str, dict[str, Any]] = {
+# Per-tool overrides merged into the boundary-failure envelope so the
+# response shape matches the tool's success path. Tools not listed
+# here still receive the canonical envelope; only the extra polish
+# (campaign_id placeholders, warnings/duplicates arrays, etc.) is
+# skipped. The empty default lives in ``_DEFAULT_EXTRA``.
+_TOOL_ENVELOPE_OVERRIDES: dict[str, dict[str, Any]] = {
     "bo_create_campaign": {
         "campaign_id": None,
         "spec_id": None,
@@ -77,6 +86,18 @@ _TOOL_ENVELOPE_DEFAULTS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Backwards-compat alias for callers that read the old name. New code
+# should reference ``_TOOL_ENVELOPE_OVERRIDES``; the alias keeps a
+# previously-public-feeling seam stable for any out-of-tree consumer.
+_TOOL_ENVELOPE_DEFAULTS = _TOOL_ENVELOPE_OVERRIDES
+
+_DEFAULT_EXTRA: dict[str, Any] = {}
+
+# Sentinel attribute pinned on the wrapped ``call_tool`` bound method
+# so a second installation is a no-op. Externalised so the assertion
+# helper can detect "wrapper not installed" reliably.
+_WRAPPED_MARKER = "_bo_mcp_envelope_wrapped"
+
 
 def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
     """Wrap ``mcp_instance._tool_manager.call_tool`` to convert ToolError → envelope.
@@ -86,10 +107,14 @@ def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
     a no-op. This matters because :func:`create_mcp_server` may be
     invoked more than once in a single process (test fixtures, REST
     + MCP co-hosting).
+
+    The wrapper applies to every registered tool: tools listed in
+    :data:`_TOOL_ENVELOPE_OVERRIDES` get their extra polish merged in;
+    others still get the canonical envelope (TODO 8.45 — default-on).
     """
     tool_manager = mcp_instance._tool_manager  # noqa: SLF001 -- the FastMCP seam
     original = tool_manager.call_tool
-    if getattr(original, "_bo_mcp_envelope_wrapped", False):
+    if getattr(original, _WRAPPED_MARKER, False):
         return
 
     async def wrapped(
@@ -98,7 +123,7 @@ def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
         context: Any = None,
         convert_result: bool = False,
     ) -> Any:
-        defaults = _TOOL_ENVELOPE_DEFAULTS.get(name)
+        extras = _TOOL_ENVELOPE_OVERRIDES.get(name, _DEFAULT_EXTRA)
         try:
             return await original(
                 name,
@@ -108,21 +133,49 @@ def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
             )
         except ToolError as exc:
             cause = exc.__cause__
-            if defaults is None or not isinstance(cause, ValidationError):
+            if not isinstance(cause, ValidationError):
                 raise
-            return validation_envelope(cause, extra=defaults)
+            return validation_envelope(cause, extra=extras)
 
     # ``setattr`` keeps ty happy: the attribute is dynamic and we
     # never type-narrow against it, just probe for it on re-entry.
-    setattr(wrapped, "_bo_mcp_envelope_wrapped", True)  # noqa: B010
+    setattr(wrapped, _WRAPPED_MARKER, True)  # noqa: B010
     tool_manager.call_tool = wrapped
+
+
+def assert_all_tools_routed_through_wrapper(mcp_instance: Any) -> None:
+    """Startup invariant: every registered tool sees the envelope wrapper.
+
+    The previous opt-in model could silently regress when a new tool
+    was added without an entry in the registry — its argument-
+    validation failures would leak as raw ``ToolError`` text. With the
+    wrapper now installed unconditionally, the remaining failure mode
+    is a code path that swaps in an unwrapped ``call_tool`` (e.g. a
+    second FastMCP instance constructed without going through
+    :func:`create_mcp_server`). This assertion catches that at server
+    start so the regression surfaces in the boot log rather than on
+    the first failing tool call.
+    """
+    tool_manager = mcp_instance._tool_manager  # noqa: SLF001
+    call_tool = getattr(tool_manager, "call_tool", None)
+    if call_tool is None or not getattr(call_tool, _WRAPPED_MARKER, False):
+        raise RuntimeError(
+            "MCP tool boundary wrapper is not installed; "
+            "call install_validation_envelope_wrapper() before serving."
+        )
+    if not getattr(tool_manager, "_tools", None):  # noqa: SLF001
+        # No tools registered yet — nothing to enforce.
+        return
 
 
 _install: Callable[[Any], None] = install_validation_envelope_wrapper
 """Backwards-compatible alias kept short for use inside server.py."""
 
 
-__all__ = ["install_validation_envelope_wrapper"]
+__all__ = [
+    "assert_all_tools_routed_through_wrapper",
+    "install_validation_envelope_wrapper",
+]
 
 
 # ---------------------------------------------------------------------------

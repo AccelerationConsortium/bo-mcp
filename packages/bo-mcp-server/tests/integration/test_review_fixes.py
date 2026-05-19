@@ -161,19 +161,23 @@ async def test_mcp_tool_schema_advertises_result_metadata_keys() -> None:
 
 @pytest.mark.asyncio
 async def test_suggestions_resource_returns_envelope_for_unknown_campaign() -> None:
-    """``suggestions://{id}`` with a valid-but-missing UUID returns CAMPAIGN_NOT_FOUND.
+    """``suggestions://{id}`` with a valid-but-missing UUID raises CAMPAIGN_NOT_FOUND.
 
     Regression test for the Medium review finding: previously the
     handler queried the suggestions table directly and returned ``"No
     pending suggestions for campaign ..."`` for any campaign with zero
-    rows, conflating "does not exist" with "exists but empty".
+    rows, conflating "does not exist" with "exists but empty". 8.43
+    promoted the error path to a raised
+    :class:`ResourceOperationError`.
     """
+    from bo_mcp_server.errors import ResourceOperationError
     from bo_mcp_server.resources.suggestion_resource import get_suggestions
 
     unknown_id = str(uuid4())
-    raw = await get_suggestions(unknown_id)
+    with pytest.raises(ResourceOperationError) as exc_info:
+        await get_suggestions(unknown_id)
 
-    payload = json.loads(raw)
+    payload = json.loads(str(exc_info.value))
     assert payload["success"] is False
     assert payload["error"]["code"] == "E002"
     assert payload["error"]["details"]["campaign_id"] == unknown_id
@@ -275,30 +279,36 @@ async def test_campaigns_resource_accepts_cursor_filter() -> None:
 
 @pytest.mark.asyncio
 async def test_campaigns_resource_rejects_unknown_filter() -> None:
-    """An unknown filter key still surfaces the structured envelope."""
+    """An unknown filter key raises a structured resource error (TODO 8.43)."""
+    from bo_mcp_server.errors import ResourceOperationError
     from bo_mcp_server.resources.campaign_resource import list_campaigns_filtered
 
-    raw = await list_campaigns_filtered("ownerr=abc")
-    payload = json.loads(raw)
+    with pytest.raises(ResourceOperationError) as exc_info:
+        await list_campaigns_filtered("ownerr=abc")
+    payload = json.loads(str(exc_info.value))
     assert payload["error"]["code"] == "E005"
     assert "ownerr" in payload["error"]["details"]["unknown_keys"]
 
 
 @pytest.mark.asyncio
 async def test_events_resource_returns_envelope_for_unknown_campaign() -> None:
-    """``events://{id}`` with a valid-but-missing UUID returns CAMPAIGN_NOT_FOUND.
+    """``events://{id}`` with a valid-but-missing UUID raises CAMPAIGN_NOT_FOUND.
 
     Regression test for the review-pass finding on TODO 1.9: the events
     resource previously returned ``"No events recorded..."`` Markdown
     for any campaign id without rows, conflating "does not exist" with
-    "exists but has no audit trail".
+    "exists but has no audit trail". 8.43 promoted the error to a
+    raised :class:`ResourceOperationError` so FastMCP surfaces it as a
+    protocol-level failure.
     """
+    from bo_mcp_server.errors import ResourceOperationError
     from bo_mcp_server.resources.events_resource import get_campaign_events
 
     unknown_id = str(uuid4())
-    raw = await get_campaign_events(unknown_id)
+    with pytest.raises(ResourceOperationError) as exc_info:
+        await get_campaign_events(unknown_id)
 
-    payload = json.loads(raw)
+    payload = json.loads(str(exc_info.value))
     assert payload["success"] is False
     assert payload["error"]["code"] == "E002"
     assert payload["error"]["details"]["campaign_id"] == unknown_id

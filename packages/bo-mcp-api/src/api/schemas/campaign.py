@@ -103,24 +103,53 @@ class CapabilitiesResponse(BaseModel):
 
 
 class CampaignQueryRequest(BaseModel):
-    """Campaign query request with filtering and pagination."""
+    """Campaign query request with filtering and pagination.
+
+    Pagination model: cursor-only is the supported path. The legacy
+    ``offset`` field is preserved for callers that have not migrated
+    but is marked ``deprecated`` so OpenAPI clients and the auto-
+    generated docs surface the deprecation; it is mutually exclusive
+    with ``cursor`` at the operation layer (supplying both yields a
+    ``VALIDATION_FAILED`` envelope).
+    """
 
     model_config = _FORBID_EXTRA
 
     status: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
-    offset: int = Field(default=0, ge=0)
+    offset: int = Field(
+        default=0,
+        ge=0,
+        deprecated=(
+            "Offset-based pagination is unstable under concurrent inserts. "
+            "Use the cursor returned in next_cursor instead."
+        ),
+    )
+    cursor: str | None = Field(
+        default=None,
+        description=(
+            "Opaque cursor from a previous response's next_cursor field. "
+            "Cursor-based pagination is stable under concurrent inserts. "
+            "Mutually exclusive with offset."
+        ),
+    )
     verbosity: str = "standard"
 
 
 class CampaignQueryResponse(BaseModel):
-    """Campaign query response with pagination envelope."""
+    """Campaign query response with pagination envelope.
+
+    ``next_cursor`` carries the opaque pagination pointer for the next
+    page. ``offset`` is echoed back for callers still on the deprecated
+    pagination model.
+    """
 
     success: bool
     campaigns: list[dict[str, Any]] = Field(default_factory=list)
     total_count: int = 0
     limit: int = 20
     offset: int = 0
+    next_cursor: str | None = None
     errors: list[str] = Field(default_factory=list)
 
 

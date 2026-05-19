@@ -542,6 +542,53 @@ class TestCampaignQueryRoute:
         assert data["total_count"] == 1
         assert data["campaigns"][0]["name"] == "My Campaign"
 
+    @pytest.mark.asyncio
+    async def test_query_campaigns_cursor_offset_mutual_exclusion_surfaces_envelope(
+        self, api_client, auth_headers, persisted_user
+    ):
+        """REST surfaces the structured ``VALIDATION_FAILED`` envelope.
+
+        Pre-fix (TODO 8.42 friend-review finding) the route constructed
+        ``CampaignQueryResponse`` from the operation's response dict.
+        That schema has no ``error`` field, so Pydantic silently dropped
+        the structured envelope and clients saw an inconsistent body for
+        a 200 OK response. The route now promotes the
+        ``success=False`` envelope to an ``HTTPException`` whose
+        ``detail`` carries the original ``error`` payload (code,
+        message, recovery_action, retryable, details), routed through
+        ``http_status_for_error`` for the correct HTTP status code.
+        """
+        # Seed two campaigns and walk one page via cursor so the request
+        # combines a real cursor token with a non-zero offset.
+        owner_id = str(persisted_user.id)
+        await _create_campaign_for_owner(owner_id, "Campaign A")
+        await _create_campaign_for_owner(owner_id, "Campaign B")
+
+        first = await api_client.post(
+            "/api/campaigns/query",
+            json={"limit": 1, "offset": 0},
+            headers=auth_headers,
+        )
+        cursor = first.json().get("next_cursor")
+        assert cursor, first.json()
+
+        # Both cursor and a non-zero offset: structured rejection.
+        response = await api_client.post(
+            "/api/campaigns/query",
+            json={"cursor": cursor, "offset": 1, "limit": 1},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        # Structured envelope is fully preserved in the HTTPException
+        # detail; the code lets clients route on the failure without
+        # parsing free-form text.
+        assert detail["code"] == "E005"
+        assert "mutually exclusive" in detail["message"]
+        assert detail["details"]["cursor"] == cursor
+        assert detail["details"]["offset"] == 1
+
 
 class TestResultQueryRoute:
     @pytest.mark.asyncio

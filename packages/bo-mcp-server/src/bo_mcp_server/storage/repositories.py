@@ -424,7 +424,14 @@ class CampaignRepository:
         total_result = await self.session.execute(count_query)
         total_count = total_result.scalar_one()
 
-        query = query.order_by(CampaignModel.created_at.desc())
+        # Order matches :meth:`list_keyset` — ``(created_at DESC, id
+        # DESC)`` — so a cursor handed back by this offset page chains
+        # losslessly when the next page switches to keyset mode. Without
+        # the ``id DESC`` tiebreaker the first page can pick an arbitrary
+        # order among rows sharing a ``created_at`` value while the
+        # keyset comparator uses ``id < cursor_id``, opening a duplicate /
+        # skip window on equal-timestamp ties (TODO 8.42 friend-review).
+        query = query.order_by(CampaignModel.created_at.desc(), CampaignModel.id.desc())
         if offset > 0:
             query = query.offset(offset)
         if limit is not None:
@@ -445,10 +452,17 @@ class CampaignRepository:
     ) -> tuple[list[Campaign], int]:
         """List campaigns via keyset pagination on ``(created_at, id)``.
 
-        The ordering is ascending so the cursor advances forward in
-        time. Under concurrent inserts, this gives a stable window:
-        rows the agent has already paged past will never re-appear, and
-        new rows always show up after the current cursor position.
+        The ordering matches :meth:`list_filtered` — newest-first
+        descending on ``created_at`` with ``id`` as the descending
+        tiebreaker. The cursor walks *backwards* through time: page 1
+        returns the newest ``limit`` campaigns, the cursor points at
+        the oldest row of that page, and page 2 returns rows strictly
+        older than the cursor row. Aligning the two paginators
+        guarantees the no-duplicate / no-skip invariant of keyset
+        pagination — under the previous ASC-with-``>`` formulation
+        the cursor walked the *opposite* direction from page 1 and
+        could both duplicate page-1 rows and skip the oldest row
+        entirely (TODO 8.42 friend-review finding).
 
         ``total_count`` is still reported so the agent can show "X of N"
         when desired; under concurrency the totals can drift, which is
@@ -471,14 +485,16 @@ class CampaignRepository:
         if cursor_created_at is not None and cursor_id is not None:
             query = query.where(
                 or_(
-                    CampaignModel.created_at > cursor_created_at,
+                    CampaignModel.created_at < cursor_created_at,
                     and_(
                         CampaignModel.created_at == cursor_created_at,
-                        CampaignModel.id > cursor_id,
+                        CampaignModel.id < cursor_id,
                     ),
                 )
             )
-        query = query.order_by(CampaignModel.created_at.asc(), CampaignModel.id.asc()).limit(limit)
+        query = query.order_by(CampaignModel.created_at.desc(), CampaignModel.id.desc()).limit(
+            limit
+        )
 
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
@@ -505,6 +521,58 @@ class CampaignRepository:
             )
         )
         return {UUID(m.id): self._to_entity(m) for m in result.scalars()}
+
+    async def list_recent(
+        self,
+        owner_id: UUID | None = None,
+        limit: int = 5,
+        *,
+        include_deleted: bool = False,
+    ) -> list[Campaign]:
+        """Return the most recently created campaigns (newest first).
+
+        Powers the cheap ``campaigns://recent`` discovery resource: a
+        bounded, parameter-free listing that an LLM can hit to recover
+        from a hallucinated id without paying the cost of paginating
+        ``campaigns://list``. ``owner_id`` lets the caller scope to the
+        authenticated user; ``limit`` caps the result regardless of how
+        many rows the table holds.
+        """
+        query = select(CampaignModel)
+        filters = list(_active_filter(CampaignModel, include_deleted))
+        if owner_id is not None:
+            filters.append(CampaignModel.owner_id == str(owner_id))
+        if filters:
+            query = query.where(*filters)
+        # ``id DESC`` tiebreaker matches :meth:`list_filtered` and
+        # :meth:`list_keyset` so equal-timestamp rows have a single
+        # deterministic order across every campaign listing surface.
+        query = query.order_by(CampaignModel.created_at.desc(), CampaignModel.id.desc()).limit(
+            max(1, limit)
+        )
+        result = await self.session.execute(query)
+        return [self._to_entity(m) for m in result.scalars()]
+
+    async def list_active_ids(
+        self,
+        owner_id: UUID | None = None,
+        *,
+        include_deleted: bool = False,
+    ) -> list[str]:
+        """Return string-form campaign ids for fuzzy id-prefix matching.
+
+        Cheap projection (id-only ``SELECT``) so the
+        ``CAMPAIGN_NOT_FOUND`` envelope can attach suggestions for a
+        typo'd UUID without loading every row.
+        """
+        query = select(CampaignModel.id)
+        filters = list(_active_filter(CampaignModel, include_deleted))
+        if owner_id is not None:
+            filters.append(CampaignModel.owner_id == str(owner_id))
+        if filters:
+            query = query.where(*filters)
+        result = await self.session.execute(query)
+        return [row for (row,) in result.all()]
 
     async def save(self, campaign: Campaign, expected_version: int | None = None) -> Campaign:
         """Save campaign with optimistic locking + soft-delete guard.
@@ -716,7 +784,15 @@ class SuggestionRepository:
         total_result = await self.session.execute(count_base)
         total_count = total_result.scalar_one()
 
-        query = base.order_by(SuggestionModel.created_at.desc()).offset(offset).limit(limit)
+        # ``(created_at DESC, id DESC)`` mirrors :meth:`list_by_campaign_keyset`
+        # so the two paginators agree even when rows share a
+        # ``created_at`` value (see ``CampaignRepository.list_filtered``
+        # for the equivalent ordering on campaigns).
+        query = (
+            base.order_by(SuggestionModel.created_at.desc(), SuggestionModel.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count
 
@@ -732,9 +808,13 @@ class SuggestionRepository:
     ) -> tuple[list[Suggestion], int]:
         """List suggestions via keyset pagination on ``(created_at, id)``.
 
-        Ascending order keeps the page sequence stable while the
-        backend issues new suggestions concurrently (a common pattern
-        in live agent workflows that interleave generation and review).
+        Ordering matches the offset paginator above (newest-first
+        descending). The cursor walks backwards through time so a page
+        2 request returns rows strictly older than the cursor row —
+        this is the only direction that preserves the no-duplicate /
+        no-skip invariant when the first page is newest-first. See
+        the corresponding ``CampaignRepository.list_keyset`` docstring
+        for the friend-review finding that motivated the realignment.
         """
         base_filters: list[Any] = [
             SuggestionModel.campaign_id == str(campaign_id),
@@ -753,14 +833,14 @@ class SuggestionRepository:
         if cursor_created_at is not None and cursor_id is not None:
             query = query.where(
                 or_(
-                    SuggestionModel.created_at > cursor_created_at,
+                    SuggestionModel.created_at < cursor_created_at,
                     and_(
                         SuggestionModel.created_at == cursor_created_at,
-                        SuggestionModel.id > cursor_id,
+                        SuggestionModel.id < cursor_id,
                     ),
                 )
             )
-        query = query.order_by(SuggestionModel.created_at.asc(), SuggestionModel.id.asc()).limit(
+        query = query.order_by(SuggestionModel.created_at.desc(), SuggestionModel.id.desc()).limit(
             limit
         )
         result = await self.session.execute(query)
@@ -1079,10 +1159,14 @@ class ResultRepository:
         )
         total_count = count_result.scalar_one()
 
+        # ``(created_at DESC, id DESC)`` mirrors :meth:`list_by_campaign_keyset`
+        # so equal-timestamp rows have a deterministic order that the
+        # cursor comparator can chain off (see the campaign repository
+        # for the friend-review finding that motivated the tiebreaker).
         query = (
             select(ResultModel)
             .where(*base_filters)
-            .order_by(ResultModel.created_at.desc())
+            .order_by(ResultModel.created_at.desc(), ResultModel.id.desc())
             .offset(offset)
             .limit(limit)
         )
@@ -1100,10 +1184,15 @@ class ResultRepository:
     ) -> tuple[list[Result], int]:
         """List results via keyset pagination on ``(created_at, id)``.
 
-        Ascending order matches the canonical insertion order already
-        used by ``list_by_campaign`` (convergence trajectory) so callers
-        paginating through results see them in submission order, never
-        skipping or duplicating under concurrent writes.
+        Ordering matches :meth:`list_by_campaign_paginated`
+        (newest-first descending) so that cursor pages chain correctly
+        from the first offset / cursorless page. Walking backwards
+        through time with ``< cursor_created_at`` is what gives keyset
+        pagination its no-duplicate / no-skip invariant when the
+        first page is newest-first; the previous ASC formulation
+        could both duplicate page-1 rows and skip the oldest row.
+        The non-paginated :meth:`list_by_campaign` retains its
+        ``ASC`` ordering for the convergence-trajectory consumer.
         """
         soft_delete_filter = _active_filter(ResultModel, include_deleted)
         base_filters: list[Any] = [
@@ -1120,14 +1209,14 @@ class ResultRepository:
         if cursor_created_at is not None and cursor_id is not None:
             query = query.where(
                 or_(
-                    ResultModel.created_at > cursor_created_at,
+                    ResultModel.created_at < cursor_created_at,
                     and_(
                         ResultModel.created_at == cursor_created_at,
-                        ResultModel.id > cursor_id,
+                        ResultModel.id < cursor_id,
                     ),
                 )
             )
-        query = query.order_by(ResultModel.created_at.asc(), ResultModel.id.asc()).limit(limit)
+        query = query.order_by(ResultModel.created_at.desc(), ResultModel.id.desc()).limit(limit)
 
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()], total_count

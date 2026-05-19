@@ -269,14 +269,48 @@ async def query_campaigns(
     request: CampaignQueryRequest,
     current_user: CurrentUser,
 ) -> CampaignQueryResponse:
-    """Query campaigns with filtering, pagination, and verbosity control."""
+    """Query campaigns with filtering, pagination, and verbosity control.
+
+    Pagination is cursor-first: pass the ``next_cursor`` returned by
+    the previous response back as ``cursor`` to walk the next page
+    safely under concurrent inserts. ``offset`` is preserved for
+    backwards-compatibility and is mutually exclusive with ``cursor``;
+    supplying both surfaces as an ``HTTPException(400)`` whose
+    ``detail`` carries the structured ``error`` envelope from the
+    operation layer (code, recovery_action, retryable, details).
+    """
+    # Pydantic emits a DeprecationWarning every time the deprecated
+    # ``offset`` field is read. Suppress it locally so well-behaved
+    # callers (who leave it at the default 0) do not see noise; the
+    # warning still surfaces in the OpenAPI schema and on actual use
+    # via the operation-level mutual-exclusion check.
+    import warnings  # noqa: PLC0415 -- scoped to this single suppression
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        offset = request.offset
     result = await list_campaigns_operation(
         owner_id=current_user.id,
         status=request.status,
         limit=request.limit,
-        offset=request.offset,
+        offset=offset,
         verbosity=request.verbosity,
+        cursor=request.cursor,
     )
+    # The success-shaped ``CampaignQueryResponse`` cannot represent
+    # the operation's ``{success: false, error: …}`` envelope —
+    # Pydantic would silently drop the unknown ``error`` field on
+    # construction, so callers would never see the cursor+offset
+    # mutual-exclusion violation (TODO 8.42 friend-review finding).
+    # Promote the structured error to an ``HTTPException`` whose
+    # ``detail`` is the original envelope so clients inspecting
+    # ``response.json()["detail"]["code"]`` can route on it the same
+    # way they route on operation envelopes.
+    if not result.get("success", False):
+        raise HTTPException(
+            status_code=http_status_for_error(result),
+            detail=result.get("error", {"message": "Query failed"}),
+        )
     return CampaignQueryResponse(**result)
 
 

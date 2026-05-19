@@ -21,7 +21,7 @@ Usage:
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from bo_engine.backend_base import (
     BackendError,
@@ -497,6 +497,68 @@ def make_concurrent_modification_response(
     )
 
 
+class ResourceOperationError(Exception):
+    """Raised by MCP resource handlers to signal a protocol-level failure.
+
+    Surfacing happens in two layers:
+
+    * **Direct callers** (tests, in-process consumers) catch
+      :class:`ResourceOperationError` and read the structured envelope
+      off ``exc.envelope`` (or from ``str(exc)`` for the JSON form).
+    * **The MCP wire path**, when the server is constructed via
+      :func:`bo_mcp_server.server.create_mcp_server`, routes through
+      the read-boundary wrapper installed by
+      :mod:`bo_mcp_server.resource_boundary`. That wrapper detects
+      :class:`ResourceOperationError` on the cause chain (FastMCP's
+      ``ResourceTemplate.create_resource`` and
+      ``ResourceManager.get_resource`` each wrap raised exceptions in a
+      generic ``ValueError("Error creating resource from template: …")``)
+      and re-raises ``mcp.shared.exceptions.McpError`` with the
+      structured envelope on ``error.data`` and a semantic JSON-RPC
+      code (``INVALID_PARAMS`` for caller-supplied validation
+      failures, ``INTERNAL_ERROR`` otherwise). Without the wrapper
+      patch, FastMCP would still escalate the failure to the JSON-RPC
+      layer, but the message would carry the double-prefix wrap and a
+      generic ``code=0``.
+
+    Either way, MCP clients see the read fail at the protocol level
+    rather than receiving a success-shaped JSON body that secretly
+    carries an error; the envelope remains a single parseable shape
+    across tool and resource surfaces. See
+    :func:`raise_resource_error` below for the standard entry point.
+    """
+
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.code = code
+        self.error_message = message
+        self.details = details
+        self.envelope = make_error_response(code, message=message, details=details)
+        super().__init__(json.dumps(self.envelope, ensure_ascii=False))
+
+
+def raise_resource_error(
+    code: ErrorCode,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> NoReturn:
+    """Raise a :class:`ResourceOperationError` for an MCP resource path.
+
+    Thin helper so call sites read naturally:
+        raise_resource_error(ErrorCode.CAMPAIGN_NOT_FOUND, ...)
+
+    Equivalent to ``raise ResourceOperationError(code, message, details)``
+    but keeps the import surface and the call site small. The return
+    annotation is :class:`NoReturn` so type checkers narrow callers
+    correctly: code after the call is treated as unreachable.
+    """
+    raise ResourceOperationError(code, message=message, details=details)
+
+
 def render_resource_error(
     code: ErrorCode,
     message: str | None = None,
@@ -504,13 +566,14 @@ def render_resource_error(
 ) -> str:
     """Render a structured error envelope as a JSON string for MCP resources.
 
-    MCP resource handlers return strings, but historically they returned
-    plain-text error messages while MCP tools returned structured
-    ``{success: false, error: {...}}`` envelopes. That asymmetry forced
-    agents to maintain two error parsers. This helper renders the same
-    envelope as :func:`make_error_response` serialized as a JSON string,
-    so agents that see a resource response starting with ``{"success":
-    false`` can apply the same recovery logic they already use for tools.
+    Retained for tests and any third-party code that depends on the
+    string-body shape. New resource handlers raise
+    :class:`ResourceOperationError` (via :func:`raise_resource_error`)
+    so the MCP read path (via the wrapper installed by
+    :mod:`bo_mcp_server.resource_boundary`) surfaces the failure as a
+    structured :class:`McpError` at the JSON-RPC layer; the envelope
+    still rides inside the exception message and on
+    ``McpError.error.data`` for clients that prefer the body.
 
     The output is stable JSON (sorted keys disabled to preserve the
     canonical field ordering of ``success``, ``error``, ``errors``) so

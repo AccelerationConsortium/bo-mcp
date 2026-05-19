@@ -52,6 +52,14 @@ IDEMPOTENCY_GC_PURGED = Counter(
     "bo_mcp_idempotency_cache_gc_rows_total",
     "Expired idempotency_cache rows removed by the background GC sweep.",
 )
+SUBSCRIPTION_SEND_RETRIES = Counter(
+    "bo_mcp_subscription_send_retries_total",
+    "Resource-update deliveries that succeeded on a retry attempt.",
+)
+SUBSCRIPTION_DROPPED = Counter(
+    "bo_mcp_subscription_dropped_total",
+    "Subscriptions unregistered after exhausting the retry budget on push delivery.",
+)
 
 
 def record_campaign_created(backend: str | None) -> None:

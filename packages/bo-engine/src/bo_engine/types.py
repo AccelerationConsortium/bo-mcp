@@ -500,7 +500,7 @@ class ObservationData:
     objective_values: dict[str, float]
     cost: float | None = None  # v1.3: Cost for cost-aware optimization
     measurement_uncertainty: dict[str, float] | None = None  # per-objective stddev
-    # Optional durable cross-system identity (TODO 8.50). Backends that
+    # Optional durable cross-system identity. Backends that
     # serialise per-observation state (notably BayBE, which keeps an
     # ``observation_identity`` index) use this as the discriminator for
     # otherwise-identical replicate rows so a specific replicate can be

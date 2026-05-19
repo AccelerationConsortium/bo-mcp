@@ -1,4 +1,4 @@
-"""BoTorch backend wraps library exceptions before the boundary (TODO 8.13).
+"""BoTorch backend wraps library exceptions before the boundary.
 
 The audit text: ``packages/bo-engine/src/bo_engine/botorch_backend.py``
 lets library exceptions propagate. The server-layer code has nothing

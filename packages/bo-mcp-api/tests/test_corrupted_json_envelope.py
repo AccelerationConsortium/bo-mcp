@@ -1,6 +1,6 @@
 """REST mapping of ``CorruptedJsonColumnError`` to the ``DATA_INTEGRITY_ERROR`` envelope.
 
-The strict JSON decoder added in TODO 8.48 raises a typed exception
+The strict JSON decoder raises a typed exception
 when a persisted JSON column cannot be decoded. The unit tests in
 ``packages/bo-mcp-server/tests/unit/test_storage/test_strict_json_column_decode.py``
 pin the ORM-level behaviour; this module covers the **REST transport

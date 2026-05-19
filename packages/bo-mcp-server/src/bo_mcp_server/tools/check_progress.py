@@ -1,4 +1,4 @@
-"""Poll-fallback progress lookup (TODO 8.59).
+"""Poll-fallback progress lookup.
 
 The primary progress channel is MCP push (``Context.report_progress``).
 When the transport stalls — closed loop, dropped connection, hung

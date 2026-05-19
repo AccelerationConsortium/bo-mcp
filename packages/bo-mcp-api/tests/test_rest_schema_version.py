@@ -1,4 +1,4 @@
-"""REST success envelopes carry ``schema_version`` (TODO 8.55 review pass).
+"""REST success envelopes carry ``schema_version``.
 
 The MCP envelope already advertises the top-level ``schema_version`` so
 older clients can detect a backwards-incompatible contract change

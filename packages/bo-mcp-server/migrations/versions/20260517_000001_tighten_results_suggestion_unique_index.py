@@ -1,6 +1,6 @@
 """Restrict the ``results.suggestion_id`` unique index to active rows.
 
-Audit follow-up to TODO 8.11: the partial unique index introduced in
+Audit follow-up: the partial unique index introduced in
 migration ``012_results_suggestion_id_unique`` keyed only on
 ``suggestion_id IS NOT NULL``. After the soft-delete column landed in
 ``013_soft_delete``, that predicate kept a *soft-deleted* result row

@@ -1,4 +1,4 @@
-"""Tests for TODO 8.15: ``supported_features`` ↔ runtime validation alignment.
+"""Tests: ``supported_features`` ↔ runtime validation alignment.
 
 The static ``supported_features`` set must contain only features
 the backend supports *unconditionally* (no spec-shape preconditions).
@@ -12,7 +12,7 @@ References:
 - Baybe TaskParameter behaviour:
   https://emdgroup.github.io/baybe/stable/userguide/parameters.html#TaskParameter
 - The capability tristate (SUPPORTED / IGNORED / UNSUPPORTED)
-  introduced in TODO 1.69 to replace the flat boolean set.
+  introduced to replace the flat boolean set.
 """
 
 from __future__ import annotations

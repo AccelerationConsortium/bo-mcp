@@ -1,4 +1,4 @@
-"""Poll-fallback progress lookup (TODO 8.59).
+"""Poll-fallback progress lookup.
 
 These tests cover the read side of the progress-bridge contract:
 ``bo_check_progress`` returns the snapshot a polling client would

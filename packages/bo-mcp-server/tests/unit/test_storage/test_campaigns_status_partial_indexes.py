@@ -1,4 +1,4 @@
-"""Partial-index contract for ``campaigns.status`` (TODO 8.49).
+"""Partial-index contract for ``campaigns.status``.
 
 The per-status partial indexes added in migration
 ``015_campaigns_status_partials`` only deliver the planner benefit if

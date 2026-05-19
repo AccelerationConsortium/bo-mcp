@@ -1,4 +1,4 @@
-"""TODO 1.63 — BayBE state reconciliation via stable identity tests.
+"""BayBE state reconciliation via stable identity tests.
 
 Replaces the previous count-prefix reconciliation
 (``len(campaign.measurements)`` vs ``len(observations)``) with an

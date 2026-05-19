@@ -10,11 +10,13 @@ suggestion-batch, and state-envelope assertions in
   way is the regression net the protocol's per-method contract relies
   on — accidental drift in any default implementation will fail here.
 * A pure-:class:`BOBackend` plugin (``_ProtocolOnlyBackend``) that does
-  not inherit from :class:`BaseBackend`. This is the entry-point
-  smoke test promised by TODO 1.69: third-party backends must remain
-  usable without :class:`BaseBackend`.
-
-Reference: TODO.md item 1.69 ("Backend plugin contract is too heavyweight").
+  not inherit from :class:`BaseBackend`. Third-party backends must
+  remain usable without :class:`BaseBackend` — :class:`BOBackend` stays
+  a structural protocol, while :class:`BaseBackend` only provides
+  default implementations of shared behavior (Sobol initial design,
+  duplicate detection, batch diversity, JSON-validated state envelope,
+  capability validation backed by ``required_features``). This file is
+  the entry-point smoke test that guards both extension paths.
 """
 
 from __future__ import annotations
@@ -106,7 +108,7 @@ class _FakeBackend(BaseBackend):
 class _ProtocolOnlyBackend:
     """Pure ``BOBackend`` implementation, not derived from BaseBackend.
 
-    Validates the TODO 1.69 promise that third-party plugins can satisfy
+    Validates the promise that third-party plugins can satisfy
     the protocol without inheriting from :class:`BaseBackend`. The class
     is intentionally minimal: only the members the protocol marks as
     required are filled in.

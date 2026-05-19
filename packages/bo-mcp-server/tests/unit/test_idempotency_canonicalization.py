@@ -1,4 +1,4 @@
-"""Non-semantic field stripping for idempotency hashing (TODO 8.25).
+"""Non-semantic field stripping for idempotency hashing.
 
 Clients regenerate transport / telemetry fields on every retry —
 ``request_id``, ``trace_id``, ``created_at``. Hashing those would
@@ -60,7 +60,7 @@ def test_strip_drops_non_semantic_keys() -> None:
 def test_strip_only_at_top_level_preserves_nested_metadata() -> None:
     """Nested ``_metadata`` is treated as semantic data; only envelope keys are dropped.
 
-    Top-level-only stripping (TODO 8.25 / second review pass): the
+    Top-level-only stripping: the
     domain layer permits ``parameter_values["_metadata"]`` as a
     user-defined key (``min_length=1`` on parameter names plus
     free-form ``parameter_values``). A recursive ``_metadata`` strip
@@ -95,8 +95,7 @@ def test_strip_only_at_top_level_preserves_nested_metadata() -> None:
 def test_strip_preserves_parameter_named_metadata() -> None:
     """A campaign with ``parameter_values["_metadata"]`` is not silently collapsed.
 
-    Regression for the recursive ``_metadata`` bug (TODO 8.25 second
-    review pass): the original Phase G implementation removed
+    Regression for the recursive ``_metadata`` bug: the original Phase G implementation removed
     ``_metadata`` at every level under the assumption it was always
     transport-owned. But ``Parameter.name`` only requires
     ``min_length=1`` and ``ResultSubmissionInput.parameter_values``
@@ -210,7 +209,7 @@ def test_hash_still_distinguishes_real_payload_differences() -> None:
 async def test_replay_works_when_only_created_at_differs() -> None:
     """End-to-end: two retries with drifting telemetry replay the cached response.
 
-    This is the user-visible payoff of TODO 8.25: a retry path that
+    This is the user-visible payoff: a retry path that
     re-stamps ``created_at`` no longer surfaces ``IDEMPOTENCY_CONFLICT``
     against the original call's hash.
     """

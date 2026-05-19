@@ -10,8 +10,8 @@ running event loop and an async session, and forwards each event by
 scheduling the async ``report_progress`` call back onto that loop via
 ``asyncio.run_coroutine_threadsafe``.
 
-Failure observability (TODO 8.59)
----------------------------------
+Failure observability
+---------------------
 
 Forwarding failures used to be swallowed at ``DEBUG`` with no metric.
 That hid a real correctness gap for clients relying on progress for
@@ -233,7 +233,7 @@ def make_progress_callback_from_context(
 
 
 # ---------------------------------------------------------------------------
-# Process-local progress registry (TODO 8.59 poll fallback)
+# Process-local progress registry (poll fallback)
 # ---------------------------------------------------------------------------
 
 

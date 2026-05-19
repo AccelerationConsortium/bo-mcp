@@ -16,7 +16,7 @@ documented keys (``success``, ``campaign_id``, …) stay present even
 when the underlying value is missing, so agent code can address them
 unconditionally. This addresses the "weak ``TypedDict``" pattern where
 the formatter previously cast arbitrary ``dict[str, Any]`` into a
-declared shape with no runtime guarantee — see TODO 1.20.
+declared shape with no runtime guarantee.
 
 Usage:
     from bo_mcp_server.response_formatter import (
@@ -42,7 +42,7 @@ from bo_mcp_server import __version__
 _METADATA_FIELD = "_metadata"
 _SCHEMA_VERSION_FIELD = "schema_version"
 
-# Top-level response-envelope schema version (TODO 8.55).
+# Top-level response-envelope schema version.
 #
 # Every MCP-tool / REST response carries ``schema_version`` so older
 # clients (including older LLM tool descriptions) can detect a

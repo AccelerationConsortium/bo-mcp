@@ -1,6 +1,6 @@
 """Tests for outcome-constraint calibration assessment.
 
-Pins the contract from TODO 1.52: the constraint-feasibility GP must
+Pins the contract: the constraint-feasibility GP must
 expose calibration metrics (Brier score and Expected Calibration Error in
 addition to mean absolute deviation) so the diagnostics layer can warn
 before agents schedule infeasible experiments.

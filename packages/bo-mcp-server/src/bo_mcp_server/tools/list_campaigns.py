@@ -18,7 +18,7 @@ from bo_mcp_server.tools.annotations import READ_ONLY
 # ``Literal`` mirrors ``CampaignStatus`` so the generated MCP tool
 # schema declares an ``enum`` constraint -- agents discover the valid
 # values from the schema directly instead of by trial-and-error retries
-# (TODO 1.54). Keep this list aligned with
+# Keep this list aligned with
 # :class:`bo_mcp_server.domain.CampaignStatus`.
 CampaignStatusFilter = Literal[
     "created",

@@ -44,7 +44,7 @@ class CampaignIntakeInput(BaseModel):
     # Default ``None`` so MCP and REST intake forms behave identically when
     # the caller omits the seed: a fresh OS-level scramble each iteration.
     # Callers that want deterministic Sobol sequences must opt in by
-    # supplying an explicit seed (see TODO 1.66).
+    # supplying an explicit seed.
     #
     # **Reproducibility bounds.** Supplying ``random_seed`` makes the Sobol
     # initial design and acquisition multi-start deterministic *within* a
@@ -193,7 +193,7 @@ _inline_defs = inline_defs
 
 # Projected JSON schemas re-used by tools that accept the corresponding
 # payload as a raw ``dict`` / ``list[dict]`` at the MCP boundary
-# (TODO 1.53 follow-up). Keeping the runtime type loose lets the
+# Keeping the runtime type loose lets the
 # operation layer convert ``ValidationError`` into our
 # ``field_errors`` envelope instead of letting FastMCP's pre-call
 # validation raise an opaque ``ToolError``. ``json_schema_extra``

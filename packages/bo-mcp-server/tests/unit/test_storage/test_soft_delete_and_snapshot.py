@@ -1,6 +1,6 @@
-"""Soft-delete + suggestion-provenance snapshot contracts (TODO 8.11).
+"""Soft-delete + suggestion-provenance snapshot contracts.
 
-Pins the data-integrity guarantees added by TODO 8.11:
+Pins the data-integrity guarantees:
 
 * ``CampaignRepository.delete`` (and the suggestion / result equivalents)
   now flips a ``deleted_at`` timestamp instead of physically removing the
@@ -147,7 +147,7 @@ async def _seed_suggestion(session: AsyncSession, campaign: Campaign) -> Suggest
 async def test_soft_delete_hides_campaign_from_default_reads(session: AsyncSession) -> None:
     """A soft-deleted campaign disappears from ``get`` / ``list_*`` by default.
 
-    TODO 8.11: ``delete()`` flips ``deleted_at`` instead of physically
+    ``delete()`` flips ``deleted_at`` instead of physically
     removing the row, so the campaign is gone for application reads
     but still reconstructable through ``include_deleted=True``.
     """
@@ -193,7 +193,7 @@ async def test_hard_delete_blocked_by_restrict_when_children_exist(
 ) -> None:
     """Hard-deleting a campaign with live suggestions fails on RESTRICT.
 
-    TODO 8.11 swaps the previous ``ON DELETE CASCADE`` for ``RESTRICT``
+    This change swaps the previous ``ON DELETE CASCADE`` for ``RESTRICT``
     on ``suggestions.campaign_id``: a forgotten cleanup that drops
     the parent without first removing the children now fails fast
     with an integrity error instead of silently destroying history.
@@ -329,7 +329,7 @@ async def test_stale_suggestion_save_raises_and_preserves_row(
 ) -> None:
     """A save against a tombstoned suggestion raises ``ConcurrentModificationError``.
 
-    Catches both failure modes of TODO 8.11's soft-delete contract:
+    Catches both failure modes of the soft-delete contract:
     a naive ``session.merge`` would (a) clear ``deleted_at`` and
     resurrect the row, *and* (b) overwrite the historical ``status``
     and ``provenance_json`` columns that audit / forensics callers

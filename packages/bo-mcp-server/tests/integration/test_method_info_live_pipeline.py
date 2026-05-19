@@ -1,4 +1,4 @@
-"""Live ``SuggestionBatch.method_info`` survives the MCP boundary (TODO 8.51).
+"""Live ``SuggestionBatch.method_info`` survives the MCP boundary.
 
 The audit flagged that ``generate_suggestions_operation`` was throwing
 away the live ``method_info`` populated by ``backend.generate_suggestions``

@@ -54,8 +54,8 @@ def _statement_timeout_seconds() -> float:
     not initialise the Settings module. Falls back to the same 300s
     default the application uses.
 
-    Non-positive values are rejected with a fallback to the default
-    (TODO 8.22 third review pass): PostgreSQL treats ``SET
+    Non-positive values are rejected with a fallback to the default:
+    PostgreSQL treats ``SET
     statement_timeout = 0`` as 'unlimited' — exactly the opposite of
     the intended kill-switch behaviour — and negative values yield an
     invalid SET statement. Either silently disables the DB-side cap

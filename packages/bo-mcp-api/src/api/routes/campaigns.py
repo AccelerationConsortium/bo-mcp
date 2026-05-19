@@ -302,7 +302,7 @@ async def query_campaigns(
     # the operation's ``{success: false, error: …}`` envelope —
     # Pydantic would silently drop the unknown ``error`` field on
     # construction, so callers would never see the cursor+offset
-    # mutual-exclusion violation (TODO 8.42 friend-review finding).
+    # mutual-exclusion violation.
     # Promote the structured error to an ``HTTPException`` whose
     # ``detail`` is the original envelope so clients inspecting
     # ``response.json()["detail"]["code"]`` can route on it the same

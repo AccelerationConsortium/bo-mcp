@@ -1,6 +1,6 @@
 """Tests for the backend-agnostic exception hierarchy.
 
-Covers TODO 8.13: backends translate library exceptions into the
+Covers: backends translate library exceptions into the
 typed :class:`bo_engine.backend_base.BackendError` hierarchy so the
 server layer can dispatch on a stable type instead of grepping
 exception strings.

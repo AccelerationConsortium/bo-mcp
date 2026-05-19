@@ -1,4 +1,4 @@
-"""Idempotency cache (TODO 1.46).
+"""Idempotency cache.
 
 Background: state-mutating MCP tools accept an optional ``idempotency_
 key``. Retries with the same key + payload return the cached response
@@ -381,7 +381,7 @@ async def test_apply_idempotency_drops_reservation_on_exception() -> None:
 async def test_canonical_hash_accepts_large_payload() -> None:
     """Large payloads hash without raising — SHA256 is O(n) and cheap.
 
-    Regression test for the review pass on TODO 1.46: the old 1 MiB
+    Regression test for the review pass: the old 1 MiB
     safety cap raised :class:`ValueError` before the tool could return
     a structured envelope, which broke file uploads that bundled the
     raw CSV in the payload. The fix removes the cap and tools digest
@@ -866,7 +866,7 @@ async def test_apply_idempotency_does_not_cache_retryable_error_envelopes() -> N
 
     Pre-fix: ``_is_transient_error`` only special-cased
     ``CONCURRENT_MODIFICATION`` (E010). A ``BACKEND_TRANSIENT_ERROR``
-    (E105, introduced in TODO 8.13/8.14) would therefore be finalized
+    (E105) would therefore be finalized
     into the cache and every retry would replay the failure instead
     of re-executing the operation against the (now-recovered) backend.
 

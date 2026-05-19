@@ -1,7 +1,7 @@
 """Add per-status partial indexes on ``campaigns.status``.
 
-Background (TODO 8.49)
-======================
+Background
+==========
 
 The initial schema declared a plain BTree on ``campaigns.status``. With
 five status values (``CREATED``, ``RUNNING``, ``PAUSED``, ``COMPLETED``,

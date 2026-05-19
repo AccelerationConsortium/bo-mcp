@@ -1,4 +1,4 @@
-"""Contract tests for the ORM lazy-relationship audit (TODO 8.47).
+"""Contract tests for the ORM lazy-relationship audit.
 
 Background
 ==========
@@ -195,7 +195,7 @@ def test_every_orm_relationship_declares_lazy_raise() -> None:
 
     A future contributor adding a new relationship without explicitly
     setting ``lazy="raise"`` would re-introduce the latent N+1 risk that
-    TODO 8.47 closed. The contract is: every relationship on every ORM
+    the audit closed. The contract is: every relationship on every ORM
     model loads via ``raise``; production reads cross-table data through
     explicit batch fetches in the repository layer.
     """
@@ -207,7 +207,7 @@ def test_every_orm_relationship_declares_lazy_raise() -> None:
         if rel.lazy != "raise"
     ]
     assert not offenders, (
-        f"ORM relationships must declare lazy='raise' (TODO 8.47). Offending entries: {offenders}"
+        f"ORM relationships must declare lazy='raise'. Offending entries: {offenders}"
     )
 
 
@@ -220,7 +220,7 @@ def test_every_orm_relationship_declares_lazy_raise() -> None:
 async def test_accidental_relationship_traversal_raises() -> None:
     """An unmodified ``select(CampaignModel)`` cannot silently lazy-load ``.spec``.
 
-    Reproducer for the failure mode TODO 8.47 closes: a caller fetches a
+    Reproducer for the failure mode the audit closes: a caller fetches a
     campaign row, walks ``.spec``, and a per-row SELECT fires. With
     ``lazy="raise"`` the access is loud, so the regression shows up in
     tests instead of in production latency dashboards.

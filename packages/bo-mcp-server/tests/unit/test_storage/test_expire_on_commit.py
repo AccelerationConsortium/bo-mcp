@@ -78,7 +78,7 @@ async def test_session_factory_uses_expire_on_commit_true() -> None:
 async def test_second_session_observes_fresh_state_after_commit() -> None:
     """Two sessions see committed state, not pre-commit cached values.
 
-    Reproducer for the stale-read hazard called out in TODO 8.10: a
+    Reproducer for the stale-read hazard: a
     second reader after a first session's commit must observe the
     persisted value, not whatever the first session held before
     flushing. With ``expire_on_commit=True`` this is the SQLAlchemy
@@ -186,7 +186,7 @@ async def test_apply_idempotency_replays_after_session_recycle() -> None:
 async def test_campaign_repository_save_enforces_optimistic_concurrency() -> None:
     """Mutating-entity repositories must guard against lost updates.
 
-    The audit follow-up to TODO 8.10 asks for a contract test that
+    The audit follow-up asks for a contract test that
     every repository with a mutation path wraps the write with version
     optimistic concurrency (or an equivalent guard). ``Campaign`` is
     currently the only entity with a mutating ``save`` path:

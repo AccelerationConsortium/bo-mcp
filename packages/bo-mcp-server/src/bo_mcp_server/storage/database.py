@@ -187,7 +187,7 @@ def _should_use_alembic() -> bool:
 def _run_alembic_in_subprocess(timeout_seconds: float) -> None:
     """Run ``python -m alembic upgrade head`` in a subprocess with a SIGKILL on timeout.
 
-    Real wall-clock kill switch (TODO 8.22 third review pass). The
+    Real wall-clock kill switch. The
     earlier ``asyncio.to_thread(in_process_command.upgrade)`` could
     only abort the *await* — the worker thread kept running, and a
     migration made of many short individually-bounded statements with
@@ -303,7 +303,7 @@ async def init_database() -> None:
     setup; no timeout because the in-process driver returns
     synchronously.
 
-    Worker-thread caveat (TODO 8.22 review pass): ``asyncio.wait_for``
+    Worker-thread caveat: ``asyncio.wait_for``
     aborts the coroutine it wraps, but Python cannot interrupt a
     worker thread spawned via :func:`asyncio.to_thread`. The Alembic
     upgrade runs in such a thread, so the timeout here is *advisory*
@@ -337,7 +337,7 @@ async def init_database() -> None:
         connect_timeout = get_database_init_connect_timeout_seconds()
         upgrade_timeout = get_database_init_timeout_seconds()
         await _preflight_connectivity(engine, connect_timeout)
-        # Wall-clock kill switch (TODO 8.22 third review pass): run
+        # Wall-clock kill switch: run
         # the migration as a child process so subprocess.run(timeout=N)
         # can SIGKILL it. ``asyncio.to_thread`` parks the blocking
         # call on the worker pool — the subprocess.run inside it

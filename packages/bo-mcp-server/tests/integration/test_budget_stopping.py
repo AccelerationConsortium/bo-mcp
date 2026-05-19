@@ -1,4 +1,4 @@
-"""Integration tests for budget / convergence-based stopping (TODO 1.44).
+"""Integration tests for budget / convergence-based stopping.
 
 The server-side ``generate_suggestions`` operation must respect three
 ``OptimizationSpec`` budgets:

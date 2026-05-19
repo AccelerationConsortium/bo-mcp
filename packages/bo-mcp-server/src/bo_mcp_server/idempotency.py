@@ -10,8 +10,8 @@ response keyed by ``(tool_name, idempotency_key)``; on later calls with
 the same key the server returns the cached response instead of
 re-executing.
 
-Atomicity / race-safety (TODO 1.46 review pass)
------------------------------------------------
+Atomicity / race-safety
+-----------------------
 
 A naive look-up-then-execute-then-store pattern is racy: two concurrent
 retries with the same key both miss the cache, both run the executor,
@@ -120,7 +120,7 @@ DEFAULT_RESERVATION_TTL_SECONDS = get_idempotency_reservation_ttl_seconds()
 _PENDING_SENTINEL = ""
 
 # Heartbeat cadence and per-tick TTL extension for the long-running
-# operation path (TODO 8.24). The cadence is shorter than the extension
+# operation path. The cadence is shorter than the extension
 # so a single missed tick (event-loop hiccup, slow DB roundtrip) does
 # not let the reservation slot lapse — the next tick still lands well
 # inside the prior extension window.
@@ -185,7 +185,7 @@ class IdempotencyLookup:
 
 
 # Non-semantic field names that must never participate in the
-# idempotency hash (TODO 8.25). Each entry is a transport- or telemetry-
+# idempotency hash. Each entry is a transport- or telemetry-
 # layer artefact that the client may regenerate on every retry; hashing
 # them would surface spurious ``IDEMPOTENCY_CONFLICT`` envelopes on
 # what is logically the same call.
@@ -199,7 +199,7 @@ class IdempotencyLookup:
 # - ``idempotency_key``: never include the key in its own hash; it lives
 #   on the row's primary key, not in the request_hash column.
 #
-# Path contract (TODO 8.25 / second review pass): these keys are
+# Path contract: these keys are
 # stripped ONLY at the top of ``request_payload``. They are transport /
 # telemetry artefacts that the wrapper layers above the idempotency
 # call site add (REST request id, MCP trace id, server-side
@@ -241,7 +241,7 @@ NON_SEMANTIC_PAYLOAD_KEYS: frozenset[str] = frozenset(
 def strip_non_semantic_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``payload`` with top-level non-semantic keys removed.
 
-    Top-level-only contract (TODO 8.25 / second review pass): nested
+    Top-level-only contract: nested
     dicts and lists are walked through verbatim. The domain layer
     permits arbitrary user-defined keys inside ``parameter_values`` /
     ``objective_values`` (and inside ``parameters`` / ``objectives``
@@ -285,7 +285,7 @@ def canonical_request_hash(payload: dict[str, Any]) -> str:
     transport / telemetry artefacts (``created_at``, ``request_id``,
     ``trace_id``, …) so a retry that regenerates those fields still
     replays the cached response instead of triggering a spurious
-    :class:`ErrorCode.IDEMPOTENCY_CONFLICT` envelope (TODO 8.25).
+    :class:`ErrorCode.IDEMPOTENCY_CONFLICT` envelope.
 
     No size cap is applied: SHA256 is O(n) and even multi-megabyte
     payloads hash in milliseconds. Tools that carry genuinely large
@@ -407,7 +407,7 @@ async def purge_expired_cache_rows() -> int:
     (the lifespan-managed sweep) can publish it as a metric. The
     opportunistic per-key purge in :func:`_read_existing` only fires
     when that key is queried; rows for never-retried calls accumulate
-    until this sweep runs. See TODO 8.23.
+    until this sweep runs.
 
     Safe to call concurrently with operation traffic: the ``DELETE``
     uses the same primary-key predicate as a fresh reservation, so a
@@ -856,7 +856,7 @@ def _is_transient_error(response: dict[str, Any]) -> bool:
     TTL elapsed even though a successful outcome is possible
     immediately. This covers the historical ``CONCURRENT_MODIFICATION``
     case and every newer addition to the typed backend hierarchy
-    (notably ``BACKEND_TRANSIENT_ERROR``) introduced in TODO 8.13/8.14
+    (notably ``BACKEND_TRANSIENT_ERROR``)
     without having to re-list each code here.
 
     Other operation errors (validation failures, missing campaign,
@@ -934,7 +934,7 @@ async def _extend_reservation_ttl(
 ) -> bool:
     """Push the pending reservation's ``expires_at`` forward by ``extra_seconds``.
 
-    Used by the heartbeat (TODO 8.24) so a legitimately slow operation
+    Used by the heartbeat so a legitimately slow operation
     (SAASBO MCMC, large-batch generation) does not lose its slot to a
     concurrent retry. The ``WHERE`` clause is intentionally tight:
 
@@ -944,7 +944,7 @@ async def _extend_reservation_ttl(
       has already been finalized; that would silently delay the response
       cache expiry past the 24h TTL contract.
 
-    Monotonic-expiry contract (TODO 8.24 review pass): the heartbeat is
+    Monotonic-expiry contract: the heartbeat is
     "extend if the proposed deadline is later than the current one",
     never "set deadline to now + extra". Without this guard the first
     heartbeat after 60s would *shorten* a 10-min initial reservation

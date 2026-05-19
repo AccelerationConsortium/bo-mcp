@@ -1,13 +1,13 @@
 """Tests for ``retryable`` / ``retry_after`` on the error envelope.
 
-Covers TODO 8.14: every structured error response must carry a
+Covers: every structured error response must carry a
 stable ``retryable`` boolean and a ``retry_after`` hint (or
 ``None``) so LLM clients and HTTP retry middleware can decide
 between fail-fast and exponential backoff without re-parsing the
 recovery action string.
 
 The exhaustive enum-coverage test mirrors the strategy described
-in the original audit (TODO 8.14, test strategy): every
+in the original audit: every
 :class:`ErrorCode` is exercised and asserts a stable retryable
 flag. Patterns echo the AWS / Stripe approach to idempotency
 errors documented in

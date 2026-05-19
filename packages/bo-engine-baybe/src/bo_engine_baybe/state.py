@@ -4,7 +4,7 @@ Split from :mod:`bo_engine_baybe.backend` to give the campaign
 state-envelope helpers and the stable-identity measurement reconciler
 their own module. The :class:`~bo_engine_baybe.backend.BayBEBackend`
 class composes the helpers below to restore campaigns from persisted
-state, add new measurements by stable identity (TODO 1.63), and write
+state, add new measurements by stable identity, and write
 the next state envelope back to storage.
 """
 
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 # Backend-state schema versions. v1 = bare {campaign_json}; v2 adds the
-# stable observation identity index introduced for TODO 1.63.
+# stable observation identity index.
 _STATE_SCHEMA_VERSION_LEGACY = 1
 _STATE_SCHEMA_VERSION_IDENTITY = 2
 
@@ -109,7 +109,7 @@ def _observation_fingerprint(
     Uses sorted parameter and objective columns so reordering the input
     list (or shuffling the underlying DB query) produces the same hash.
     When the caller threads a durable cross-system ID through
-    ``ObservationData.result_id`` (TODO 8.50) it is folded into the
+    ``ObservationData.result_id`` it is folded into the
     payload as the per-row discriminator so otherwise-identical
     replicate rows produce *distinct* identities and can be addressed
     individually. The hash is intentionally short (16 hex chars) —
@@ -145,7 +145,7 @@ def _serialize_campaign(
     The identity index is the list of fingerprints for the measurements
     BayBE believes it has. On restore, the next call compares its incoming
     observation fingerprints to this list and adds only truly unseen rows
-    (TODO 1.63). Schema version bumps to ``_STATE_SCHEMA_VERSION_IDENTITY``.
+    Schema version bumps to ``_STATE_SCHEMA_VERSION_IDENTITY``.
     """
     return {
         "schema_version": _STATE_SCHEMA_VERSION_IDENTITY,
@@ -160,7 +160,7 @@ def _reconcile_measurements(
     observations: list[ObservationData],
     backend_state: dict[str, Any] | None,
 ) -> tuple[Campaign, list[str]]:
-    """Add new measurements to a restored campaign via stable identity (TODO 1.63).
+    """Add new measurements to a restored campaign via stable identity.
 
     Returns ``(campaign, identity_index)`` — the campaign may be a freshly
     built replacement when the stored identity index references rows that
@@ -169,7 +169,7 @@ def _reconcile_measurements(
     * Compute a fingerprint for each observation in the current
       ``observations`` list. When ``ObservationData.result_id`` is set,
       it is folded into the fingerprint so otherwise-identical
-      replicate rows produce distinct identities — see TODO 8.50.
+      replicate rows produce distinct identities.
     * Fingerprints are reconciled as a **multiset**, not a set, so two
       observations with identical parameter/objective values that also
       lack a ``result_id`` (the legacy direct-engine path) both stay in
@@ -194,7 +194,7 @@ def _reconcile_measurements(
     has_identity_field = _has_stored_identity_field(backend_state)
 
     if not has_identity_field and _campaign_has_measurements(campaign):
-        # Promoted from INFO to WARNING with structured fields (TODO 8.50)
+        # Promoted from INFO to WARNING with structured fields
         # so operators running on cached v1 payloads during a deploy that
         # drops v1 support get a dashboard-filterable signal — the state
         # reset would otherwise be invisible to monitoring.

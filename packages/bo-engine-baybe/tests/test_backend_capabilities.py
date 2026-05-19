@@ -1,4 +1,4 @@
-"""TODO 1.64 / 1.65 — capability classification & typed option validation tests.
+"""Capability classification & typed option validation tests.
 
 The BayBE backend's ``validate_capabilities`` must produce a per-constraint
 classification (continuous / discrete / hybrid / categorical) so that
@@ -7,9 +7,6 @@ construct. Misshaped ``parameter_options["baybe"]`` /
 ``backend_options["baybe"]`` payloads also surface as
 ``CapabilityStatus.UNSUPPORTED`` reports here instead of crashing the
 suggestion path.
-
-Reference: TODO 1.64 (constraint capability), 1.65 (BayBE-native parameter
-metadata typed schema).
 """
 
 from __future__ import annotations

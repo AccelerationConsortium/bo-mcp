@@ -1,4 +1,4 @@
-"""Three-phase split for generate_suggestions (TODO 8.12).
+"""Three-phase split for generate_suggestions.
 
 Pins the snapshot → compute → persist contract:
 
@@ -410,7 +410,7 @@ async def test_event_loop_responsive_during_slow_compute(
     underlying ``asyncio.to_thread`` wrap on the backend call. We
     keep a focused check here because the three-phase split also
     removes the DB-session-held-across-compute concern, and we want
-    a single test we can point at when reviewing TODO 8.12.
+    a single test we can point at when reviewing the three-phase split.
     """
     _ = setup_database
     campaign_id = await _create_minimal_campaign()

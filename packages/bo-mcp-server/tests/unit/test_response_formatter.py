@@ -517,8 +517,7 @@ class TestResponseContractValidation:
     previous ``TypedDict`` implementation did.
 
     Reference: Pydantic v2 ``ConfigDict(extra="forbid")`` and
-    ``model_validate`` semantics. See TODO 1.20 for the original
-    typing-strength complaint.
+    ``model_validate`` semantics.
     """
 
     def test_diagnostics_minimal_rejects_unknown_keys(self) -> None:

@@ -1,4 +1,4 @@
-"""TODO 1.67 — method/provenance metadata is sourced from the active campaign.
+"""Method/provenance metadata is sourced from the active campaign.
 
 Previously the backend hard-coded labels like ``qLogNoisyExpectedImprovement``
 and ``BotorchRecommender`` based on the spec, ignoring whether the active
@@ -105,7 +105,7 @@ class TestFallbackSelectMethods:
         guess vs. live metadata) is preserved by the structured
         ``is_fallback`` / ``acquisition_function_inferred`` flags; the
         legacy ``"(fallback)"`` suffix is removed so consumers do not
-        have to substring-match free-form labels (TODO 8.51).
+        have to substring-match free-form labels.
         """
         backend = BayBEBackend()
         info = backend.select_methods(_spec(), n_observations=0)

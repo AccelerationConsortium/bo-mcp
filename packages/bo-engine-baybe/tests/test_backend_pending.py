@@ -1,4 +1,4 @@
-"""TODO 1.62 — BayBE pending-experiment support tests.
+"""BayBE pending-experiment support tests.
 
 Verifies that pending suggestions are forwarded to BayBE's native
 ``Campaign.recommend(pending_experiments=...)`` /

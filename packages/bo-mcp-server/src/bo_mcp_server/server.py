@@ -129,7 +129,7 @@ def create_mcp_server() -> FastMCP:
     )
 
     install_validation_envelope_wrapper(mcp)
-    # Startup invariant (TODO 8.45): every registered tool must route
+    # Startup invariant: every registered tool must route
     # through the envelope wrapper so payload-validation failures
     # always surface as the structured ``field_errors`` envelope. Pin
     # the contract here so a future code path that bypasses the
@@ -137,7 +137,7 @@ def create_mcp_server() -> FastMCP:
     # the first failing call.
     assert_all_tools_routed_through_wrapper(mcp)
 
-    # TODO 8.43 follow-up: surface ``ResourceOperationError`` at the
+    # Follow-up: surface ``ResourceOperationError`` at the
     # FastMCP read-resource boundary so the structured envelope is
     # not double-wrapped in ``"Error creating resource from template:
     # ..."`` strings before the lowlevel JSON-RPC dispatcher sees it.

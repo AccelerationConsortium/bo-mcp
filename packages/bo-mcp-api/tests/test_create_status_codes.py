@@ -1,4 +1,4 @@
-"""Synchronous POST creates return 201 + ``Location`` (TODO 8.19).
+"""Synchronous POST creates return 201 + ``Location``.
 
 The contract: every endpoint that *creates* a resource synchronously
 must (a) return ``201 Created`` and (b) carry a ``Location`` header

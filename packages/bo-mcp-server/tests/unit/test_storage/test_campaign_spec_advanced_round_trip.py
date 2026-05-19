@@ -135,8 +135,8 @@ class TestAdvancedFieldRoundTrip:
         )
         reloaded = await _save_and_reload(session, spec)
         assert reloaded.transfer_learning is not None
-        # ``prior_campaign_ids`` is a tuple on the domain model (TODO 1.22 follow-up
-        # for deep immutability); the round-trip preserves order and contents.
+        # ``prior_campaign_ids`` is a tuple on the domain model for deep
+        # immutability; the round-trip preserves order and contents.
         assert reloaded.transfer_learning.prior_campaign_ids == ("abc-123",)
         assert reloaded.transfer_learning.num_ranking_samples == 128
 

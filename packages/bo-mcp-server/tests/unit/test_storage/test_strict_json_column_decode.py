@@ -1,4 +1,4 @@
-"""Strict JSON-column decode contract (TODO 8.48).
+"""Strict JSON-column decode contract.
 
 The previous read path silently substituted an empty default
 (``[]`` / ``{}`` / ``None``) when a JSON column was corrupted: a spec

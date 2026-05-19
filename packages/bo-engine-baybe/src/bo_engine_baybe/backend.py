@@ -14,8 +14,7 @@ Delegates to bo_engine only for what BayBE doesn't provide:
 hypervolume computation, near-duplicate detection, batch diversity metrics.
 
 The implementation has been split across companion modules so each file
-owns one concern and stays well under the 1k LOC cognitive-load ceiling
-(TODO 8.54):
+owns one concern and stays well under the 1k LOC cognitive-load ceiling:
 
 * :mod:`bo_engine_baybe.state` — campaign construction, state envelope
   serialization, and stable-identity measurement reconciliation.
@@ -195,9 +194,9 @@ class BayBEBackend(BaseBackend):
 
         ``Feature.CONSTRAINTS`` is reported per-constraint so hybrid /
         categorical-arithmetic constraints route ``backend="auto"`` away
-        from BayBE instead of failing inside SearchSpace construction
-        (TODO 1.64). ``Feature.TRANSFER_LEARNING`` is supported only when
-        the campaign uses BayBE-native ``TaskParameter``s (TODO 1.65) —
+        from BayBE instead of failing inside SearchSpace construction.
+        ``Feature.TRANSFER_LEARNING`` is supported only when
+        the campaign uses BayBE-native ``TaskParameter``s —
         the BoTorch RGPE flavour exposed by ``OptimizationSpec.transfer_learning``
         remains an ignored option for BayBE. Misshaped
         ``parameter_options['baybe']`` and ``backend_options['baybe']``
@@ -545,7 +544,7 @@ class BayBEBackend(BaseBackend):
         inner_state = self.unwrap_state(backend_state)
         campaign = _restore_or_build_campaign(spec, inner_state)
 
-        # Reconcile measurements by stable identity (TODO 1.63). Run the
+        # Reconcile measurements by stable identity. Run the
         # reconciliation even when observations is empty so a restored
         # campaign with stale measurements is rebuilt instead of carrying
         # forward data the storage layer no longer owns.
@@ -608,7 +607,7 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         pending_points: list[dict[str, Any]] | None,
     ) -> tuple[pd.DataFrame | None, list[str]]:
-        """Translate neutral pending dicts to BayBE's dataframe shape (TODO 1.62).
+        """Translate neutral pending dicts to BayBE's dataframe shape.
 
         Validation failures are downgraded to warnings rather than
         raising — pending points are an optimization hint, not a
@@ -632,7 +631,7 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         n_observations: int,
     ) -> dict[str, Any]:
-        """Source method metadata from the active campaign (TODO 1.67).
+        """Source method metadata from the active campaign.
 
         Falls back to the previous static labels only when BayBE cannot
         provide live introspection (e.g. before the first recommend or

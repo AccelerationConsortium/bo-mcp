@@ -1,6 +1,6 @@
 """FastMCP read-resource boundary: surface :class:`ResourceOperationError` cleanly.
 
-Background (TODO 8.43 follow-up): the previous pass made resource
+Background: the previous pass made resource
 handlers raise :class:`ResourceOperationError` with the structured
 ``{success: false, error: …}`` envelope embedded in ``str(exc)``. In
 isolation that works — direct callers see a clean exception. But the

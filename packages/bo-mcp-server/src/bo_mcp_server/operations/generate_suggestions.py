@@ -351,7 +351,7 @@ async def _run_three_phase_generation(
     started: float,
     progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
-    """Drive the snapshot → compute → persist split (TODO 8.12).
+    """Drive the snapshot → compute → persist split.
 
     Phase 1 (``_load_generation_snapshot``) acquires its own short
     read transaction even when the caller supplies an outer session,
@@ -527,7 +527,7 @@ class _GenerationPreflight:
 
 @dataclass
 class _GenerationSnapshot:
-    """Phase-1 snapshot consumed by the compute phase (TODO 8.12).
+    """Phase-1 snapshot consumed by the compute phase.
 
     Captures every value the BO backend needs to generate a batch so
     the heavy ``backend.generate_suggestions`` call can run with no
@@ -562,7 +562,7 @@ class _GenerationSnapshot:
 
 @dataclass
 class _GenerationComputeResult:
-    """Output of the phase-2 backend compute (TODO 8.12).
+    """Output of the phase-2 backend compute.
 
     Carries everything phase 3 needs to persist + format the response
     without touching the backend again.
@@ -787,7 +787,7 @@ async def _load_generation_snapshot(
     campaign_uuid: UUID,
     batch_size: int | None,
 ) -> _GenerationSnapshot | dict[str, Any]:
-    """Phase 1 (TODO 8.12) — short read transaction → snapshot.
+    """Phase 1 — short read transaction → snapshot.
 
     Opens its own session so the read locks are released *before* the
     BO compute starts. Returns either a fully-populated snapshot or
@@ -943,7 +943,7 @@ async def _compute_generation_batch(
     prior_backend_state: dict[str, Any] | None,
     progress_callback: ProgressCallback | None,
 ) -> _GenerationComputeResult:
-    """Phase 2 (TODO 8.12) — heavy BO compute with no DB session open.
+    """Phase 2 — heavy BO compute with no DB session open.
 
     Runs ``backend.generate_suggestions`` (and the follow-up diversity
     metric) outside any transaction so a concurrent
@@ -1031,7 +1031,7 @@ async def _persist_generation_batch(
     backend: BOBackend,
     verbosity_level: VerbosityLevel,
 ) -> dict[str, Any]:
-    """Phase 3 (TODO 8.12) — short write transaction with OCC + child-table recheck.
+    """Phase 3 — short write transaction with OCC + child-table recheck.
 
     Two complementary guards protect against concurrent state changes
     that landed during the compute window:
@@ -1194,7 +1194,7 @@ async def _generate_via_backend(
     the actual run (which recommender phase / strategy / acquisition
     fired). Routing it through here lets ``_build_success_response``
     surface the live labels instead of the static ``select_methods``
-    fallback the operation previously recomputed (TODO 8.51).
+    fallback the operation previously recomputed.
     """
     # The heartbeat is a no-op when there is no active idempotency
     # reservation (the typical direct-call path). When invoked inside

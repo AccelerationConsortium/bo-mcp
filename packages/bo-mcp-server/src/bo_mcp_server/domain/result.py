@@ -88,7 +88,7 @@ class Result(BaseModel):
     introduced; new writes flow through ``ResultSubmissionInput`` which
     rejects unknown keys at the boundary.
 
-    ``suggestion_snapshot`` (TODO 8.11) carries the parameter values
+    ``suggestion_snapshot`` carries the parameter values
     and provenance of the originating suggestion at submission time.
     The result-to-suggestion FK is ``ON DELETE SET NULL``; the snapshot
     keeps the BO context reconstructable even after the suggestion row

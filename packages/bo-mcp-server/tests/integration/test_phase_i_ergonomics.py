@@ -50,7 +50,7 @@ async def _make_campaign(name: str = "Test Campaign") -> str:
 
 
 class TestCampaignsRecentResource:
-    """``campaigns://recent`` — TODO 8.40 cheap-discovery surface."""
+    """``campaigns://recent`` — cheap-discovery surface."""
 
     @pytest.mark.asyncio
     async def test_empty_listing_returns_placeholder(self) -> None:
@@ -98,7 +98,7 @@ class TestCampaignsRecentResource:
 
 
 class TestCampaignNotFoundSuggestions:
-    """Typo'd campaign ids surface fuzzy-match suggestions (TODO 8.40)."""
+    """Typo'd campaign ids surface fuzzy-match suggestions."""
 
     @pytest.mark.asyncio
     async def test_typo_uuid_returns_suggestions(self) -> None:
@@ -133,7 +133,7 @@ class TestCampaignNotFoundSuggestions:
 
 
 class TestCursorOffsetMutualExclusion:
-    """``list_campaigns_operation`` rejects ``cursor`` + ``offset>0`` (TODO 8.42)."""
+    """``list_campaigns_operation`` rejects ``cursor`` + ``offset>0``."""
 
     @pytest.mark.asyncio
     async def test_both_cursor_and_offset_returns_validation_error(self) -> None:
@@ -265,8 +265,7 @@ class TestCursorOffsetMutualExclusion:
         enforced SQLite and Postgres — the earlier approach went
         through :meth:`CampaignRepository.save` with random
         ``spec_id`` / ``owner_id`` UUIDs that only worked because the
-        default SQLite fixture leaves ``PRAGMA foreign_keys`` off
-        (TODO 8.42 friend-review follow-up).
+        default SQLite fixture leaves ``PRAGMA foreign_keys`` off.
         """
         from datetime import UTC, datetime
 
@@ -401,7 +400,7 @@ def _synthetic_cursor() -> str:
 
 
 class TestToolBoundaryDefaults:
-    """Every MCP tool routes through the envelope wrapper (TODO 8.45)."""
+    """Every MCP tool routes through the envelope wrapper."""
 
     def test_assert_invariant_passes_after_create_mcp_server(self) -> None:
         from bo_mcp_server.server import create_mcp_server

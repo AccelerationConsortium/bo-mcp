@@ -1,6 +1,6 @@
 """Tests for end-to-end measurement-uncertainty routing into the GP.
 
-The TODO 1.5 fix added a ``train_yvar`` parameter to
+The fix added a ``train_yvar`` parameter to
 ``create_single_task_model`` / ``create_model``, but that signature alone is
 not enough -- callers must also build the variance tensor from each
 ``ObservationData``'s per-objective standard-deviation map and pass it into

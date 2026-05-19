@@ -107,8 +107,8 @@ def results_to_observations(results: list[Result]) -> list[ObservationData]:
     ``None``, which the engine treats as "trainable noise for this batch".
 
     ``Result.id`` is threaded through as ``ObservationData.result_id`` so
-    backends that serialise per-observation identity (notably BayBE — see
-    TODO 8.50) can use a stable cross-system discriminator instead of a
+    backends that serialise per-observation identity (notably BayBE)
+    can use a stable cross-system discriminator instead of a
     parameter/objective fingerprint that collapses replicates onto a
     single identity slot. Without the discriminator, two identical
     replicate rows are indistinguishable in the serialized identity index

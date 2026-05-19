@@ -1,6 +1,6 @@
 """Atomic suggestion-status transition contract.
 
-TODO 8.11 follow-up: status updates used to read the row, validate
+Follow-up: status updates used to read the row, validate
 the transition in Python, then write through ``SuggestionRepository.save``.
 Two concurrent transitions from the same source state (e.g.
 ``PENDING -> ACCEPTED`` and ``PENDING -> REJECTED``) could both pass

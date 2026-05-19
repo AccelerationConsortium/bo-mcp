@@ -1,4 +1,4 @@
-"""Streaming parsers for tabular result uploads (TODO 8.17).
+"""Streaming parsers for tabular result uploads.
 
 These tests verify the two correctness properties the audit called
 out:

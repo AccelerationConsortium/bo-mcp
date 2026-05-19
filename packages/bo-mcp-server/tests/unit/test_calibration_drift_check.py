@@ -1,4 +1,4 @@
-"""Tests for the calibration drift gate (TODO 8.56).
+"""Tests for the calibration drift gate.
 
 The nightly CI job runs ``scripts/calibrate_test_tolerances.py`` with
 ``--check <baseline>`` so a tolerance regression caused by an

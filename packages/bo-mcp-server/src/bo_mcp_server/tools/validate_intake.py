@@ -17,7 +17,7 @@ from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
 
 # The tool boundary widens to ``Any`` for the same reason as
-# ``bo_create_campaign`` (see TODO 1.53 follow-up): the
+# ``bo_create_campaign``: the
 # ``CampaignIntakeInput | dict[str, Any]`` union pre-1.53 made
 # FastMCP attempt both union arms on every malformed payload, producing
 # Pydantic-internal ``loc`` paths like

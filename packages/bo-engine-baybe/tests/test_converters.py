@@ -68,7 +68,7 @@ class TestSpecToParameters:
         assert isinstance(searchspace, SearchSpace)
 
     def test_fractional_discrete_values(self) -> None:
-        """Fractional numerical discrete grids round-trip without per-backend hacks (TODO 1.65).
+        """Fractional numerical discrete grids round-trip without per-backend hacks.
 
         BayBE supports ``NumericalDiscreteParameter`` over arbitrary floats; the
         neutral ``ParameterSpec.values`` slot now accepts ``list[float]`` so a
@@ -91,7 +91,7 @@ class TestSpecToParameters:
         assert tuple(params[0].values) == pytest.approx((0.0, 0.25, 0.5, 0.75, 1.0))
 
     def test_task_parameter_from_options(self) -> None:
-        """``parameter_options['baybe'].role == 'task'`` emits a TaskParameter (TODO 1.65)."""
+        """``parameter_options['baybe'].role == 'task'`` emits a TaskParameter."""
         spec = OptimizationSpec(
             parameters=[
                 ParameterSpec(
@@ -109,7 +109,7 @@ class TestSpecToParameters:
         assert isinstance(params[0], TaskParameter)
 
     def test_categorical_encoding_from_options(self) -> None:
-        """Categorical encoding choice flows through parameter_options (TODO 1.65)."""
+        """Categorical encoding choice flows through parameter_options."""
         spec = OptimizationSpec(
             parameters=[
                 ParameterSpec(
@@ -175,7 +175,7 @@ class TestObservationsToDataframe:
 
 
 class TestPendingPointsToDataframe:
-    """TODO 1.62 — pending parameter dicts to BayBE pending_experiments dataframe."""
+    """Pending parameter dicts to BayBE pending_experiments dataframe."""
 
     def test_strips_extra_columns(self, simple_spec: OptimizationSpec) -> None:
         """Objective columns leak in if a caller reuses ObservationData dicts."""
@@ -200,7 +200,7 @@ class TestPendingPointsToDataframe:
 
 
 class TestClassifyConstraintTarget:
-    """TODO 1.64 — classify constraints by referenced parameter types."""
+    """Classify constraints by referenced parameter types."""
 
     def _spec_params(self) -> list[ParameterSpec]:
         return [
@@ -244,7 +244,7 @@ class TestClassifyConstraintTarget:
 
 
 class TestSpecToConstraints:
-    """TODO 1.64 — constraint mapping respects parameter classification."""
+    """Constraint mapping respects parameter classification."""
 
     def test_continuous_linear_constraint(self) -> None:
         params = [

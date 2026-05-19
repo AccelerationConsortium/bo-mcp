@@ -1,4 +1,4 @@
-"""Rolled-back mutations must not stale the diagnostics cache (TODO 8.26).
+"""Rolled-back mutations must not stale the diagnostics cache.
 
 The diagnostics cache is keyed by ``f"diagnostics:{campaign_id}:{campaign.version}"``
 (:mod:`bo_mcp_server.operations.get_diagnostics`). The audit's open

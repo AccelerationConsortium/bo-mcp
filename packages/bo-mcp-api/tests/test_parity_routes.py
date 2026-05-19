@@ -548,7 +548,7 @@ class TestCampaignQueryRoute:
     ):
         """REST surfaces the structured ``VALIDATION_FAILED`` envelope.
 
-        Pre-fix (TODO 8.42 friend-review finding) the route constructed
+        Pre-fix the route constructed
         ``CampaignQueryResponse`` from the operation's response dict.
         That schema has no ``error`` field, so Pydantic silently dropped
         the structured envelope and clients saw an inconsistent body for

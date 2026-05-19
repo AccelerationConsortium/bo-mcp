@@ -5,7 +5,7 @@ are offloaded via ``asyncio.to_thread`` so they cannot block the FastAPI /
 MCP event loop during concurrent result submissions.
 
 The previously-monolithic submit_results module has been split into
-three companion files (TODO 8.54) so each file owns one concern and
+three companion files so each file owns one concern and
 stays well below the 1k LOC cognitive-load ceiling:
 
 * :mod:`.submit_results_validation` — per-row shape validation

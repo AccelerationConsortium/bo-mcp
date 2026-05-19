@@ -11,8 +11,7 @@ to choose a retry policy without trial-and-error:
   effect. Safe to retry on ambiguous network failures.
 
 Hints are advisory per the MCP spec. The retry-safe path for
-non-idempotent mutating tools is the ``idempotency_key`` argument added
-by TODO 1.46.
+non-idempotent mutating tools is the ``idempotency_key`` argument.
 """
 
 from mcp.types import ToolAnnotations
@@ -39,8 +38,8 @@ DESTRUCTIVE_MUTATION = ToolAnnotations(
 )
 
 # Default mutating tools: not destructive, not idempotent. Agents that
-# need retry safety should pass the ``idempotency_key`` argument (see
-# TODO 1.46) — the server then deduplicates retried calls server-side.
+# need retry safety should pass the ``idempotency_key`` argument —
+# the server then deduplicates retried calls server-side.
 NON_IDEMPOTENT_MUTATION = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=False,

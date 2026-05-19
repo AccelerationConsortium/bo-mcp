@@ -1,6 +1,6 @@
 """Backend auto-resolution consults :class:`BackendValidationResult`.
 
-Covers TODO 1.69's "spec-aware ``resolve_backend_name``" requirement:
+Covers the "spec-aware ``resolve_backend_name``" requirement:
 ``backend="auto"`` must ask candidate backends whether the *concrete*
 spec is compatible, not just whether the flat ``supported_features``
 set covers the coarse feature requirements.
@@ -128,7 +128,7 @@ def test_auto_selects_env_default_when_compatible(monkeypatch):
 
 
 def test_auto_routes_baybe_hybrid_constraint_to_botorch(monkeypatch):
-    """TODO 1.64 — BayBE rejects hybrid constraints, so ``auto`` falls back.
+    """BayBE rejects hybrid constraints, so ``auto`` falls back.
 
     A constraint over a mixed continuous/discrete parameter set is not
     expressible as a BayBE ``ContinuousLinearConstraint`` (numerical_only)

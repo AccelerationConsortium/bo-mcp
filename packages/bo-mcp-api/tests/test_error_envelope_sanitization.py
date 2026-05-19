@@ -1,4 +1,4 @@
-"""Global error sanitization for the REST transport (TODO 8.18).
+"""Global error sanitization for the REST transport.
 
 The audit found two leak surfaces:
 

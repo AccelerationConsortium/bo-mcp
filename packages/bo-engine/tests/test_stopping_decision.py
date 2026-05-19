@@ -1,4 +1,4 @@
-"""Tests for budget / convergence-based automatic stopping (TODO 1.44).
+"""Tests for budget / convergence-based automatic stopping.
 
 The historical behaviour of ``OptimizationSpec`` quietly dropped any
 ``max_iterations`` field set at the server domain layer, so unattended

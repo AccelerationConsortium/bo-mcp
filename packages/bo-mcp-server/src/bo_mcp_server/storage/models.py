@@ -10,7 +10,7 @@ parsed value remain logically immutable. To enforce that:
 
 1. Domain value objects emitted from these models (``InputParameter``,
    ``Objective``, ``Constraint``, ``CampaignSpec``, ...) are Pydantic
-   models with ``model_config = ConfigDict(frozen=True)`` (see TODO 1.22).
+   models with ``model_config = ConfigDict(frozen=True)``.
 2. Callers must never assign back into ``*_json`` columns or mutate the
    list/dict returned by a ``parsed_*`` property in place. Producing a
    new ORM instance via ``session.merge`` is the only supported edit
@@ -43,7 +43,7 @@ class CorruptedJsonColumnError(RuntimeError):
     logged at ERROR, which made corruption invisible to callers: a
     spec with unreadable parameters would round-trip as an empty
     parameter list and a downstream BO run would silently misbehave.
-    TODO 8.48 hardens this to a typed exception so the failure is
+    This class hardens the read path to a typed exception so the failure is
     addressable at the operation layer (mapped to ``DATA_INTEGRITY_ERROR``
     by ``make_corrupted_json_response`` at every transport boundary —
     distinct from ``DATABASE_ERROR`` because data corruption is
@@ -72,8 +72,7 @@ def _strict_json_loads(raw: str, *, context: str) -> object:
     contract is "decode error means corruption, fail loud": empty
     columns either persist as the empty-JSON-literal (``"[]"`` or
     ``"{}"``) or stay ``NULL`` and are handled explicitly by the
-    caller before reaching this helper. See TODO 8.48 for the audit
-    rationale.
+    caller before reaching this helper.
     """
     try:
         return json.loads(raw)
@@ -95,7 +94,7 @@ SUGGESTIONS_ID_FK = "suggestions.id"
 # cannot drift apart.
 _ACTIVE_ROW_PREDICATE = "deleted_at IS NULL"
 
-# Per-status partial-index predicates for ``campaigns.status`` (TODO 8.49).
+# Per-status partial-index predicates for ``campaigns.status``.
 # Mirrors migration ``015_campaigns_status_partials`` so
 # ``alembic --autogenerate`` does not propose dropping the indexes.
 # The status values are the *stored* enum names (uppercase), not the
@@ -153,7 +152,7 @@ class UserModel(Base):
     # silently emitting a per-row SELECT. Production code reads cross-table
     # data through explicit batch fetches in the repository layer
     # (``CampaignSpecRepository.get_by_ids`` / ``ResultRepository.count_by_campaigns``);
-    # any future read path must follow the same pattern. See TODO 8.47.
+    # any future read path must follow the same pattern.
     campaigns: Mapped[list["CampaignModel"]] = relationship(back_populates="owner", lazy="raise")
 
 
@@ -179,10 +178,10 @@ class CampaignSpecModel(Base):
     initial_design_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     random_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     backend: Mapped[str] = mapped_column(String(50), default="botorch", server_default="botorch")
-    # Per-backend native option surface (TODO 1.66). JSON-encoded because
+    # Per-backend native option surface. JSON-encoded because
     # each entry is opaque to the neutral spec. NULL means "no options".
     backend_options_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Advanced cross-backend knobs (TODO 1.66): acquisition_method,
+    # Advanced cross-backend knobs: acquisition_method,
     # use_input_warping, use_cost_aware, turbo_config, saasbo_config,
     # fidelity_parameter, transfer_learning, outcome_constraints. Stored
     # as a JSON blob because the values are consumed in-process and
@@ -291,8 +290,8 @@ class CampaignModel(Base):
     turbo_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # v2.8: Hypervolume history for multi-objective convergence detection
     hypervolume_history_json: Mapped[str] = mapped_column(Text, default="[]")
-    # Soft-delete marker (TODO 8.11). ``NULL`` means active;
-    # repositories filter rows where this is non-null by default.
+    # Soft-delete marker. ``NULL`` means active; repositories filter
+    # rows where this is non-null by default.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships — see :class:`UserModel` for the ``lazy="raise"`` rationale.
@@ -365,7 +364,7 @@ class SuggestionModel(Base):
     provenance_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    # Soft-delete marker (TODO 8.11). See :class:`CampaignModel.deleted_at`.
+    # Soft-delete marker. See :class:`CampaignModel.deleted_at`.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships — see :class:`UserModel` for the ``lazy="raise"`` rationale.
@@ -458,14 +457,14 @@ class ResultModel(Base):
     submitted_by: Mapped[str] = mapped_column(String(36), nullable=False)
     measurement_uncertainty_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")  # JSON
-    # Snapshot of the originating suggestion at submission time (TODO 8.11).
+    # Snapshot of the originating suggestion at submission time.
     # ``None`` for free-floating results (no suggestion_id). For
     # suggestion-linked results this carries ``parameter_values`` and
     # ``provenance`` so the result reconstructs the BO context even if
     # the suggestion row is later removed.
     suggestion_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    # Soft-delete marker (TODO 8.11). See :class:`CampaignModel.deleted_at`.
+    # Soft-delete marker. See :class:`CampaignModel.deleted_at`.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships — see :class:`UserModel` for the ``lazy="raise"`` rationale.
@@ -506,7 +505,7 @@ class ResultModel(Base):
 
     @functools.cached_property
     def parsed_suggestion_snapshot(self) -> dict[str, Any] | None:
-        """Deserialize the suggestion-provenance snapshot (TODO 8.11).
+        """Deserialize the suggestion-provenance snapshot.
 
         ``None`` for free-floating rows (no suggestion_id at submission).
         Immutability contract: see the module docstring.
@@ -562,7 +561,7 @@ class EventModel(Base):
     output_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    # Soft-delete marker (TODO 8.11). See :class:`CampaignModel.deleted_at`.
+    # Soft-delete marker. See :class:`CampaignModel.deleted_at`.
     # Events are append-only audit history; soft-delete should be reserved
     # for explicit retention purges. Read paths filter ``deleted_at IS
     # NULL`` for consistency.
@@ -573,7 +572,7 @@ class IdempotencyCacheModel(Base):
     """Persisted ``(tool_name, idempotency_key) -> response`` cache.
 
     Backs the ``idempotency_key`` argument added to state-mutating MCP
-    tools in TODO 1.46. The cache is shared across processes (rows live
+    tools. The cache is shared across processes (rows live
     in the campaign DB) so retries that land on a different worker still
     short-circuit. Stale rows are pruned on read by
     :class:`bo_mcp_server.idempotency.IdempotencyStore`.
@@ -593,7 +592,7 @@ class IdempotencyCacheModel(Base):
     # silently masking a client bug.
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     # Per-reservation UUID. Nullable for migration compatibility with
-    # rows written before TODO 1.46 follow-up.
+    # rows written before the idempotency follow-up.
     reservation_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
     response_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -1,4 +1,4 @@
-"""Cursor codec and helpers for keyset pagination (TODO 1.47).
+"""Cursor codec and helpers for keyset pagination.
 
 Background: offset pagination is unsafe under concurrent inserts —
 rows get skipped or duplicated across pages. This suite pins the

@@ -1,4 +1,4 @@
-"""Tests for the SAASBO active-dimension mask (TODO 1.6).
+"""Tests for the SAASBO active-dimension mask.
 
 SAASBO's sparsity-inducing prior drives inactive dimensions to large
 lengthscales. The normalized inverse-lengthscale importance metric then

@@ -1,7 +1,7 @@
 """Add ``backend_options_json`` column to ``campaign_specs``.
 
 Adds a nullable text column carrying the per-backend native-options
-dictionary introduced in TODO 1.66. The dictionary is JSON-encoded
+dictionary. The dictionary is JSON-encoded
 because each entry is opaque to the neutral spec and can grow per
 backend. Existing rows backfill to NULL so previously-created campaigns
 keep their behavior.

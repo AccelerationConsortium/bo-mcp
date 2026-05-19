@@ -49,7 +49,7 @@ def _intake_validation_error_response(validation: dict[str, Any]) -> dict[str, A
     """Build the structured-error response for a failed intake validation.
 
     Forwards both the legacy ``errors`` list (for backward compatibility)
-    and the ``field_errors`` map (added in TODO 1.53) so callers can
+    and the ``field_errors`` map so callers can
     address the offending fields directly.
     """
     field_errors = validation.get("field_errors", {})

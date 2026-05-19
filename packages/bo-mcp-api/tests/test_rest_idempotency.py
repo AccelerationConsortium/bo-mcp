@@ -1,4 +1,4 @@
-"""REST endpoints honour the ``Idempotency-Key`` header (TODO 8.16).
+"""REST endpoints honour the ``Idempotency-Key`` header.
 
 The same idempotency contract that the MCP tools enforce must now
 apply to the REST routes: a retry with the same ``Idempotency-Key``

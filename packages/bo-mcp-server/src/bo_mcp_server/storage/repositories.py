@@ -88,7 +88,7 @@ def _advanced_options_kwargs(data: dict[str, Any]) -> dict[str, Any]:
 def _active_filter(model: type[Base], include_deleted: bool) -> list[Any]:
     """Return WHERE-clauses that hide soft-deleted rows by default.
 
-    TODO 8.11: every campaign / suggestion / result / event read goes
+    Every campaign / suggestion / result / event read goes
     through this helper so a single flag (``include_deleted=True``,
     reserved for admin / forensics paths) flips the filter
     consistently. The model's ``deleted_at`` column must exist for
@@ -349,8 +349,7 @@ class CampaignRepository:
         """Get campaign by ID.
 
         Soft-deleted rows are hidden by default; set ``include_deleted=True``
-        for admin / forensics queries that need to read historical state
-        (see TODO 8.11).
+        for admin / forensics queries that need to read historical state.
         """
         result = await self.session.execute(
             select(CampaignModel).where(
@@ -435,7 +434,7 @@ class CampaignRepository:
         # the ``id DESC`` tiebreaker the first page can pick an arbitrary
         # order among rows sharing a ``created_at`` value while the
         # keyset comparator uses ``id < cursor_id``, opening a duplicate /
-        # skip window on equal-timestamp ties (TODO 8.42 friend-review).
+        # skip window on equal-timestamp ties.
         query = query.order_by(CampaignModel.created_at.desc(), CampaignModel.id.desc())
         if offset > 0:
             query = query.offset(offset)
@@ -467,7 +466,7 @@ class CampaignRepository:
         pagination — under the previous ASC-with-``>`` formulation
         the cursor walked the *opposite* direction from page 1 and
         could both duplicate page-1 rows and skip the oldest row
-        entirely (TODO 8.42 friend-review finding).
+        entirely.
 
         ``total_count`` is still reported so the agent can show "X of N"
         when desired; under concurrency the totals can drift, which is
@@ -589,7 +588,7 @@ class CampaignRepository:
         statement so the operation is atomic even under concurrent
         PostgreSQL connections.
 
-        TODO 8.11 follow-up: ``deleted_at IS NULL`` is part of the OCC
+        Follow-up: ``deleted_at IS NULL`` is part of the OCC
         predicate so a campaign that was soft-deleted between the
         caller's read and this save raises
         :class:`ConcurrentModificationError` instead of silently
@@ -651,7 +650,7 @@ class CampaignRepository:
     async def delete(self, entity_id: UUID) -> bool:
         """Soft-delete a campaign by stamping ``deleted_at``.
 
-        TODO 8.11 replaces hard-delete cascades with a soft-delete
+        This replaces hard-delete cascades with a soft-delete
         first-class semantics: the row stays queryable through
         ``include_deleted=True`` so forensics and audit can reconstruct
         history, but normal reads hide it. The suggestion / result
@@ -873,7 +872,7 @@ class SuggestionRepository:
     async def save(self, suggestion: Suggestion) -> Suggestion:
         """Save suggestion. Atomic ``deleted_at`` guard on the write itself.
 
-        TODO 8.11 follow-up: the previous implementation read
+        Follow-up: the previous implementation read
         ``deleted_at`` first, then merged — a race window where a
         concurrent ``delete()`` landing between the read and the
         merge would silently resurrect the tombstone. The write path
@@ -984,7 +983,7 @@ class SuggestionRepository:
     ) -> bool:
         """Atomically transition a suggestion from one status to another.
 
-        TODO 8.11 follow-up: status updates used to read the row,
+        Follow-up: status updates used to read the row,
         validate the transition in Python, and write through
         :meth:`save`. Two concurrent transitions from ``PENDING``
         could both pass the in-Python validation and then race to
@@ -1292,7 +1291,7 @@ class ResultRepository:
     async def save(self, result: Result) -> Result:
         """Save result. Atomic ``deleted_at`` guard on the write itself.
 
-        TODO 8.11 follow-up: see :meth:`SuggestionRepository.save`
+        Follow-up: see :meth:`SuggestionRepository.save`
         for the rationale — the previous read-then-merge sequence
         left a race window where a concurrent ``delete()`` between
         the ``deleted_at`` read and the merge could resurrect the

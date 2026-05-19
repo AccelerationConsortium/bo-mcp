@@ -1,4 +1,4 @@
-"""Alembic env.py applies DB-side timeouts on PostgreSQL (TODO 8.22).
+"""Alembic env.py applies DB-side timeouts on PostgreSQL.
 
 The Python-side ``asyncio.wait_for(asyncio.to_thread(...))`` can only
 abort the *await* — the worker thread continues. The real kill switch
@@ -90,7 +90,7 @@ def _exercise_env_helper(connection: _RecordingConnection, timeout_seconds: floa
     needle = "def _apply_postgres_statement_timeout(connection: Connection) -> None:"
     assert needle in source, (
         "env.py must still expose _apply_postgres_statement_timeout; "
-        "see TODO 8.22 — removing it loses the DB-side kill switch."
+        "removing it loses the DB-side kill switch."
     )
 
     # The actual run uses the recording connection; we exercise the
@@ -122,8 +122,7 @@ def test_env_helper_sets_three_timeouts_on_postgresql(
 ) -> None:
     """PostgreSQL connection receives statement, lock, and idle-in-transaction caps.
 
-    Without ``idle_in_transaction_session_timeout`` (TODO 8.22 second
-    review pass), a migration that runs many short statements
+    Without ``idle_in_transaction_session_timeout``, a migration that runs many short statements
     separated by long Python work between them would continue running
     after the orchestrator-side timeout has already raised
     ``stage='timeout'``. All three SETs are load-bearing for the
@@ -183,7 +182,7 @@ def test_env_helper_rejects_non_positive_or_garbage_timeout(
 ) -> None:
     """Non-positive or unparseable timeouts fall back to the 300s default.
 
-    Regression for TODO 8.22 third review pass. ``SET statement_timeout
+    Regression. ``SET statement_timeout
     = 0`` is interpreted by PostgreSQL as 'unlimited' — exactly the
     opposite of the kill-switch intent — and negative values yield an
     invalid SET. Either case silently disables the DB-side cap.
@@ -213,7 +212,7 @@ def test_env_helper_rejects_non_positive_or_garbage_timeout(
 def test_do_run_migrations_calls_the_timeout_helper() -> None:
     """``do_run_migrations`` must call ``_apply_postgres_statement_timeout``.
 
-    Source-level pin (TODO 8.22 third review pass). The previous test
+    Source-level pin. The previous test
     suite only verified what the helper *would* do *if* called — it
     did not assert that ``do_run_migrations`` actually invokes it. If
     a future change removed the call site from ``do_run_migrations``,
@@ -258,7 +257,7 @@ def test_do_run_migrations_calls_the_timeout_helper() -> None:
         "do_run_migrations() must call _apply_postgres_statement_timeout(connection) "
         "before configuring Alembic; otherwise statement_timeout / lock_timeout / "
         "idle_in_transaction_session_timeout are never applied and the DB-side kill "
-        "switch is silently lost (TODO 8.22)."
+        "switch is silently lost."
     )
 
 

@@ -157,7 +157,7 @@ async def test_alembic_non_sqlalchemy_failures_also_typed(
 ) -> None:
     """Non-``SQLAlchemyError`` migration failures become ``stage='alembic'``.
 
-    Regression for the original narrow catch (TODO 8.22 review pass):
+    Regression for the original narrow catch:
     only ``SQLAlchemyError`` was translated, so ``alembic.util.exc.
     CommandError`` and any ``raise`` from a migration body bubbled up
     as a raw exception and the orchestrator lost the typed signal.
@@ -195,7 +195,7 @@ async def test_alembic_non_sqlalchemy_failures_also_typed(
 def test_run_alembic_subprocess_sigkills_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """``_run_alembic_in_subprocess`` SIGKILLs a real child process on timeout.
 
-    End-to-end coverage for TODO 8.22 third review pass. Spawns an
+    End-to-end coverage for the subprocess kill switch. Spawns an
     actual ``python -c 'time.sleep(...)'`` subprocess via a monkey-
     patched command so we exercise the real ``subprocess.run(timeout=N)``
     path. The previous Python-thread approach could not be interrupted;

@@ -9,8 +9,7 @@ v1.3: Added outcome constraints and cost-aware optimization
 v2.3: Added GPU auto-detection and acceleration
 
 The implementation has been split across companion modules so each file
-owns one concern and stays well under the 1k LOC cognitive-load ceiling
-(TODO 8.54):
+owns one concern and stays well under the 1k LOC cognitive-load ceiling:
 
 * :mod:`bo_engine.initial_design` — Sobol initial-design draws,
   exclusion / deduplication, and the purely-categorical exhaustion

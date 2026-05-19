@@ -8,7 +8,7 @@ REST API layer for the Bayesian Optimization MCP server. Provides HTTP endpoints
 - CORS-enabled for browser-based frontends
 - OpenAPI documentation via Swagger UI (`/docs`)
 - Shares the same operations layer as the MCP server -- identical behavior guaranteed
-- Planned for extraction into a separate GUI repository (see TODO.md Step 9)
+- Planned for extraction into a separate GUI repository
 
 ## Installation
 

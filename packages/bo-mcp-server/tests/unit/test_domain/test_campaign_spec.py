@@ -667,8 +667,7 @@ class TestTurboConfigValidation:
 
     The schema is the only place where REST / MCP clients can be stopped
     before garbage propagates into the engine. Each test pins one failure
-    mode that the previous schema accepted silently — see the regression
-    note in TODO 1.49 follow-up.
+    mode that the previous schema accepted silently.
 
     Reference: Eriksson et al., NeurIPS 2019, Algorithm 1. The trust-region
     operating band requires ``length_min < initial_length <= length_max``

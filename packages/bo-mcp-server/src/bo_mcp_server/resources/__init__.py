@@ -1,7 +1,7 @@
 """MCP Resources for Bayesian Optimization.
 
-Tenant-scoping model (TODO 8.40 friend-review finding)
-------------------------------------------------------
+Tenant-scoping model
+--------------------
 
 MCP resources here read the full active dataset — they do **not** scope
 to a per-caller owner. The friend-review for the May 2026 audit

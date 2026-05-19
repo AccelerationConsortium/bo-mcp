@@ -81,8 +81,8 @@ class TestFeatureImportance:
         finite, the warning surface keeps a poorly-conditioned GP fit
         visible to operators.
 
-        Reference: numerical-safety guidance in the project CLAUDE.md
-        (do not hardcode bare zero comparisons; clamp before reciprocal).
+        Numerical-safety rule: do not hardcode bare zero comparisons on
+        computed floats; clamp to ``NUMERICAL_EPSILON`` before reciprocal.
         """
         lengthscales = {
             "objective_0": torch.tensor([0.0, 1.0]),

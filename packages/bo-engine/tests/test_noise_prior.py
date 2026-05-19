@@ -1,4 +1,4 @@
-"""Tests for explicit GP noise prior configuration (TODO 1.5).
+"""Tests for explicit GP noise prior configuration.
 
 The GP observation-noise hyperparameter is the silent failure mode of
 single-task BO on multi-scale objectives: when the prior is left implicit and

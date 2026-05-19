@@ -70,7 +70,7 @@ def _extract_posterior_stats(
     Returns ``(predictions, warning)`` where ``warning`` is a short
     message explaining why posterior_stats was unavailable for the active
     recommender phase, or ``None`` when extraction succeeded. The warning
-    is forwarded to :class:`SuggestionBatch.warnings` (TODO 1.67) so users
+    is forwarded to :class:`SuggestionBatch.warnings` so users
     see "no posterior in random-warmup phase" instead of a silent ``None``.
     """
     obj_names = [o.name for o in spec.objectives]
@@ -117,7 +117,7 @@ def _extract_acquisition_values(
     """Extract per-suggestion acquisition function values from BayBE.
 
     Pending experiments are forwarded so the acquisition values reflect
-    the same conditioning BayBE used during ``recommend`` (TODO 1.62). A
+    the same conditioning BayBE used during ``recommend``. A
     short warning message is returned alongside the values when
     extraction is impossible in the current recommender phase so the
     backend can surface it via :class:`SuggestionBatch.warnings`.
@@ -143,7 +143,7 @@ def _extract_model_info(
     first sub-model's hyperparameters are reported (BayBE composes one
     GP per target). The ``kernel_type`` key is always present so callers
     can distinguish "fitted" (string class name) from "not available"
-    (``None``) — surfacing only the latter as a method warning (TODO 1.67).
+    (``None``) — surfacing only the latter as a method warning.
     """
     info: dict[str, str | list[float] | float | None] = {
         "kernel_type": None,
@@ -294,7 +294,7 @@ def _acquisition_label(
     Returns ``(label, inferred)``. ``inferred=True`` signals that the
     label was guessed from the static fallback table because the live
     recommender did not expose an acquisition function attribute. The
-    caller stamps the flag onto the structured ``method_info`` (TODO 8.51)
+    caller stamps the flag onto the structured ``method_info``
     so downstream consumers can distinguish "BayBE told us qLogNEI" from
     "we couldn't read the acq function and assumed qLogNEI"; the legacy
     ``(fallback)`` suffix on the label itself is removed because the

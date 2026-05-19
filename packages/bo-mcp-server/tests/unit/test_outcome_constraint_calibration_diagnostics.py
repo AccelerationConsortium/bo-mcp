@@ -1,7 +1,7 @@
 """Tests for the outcome-constraint calibration diagnostics helper.
 
 The helper plumbs ``bo_engine.compute_outcome_constraint_calibration`` into
-the server-side diagnostics payload (TODO 1.52). These tests pin both the
+the server-side diagnostics payload. These tests pin both the
 happy-path emission and the threshold-driven WARN behaviour so agents see
 a single, actionable signal when the feasibility GP is overconfident.
 

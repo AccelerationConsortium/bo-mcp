@@ -133,8 +133,15 @@ async def setup_database():
     isolation. The savepoint pattern documented there avoids both issues.
 
     See ``conftest_postgres.py::postgres_session`` for the PG-side
-    implementation and ``TESTING.md`` for guidance on when to parametrize
-    a test across both fixtures.
+    implementation. When a test needs to run against both backends,
+    parametrize the database fixture rather than duplicating the test
+    body::
+
+        @pytest.mark.parametrize(
+            "session_fixture",
+            ["setup_database", "postgres_session"],
+            indirect=True,
+        )
 
     Reference: SQLAlchemy async engine lifecycle documentation
     https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html

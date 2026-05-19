@@ -1,4 +1,4 @@
-"""Per-row discriminator for BayBE observation identity (TODO 8.50).
+"""Per-row discriminator for BayBE observation identity.
 
 The original ``_observation_fingerprint`` hashed only
 ``(parameter_values, objective_values)`` so two replicate rows

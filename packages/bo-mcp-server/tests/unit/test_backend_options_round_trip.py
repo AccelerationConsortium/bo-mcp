@@ -1,4 +1,4 @@
-"""Backend-option round-trip tests for TODO 1.66 (MCP-server side).
+"""Backend-option round-trip tests (MCP-server side).
 
 Covers:
 

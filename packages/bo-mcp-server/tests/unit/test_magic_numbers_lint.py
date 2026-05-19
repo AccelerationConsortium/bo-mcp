@@ -1,11 +1,11 @@
 """Lint contract: named offender files must not regress on hardcoded knobs.
 
-The project guideline in :doc:`/CLAUDE.md` forbids hardcoded numbers
-in operational code: tuning values must live in constants or
-pydantic-settings so deployments can override them via environment.
+Project guideline: tuning values must not be hardcoded in operational
+code — they must live in constants or pydantic-settings so deployments
+can override them via environment.
 
-The audit (TODO 8.53) named three files as the load-bearing offenders
-for connection-pool sizing, cache capacity, and idempotency TTLs:
+Three files are the load-bearing offenders for connection-pool sizing,
+cache capacity, and idempotency TTLs:
 
 * ``storage/database.py``      — pool_size / max_overflow / pool_recycle
 * ``cache.py``                  — MAX_CACHE_ENTRIES, TTL
@@ -19,8 +19,8 @@ new tuning knob without going through Settings — both shapes are
 flagged so a reviewer can audit the decision.
 
 A whole-repo numeric lint would fire on test fixtures, threshold
-constants, and bench-mark seeds — the audit explicitly limits the
-guard to the named offender files to keep the signal sharp.
+constants, and bench-mark seeds — this guard is deliberately limited
+to the named offender files to keep the signal sharp.
 """
 
 from __future__ import annotations

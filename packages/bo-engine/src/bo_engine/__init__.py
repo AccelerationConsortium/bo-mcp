@@ -465,7 +465,7 @@ __all__ = [
     "AcquisitionOptimizationConfig",
     # Backend Protocol (Step 8)
     "BOBackend",
-    # Backend extensibility (TODO 1.69)
+    # Backend extensibility
     "BackendError",
     "BackendIncompatibilityError",
     "BackendInputError",
@@ -557,7 +557,7 @@ __all__ = [
     "PosteriorCheckReport",
     "PredictionInterval",
     "PriorTaskData",
-    # Progress reporting hook (TODO 1.48)
+    # Progress reporting hook
     "ProgressCallback",
     "ProgressEvent",
     "ProvenanceChain",

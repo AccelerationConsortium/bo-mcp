@@ -140,7 +140,7 @@ async def _resolve_suggestion_id(
     """Resolve a ``suggestion_id`` and return the snapshot to persist with the result.
 
     The second tuple element is a JSON-safe snapshot of the originating
-    suggestion's parameter values and provenance (TODO 8.11). The
+    suggestion's parameter values and provenance. The
     snapshot is copied onto the persisted ``Result`` row so the BO
     context survives even if the suggestion is later removed —
     ``results.suggestion_id`` is ``ON DELETE SET NULL`` and the

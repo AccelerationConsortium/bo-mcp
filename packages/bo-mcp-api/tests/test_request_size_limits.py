@@ -1,4 +1,4 @@
-"""Request-size bounds enforced at the REST transport boundary (TODO 8.17).
+"""Request-size bounds enforced at the REST transport boundary.
 
 Each test pins one of the three caps the audit called out:
 

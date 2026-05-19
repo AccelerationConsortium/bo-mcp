@@ -97,7 +97,7 @@ class TurboState:
     Use :func:`assert_unit_scale_targets` at construction time to warn when
     the supplied training targets are far from unit scale; the warning
     references this docstring and points at
-    :class:`bo_engine.types.OutcomeTransformSpec` (paired with TODO 1.42).
+    :class:`bo_engine.types.OutcomeTransformSpec`.
 
     Attributes:
         dim: Problem dimensionality

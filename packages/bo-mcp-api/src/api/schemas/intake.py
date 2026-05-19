@@ -9,7 +9,7 @@ that was the pre-1.66 behavior and it produced confused agents.
 Parameter, objective, and constraint nested models are the canonical
 domain types from :mod:`bo_mcp_server.domain`. This lets the REST handler
 hand the validated nested instances straight to ``CampaignIntakeInput``
-without a ``model_dump() -> model_validate()`` round-trip (TODO 1.24).
+without a ``model_dump() -> model_validate()`` round-trip.
 """
 
 from typing import Any, Literal

@@ -17,7 +17,7 @@ boolean flags) to be revalidated by hand. Instead, this module wraps
 ValidationError-caused ToolError into the same envelope the tool
 body would have produced if validation had been deferred.
 
-TODO 8.45: envelope wrapping is now on by default for every
+Envelope wrapping is now on by default for every
 registered tool. The previous opt-in model required new tool authors
 to remember to register in ``_TOOL_ENVELOPE_DEFAULTS`` or their
 boundary failures would leak as opaque ``ToolError`` text. The
@@ -113,7 +113,7 @@ def install_validation_envelope_wrapper(mcp_instance: FastMCP) -> None:
 
     The wrapper applies to every registered tool: tools listed in
     :data:`_TOOL_ENVELOPE_OVERRIDES` get their extra polish merged in;
-    others still get the canonical envelope (TODO 8.45 — default-on).
+    others still get the canonical envelope.
     """
     tool_manager = mcp_instance._tool_manager
     original = tool_manager.call_tool

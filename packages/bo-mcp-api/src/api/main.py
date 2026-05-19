@@ -6,7 +6,12 @@ import uuid as _uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from bo_mcp_server.client import ensure_dev_user, init_database, ping_database_detailed
+from bo_mcp_server.client import (
+    CorruptedJsonColumnError,
+    ensure_dev_user,
+    init_database,
+    ping_database_detailed,
+)
 from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan
 from bo_mcp_server.trace_context import bind_trace_id
 from fastapi import FastAPI, Request, Response
@@ -14,7 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from api.body_size_middleware import BodySizeLimitMiddleware
-from api.error_handlers import handle_unhandled_exception, install_exception_handlers
+from api.error_handlers import (
+    handle_corrupted_json_column,
+    handle_unhandled_exception,
+    install_exception_handlers,
+)
 from api.limits import MAX_JSON_REQUEST_BODY_BYTES
 from api.metrics import install_metrics
 from api.request_context import install_request_id_log_filter, request_id_var
@@ -165,6 +174,14 @@ def create_app() -> FastAPI:
             with bind_trace_id(trace_id):
                 try:
                     response = await call_next(request)
+                except CorruptedJsonColumnError as exc:
+                    # Storage-layer JSON corruption gets the dedicated
+                    # ``DATA_INTEGRITY_ERROR`` envelope (non-retryable —
+                    # the row stays broken until an operator repairs it)
+                    # rather than the generic catch-all; without this
+                    # dispatch the middleware would mask a known
+                    # data-corruption signal as ``INTERNAL_ERROR``.
+                    response = await handle_corrupted_json_column(request, exc)
                 except Exception as exc:  # noqa: BLE001 - intentional catch-all
                     response = await handle_unhandled_exception(request, exc)
         finally:

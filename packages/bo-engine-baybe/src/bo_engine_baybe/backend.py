@@ -202,7 +202,6 @@ _MODEL_TYPE_SINGLE = "BayBE GP"
 _MODEL_TYPE_MULTI = "BayBE GP (CompositeSurrogate)"
 _FALLBACK_ACQ_SINGLE = "qLogNoisyExpectedImprovement"
 _FALLBACK_ACQ_MULTI = "qLogNoisyExpectedHypervolumeImprovement"
-_FALLBACK_LABEL = "(fallback)"
 
 # Minimum observations before fitting a model for diagnostics
 _MIN_DATA_ABSOLUTE = 3
@@ -285,14 +284,20 @@ def _observation_fingerprint(
 
     Uses sorted parameter and objective columns so reordering the input
     list (or shuffling the underlying DB query) produces the same hash.
-    The hash is intentionally short (12 hex chars) — enough to make
-    collisions astronomically unlikely for any realistic campaign and
-    cheap to compare during reconciliation.
+    When the caller threads a durable cross-system ID through
+    ``ObservationData.result_id`` (TODO 8.50) it is folded into the
+    payload as the per-row discriminator so otherwise-identical
+    replicate rows produce *distinct* identities and can be addressed
+    individually. The hash is intentionally short (16 hex chars) —
+    enough to make collisions astronomically unlikely for any realistic
+    campaign and cheap to compare during reconciliation.
     """
-    payload = {
+    payload: dict[str, Any] = {
         "params": [(name, obs.parameter_values.get(name)) for name in param_names],
         "objectives": [(name, obs.objective_values.get(name)) for name in obj_names],
     }
+    if obs.result_id is not None:
+        payload["result_id"] = obs.result_id
     encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     return hashlib.blake2b(encoded, digest_size=8).hexdigest()
 
@@ -338,10 +343,13 @@ def _reconcile_measurements(
     have since been deleted from storage. Reconciliation rules:
 
     * Compute a fingerprint for each observation in the current
-      ``observations`` list.
+      ``observations`` list. When ``ObservationData.result_id`` is set,
+      it is folded into the fingerprint so otherwise-identical
+      replicate rows produce distinct identities — see TODO 8.50.
     * Fingerprints are reconciled as a **multiset**, not a set, so two
-      observations with identical parameter/objective values (real
-      replicates) both stay in the campaign.
+      observations with identical parameter/objective values that also
+      lack a ``result_id`` (the legacy direct-engine path) both stay in
+      the campaign via the multiset Counter pass.
     * Stored identities that no longer appear in storage trigger a
       rebuild — the user deleted or rewrote rows, so the BayBE campaign
       must not keep training on data the server no longer owns.
@@ -352,6 +360,8 @@ def _reconcile_measurements(
       the previous count-prefix logic was the bug 1.63 set out to fix.
       The migration path is therefore to rebuild from current
       observations and start tracking identities from this call onwards.
+      The rebuild emits a structured WARNING with ``migration=v1_rebuild``
+      so dashboards alarm on cached v1 state being reset on deploy.
     """
     from collections import Counter
 
@@ -362,10 +372,18 @@ def _reconcile_measurements(
     has_identity_field = _has_stored_identity_field(backend_state)
 
     if not has_identity_field and _campaign_has_measurements(campaign):
-        logger.info(
-            "Restored BayBE state has no identity index; rebuilding campaign from "
-            "%d current observation(s).",
-            len(observations),
+        # Promoted from INFO to WARNING with structured fields (TODO 8.50)
+        # so operators running on cached v1 payloads during a deploy that
+        # drops v1 support get a dashboard-filterable signal — the state
+        # reset would otherwise be invisible to monitoring.
+        logger.warning(
+            "BayBE state migration: v1 payload rebuild",
+            extra={
+                "migration": "v1_rebuild",
+                "schema_version_seen": _STATE_SCHEMA_VERSION_LEGACY,
+                "schema_version_target": _STATE_SCHEMA_VERSION_IDENTITY,
+                "n_observations": len(observations),
+            },
         )
         return _rebuild_from_observations(spec, observations), incoming_ids
 
@@ -705,20 +723,26 @@ def _acquisition_label(
     recommender: Any,
     is_nonpredictive: bool,
     is_multi: bool,
-) -> str:
-    """Choose the acquisition-function label live from the recommender."""
+) -> tuple[str, bool]:
+    """Resolve the acquisition-function label and whether it is inferred.
+
+    Returns ``(label, inferred)``. ``inferred=True`` signals that the
+    label was guessed from the static fallback table because the live
+    recommender did not expose an acquisition function attribute. The
+    caller stamps the flag onto the structured ``method_info`` (TODO 8.51)
+    so downstream consumers can distinguish "BayBE told us qLogNEI" from
+    "we couldn't read the acq function and assumed qLogNEI"; the legacy
+    ``(fallback)`` suffix on the label itself is removed because the
+    structured field is the load-bearing signal.
+    """
     if is_nonpredictive:
         # Nonpredictive recommenders do not have an acquisition function;
         # claiming qLogNEI here would mislead audit metadata.
-        return "none (space-filling)"
+        return "none (space-filling)", False
     live_acq = _active_acquisition_label(recommender)
     if live_acq is not None:
-        return live_acq
-    return (
-        f"{_FALLBACK_ACQ_MULTI} {_FALLBACK_LABEL}"
-        if is_multi
-        else f"{_FALLBACK_ACQ_SINGLE} {_FALLBACK_LABEL}"
-    )
+        return live_acq, False
+    return (_FALLBACK_ACQ_MULTI if is_multi else _FALLBACK_ACQ_SINGLE), True
 
 
 # ---------------------------------------------------------------------------
@@ -1211,11 +1235,18 @@ class BayBEBackend(BaseBackend):
         searchspace_str = _campaign_searchspace_label(campaign)
         objective_type = type(getattr(campaign, "objective", None)).__name__
         strategy, model_type = _strategy_and_model(rec_name, is_nonpredictive, is_multi)
-        acq_fn = _acquisition_label(recommender, is_nonpredictive, is_multi)
+        acq_fn, acq_inferred = _acquisition_label(recommender, is_nonpredictive, is_multi)
 
         return {
             "model_type": model_type,
             "acquisition_function": acq_fn,
+            # ``acquisition_function_inferred`` replaces the legacy
+            # ``(fallback)`` suffix on the label with a structured signal:
+            # True means BayBE did not expose a live ``acquisition_function``
+            # attribute on the recommender and the label is the static
+            # default. Downstream consumers (UIs, LLM tools) should branch
+            # on this flag instead of string-matching the label.
+            "acquisition_function_inferred": acq_inferred,
             "optimization_strategy": strategy,
             "recommender": rec_name,
             "is_nonpredictive": is_nonpredictive,
@@ -1260,32 +1291,33 @@ class BayBEBackend(BaseBackend):
         :meth:`generate_suggestions` via
         :meth:`_method_info_from_campaign`. This entry point is invoked
         by the server's diagnostics pipeline when no campaign exists yet
-        (e.g. before the first iteration) and therefore can only return
-        static labels marked as ``(fallback)``.
+        (e.g. before the first iteration). The legacy ``(fallback)``
+        string suffix on the returned labels is replaced by the
+        structured ``is_fallback: True`` field so programmatic consumers
+        (UIs, LLM tools) can branch on a typed signal instead of
+        string-matching a label.
         """
         is_multi = spec.n_objectives > 1
         if n_observations == 0:
-            strategy = f"RandomRecommender (space-filling initial design) {_FALLBACK_LABEL}"
+            strategy = "RandomRecommender (space-filling initial design)"
         else:
-            strategy = f"BotorchRecommender (GP-based) {_FALLBACK_LABEL}"
-        acq_fn = (
-            f"{_FALLBACK_ACQ_MULTI} {_FALLBACK_LABEL}"
-            if is_multi
-            else f"{_FALLBACK_ACQ_SINGLE} {_FALLBACK_LABEL}"
-        )
+            strategy = "BotorchRecommender (GP-based)"
+        acq_fn = _FALLBACK_ACQ_MULTI if is_multi else _FALLBACK_ACQ_SINGLE
         return {
             "model_type": _MODEL_TYPE_MULTI if is_multi else _MODEL_TYPE_SINGLE,
             "acquisition_function": acq_fn,
+            "acquisition_function_inferred": True,
             "optimization_strategy": strategy,
+            "is_fallback": True,
             "input_transforms": ["BayBE internal encoding"],
             "explanation": (
                 f"BayBE backend with {n_observations} observations. "
                 f"Using {strategy}."
                 + (f" Multi-objective with {spec.n_objectives} targets." if is_multi else "")
             ),
-            "confidence": (
-                "medium" if n_observations < _MIN_OBSERVATIONS_FOR_CONFIDENCE else "high"
-            ),
+            # The static fallback can only guess at confidence; ``low``
+            # is the honest signal until a live campaign is available.
+            "confidence": "low",
             "alternatives": [],
             "warnings": [],
             "baybe_version": baybe_version,

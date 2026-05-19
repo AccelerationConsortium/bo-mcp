@@ -950,7 +950,7 @@ async def _compute_generation_batch(
     opt_spec = campaign_spec_to_optimization_spec(snapshot.spec)
     pending_parameter_values = [p.parameter_values for p in snapshot.valid_pending]
 
-    suggestion_data, new_backend_state, warnings = await _generate_via_backend(
+    suggestion_data, new_backend_state, warnings, live_method_info = await _generate_via_backend(
         backend,
         opt_spec,
         snapshot.observations,
@@ -965,7 +965,23 @@ async def _compute_generation_batch(
         backend, opt_spec, [params for params, _ in suggestion_data]
     )
 
-    method_selection = backend.select_methods(opt_spec, n_observations=len(snapshot.observations))
+    # Prefer the live ``method_info`` the backend recorded during the
+    # actual run; fall back to ``select_methods`` only when the backend
+    # emits nothing (e.g. a third-party implementation that leaves the
+    # field empty). Recomputing ``select_methods`` after the fact used
+    # to mis-report: BayBE's static path explicitly tags every label
+    # with ``(fallback)`` so the response would carry a fallback label
+    # even on a successful BO run.
+    if live_method_info:
+        method_selection = live_method_info
+        method_selection.setdefault("is_fallback", False)
+    else:
+        method_selection = backend.select_methods(
+            opt_spec, n_observations=len(snapshot.observations)
+        )
+        method_selection["is_fallback"] = True
+        method_selection.setdefault("confidence", "low")
+
     return _GenerationComputeResult(
         suggestion_data=suggestion_data,
         new_backend_state=new_backend_state,
@@ -1142,6 +1158,7 @@ async def _generate_via_backend(
     SuggestionDataList,
     dict[str, Any] | None,
     list[str],
+    dict[str, Any],
 ]:
     """Generate a batch of suggestions via the backend.
 
@@ -1167,7 +1184,12 @@ async def _generate_via_backend(
     optimization, MCMC) and are offloaded via ``asyncio.to_thread`` so
     concurrent requests do not stall the event loop.
 
-    Returns (suggestion_data, backend_state, warnings).
+    Returns ``(suggestion_data, backend_state, warnings, method_info)``.
+    ``method_info`` is the live metadata the backend recorded during
+    the actual run (which recommender phase / strategy / acquisition
+    fired). Routing it through here lets ``_build_success_response``
+    surface the live labels instead of the static ``select_methods``
+    fallback the operation previously recomputed (TODO 8.51).
     """
     # The heartbeat is a no-op when there is no active idempotency
     # reservation (the typical direct-call path). When invoked inside
@@ -1198,4 +1220,5 @@ async def _generate_via_backend(
         suggestion_data,
         batch.backend_state,
         batch.warnings,
+        dict(batch.method_info or {}),
     )

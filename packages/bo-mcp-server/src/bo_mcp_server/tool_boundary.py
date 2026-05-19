@@ -50,7 +50,9 @@ from typing import TYPE_CHECKING, Any
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
+from bo_mcp_server.errors import make_corrupted_json_response
 from bo_mcp_server.field_errors import validation_envelope
+from bo_mcp_server.storage.models import CorruptedJsonColumnError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -131,8 +133,21 @@ def install_validation_envelope_wrapper(mcp_instance: Any) -> None:
                 context=context,
                 convert_result=convert_result,
             )
+        except CorruptedJsonColumnError as exc:
+            # Convert the typed storage-layer exception into the
+            # canonical ``DATA_INTEGRITY_ERROR`` envelope (a distinct,
+            # non-retryable code — corrupted rows stay broken until an
+            # operator repairs them, so we steer clients away from a
+            # retry loop). Without this mapper the exception would
+            # propagate as a raw ``RuntimeError`` through FastMCP and
+            # leak as opaque text.
+            envelope = make_corrupted_json_response(exc)
+            return {**extras, **envelope}
         except ToolError as exc:
             cause = exc.__cause__
+            if isinstance(cause, CorruptedJsonColumnError):
+                envelope = make_corrupted_json_response(cause)
+                return {**extras, **envelope}
             if not isinstance(cause, ValidationError):
                 raise
             return validation_envelope(cause, extra=extras)

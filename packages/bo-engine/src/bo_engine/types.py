@@ -500,6 +500,16 @@ class ObservationData:
     objective_values: dict[str, float]
     cost: float | None = None  # v1.3: Cost for cost-aware optimization
     measurement_uncertainty: dict[str, float] | None = None  # per-objective stddev
+    # Optional durable cross-system identity (TODO 8.50). Backends that
+    # serialise per-observation state (notably BayBE, which keeps an
+    # ``observation_identity`` index) use this as the discriminator for
+    # otherwise-identical replicate rows so a specific replicate can be
+    # tied to the same storage row across reorder / restart cycles. The
+    # MCP server populates it with ``Result.id`` (a UUID string) via
+    # ``helpers.results_to_observations``; direct bo-engine callers that
+    # do not need cross-system addressing can leave it ``None`` and the
+    # backend falls back to a within-batch fingerprint as before.
+    result_id: str | None = None
 
 
 # =============================================================================

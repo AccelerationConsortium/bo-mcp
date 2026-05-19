@@ -35,6 +35,7 @@ from bo_mcp_server.constants import CONCURRENT_MODIFICATION_RETRY_AFTER_SECONDS
 
 if TYPE_CHECKING:
     from bo_mcp_server.storage.base import ConcurrentModificationError
+    from bo_mcp_server.storage.models import CorruptedJsonColumnError
 
 # ---------------------------------------------------------------------------
 # Domain exceptions
@@ -117,6 +118,12 @@ class ErrorCode(StrEnum):
     BACKEND_TRANSIENT_ERROR = "E105"
     BACKEND_INCOMPATIBILITY = "E106"
     BACKEND_INTERNAL_ERROR = "E107"
+    # Persisted data is unreadable / structurally invalid (e.g. a JSON
+    # column that no longer decodes). Distinct from DATABASE_ERROR
+    # because the failure is deterministic — the row stays broken until
+    # an operator repairs it, so retrying the same request is a waste.
+    # Mapped from CorruptedJsonColumnError at every transport boundary.
+    DATA_INTEGRITY_ERROR = "E108"
     # Catch-all for unexpected transport-layer errors. The REST global
     # exception handler maps any exception not already classified by an
     # operation into this code so the client always sees the same
@@ -244,6 +251,11 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
     ErrorCode.DATABASE_ERROR: (
         "Retry the operation. If persistent, check DATABASE_URL configuration."
     ),
+    ErrorCode.DATA_INTEGRITY_ERROR: (
+        "Do not retry; the persisted row is malformed and will keep failing. "
+        "Use the request_id from details to locate the offending row in the "
+        "server log and repair it manually or restore from backup."
+    ),
     ErrorCode.INSUFFICIENT_DATA: (
         "Submit more results before generating suggestions. "
         "Need at least 2 observations for model fitting."
@@ -296,6 +308,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.MODEL_FITTING_FAILED: "Model fitting failed",
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: "Acquisition optimization failed",
     ErrorCode.DATABASE_ERROR: "Database operation failed",
+    ErrorCode.DATA_INTEGRITY_ERROR: "Persisted data is structurally invalid",
     ErrorCode.INSUFFICIENT_DATA: "Insufficient data for operation",
     ErrorCode.BACKEND_TRANSIENT_ERROR: "Backend reported a transient failure",
     ErrorCode.BACKEND_INCOMPATIBILITY: "Backend cannot handle this spec",
@@ -380,6 +393,7 @@ ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.MODEL_FITTING_FAILED: 500,
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: 500,
     ErrorCode.DATABASE_ERROR: 500,
+    ErrorCode.DATA_INTEGRITY_ERROR: 500,
     ErrorCode.INSUFFICIENT_DATA: 422,
     ErrorCode.BACKEND_TRANSIENT_ERROR: 503,
     ErrorCode.BACKEND_INCOMPATIBILITY: 400,
@@ -429,6 +443,11 @@ ERROR_CODE_RETRY_HINTS: dict[ErrorCode, tuple[bool, float | None]] = {
     ErrorCode.MODEL_FITTING_FAILED: (False, None),
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: (False, None),
     ErrorCode.DATABASE_ERROR: (True, CONCURRENT_MODIFICATION_RETRY_AFTER_SECONDS),
+    # Deterministic failure: the row stays broken until an operator
+    # repairs it, so a client retry just burns the same request again.
+    # Distinct from DATABASE_ERROR which covers transient connection
+    # blips / deadlocks that *do* resolve on retry.
+    ErrorCode.DATA_INTEGRITY_ERROR: (False, None),
     ErrorCode.INSUFFICIENT_DATA: (False, None),
     # Backend hierarchy — only the explicit "transient" subtype is
     # retryable; the others are terminal until the spec/backend
@@ -492,6 +511,58 @@ def make_concurrent_modification_response(
     )
     return make_error_response(
         ErrorCode.CONCURRENT_MODIFICATION,
+        message=message,
+        details=details,
+    )
+
+
+def make_corrupted_json_response(
+    err: "CorruptedJsonColumnError",
+    extra_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the structured response for a malformed persisted JSON column.
+
+    The storage-layer ``_strict_json_loads`` raises
+    :class:`CorruptedJsonColumnError` when a persisted JSON column no
+    longer decodes; this helper is the transport-boundary mapper that
+    turns that exception into the canonical structured envelope so MCP
+    and REST clients see a typed failure instead of an opaque
+    ``RuntimeError`` leaking through.
+
+    Uses :data:`ErrorCode.DATA_INTEGRITY_ERROR` rather than the
+    broader :data:`ErrorCode.DATABASE_ERROR` for a deliberate
+    semantic reason: the failure is **deterministic**, not transient.
+    A retry against the same request hits the same broken row and
+    will keep failing until an operator repairs the column. The
+    matching retry hint in :data:`ERROR_CODE_RETRY_HINTS` is
+    ``(retryable=False, retry_after=None)`` so clients (and especially
+    LLM agents) do not enter a retry storm against unrecoverable
+    state. ``DATABASE_ERROR`` retains ``retryable=True`` for connection
+    blips, deadlocks, and other transient DB failures that *do*
+    resolve on retry.
+
+    The ``raw_excerpt`` from the exception is **not** included in the
+    response: a corrupted column's content may carry user-submitted
+    chemistry, formulation IP, or other sensitive bytes; surfacing the
+    first 200 chars of an arbitrary blob to an untrusted client would
+    be the wrong default. Operators still see the full excerpt in the
+    server-side ERROR log emitted by ``_strict_json_loads``.
+    """
+    details: dict[str, Any] = {
+        "column": err.context,
+    }
+    if extra_details:
+        details.update(extra_details)
+
+    message = (
+        "Persisted JSON column could not be decoded. The row exists but "
+        f"the value in {err.context} is no longer valid JSON. Do not retry "
+        "the request — the row will keep failing until an operator repairs "
+        "it; use the request_id from details to locate the offending row "
+        "in the server log and repair it manually or restore from backup."
+    )
+    return make_error_response(
+        ErrorCode.DATA_INTEGRITY_ERROR,
         message=message,
         details=details,
     )

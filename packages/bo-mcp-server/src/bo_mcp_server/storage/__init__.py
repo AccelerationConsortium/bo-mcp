@@ -8,7 +8,7 @@ from bo_mcp_server.storage.database import (
     init_database,
     lifespan,
 )
-from bo_mcp_server.storage.models import IdempotencyCacheModel
+from bo_mcp_server.storage.models import CorruptedJsonColumnError, IdempotencyCacheModel
 from bo_mcp_server.storage.repositories import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -22,6 +22,7 @@ __all__ = [
     "CampaignRepository",
     "CampaignSpecRepository",
     "ConcurrentModificationError",
+    "CorruptedJsonColumnError",
     "DatabaseInitializationError",
     "EventRepository",
     "IdempotencyCacheModel",

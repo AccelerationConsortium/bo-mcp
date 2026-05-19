@@ -69,8 +69,10 @@ from bo_mcp_server.domain import (
     User,
 )
 from bo_mcp_server.errors import (
+    ERROR_CODE_TO_HTTP_STATUS,
     ErrorCode,
     http_status_for_error,
+    make_corrupted_json_response,
     make_error_response,
 )
 from bo_mcp_server.metrics import (
@@ -116,6 +118,7 @@ from bo_mcp_server.response_formatter import (
     format_validate_intake_response,
 )
 from bo_mcp_server.result_upload_parser import parse_named_result_rows
+from bo_mcp_server.storage.models import CorruptedJsonColumnError
 
 __all__ = [
     # DTOs
@@ -136,10 +139,13 @@ __all__ = [
     "SuggestionStatus",
     "User",
     # Errors / formatting
+    "CorruptedJsonColumnError",
+    "ERROR_CODE_TO_HTTP_STATUS",
     "ErrorCode",
     "VerbosityLevel",
     "format_validate_intake_response",
     "http_status_for_error",
+    "make_corrupted_json_response",
     "make_error_response",
     # Operations
     "batch_get_status_operation",

@@ -28,7 +28,13 @@ from __future__ import annotations
 
 import logging
 
-from bo_mcp_server.client import ErrorCode, make_error_response
+from bo_mcp_server.client import (
+    ERROR_CODE_TO_HTTP_STATUS,
+    CorruptedJsonColumnError,
+    ErrorCode,
+    make_corrupted_json_response,
+    make_error_response,
+)
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -62,6 +68,44 @@ def _attach_trace_headers(response: JSONResponse, request_id: str) -> JSONRespon
     """Echo the request id on the error response so clients can correlate."""
     response.headers["X-Request-ID"] = request_id
     return response
+
+
+async def handle_corrupted_json_column(request: Request, exc: Exception) -> JSONResponse:
+    """Map a persisted-JSON decode failure to the ``DATA_INTEGRITY_ERROR`` envelope.
+
+    The storage layer raises :class:`CorruptedJsonColumnError` when a
+    ``parsed_*`` cached property hits a row whose JSON column does not
+    decode. Without this dedicated handler the catch-all converts it
+    into a generic ``INTERNAL_ERROR`` envelope, hiding the fact that
+    the failure is a *known* data-corruption signal that operators can
+    address. The dedicated handler keeps the sanitization contract
+    intact: the response carries the column name but never the raw
+    payload bytes, and the full excerpt stays in the server log.
+    """
+    assert isinstance(exc, CorruptedJsonColumnError)
+    request_id = _current_request_id(request)
+    logger.error(
+        "Corrupted JSON column on %s %s (request_id=%s, column=%s)",
+        request.method,
+        request.url.path,
+        request_id,
+        exc.context,
+        exc_info=exc,
+    )
+    envelope = make_corrupted_json_response(exc, extra_details={"request_id": request_id})
+    # Derive the HTTP status from the envelope's own ``error.code`` so
+    # a future change to either mapping cannot let the response status
+    # drift away from the envelope semantics. Falls back to 500 only
+    # if the code went missing — :func:`make_corrupted_json_response`
+    # always sets one.
+    envelope_code = ErrorCode(envelope["error"]["code"])
+    return _attach_trace_headers(
+        JSONResponse(
+            status_code=ERROR_CODE_TO_HTTP_STATUS.get(envelope_code, 500),
+            content=envelope,
+        ),
+        request_id,
+    )
 
 
 async def handle_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
@@ -152,10 +196,11 @@ def install_exception_handlers(app: FastAPI) -> None:
     """Register the global handlers on a FastAPI app.
 
     Ordering matters: Starlette resolves the most specific class
-    first, so ``HTTPException`` and ``RequestValidationError`` are
-    registered before the bare ``Exception`` catch-all to keep their
-    curated bodies intact.
+    first, so ``HTTPException`` / ``RequestValidationError`` /
+    ``CorruptedJsonColumnError`` are registered before the bare
+    ``Exception`` catch-all to keep their curated bodies intact.
     """
     app.add_exception_handler(StarletteHTTPException, handle_http_exception)
     app.add_exception_handler(RequestValidationError, handle_request_validation_error)
+    app.add_exception_handler(CorruptedJsonColumnError, handle_corrupted_json_column)
     app.add_exception_handler(Exception, handle_unhandled_exception)

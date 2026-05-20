@@ -68,9 +68,7 @@ def catalyst_experiment(
         base_yield += 0.03  # Nickel benefits from high pressure
 
     yield_val = base_yield * temp_factor * pressure_factor * conc_factor * 100
-    yield_val = max(0, min(100, yield_val + random.gauss(0, 2)))
-
-    return yield_val
+    return max(0, min(100, yield_val + random.gauss(0, 2)))
 
 
 async def main() -> None:

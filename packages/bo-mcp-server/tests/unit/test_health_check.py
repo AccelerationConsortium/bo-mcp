@@ -21,11 +21,12 @@ from bo_mcp_server.tools.health_check import (
 )
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestHealthCheckResponse:
     """Tests for health_check response structure."""
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_required_fields(self, setup_database: None) -> None:
+    async def test_health_check_returns_required_fields(self) -> None:
         """Verify health_check returns all required fields.
 
         Reference: Section 12.3 specifies the response schema.
@@ -39,7 +40,7 @@ class TestHealthCheckResponse:
         assert "uptime_seconds" in result
 
     @pytest.mark.asyncio
-    async def test_health_check_healthy_when_database_connected(self, setup_database: None) -> None:
+    async def test_health_check_healthy_when_database_connected(self) -> None:
         """Verify healthy=True when database is connected.
 
         This is the primary success indicator for agents.
@@ -50,14 +51,14 @@ class TestHealthCheckResponse:
         assert result["database"] == "connected"
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_correct_version(self, setup_database: None) -> None:
+    async def test_health_check_returns_correct_version(self) -> None:
         """Verify version matches package version."""
         result = await health_check()
 
         assert result["version"] == __version__
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_correct_tool_count(self, setup_database: None) -> None:
+    async def test_health_check_returns_correct_tool_count(self) -> None:
         """Verify tools_available matches actual tool count."""
         expected_tools = len(create_mcp_server()._tool_manager.list_tools())
         result = await health_check()
@@ -65,12 +66,34 @@ class TestHealthCheckResponse:
         assert result["tools_available"] == expected_tools
 
     @pytest.mark.asyncio
-    async def test_health_check_uptime_is_non_negative(self, setup_database: None) -> None:
+    async def test_health_check_uptime_is_non_negative(self) -> None:
         """Verify uptime is a non-negative integer."""
         result = await health_check()
 
         assert isinstance(result["uptime_seconds"], int)
         assert result["uptime_seconds"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_health_check_reports_discovered_backends(self) -> None:
+        """Health check exposes the cached backend discovery surface.
+
+        Agents need to know which optimization backends are installed
+        before they pick one in the ``backend`` field of a campaign
+        intake. Without this, a typo or missing optional dependency only
+        surfaces deep inside the first suggestion call.
+        """
+        result = await health_check()
+
+        backends = result["backends"]
+        assert isinstance(backends, dict)
+        assert backends, "At least one backend must be discovered in the test env"
+        # The default ``botorch`` backend is registered via the bo-engine
+        # package's entry point and must always be loadable in the test
+        # environment.
+        botorch = backends.get("botorch")
+        assert botorch is not None
+        assert botorch["loaded"] is True
+        assert isinstance(botorch["features"], list)
 
 
 class TestHealthCheckDatabaseError:
@@ -131,24 +154,33 @@ class TestServerStartTime:
         assert before <= start_time <= after
 
     def test_get_server_start_time_returns_same_value(self) -> None:
-        """Verify start time is consistent across calls."""
-        # Reset for testing
+        """Verify start time is consistent across calls.
+
+        The invariant under test is the cache, not wall-clock progression: a
+        second call must return the same cached value even when ``time.time()``
+        has advanced between the calls. To prove the cache is in play without
+        relying on ``time.sleep``, ``time.time`` is monkey-patched to return
+        two distinct values; if the second call were not cached, it would
+        return the second mocked timestamp and the assertion would fail.
+        """
         import bo_mcp_server.tools.health_check as hc_module
 
         hc_module._server_start_time = None
 
-        first_call = _get_server_start_time()
-        time.sleep(0.01)  # Small delay
-        second_call = _get_server_start_time()
+        with patch.object(hc_module.time, "time", side_effect=[1000.0, 2000.0]):
+            first_call = _get_server_start_time()
+            second_call = _get_server_start_time()
 
-        assert first_call == second_call
+        assert first_call == 1000.0
+        assert second_call == first_call
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestHealthCheckIntegration:
     """Integration tests for health_check usage patterns."""
 
     @pytest.mark.asyncio
-    async def test_agent_can_verify_server_before_operations(self, setup_database: None) -> None:
+    async def test_agent_can_verify_server_before_operations(self) -> None:
         """Test typical agent verification workflow.
 
         Agents should call health_check before starting optimization
@@ -166,7 +198,7 @@ class TestHealthCheckIntegration:
             pytest.fail("Server should be healthy in test environment")
 
     @pytest.mark.asyncio
-    async def test_health_check_is_lightweight(self, setup_database: None) -> None:
+    async def test_health_check_is_lightweight(self) -> None:
         """Verify health_check completes quickly.
 
         Health checks should be fast for agent pre-flight checks.
@@ -179,7 +211,7 @@ class TestHealthCheckIntegration:
         assert elapsed < 1.0, f"Health check took {elapsed:.2f}s, expected <1s"
 
     @pytest.mark.asyncio
-    async def test_multiple_health_checks_are_idempotent(self, setup_database: None) -> None:
+    async def test_multiple_health_checks_are_idempotent(self) -> None:
         """Verify multiple health checks return consistent results.
 
         Agents may call health_check multiple times; results should be stable.

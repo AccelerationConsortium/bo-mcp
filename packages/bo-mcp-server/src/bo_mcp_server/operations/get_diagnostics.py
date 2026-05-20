@@ -16,18 +16,21 @@ from typing import Any
 from uuid import UUID
 
 from bo_engine.backend import DiagnosticSection
+from bo_engine.progress import ProgressCallback
 
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.cache import diagnostics_cache
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import Campaign, CampaignSpec, Result, Suggestion, SuggestionStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.metrics import record_diagnostics_cache
 from bo_mcp_server.operations.diagnostics import (
     compute_constraint_satisfaction_metrics,
     compute_convergence_diagnostics,
     compute_exploration_exploitation,
     compute_health_and_progress,
     compute_next_action_recommendation,
+    compute_outcome_constraint_calibration_metrics,
     compute_suggestion_diversity_metrics,
     compute_uncertainty_trends,
     enrich_diagnostics,
@@ -122,6 +125,7 @@ async def _compute_sections(
     all_suggestions: list[Suggestion],
     pending_suggestions: list[Suggestion],
     campaign: Campaign,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Compute only the requested diagnostic sections."""
     is_single_objective = len(spec.objectives) == 1
@@ -148,6 +152,7 @@ async def _compute_sections(
                 opt_spec,
                 observations,
                 backend_sections,
+                progress_callback,
             )
         )
 
@@ -181,6 +186,7 @@ async def _compute_sections(
 
     if "constraints" in requested:
         compute_constraint_satisfaction_metrics(results, spec, diagnostics)
+        compute_outcome_constraint_calibration_metrics(results, spec, diagnostics)
 
     if "convergence" in requested:
         compute_convergence_diagnostics(
@@ -209,6 +215,7 @@ async def get_diagnostics_operation(
     use_cache: bool = True,
     verbosity: str = "standard",
     sections: list[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Compute diagnostic information for a campaign.
 
@@ -222,6 +229,9 @@ async def get_diagnostics_operation(
         sections: Optional list of sections to compute. When omitted, all
             sections are computed. Valid: health, objectives, model,
             convergence, suggestions, outliers, constraints.
+        progress_callback: Optional progress hook (see
+            :class:`bo_engine.progress.ProgressEvent`). Backend
+            diagnostic sections emit start/done milestones through this.
 
     Returns:
         Formatted diagnostics dictionary.
@@ -259,8 +269,15 @@ async def get_diagnostics_operation(
         if use_cache and is_full:
             cached = await diagnostics_cache.get(cache_key)
             if cached is not None:
+                record_diagnostics_cache("hit")
                 logger.debug("Returning cached diagnostics for campaign %s", campaign_id)
                 return format_diagnostics_response(cached, verbosity_level)
+            record_diagnostics_cache("miss")
+        elif use_cache:
+            # Partial-section reads cannot use the cached envelope but
+            # still touch the cache subsystem; track them under a
+            # ``partial`` label so the hit rate stays meaningful.
+            record_diagnostics_cache("partial")
 
         spec = await spec_repo.get(campaign.spec_id)
         if spec is None:
@@ -281,6 +298,7 @@ async def get_diagnostics_operation(
             all_suggestions,
             pending_suggestions,
             campaign,
+            progress_callback=progress_callback,
         )
 
         logger.info(

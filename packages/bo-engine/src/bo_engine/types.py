@@ -77,21 +77,49 @@ class ConstraintType(StrEnum):
 
 @dataclass(frozen=True)
 class ParameterSpec:
-    """Specification for a single input parameter."""
+    """Specification for a single input parameter.
+
+    ``parameter_options`` carries per-backend metadata that has no neutral
+    cross-backend equivalent (BayBE encoding choice, active task values,
+    candidate-table mode, etc.). Keys are concrete backend names — a
+    backend that does not recognize its slot must silently ignore it.
+    """
 
     name: str
     type: ParameterType
     bounds: tuple[float, float] | None = None  # For continuous/discrete
-    values: list[int] | None = None  # For discrete (explicit values)
+    values: list[float] | None = None  # For discrete (explicit values; fractional ok)
     categories: list[str] | None = None  # For categorical
+    parameter_options: dict[str, dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
 class ObjectiveSpec:
-    """Specification for a single objective."""
+    """Specification for a single objective.
+
+    ``log_transform`` opts the objective into a ``Log → Standardize``
+    outcome stack inside :mod:`bo_engine.models`. Enable it for
+    multi-decade objectives (e.g. reaction rates spanning 10⁻³ … 10²)
+    whose raw scale would otherwise dominate the GP's lengthscale
+    fit; the model un-applies both stages on the posterior so callers
+    still see results in the user's original scale.
+
+    **Constraints (enforced at model-fit time):**
+
+    * Requires strictly positive ``train_y`` for this objective.
+      Zero or negative observations raise ``ValueError`` from the
+      model factory; pre-shift the target (or drop the row) if
+      non-positive outcomes can occur.
+    * Requires ``minimize=True``. The maximize path negates targets
+      to enforce BoTorch's internal minimization convention, which
+      flips positive raw values to negative and makes the subsequent
+      ``Log`` step ill-defined. Suggestion generation raises a
+      ``ValueError`` for ``log_transform=True`` + ``minimize=False``.
+    """
 
     name: str
     minimize: bool = True
+    log_transform: bool = False
 
 
 @dataclass(frozen=True)
@@ -180,12 +208,88 @@ class TurboConfig:
     """Configuration for TuRBO trust-region optimization.
 
     Present = use TuRBO, absent (None) = standard acquisition optimization.
+
+    All defaults match the canonical TuRBO paper (Eriksson et al., NeurIPS
+    2019) under the assumption of unit-standardized objectives — see
+    :class:`bo_engine.turbo.TurboState` for the scale assumption and the
+    meaning of each tolerance.
+
+    Attributes:
+        initial_length: Initial trust region edge in normalized [0,1] input
+            space (paper Algorithm 1: ``L_init = 0.8``).
+        length_min: Minimum trust region edge before a restart is triggered
+            (paper §3.2: ``L_min = 0.5**7 ≈ 7.8e-3``).
+        length_max: Maximum trust region edge after expansion (paper §3.2:
+            ``L_max = 1.6``). Larger than 1.0 lets the trust region cover the
+            entire normalized input box once expanded.
+        success_tolerance: Consecutive improving batches before the trust
+            region doubles (paper Algorithm 1: ``tau_s = 10``).
+        failure_tolerance: Consecutive non-improving batches before the trust
+            region halves. ``None`` (the default) re-derives the value at
+            ``TurboState`` construction time as
+            ``ceil(max(4/batch, dim/batch))`` capped at
+            ``TURBO_MAX_FAILURE_TOLERANCE`` so high-dimensional campaigns get
+            proportionally more rope before contracting; set an explicit
+            integer to override.
     """
 
     initial_length: float = 0.8
     length_min: float = 0.5**7
     length_max: float = 1.6
     success_tolerance: int = 10
+    failure_tolerance: int | None = None
+
+
+@dataclass(frozen=True)
+class AcquisitionOptimizationConfig:
+    """L-BFGS-B / multi-start budget for acquisition optimization.
+
+    Restart and raw-sample budgets must scale with problem dimensionality so
+    that SAASBO and other high-D campaigns do not return shallow local
+    optima. The defaults are derived from :mod:`bo_engine.constants` and grow
+    linearly with the number of acquisition-input dimensions; both values are
+    capped to keep CPU budget bounded.
+
+    Attributes:
+        num_restarts: Override for restart count. ``None`` means use the
+            dimension-adaptive default.
+        raw_samples: Override for the raw-sample budget. ``None`` means use
+            the dimension-adaptive default.
+    """
+
+    num_restarts: int | None = None
+    raw_samples: int | None = None
+
+    def resolve(self, n_dims: int) -> tuple[int, int]:
+        """Return the effective ``(num_restarts, raw_samples)`` for ``n_dims``.
+
+        Caller-provided overrides on the dataclass take precedence; otherwise
+        the formula
+        ``num_restarts = NUM_RESTARTS_BASE + NUM_RESTARTS_PER_DIM * d`` and
+        ``raw_samples = max(RAW_SAMPLES_MIN, RAW_SAMPLES_PER_DIM * d)`` apply,
+        each clamped by the corresponding ``*_MAX`` constant.
+        """
+        from bo_engine.constants import (
+            NUM_RESTARTS_BASE,
+            NUM_RESTARTS_MAX,
+            NUM_RESTARTS_PER_DIM,
+            RAW_SAMPLES_MAX,
+            RAW_SAMPLES_MIN,
+            RAW_SAMPLES_PER_DIM,
+        )
+
+        d = max(int(n_dims), 1)
+        restarts = (
+            int(self.num_restarts)
+            if self.num_restarts is not None
+            else NUM_RESTARTS_BASE + NUM_RESTARTS_PER_DIM * d
+        )
+        samples = (
+            int(self.raw_samples)
+            if self.raw_samples is not None
+            else max(RAW_SAMPLES_MIN, RAW_SAMPLES_PER_DIM * d)
+        )
+        return min(restarts, NUM_RESTARTS_MAX), min(samples, RAW_SAMPLES_MAX)
 
 
 @dataclass(frozen=True)
@@ -229,6 +333,92 @@ class OptimizationSpec:
     transfer_learning: TransferLearningSpec | None = None
     # v2.0: SAASBO for high-dimensional optimization (None = disabled)
     saasbo_config: SAASBOConfig | None = None
+    # Acquisition-optimizer restart / raw-sample budget. Defaults scale with
+    # parameter dimensionality (see ``AcquisitionOptimizationConfig``); set
+    # explicit fields here to override per campaign.
+    acquisition_optimization: AcquisitionOptimizationConfig = field(
+        default_factory=AcquisitionOptimizationConfig
+    )
+    # Budget / convergence-based automatic stopping. Each field is optional;
+    # when set, the suggestion entry point uses the corresponding signal to
+    # short-circuit further suggestion generation. ``max_iterations`` caps
+    # the number of completed BO iterations; ``max_observations`` caps the
+    # number of observed results irrespective of iteration grouping;
+    # ``convergence_tolerance`` is forwarded to ``detect_convergence`` as the
+    # relative-improvement threshold below which the campaign is considered
+    # converged.
+    max_iterations: int | None = None
+    max_observations: int | None = None
+    convergence_tolerance: float | None = None
+    # Typed backend-native option surface. Outer keys are backend names
+    # (``"botorch"``, ``"baybe"``); inner dicts hold options that have no
+    # neutral cross-backend equivalent. Consumed by ``validate_capabilities``
+    # and the per-backend converters; backends that do not recognize a key
+    # must silently ignore it.
+    backend_options: dict[str, dict[str, Any]] | None = None
+    # Explicit caller-side acknowledgement that the chosen backend may
+    # silently degrade these option fields. Backends classify
+    # semantically load-bearing options (e.g. ``outcome_constraints`` on
+    # BayBE) as UNSUPPORTED by default so misroutings fail loudly at
+    # intake; passing the corresponding field name here downgrades the
+    # report to IGNORED so the caller opts into the degraded run with a
+    # warning. ``backend="auto"`` continues to route around backends that
+    # require acknowledgement for active options.
+    acknowledge_degradations: tuple[str, ...] = field(default_factory=tuple)
+    # Modeling strategy for ``outcome_constraints``. ``"continuous"``
+    # (default) fits a regression GP on the raw constrained-objective values
+    # and converts posterior samples to signed distance-to-boundary so the
+    # acquisition retains gradient information near the boundary;
+    # Gaussian-CDF feasibility weighting is then exact in expectation
+    # (Gardner et al. ICML 2014; Letham et al. ICML 2019). ``"binary"`` is
+    # the legacy path that fits a GP on binary feasibility labels — kept as
+    # an opt-in fallback for genuinely binary outcomes (e.g. pass/fail
+    # quality gates) where the objective value is not informative.
+    outcome_constraint_method: str = "continuous"
+    # Categorical-aware GP kernel routing. ``False`` (default) keeps the
+    # historical one-hot + RBF behaviour. ``True`` requests an additive
+    # ``RBF(continuous_dims) + CategoricalKernel(one_hot_blocks)`` kernel —
+    # Hamming-style similarity on the categorical dims instead of Euclidean
+    # distance on their one-hot columns. The audit identified this as a
+    # modeling-efficiency concern (slower fits and lower posterior quality
+    # on high-cardinality categorical specs) rather than a correctness bug;
+    # the acquisition path already enumerates one-hot combinations via
+    # ``optimize_acqf_mixed`` so projection drift is not in scope.
+    #
+    # The flag is wired to ``models.create_input_transform`` /
+    # ``models.create_single_task_model``; routing to BoTorch's
+    # ``MixedSingleTaskGP`` (which requires *ordinal* integer encoding for
+    # the categorical block) is a separate piece of work because it
+    # propagates through every transform / acquisition call site.
+    use_categorical_kernel: bool = False
+    # Optional override for the GP observation-noise ``GammaPrior``
+    # concentration and rate. ``None`` (default) uses the
+    # bo_engine.constants values calibrated for standardized targets. In
+    # data-starved regimes (small n on a high-noise problem) the inferred
+    # noise hyperparameter is miscalibrated by the stock prior; passing
+    # ``(concentration, rate)`` lets the caller tighten or relax the
+    # prior to match an empirically known noise floor. The override is
+    # only consumed when ``train_yvar`` is not supplied — the
+    # heteroskedastic / known-uncertainty path bypasses the prior
+    # entirely (see ``models._build_likelihood``).
+    noise_prior_params: tuple[float, float] | None = None
+    # Auto-shift toggle for objectives that declare ``log_transform=True``
+    # but may have occasional non-positive observations. When set, the
+    # log-transform path computes ``shift = -min(y) + epsilon`` once at
+    # fit and applies it before training — see
+    # :func:`bo_engine.models.create_single_task_model` for the
+    # bookkeeping. Defaults to ``False`` so the strict positivity check
+    # remains the default and only opt-in callers are subject to the
+    # shifted-scale posterior contract.
+    #
+    # **Single-objective only.** The current shift bookkeeping lives on
+    # the single-task GP factory and the single-objective suggestion
+    # provenance; the multi-objective path
+    # (``create_model`` / ``_generate_multi_objective_batch``) does not
+    # thread it through and raises ``ValueError`` when the flag is set
+    # alongside more than one objective. Per-objective shifts are
+    # tracked separately (Phase H follow-up).
+    auto_shift_for_log: bool = False
 
     @property
     def use_turbo(self) -> bool:
@@ -263,6 +453,14 @@ class SuggestionResult:
     """Result of suggestion generation.
 
     Contains parameter values and metadata about how the suggestion was generated.
+
+    ``model_warnings`` (when non-empty) carries diagnostic strings raised by
+    post-fit checks (e.g. failed standardization invariant on a constant
+    objective). The warnings are batch-level rather than per-suggestion, but
+    they are stamped onto every entry of the batch so a downstream wrapper
+    that operates on the full list (e.g. :class:`bo_engine.backend.SuggestionBatch`)
+    can de-duplicate and lift them onto its own ``warnings`` field without
+    threading a separate channel through the generator API.
     """
 
     parameter_values: dict[str, Any]
@@ -279,6 +477,7 @@ class SuggestionResult:
     explanation: str | None = None
     predicted_objectives: dict[str, float] | None = None  # Posterior mean per objective
     predicted_std: dict[str, float] | None = None  # Posterior std per objective
+    model_warnings: tuple[str, ...] = ()
 
 
 @dataclass
@@ -286,11 +485,31 @@ class ObservationData:
     """Observed data point for optimization.
 
     Contains parameter values and their corresponding objective values.
+
+    ``measurement_uncertainty`` holds per-objective measurement *standard
+    deviations* (one entry per objective name). When supplied for every
+    observation in a campaign, the bo-engine builds ``train_yvar`` as
+    ``stddev**2`` and switches the GP to a ``FixedNoiseGaussianLikelihood``,
+    so the user's measurement uncertainty is trusted instead of re-estimated
+    by MLL. Partial coverage (some observations missing or with a missing
+    objective key) is treated as "unknown for this batch" -- the GP falls
+    back to its trainable-noise prior.
     """
 
     parameter_values: dict[str, Any]
     objective_values: dict[str, float]
     cost: float | None = None  # v1.3: Cost for cost-aware optimization
+    measurement_uncertainty: dict[str, float] | None = None  # per-objective stddev
+    # Optional durable cross-system identity. Backends that
+    # serialise per-observation state (notably BayBE, which keeps an
+    # ``observation_identity`` index) use this as the discriminator for
+    # otherwise-identical replicate rows so a specific replicate can be
+    # tied to the same storage row across reorder / restart cycles. The
+    # MCP server populates it with ``Result.id`` (a UUID string) via
+    # ``helpers.results_to_observations``; direct bo-engine callers that
+    # do not need cross-system addressing can leave it ``None`` and the
+    # backend falls back to a within-batch fingerprint as before.
+    result_id: str | None = None
 
 
 # =============================================================================
@@ -320,6 +539,10 @@ class GenerationContext:
     observations: list[ObservationData] | None = None
     train_costs: Any | None = None  # Tensor
     pending_x: Any | None = None  # Tensor of encoded pending / in-flight points
+    # Per-objective measurement noise variance ``(n_obs, n_objectives)``
+    # derived from ``ObservationData.measurement_uncertainty``. ``None`` when
+    # any observation lacks uncertainty data so the GP keeps trainable noise.
+    train_yvar: Any | None = None  # Tensor
 
 
 @dataclass

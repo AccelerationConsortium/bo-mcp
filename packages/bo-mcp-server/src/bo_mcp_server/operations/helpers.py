@@ -99,12 +99,28 @@ def parse_campaign_id(campaign_id: str) -> UUID | dict[str, Any]:
 
 
 def results_to_observations(results: list[Result]) -> list[ObservationData]:
-    """Convert domain Result objects to ObservationData for bo-engine."""
+    """Convert domain Result objects to ObservationData for bo-engine.
+
+    Forwards ``Result.measurement_uncertainty`` so the bo-engine can route
+    the GP onto a ``FixedNoiseGaussianLikelihood`` when every observation
+    has uncertainty for every objective. Missing entries fall through as
+    ``None``, which the engine treats as "trainable noise for this batch".
+
+    ``Result.id`` is threaded through as ``ObservationData.result_id`` so
+    backends that serialise per-observation identity (notably BayBE)
+    can use a stable cross-system discriminator instead of a
+    parameter/objective fingerprint that collapses replicates onto a
+    single identity slot. Without the discriminator, two identical
+    replicate rows are indistinguishable in the serialized identity index
+    and reconciliation has to fall back to a positional ``Counter``.
+    """
     return [
         ObservationData(
             parameter_values=r.parameter_values,
             objective_values=r.objective_values,
             cost=r.metadata.get("cost") if r.metadata else None,
+            measurement_uncertainty=r.measurement_uncertainty,
+            result_id=str(r.id),
         )
         for r in results
     ]

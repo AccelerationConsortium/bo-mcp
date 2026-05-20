@@ -1,10 +1,19 @@
-"""Suggestion resource for MCP."""
+"""Suggestion resource for MCP.
+
+Errors raise :class:`ResourceOperationError`; the MCP read path
+(via the wrapper installed by :mod:`bo_mcp_server.resource_boundary`)
+surfaces them as :class:`McpError` JSON-RPC errors with the
+structured envelope on ``error.data``. Direct in-process callers
+catch the typed exception and read the envelope off ``exc.envelope``
+or ``str(exc)``.
+"""
 
 from uuid import UUID
 
 from bo_mcp_server.domain import SuggestionStatus
+from bo_mcp_server.errors import ErrorCode, raise_resource_error
 from bo_mcp_server.server import mcp
-from bo_mcp_server.storage import SuggestionRepository, get_session
+from bo_mcp_server.storage import CampaignRepository, SuggestionRepository, get_session
 
 
 @mcp.resource("suggestions://{campaign_id}")
@@ -15,16 +24,35 @@ async def get_suggestions(campaign_id: str) -> str:
         campaign_id: UUID of the campaign
 
     Returns:
-        Formatted list of pending suggestions
+        Markdown listing on success.
+
+    Raises:
+        ResourceOperationError: ``INVALID_CAMPAIGN_ID`` for malformed
+            ids and ``CAMPAIGN_NOT_FOUND`` when the well-formed id is
+            unknown. An existing campaign with no pending suggestions
+            still returns the plain Markdown placeholder.
     """
     try:
         campaign_uuid = UUID(campaign_id)
     except ValueError:
-        return f"Error: Invalid campaign_id format: {campaign_id}"
+        raise_resource_error(
+            ErrorCode.INVALID_CAMPAIGN_ID,
+            details={"campaign_id": campaign_id},
+        )
 
     async with get_session() as session:
-        suggestion_repo = SuggestionRepository(session)
+        # Verify the campaign exists before listing suggestions so that
+        # ``no rows`` from the suggestions table cannot be confused with
+        # ``campaign does not exist``.
+        campaign_repo = CampaignRepository(session)
+        if await campaign_repo.get(campaign_uuid) is None:
+            raise_resource_error(
+                ErrorCode.CAMPAIGN_NOT_FOUND,
+                message=f"Campaign {campaign_id} not found",
+                details={"campaign_id": campaign_id},
+            )
 
+        suggestion_repo = SuggestionRepository(session)
         suggestions = await suggestion_repo.list_by_campaign(
             campaign_uuid, status=SuggestionStatus.PENDING
         )
@@ -61,12 +89,20 @@ async def get_suggestion(suggestion_id: str) -> str:
         suggestion_id: UUID of the suggestion
 
     Returns:
-        Formatted suggestion details
+        Markdown details on success.
+
+    Raises:
+        ResourceOperationError: ``VALIDATION_FAILED`` for malformed
+            ids; ``SUGGESTION_NOT_FOUND`` when the id is unknown.
     """
     try:
         suggestion_uuid = UUID(suggestion_id)
     except ValueError:
-        return f"Error: Invalid suggestion_id format: {suggestion_id}"
+        raise_resource_error(
+            ErrorCode.VALIDATION_FAILED,
+            message=f"Invalid suggestion_id format: {suggestion_id}",
+            details={"suggestion_id": suggestion_id},
+        )
 
     async with get_session() as session:
         suggestion_repo = SuggestionRepository(session)
@@ -74,7 +110,11 @@ async def get_suggestion(suggestion_id: str) -> str:
         suggestion = await suggestion_repo.get(suggestion_uuid)
 
         if suggestion is None:
-            return f"Suggestion {suggestion_id} not found"
+            raise_resource_error(
+                ErrorCode.SUGGESTION_NOT_FOUND,
+                message=f"Suggestion {suggestion_id} not found",
+                details={"suggestion_id": suggestion_id},
+            )
 
         lines = [
             f"# Suggestion {suggestion.id}",

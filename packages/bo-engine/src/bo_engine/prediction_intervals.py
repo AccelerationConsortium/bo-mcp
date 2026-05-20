@@ -145,10 +145,7 @@ def compute_prediction_intervals(
     n_points = x.shape[0]
 
     # Get number of objectives
-    if isinstance(model, ModelListGP):
-        n_objectives = len(model.models)
-    else:
-        n_objectives = 1
+    n_objectives = len(model.models) if isinstance(model, ModelListGP) else 1
 
     if objective_names is None:
         objective_names = [f"obj_{i}" for i in range(n_objectives)]
@@ -207,7 +204,7 @@ def _compute_improvement_metrics(
     if best_value is None or len(intervals) == 0:
         return None, None, "unknown"
 
-    first_obj = list(intervals.keys())[0]
+    first_obj = next(iter(intervals.keys()))
     mean = intervals[first_obj][0].mean
     std = intervals[first_obj][0].std
 

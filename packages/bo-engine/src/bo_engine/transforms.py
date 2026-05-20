@@ -43,10 +43,9 @@ def classify_search_space(spec: OptimizationSpec) -> SearchSpaceType:
 
     if all_categorical:
         return SearchSpaceType.PURELY_CATEGORICAL
-    elif has_categorical:
+    if has_categorical:
         return SearchSpaceType.MIXED
-    else:
-        return SearchSpaceType.CONTINUOUS
+    return SearchSpaceType.CONTINUOUS
 
 
 def count_categorical_combinations(spec: OptimizationSpec) -> int:
@@ -67,7 +66,8 @@ def count_categorical_combinations(spec: OptimizationSpec) -> int:
     for param in spec.parameters:
         if param.type == ParameterType.CATEGORICAL:
             if param.categories is None:
-                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+                msg = f"Categorical parameter '{param.name}' has no categories defined"
+                raise ValueError(msg)
             has_categorical = True
             product *= len(param.categories)
 
@@ -95,11 +95,12 @@ def enumerate_discrete_choices(spec: OptimizationSpec) -> Tensor:
     """
     n_combos = count_categorical_combinations(spec)
     if n_combos > DISCRETE_ENUMERATION_MAX_POINTS:
-        raise ValueError(
+        msg = (
             f"Discrete space has {n_combos} combinations, exceeding the "
             f"enumeration limit of {DISCRETE_ENUMERATION_MAX_POINTS}. "
             "Consider reducing the number of categories."
         )
+        raise ValueError(msg)
 
     device = get_device()
     dtype = get_dtype()
@@ -109,16 +110,15 @@ def enumerate_discrete_choices(spec: OptimizationSpec) -> Tensor:
     for param in spec.parameters:
         if param.type == ParameterType.CATEGORICAL:
             if param.categories is None:
-                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+                msg = f"Categorical parameter '{param.name}' has no categories defined"
+                raise ValueError(msg)
             cat_ranges.append(range(len(param.categories)))
 
     # Pre-compute parameter layout: list of (n_dims, is_categorical) tuples
     param_layout = _get_parameter_layout(spec)
 
     # Build all combinations
-    rows = []
-    for combo in itertools.product(*cat_ranges):
-        rows.append(_encode_combo(combo, param_layout))
+    rows = [_encode_combo(combo, param_layout) for combo in itertools.product(*cat_ranges)]
 
     return torch.tensor(rows, dtype=dtype, device=device)
 
@@ -129,7 +129,8 @@ def _get_parameter_layout(spec: OptimizationSpec) -> list[tuple[int, bool]]:
     for param in spec.parameters:
         if param.type == ParameterType.CATEGORICAL:
             if param.categories is None:
-                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+                msg = f"Categorical parameter '{param.name}' has no categories defined"
+                raise ValueError(msg)
             layout.append((len(param.categories), True))
         else:
             layout.append((1, False))
@@ -182,7 +183,8 @@ def _collect_categorical_dim_info(
     for param in spec.parameters:
         if param.type == ParameterType.CATEGORICAL:
             if param.categories is None:
-                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+                msg = f"Categorical parameter '{param.name}' has no categories defined"
+                raise ValueError(msg)
             n_cats = len(param.categories)
             cat_info.append((dim_idx, n_cats))
             dim_idx += n_cats
@@ -218,7 +220,8 @@ def _get_param_bounds(param: ParameterSpec) -> tuple[list[float], list[float]]:
     """
     if param.type == ParameterType.CONTINUOUS:
         if param.bounds is None:
-            raise ValueError(f"Continuous parameter '{param.name}' has no bounds defined")
+            msg = f"Continuous parameter '{param.name}' has no bounds defined"
+            raise ValueError(msg)
         return [param.bounds[0]], [param.bounds[1]]
 
     if param.type == ParameterType.DISCRETE:
@@ -230,7 +233,8 @@ def _get_param_bounds(param: ParameterSpec) -> tuple[list[float], list[float]]:
 
     # ParameterType.CATEGORICAL — one-hot encoding: each category is a dimension in [0, 1]
     if param.categories is None:
-        raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+        msg = f"Categorical parameter '{param.name}' has no categories defined"
+        raise ValueError(msg)
     n_cats = len(param.categories)
     return [0.0] * n_cats, [1.0] * n_cats
 
@@ -252,6 +256,34 @@ def get_bounds_tensor(spec: OptimizationSpec) -> Tensor:
     return torch.tensor([lower, upper], dtype=get_dtype(), device=get_device())
 
 
+def get_categorical_dim_indices(spec: OptimizationSpec) -> list[int]:
+    """Return the encoded-space column indices belonging to one-hot blocks.
+
+    The encoded feature space puts each continuous / discrete parameter
+    into a single column and each categorical parameter into a block of
+    ``len(categories)`` one-hot columns. This helper returns the indices
+    of the categorical columns so callers (e.g.
+    :func:`bo_engine.models.build_mixed_kernel`) can apply a
+    Hamming-style kernel to those dimensions and an RBF kernel to the
+    remaining (continuous + discrete) dimensions.
+
+    Empty list when ``spec`` has no categorical parameters.
+    """
+    indices: list[int] = []
+    dim_idx = 0
+    for param in spec.parameters:
+        if param.type == ParameterType.CATEGORICAL:
+            if param.categories is None:
+                msg = f"Categorical parameter '{param.name}' has no categories defined"
+                raise ValueError(msg)
+            n_cats = len(param.categories)
+            indices.extend(range(dim_idx, dim_idx + n_cats))
+            dim_idx += n_cats
+        else:
+            dim_idx += 1
+    return indices
+
+
 def _encode_param_value(param: ParameterSpec, value: int | float | str) -> list[float]:
     """Encode a single parameter value into its tensor representation.
 
@@ -267,7 +299,8 @@ def _encode_param_value(param: ParameterSpec, value: int | float | str) -> list[
     """
     if param.type == ParameterType.CATEGORICAL:
         if param.categories is None:
-            raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+            msg = f"Categorical parameter '{param.name}' has no categories defined"
+            raise ValueError(msg)
         return [1.0 if value == cat else 0.0 for cat in param.categories]
     return [float(value)]
 
@@ -305,7 +338,7 @@ def _decode_param_value(
 
     For continuous parameters, extracts a float.
     For discrete parameters, extracts and rounds to the nearest integer.
-    For categorical parameters, decodes one-hot via softmax and argmax.
+    For categorical parameters, decodes one-hot via ``argmax``.
 
     Args:
         param: Parameter specification
@@ -321,15 +354,19 @@ def _decode_param_value(
     if param.type == ParameterType.DISCRETE:
         return round(tensor[idx].item()), idx + 1
 
-    # ParameterType.CATEGORICAL — decode one-hot via softmax then argmax.
-    # Softmax sharpens the encoding so ties from continuous relaxation
-    # are resolved deterministically.
+    # ParameterType.CATEGORICAL — pick the argmax over the one-hot block.
+    # Softmax is monotone, so ``softmax(x).argmax() == x.argmax()``; the
+    # extra transform was a no-op that misled readers about the semantics
+    # (no probabilistic sampling happens here) and cost an unnecessary
+    # exp/normalize per decode. ``torch.argmax`` resolves ties to the
+    # lowest index deterministically — matching the encoder's category
+    # ordering — so callers see the canonical category name on ties.
     if param.categories is None:
-        raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+        msg = f"Categorical parameter '{param.name}' has no categories defined"
+        raise ValueError(msg)
     n_cats = len(param.categories)
     cat_values = tensor[idx : idx + n_cats]
-    sharpened = torch.softmax(cat_values, dim=0)
-    best_cat_idx = int(sharpened.argmax().item())
+    best_cat_idx = int(torch.argmax(cat_values).item())
     return param.categories[best_cat_idx], idx + n_cats
 
 
@@ -412,7 +449,8 @@ def get_n_dims(spec: OptimizationSpec) -> int:
     for param in spec.parameters:
         if param.type == ParameterType.CATEGORICAL:
             if param.categories is None:
-                raise ValueError(f"Categorical parameter '{param.name}' has no categories defined")
+                msg = f"Categorical parameter '{param.name}' has no categories defined"
+                raise ValueError(msg)
             n_dims += len(param.categories)
         else:
             n_dims += 1

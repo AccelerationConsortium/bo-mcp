@@ -363,9 +363,11 @@ class TestCategoricalBatchDiversity:
                 iteration=1,
             )
 
-            if len(suggestions) == 2:
-                if suggestions[0].parameter_values == suggestions[1].parameter_values:
-                    n_duplicates += 1
+            if (
+                len(suggestions) == 2
+                and suggestions[0].parameter_values == suggestions[1].parameter_values
+            ):
+                n_duplicates += 1
 
         duplicate_rate = n_duplicates / n_seeds
         assert duplicate_rate < 0.05, (

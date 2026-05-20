@@ -330,12 +330,15 @@ class TestCVForRealBenchmarks:
         )
 
     @pytest.mark.slow
+    @pytest.mark.nightly
     def test_cv_on_hartmann6_samples(self) -> None:
         """CV on Hartmann6 function (6D, more challenging).
 
         Hartmann6 is smooth but higher dimensional, requiring more samples.
         The curse of dimensionality means we need significantly more points
-        for good GP fit in higher dimensions.
+        for good GP fit in higher dimensions. The ``coverage_95 > 0.5``
+        calibration assertion is a statistical claim, so this test is marked
+        ``nightly`` in addition to ``slow`` and runs against multi-seed nightly.
         """
         torch.manual_seed(42)
         bounds = torch.tensor([[0.0] * 6, [1.0] * 6], dtype=torch.float64)

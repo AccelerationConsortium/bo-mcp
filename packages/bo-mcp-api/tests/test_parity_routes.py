@@ -12,6 +12,8 @@ from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.submit_results import submit_results
 
+pytestmark = pytest.mark.usefixtures("persisted_user")
+
 
 def _to_result_inputs(rows: list[dict]) -> list[ResultSubmissionInput]:
     return [
@@ -82,7 +84,6 @@ class TestCampaignParityRoutes:
         self,
         api_client,
         auth_headers,
-        persisted_user,
         persisted_another_user,
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
@@ -206,6 +207,76 @@ class TestCampaignParityRoutes:
         assert data["candidates"]
         assert data["candidates"][0]["name"] == "Source Transfer Campaign"
 
+    @pytest.mark.asyncio
+    async def test_transfer_candidates_route_honors_parameter_aliases(
+        self,
+        api_client,
+        auth_headers,
+        persisted_user,
+    ):
+        """The REST transfer endpoint passes ``parameter_aliases`` through to the operation.
+
+        Without the alias map, ``temperature`` vs ``temp_c`` look like
+        disjoint parameter sets and the Jaccard intersection collapses
+        to zero. With the alias, the canonical name unifies the two
+        and the source surfaces as a candidate.
+        """
+        owner_id = str(persisted_user.id)
+        source = await create_campaign(
+            {
+                "name": "Aliased REST Source",
+                "parameters": [
+                    {"name": "temperature", "type": "continuous", "bounds": [20.0, 100.0]},
+                ],
+                "objectives": [{"name": "yield", "direction": "maximize"}],
+            },
+            owner_id,
+        )
+        await generate_suggestions(source["campaign_id"])
+        await submit_results(
+            source["campaign_id"],
+            _to_result_inputs(
+                [
+                    {"parameter_values": {"temperature": 25.0}, "objective_values": {"yield": 0.5}},
+                    {"parameter_values": {"temperature": 50.0}, "objective_values": {"yield": 0.7}},
+                    {"parameter_values": {"temperature": 75.0}, "objective_values": {"yield": 0.6}},
+                ]
+            ),
+            owner_id,
+        )
+        target = await create_campaign(
+            {
+                "name": "Aliased REST Target",
+                "parameters": [
+                    {"name": "temp_c", "type": "continuous", "bounds": [30.0, 90.0]},
+                ],
+                "objectives": [{"name": "yield", "direction": "maximize"}],
+            },
+            owner_id,
+        )
+
+        response = await api_client.post(
+            f"/api/campaigns/{target['campaign_id']}/transfer-candidates",
+            json={
+                "similarity_threshold": 0.0,
+                "max_candidates": 5,
+                "verbosity": "detailed",
+                "parameter_aliases": {"temperature": ["temp_c"]},
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        candidates = data["candidates"]
+        assert candidates, "aliases must reveal the renamed source campaign"
+        top = candidates[0]
+        assert top["name"] == "Aliased REST Source"
+        # ``parameter_similarity`` is part of ``component_scores`` at detailed verbosity.
+        if "component_scores" in top:
+            assert top["component_scores"]["parameter_similarity"] > 0.0
+
 
 class TestSuggestionParityRoutes:
     @pytest.mark.asyncio
@@ -238,7 +309,6 @@ class TestSuggestionParityRoutes:
         self,
         api_client,
         auth_headers,
-        persisted_user,
         persisted_another_user,
     ):
         campaign_id = await _create_campaign_for_owner(
@@ -259,7 +329,7 @@ class TestSuggestionParityRoutes:
 
 class TestValidateIntakeRoute:
     @pytest.mark.asyncio
-    async def test_validate_valid_intake(self, api_client, auth_headers, persisted_user):
+    async def test_validate_valid_intake(self, api_client, auth_headers):
         response = await api_client.post(
             "/api/campaigns/validate",
             json={
@@ -280,7 +350,7 @@ class TestValidateIntakeRoute:
         assert data["spec_summary"]["name"] == "Validate Test"
 
     @pytest.mark.asyncio
-    async def test_validate_invalid_intake(self, api_client, auth_headers, persisted_user):
+    async def test_validate_invalid_intake(self, api_client, auth_headers):
         response = await api_client.post(
             "/api/campaigns/validate",
             json={
@@ -299,7 +369,7 @@ class TestValidateIntakeRoute:
 
 class TestCapabilitiesRoute:
     @pytest.mark.asyncio
-    async def test_list_capabilities(self, api_client, auth_headers, persisted_user):
+    async def test_list_capabilities(self, api_client, auth_headers):
         response = await api_client.get(
             "/api/capabilities",
             headers=auth_headers,
@@ -338,7 +408,7 @@ class TestExportCampaignRoute:
 
     @pytest.mark.asyncio
     async def test_export_campaign_enforces_ownership(
-        self, api_client, auth_headers, persisted_user, persisted_another_user
+        self, api_client, auth_headers, persisted_another_user
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
             str(persisted_another_user.id), "Foreign Export Test"
@@ -374,7 +444,7 @@ class TestSuggestionStatusRoute:
 
     @pytest.mark.asyncio
     async def test_update_suggestion_status_enforces_ownership(
-        self, api_client, auth_headers, persisted_user, persisted_another_user
+        self, api_client, auth_headers, persisted_another_user
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
             str(persisted_another_user.id), "Foreign Status Test"
@@ -472,6 +542,53 @@ class TestCampaignQueryRoute:
         assert data["total_count"] == 1
         assert data["campaigns"][0]["name"] == "My Campaign"
 
+    @pytest.mark.asyncio
+    async def test_query_campaigns_cursor_offset_mutual_exclusion_surfaces_envelope(
+        self, api_client, auth_headers, persisted_user
+    ):
+        """REST surfaces the structured ``VALIDATION_FAILED`` envelope.
+
+        Pre-fix the route constructed
+        ``CampaignQueryResponse`` from the operation's response dict.
+        That schema has no ``error`` field, so Pydantic silently dropped
+        the structured envelope and clients saw an inconsistent body for
+        a 200 OK response. The route now promotes the
+        ``success=False`` envelope to an ``HTTPException`` whose
+        ``detail`` carries the original ``error`` payload (code,
+        message, recovery_action, retryable, details), routed through
+        ``http_status_for_error`` for the correct HTTP status code.
+        """
+        # Seed two campaigns and walk one page via cursor so the request
+        # combines a real cursor token with a non-zero offset.
+        owner_id = str(persisted_user.id)
+        await _create_campaign_for_owner(owner_id, "Campaign A")
+        await _create_campaign_for_owner(owner_id, "Campaign B")
+
+        first = await api_client.post(
+            "/api/campaigns/query",
+            json={"limit": 1, "offset": 0},
+            headers=auth_headers,
+        )
+        cursor = first.json().get("next_cursor")
+        assert cursor, first.json()
+
+        # Both cursor and a non-zero offset: structured rejection.
+        response = await api_client.post(
+            "/api/campaigns/query",
+            json={"cursor": cursor, "offset": 1, "limit": 1},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        # Structured envelope is fully preserved in the HTTPException
+        # detail; the code lets clients route on the failure without
+        # parsing free-form text.
+        assert detail["code"] == "E005"
+        assert "mutually exclusive" in detail["message"]
+        assert detail["details"]["cursor"] == cursor
+        assert detail["details"]["offset"] == 1
+
 
 class TestResultQueryRoute:
     @pytest.mark.asyncio
@@ -501,7 +618,7 @@ class TestResultQueryRoute:
 
     @pytest.mark.asyncio
     async def test_query_results_enforces_ownership(
-        self, api_client, auth_headers, persisted_user, persisted_another_user
+        self, api_client, auth_headers, persisted_another_user
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
             str(persisted_another_user.id), "Foreign Result Query"
@@ -568,7 +685,7 @@ class TestSuggestionQueryRoute:
 
     @pytest.mark.asyncio
     async def test_query_suggestions_enforces_ownership(
-        self, api_client, auth_headers, persisted_user, persisted_another_user
+        self, api_client, auth_headers, persisted_another_user
     ):
         foreign_campaign_id = await _create_campaign_for_owner(
             str(persisted_another_user.id), "Foreign Sugg Query"
@@ -664,7 +781,7 @@ class TestMcpHttpParity:
     """Run the same scenario through MCP operations and HTTP, compare meaningful fields."""
 
     @pytest.mark.asyncio
-    async def test_validate_intake_parity(self, api_client, auth_headers, persisted_user):
+    async def test_validate_intake_parity(self, api_client, auth_headers):
         intake = {
             "name": "Parity Validate",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -687,7 +804,7 @@ class TestMcpHttpParity:
         assert mcp_result["warnings"] == http_result["warnings"]
 
     @pytest.mark.asyncio
-    async def test_list_capabilities_parity(self, api_client, auth_headers, persisted_user):
+    async def test_list_capabilities_parity(self, api_client, auth_headers):
         # MCP path (operation directly)
         mcp_result = list_capabilities_operation()
 

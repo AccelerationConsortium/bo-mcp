@@ -8,15 +8,15 @@ from bo_mcp_server.server import create_mcp_server, mcp
 from bo_mcp_server.storage import get_session, init_database
 
 __all__ = [
-    # Server
-    "create_mcp_server",
-    "mcp",
-    # Database
-    "init_database",
-    "get_session",
     # Logging
     "configure_logging",
+    # Server
+    "create_mcp_server",
     "get_logger",
+    "get_session",
+    # Database
+    "init_database",
+    "mcp",
 ]
 
 __version__ = "0.1.0"

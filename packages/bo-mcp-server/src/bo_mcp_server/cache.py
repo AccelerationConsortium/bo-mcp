@@ -8,6 +8,11 @@ stale after any mutation — no explicit invalidation needed.
 
 Uses asyncio.Lock to ensure safe concurrent access from async operations.
 
+The cache accepts an injectable ``clock`` callable so tests can advance time
+without sleeping. Production code constructs the cache with the default clock
+(``datetime.now(UTC)``); tests pass a callable backed by a mutable container
+to deterministically simulate TTL expiry.
+
 Usage:
     from bo_mcp_server.cache import diagnostics_cache
 
@@ -20,14 +25,39 @@ Usage:
     # Compute and cache
     result = compute_expensive_diagnostics()
     await diagnostics_cache.set(cache_key, result)
+
+Rollback safety
+---------------
+
+The cache is only *written* by ``get_diagnostics_operation``; mutation
+paths never touch it. ``campaign.version`` is bumped in the same
+transaction as the underlying mutation, so a rolled-back mutation
+leaves the version unchanged and the existing cache entry stays
+semantically correct (it still represents the committed state).
+Regression coverage:
+``tests/unit/test_diagnostics_cache_rollback_safety.py``.
 """
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
-# Maximum number of entries before evicting oldest
-MAX_CACHE_ENTRIES = 200
+from bo_mcp_server.settings import (
+    get_diagnostics_cache_max_entries,
+    get_diagnostics_cache_ttl_seconds,
+)
+
+# Compatibility alias retained for code/tests that import the symbol
+# directly. New call sites should read the live value via
+# :func:`bo_mcp_server.settings.get_diagnostics_cache_max_entries` so
+# environment-driven tuning is observed without restarting the
+# process at import time.
+MAX_CACHE_ENTRIES = get_diagnostics_cache_max_entries()
+
+
+def _default_clock() -> datetime:
+    """Return the current UTC time. Default clock for ResponseCache."""
+    return datetime.now(UTC)
 
 
 class ResponseCache:
@@ -36,19 +66,44 @@ class ResponseCache:
     Default TTL is 120 seconds for diagnostics. Version-aware keys mean
     entries become unreachable (and eventually evicted) after mutations,
     so a longer TTL is safe and improves hit rate.
+
+    The ``clock`` parameter is injectable so tests can advance time without
+    relying on wall-clock sleeps. In production, leave it at the default;
+    in tests, pass a callable that returns a controllable ``datetime``.
     """
 
-    def __init__(self, ttl_seconds: int = 120) -> None:
+    def __init__(
+        self,
+        ttl_seconds: int | None = None,
+        clock: Callable[[], datetime] = _default_clock,
+        max_entries: int | None = None,
+    ) -> None:
         """Initialize cache with TTL.
 
         Args:
-            ttl_seconds: Time-to-live for cache entries in seconds.
+            ttl_seconds: Time-to-live for cache entries in seconds. When
+                ``None``, falls back to
+                :func:`bo_mcp_server.settings.get_diagnostics_cache_ttl_seconds`
+                so the deployment knob is honoured at construction.
+            clock: Callable returning the current ``datetime``. Tests can
+                inject a fake clock to advance time deterministically.
+            max_entries: Capacity before LRU-eviction kicks in. When
+                ``None``, falls back to
+                :func:`bo_mcp_server.settings.get_diagnostics_cache_max_entries`.
         """
-        self._cache: dict[str, tuple[datetime, Any]] = {}
-        self._ttl = timedelta(seconds=ttl_seconds)
+        resolved_ttl = (
+            ttl_seconds if ttl_seconds is not None else get_diagnostics_cache_ttl_seconds()
+        )
+        resolved_cap = (
+            max_entries if max_entries is not None else get_diagnostics_cache_max_entries()
+        )
+        self._cache: dict[str, tuple[datetime, object]] = {}
+        self._ttl = timedelta(seconds=resolved_ttl)
         self._lock = asyncio.Lock()
+        self._clock = clock
+        self._max_entries = resolved_cap
 
-    async def get(self, key: str) -> Any | None:
+    async def get(self, key: str) -> object | None:
         """Get cached value if not expired.
 
         Args:
@@ -60,12 +115,12 @@ class ResponseCache:
         async with self._lock:
             if key in self._cache:
                 timestamp, value = self._cache[key]
-                if datetime.now(UTC) - timestamp < self._ttl:
+                if self._clock() - timestamp < self._ttl:
                     return value
                 del self._cache[key]
             return None
 
-    async def set(self, key: str, value: Any) -> None:
+    async def set(self, key: str, value: object) -> None:
         """Store value in cache, evicting oldest entries if at capacity.
 
         Args:
@@ -73,9 +128,9 @@ class ResponseCache:
             value: Value to cache.
         """
         async with self._lock:
-            if len(self._cache) >= MAX_CACHE_ENTRIES:
+            if len(self._cache) >= self._max_entries:
                 self._evict_oldest()
-            self._cache[key] = (datetime.now(UTC), value)
+            self._cache[key] = (self._clock(), value)
 
     def _evict_oldest(self) -> None:
         """Remove the oldest cache entry. Must be called under lock."""
@@ -95,6 +150,8 @@ class ResponseCache:
         return len(self._cache)
 
 
-# Global cache instance for diagnostics
-# 120s TTL — version-aware keys auto-invalidate on mutations
-diagnostics_cache = ResponseCache(ttl_seconds=120)
+# Global cache instance for diagnostics. TTL and capacity are sourced
+# from :class:`bo_mcp_server.settings.Settings` so a deployment can
+# tune them via env without re-importing this module. Version-aware
+# keys auto-invalidate on mutations regardless of the TTL.
+diagnostics_cache = ResponseCache()

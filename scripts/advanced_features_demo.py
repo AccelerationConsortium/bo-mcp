@@ -107,7 +107,7 @@ def demo_qlogparego() -> None:
         [[obs.objective_values["f1"], obs.objective_values["f2"]] for obs in observations],
         dtype=torch.double,
     )
-    pareto_y, pareto_mask = compute_pareto_front(y_tensor)
+    pareto_y, _pareto_mask = compute_pareto_front(y_tensor)
 
     print("\nResults after 3 iterations:")
     print(f"  Total evaluations: {len(observations)}")
@@ -276,7 +276,7 @@ def demo_combined_features() -> None:
         [[obs.objective_values["f1"], obs.objective_values["f2"]] for obs in observations],
         dtype=torch.double,
     )
-    pareto_y, pareto_mask = compute_pareto_front(y_tensor)
+    pareto_y, _pareto_mask = compute_pareto_front(y_tensor)
 
     # Compute reference point and hypervolume
     minimize_mask = torch.tensor([True, True], dtype=torch.bool)

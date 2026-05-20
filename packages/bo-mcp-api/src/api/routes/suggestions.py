@@ -1,24 +1,24 @@
 """Suggestion routes."""
 
-from bo_mcp_server.domain import SuggestionStatus
-from bo_mcp_server.operations.generate_suggestions import (
+from typing import Annotated
+
+from bo_mcp_server.client import (
+    InvalidIdentifierError,
+    NotAuthorizedError,
+    NotFoundError,
+    SuggestionStatus,
     generate_suggestions_operation,
-)
-from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
-from bo_mcp_server.operations.suggestion_explanation import (
     get_suggestion_explanation_operation,
-)
-from bo_mcp_server.operations.update_suggestion_status import (
+    list_campaign_suggestions,
+    list_suggestions_operation,
     update_suggestion_status_operation,
 )
-from bo_mcp_server.storage import CampaignRepository, SuggestionRepository, get_session
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from api.deps import (
     CurrentUser,
     get_authorized_campaign,
     get_authorized_suggestion,
-    validate_uuid,
 )
 from api.schemas.suggestion import (
     SuggestionExplanationResponse,
@@ -36,13 +36,25 @@ from api.schemas.suggestion import (
 router = APIRouter()
 
 
-@router.post("/{campaign_id}/generate", response_model=SuggestionsGenerateResponse)
+@router.post(
+    "/{campaign_id}/generate",
+    status_code=status.HTTP_201_CREATED,
+)
 async def generate_campaign_suggestions(
     campaign_id: str,
     current_user: CurrentUser,
-    batch_size: int | None = Query(default=None, ge=1),
+    response: Response,
+    batch_size: Annotated[int | None, Query(ge=1)] = None,
 ) -> SuggestionsGenerateResponse:
-    """Generate new suggestions for a campaign."""
+    """Generate new suggestions for a campaign.
+
+    Returns ``201 Created`` with a ``Location`` header pointing at
+    :func:`list_campaign_suggestions_route` for the freshly-created
+    batch. Operation-level rejections (stopping criteria triggered,
+    backend failure, etc.) keep the historical ``200 OK`` shape so
+    existing tests that inspect the ``success=False`` envelope still
+    see it rather than a redirected HTTP error.
+    """
     await get_authorized_campaign(campaign_id, current_user)
 
     result = await generate_suggestions_operation(
@@ -51,6 +63,10 @@ async def generate_campaign_suggestions(
     )
 
     if not result["success"]:
+        # Operation-level rejection: no suggestions were persisted,
+        # so 201 would mislead clients. Drop back to 200 with the
+        # structured envelope.
+        response.status_code = status.HTTP_200_OK
         return SuggestionsGenerateResponse(
             success=False,
             suggestions=[],
@@ -71,6 +87,7 @@ async def generate_campaign_suggestions(
         for s in result["suggestions"]
     ]
 
+    response.headers["Location"] = f"/api/v1/suggestions/{campaign_id}"
     return SuggestionsGenerateResponse(
         success=True,
         suggestions=suggestions,
@@ -79,10 +96,7 @@ async def generate_campaign_suggestions(
     )
 
 
-@router.get(
-    "/{suggestion_id}/explanation",
-    response_model=SuggestionExplanationResponse,
-)
+@router.get("/{suggestion_id}/explanation")
 async def get_campaign_suggestion_explanation(
     suggestion_id: str,
     current_user: CurrentUser,
@@ -94,7 +108,7 @@ async def get_campaign_suggestion_explanation(
     return SuggestionExplanationResponse(**result)
 
 
-@router.post("/{campaign_id}/query", response_model=SuggestionQueryResponse)
+@router.post("/{campaign_id}/query")
 async def query_campaign_suggestions(
     campaign_id: str,
     request: SuggestionQueryRequest,
@@ -113,10 +127,7 @@ async def query_campaign_suggestions(
     return SuggestionQueryResponse(**result)
 
 
-@router.post(
-    "/{suggestion_id}/status",
-    response_model=SuggestionStatusUpdateResponse,
-)
+@router.post("/{suggestion_id}/status")
 async def update_suggestion_status(
     suggestion_id: str,
     request: SuggestionStatusUpdateRequest,
@@ -138,65 +149,65 @@ async def update_suggestion_status(
     )
 
 
-@router.get("/{campaign_id}", response_model=list[SuggestionResponse])
-async def list_campaign_suggestions(
+@router.get("/{campaign_id}")
+async def list_campaign_suggestions_route(
     campaign_id: str,
     current_user: CurrentUser,
-    status_filter: str | None = Query(default=None, alias="status"),
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
 ) -> list[SuggestionResponse]:
     """List suggestions for a campaign."""
-    campaign_uuid = validate_uuid(campaign_id, "campaign_id")
-
-    async with get_session() as session:
-        campaign_repo = CampaignRepository(session)
-        suggestion_repo = SuggestionRepository(session)
-
-        campaign = await campaign_repo.get(campaign_uuid)
-        if campaign is None:
+    status_enum: SuggestionStatus | None = None
+    if status_filter:
+        try:
+            status_enum = SuggestionStatus(status_filter)
+        except ValueError:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Campaign {campaign_id} not found",
-            )
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status: {status_filter}",
+            ) from None
 
-        if campaign.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to access this campaign",
-            )
+    try:
+        suggestions = await list_campaign_suggestions(
+            campaign_id,
+            current_user.id,
+            status_filter=status_enum,
+        )
+    except InvalidIdentifierError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid campaign_id format",
+        ) from None
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Campaign {campaign_id} not found",
+        ) from None
+    except NotAuthorizedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this campaign",
+        ) from None
 
-        # Get suggestions
-        status_enum = None
-        if status_filter:
-            try:
-                status_enum = SuggestionStatus(status_filter)
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid status: {status_filter}",
-                ) from None
-
-        suggestions = await suggestion_repo.list_by_campaign(campaign_uuid, status_enum)
-
-        return [
-            SuggestionResponse(
-                id=str(s.id),
-                campaign_id=str(s.campaign_id),
-                parameter_values=s.parameter_values,
-                status=s.status.value,
-                provenance=SuggestionProvenanceSchema(
-                    iteration=s.provenance.iteration,
-                    batch_index=s.provenance.batch_index,
-                    acquisition_value=s.provenance.acquisition_value,
-                    model_uncertainty=s.provenance.model_uncertainty,
-                    generation_method=s.provenance.generation_method,
-                    acquisition_function=s.provenance.acquisition_function,
-                    model_type=s.provenance.model_type,
-                    random_seed=s.provenance.random_seed,
-                    model_version=s.provenance.model_version,
-                    confidence_level=s.provenance.confidence_level,
-                    explanation=s.provenance.explanation,
-                ),
-                created_at=s.created_at,
-            )
-            for s in suggestions
-        ]
+    return [
+        SuggestionResponse(
+            id=str(s.id),
+            campaign_id=str(s.campaign_id),
+            parameter_values=s.parameter_values,
+            status=s.status.value,
+            provenance=SuggestionProvenanceSchema(
+                iteration=s.provenance.iteration,
+                batch_index=s.provenance.batch_index,
+                acquisition_value=s.provenance.acquisition_value,
+                model_uncertainty=s.provenance.model_uncertainty,
+                generation_method=s.provenance.generation_method,
+                acquisition_function=s.provenance.acquisition_function,
+                model_type=s.provenance.model_type,
+                random_seed=s.provenance.random_seed,
+                model_version=s.provenance.model_version,
+                confidence_level=s.provenance.confidence_level,
+                explanation=s.provenance.explanation,
+            ),
+            created_at=s.created_at,
+        )
+        for s in suggestions
+    ]

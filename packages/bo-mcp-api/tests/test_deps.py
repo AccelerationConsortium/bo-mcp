@@ -96,6 +96,7 @@ class TestValidateUUID:
         assert exc_info.value.status_code == 400
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestGetAuthorizedCampaign:
     """Tests for get_authorized_campaign helper function.
 
@@ -108,7 +109,7 @@ class TestGetAuthorizedCampaign:
     """
 
     @pytest.mark.asyncio
-    async def test_invalid_campaign_id_raises_400(self, setup_database, sample_user):
+    async def test_invalid_campaign_id_raises_400(self, sample_user):
         """Invalid campaign_id format should raise 400 HTTPException."""
         with pytest.raises(HTTPException) as exc_info:
             await get_authorized_campaign("not-a-uuid", sample_user)
@@ -117,7 +118,7 @@ class TestGetAuthorizedCampaign:
         assert "Invalid campaign_id format" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_nonexistent_campaign_raises_404(self, setup_database, sample_user):
+    async def test_nonexistent_campaign_raises_404(self, sample_user):
         """Non-existent campaign should raise 404 HTTPException."""
         nonexistent_id = str(uuid4())
 

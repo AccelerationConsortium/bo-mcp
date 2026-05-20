@@ -27,10 +27,11 @@ from bo_engine.transfer_learning import (
 )
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestPriorTaskData:
     """Test PriorTaskData dataclass."""
 
-    def test_basic_creation(self, torch_rng) -> None:
+    def test_basic_creation(self) -> None:
         """PriorTaskData can be created with required fields."""
         train_x = torch.rand(10, 2, dtype=torch.double)
         train_y = torch.rand(10, 1, dtype=torch.double)
@@ -46,7 +47,7 @@ class TestPriorTaskData:
         assert prior.train_y.shape == (10, 1)
         assert prior.metadata == {}
 
-    def test_with_metadata(self, torch_rng) -> None:
+    def test_with_metadata(self) -> None:
         """PriorTaskData accepts optional metadata."""
         train_x = torch.rand(5, 3, dtype=torch.double)
         train_y = torch.rand(5, 1, dtype=torch.double)
@@ -78,10 +79,11 @@ class TestRGPEConfig:
         assert config.use_input_warping is True
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestBaseModelCreation:
     """Test base model creation for transfer learning."""
 
-    def test_create_base_model_basic(self, torch_rng) -> None:
+    def test_create_base_model_basic(self) -> None:
         """Base model can be created and fitted."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -96,7 +98,7 @@ class TestBaseModelCreation:
             posterior = model.posterior(test_x)
             assert posterior.mean.shape == (5, 1)
 
-    def test_create_base_model_with_1d_y(self, torch_rng) -> None:
+    def test_create_base_model_with_1d_y(self) -> None:
         """Base model handles 1D y input."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, dtype=torch.double)  # 1D
@@ -106,14 +108,16 @@ class TestBaseModelCreation:
         assert model is not None
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestRGPEClass:
     """Test the RGPE ensemble class."""
 
     @pytest.fixture
     def simple_rgpe(
-        self, torch_rng
+        self, request: pytest.FixtureRequest
     ) -> tuple[RGPE, list[PriorTaskData], torch.Tensor, torch.Tensor]:
         """Create a simple RGPE ensemble for testing."""
+        request.getfixturevalue("torch_rng")
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
         # Create one prior task
@@ -130,7 +134,7 @@ class TestRGPEClass:
 
     def test_num_models(self, simple_rgpe: tuple) -> None:
         """RGPE correctly counts total models."""
-        rgpe, prior_tasks, _, _ = simple_rgpe
+        rgpe, _prior_tasks, _, _ = simple_rgpe
         # 1 prior + 1 target = 2 models
         assert rgpe.num_models == 2
 
@@ -164,10 +168,11 @@ class TestRGPEClass:
         assert hasattr(distribution, "variance")
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestRGPEWeightComputation:
     """Test RGPE weight computation behavior."""
 
-    def test_weights_without_compute_raises(self, torch_rng) -> None:
+    def test_weights_without_compute_raises(self) -> None:
         """Accessing weights before computation raises error."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -227,10 +232,11 @@ class TestRGPEWeightComputation:
         assert all(w >= 0 for w in weights)
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestRGPEWeightsExplanation:
     """Test human-readable weight explanation."""
 
-    def test_explanation_format(self, torch_rng) -> None:
+    def test_explanation_format(self) -> None:
         """Explanation maps task IDs to weights."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -278,7 +284,7 @@ class TestRGPESuggestionGeneration:
         target_x = torch.rand(10, 2, dtype=torch.double)
         target_y = torch.rand(10, 1, dtype=torch.double)
 
-        candidates, acq_values, metadata = generate_rgpe_suggestions(
+        candidates, acq_values, _metadata = generate_rgpe_suggestions(
             target_x, target_y, prior_tasks, bounds, batch_size=2
         )
 
@@ -366,10 +372,11 @@ class TestRGPETransferBenefit:
         assert target_posterior.variance.mean() >= 0
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestRGPEEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_single_prior_task(self, torch_rng) -> None:
+    def test_single_prior_task(self) -> None:
         """Works with a single prior task."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -387,7 +394,7 @@ class TestRGPEEdgeCases:
         rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
         assert rgpe.num_models == 2
 
-    def test_many_prior_tasks(self, torch_rng) -> None:
+    def test_many_prior_tasks(self) -> None:
         """Works with multiple prior tasks."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 
@@ -406,7 +413,7 @@ class TestRGPEEdgeCases:
         rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
         assert rgpe.num_models == 6  # 5 priors + 1 target
 
-    def test_minimal_target_data(self, torch_rng) -> None:
+    def test_minimal_target_data(self) -> None:
         """Works with minimal target data."""
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
 

@@ -24,6 +24,7 @@ def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSuggestionReproducibility:
     """Tests ensuring deterministic suggestion generation with fixed seeds.
 
@@ -32,13 +33,13 @@ class TestSuggestionReproducibility:
     """
 
     @pytest.mark.asyncio
-    async def test_initial_design_deterministic(self, setup_database):
+    async def test_initial_design_deterministic(self):
         """Initial design (Sobol sequence) produces same suggestions with same setup.
 
         Sobol sequences are deterministic when seeded; the campaign's
-        ``random_seed`` (default 42 in intake) is threaded through
-        ``OptimizationSpec`` into ``SobolEngine`` so two campaigns sharing
-        a spec produce identical initial-design batches.
+        explicit ``random_seed`` is threaded through ``OptimizationSpec``
+        into ``SobolEngine`` so two campaigns sharing a spec produce
+        identical initial-design batches.
         """
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -53,6 +54,7 @@ class TestSuggestionReproducibility:
             ],
             "objectives": [{"name": "f", "direction": "minimize"}],
             "batch_size": 5,
+            "random_seed": 42,
         }
 
         # Create first campaign and generate
@@ -76,7 +78,7 @@ class TestSuggestionReproducibility:
                 assert abs(s1["parameter_values"][param] - s2["parameter_values"][param]) < 1e-10
 
     @pytest.mark.asyncio
-    async def test_suggestion_provenance_includes_seed(self, setup_database):
+    async def test_suggestion_provenance_includes_seed(self):
         """Suggestion provenance includes random_seed for reproducibility.
 
         Reference: Section 3.7 - Full Reproducibility Guarantees
@@ -124,7 +126,7 @@ class TestSuggestionReproducibility:
             assert s["provenance"]["random_seed"] is not None
 
     @pytest.mark.asyncio
-    async def test_bo_phase_deterministic_with_seed(self, setup_database):
+    async def test_bo_phase_deterministic_with_seed(self):
         """BO-phase suggestions are reproducible when ``random_seed`` is set.
 
         Previously ``generate_next_batch`` picked its acquisition seed
@@ -197,6 +199,7 @@ def _params_tuple(params: dict) -> tuple:
     return tuple(sorted(params.items()))
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestInitialDesignNoDuplicates:
     """Regression tests for initial-design duplicate elimination.
 
@@ -215,7 +218,7 @@ class TestInitialDesignNoDuplicates:
     """
 
     @pytest.mark.asyncio
-    async def test_consecutive_initial_design_batches_are_disjoint(self, setup_database):
+    async def test_consecutive_initial_design_batches_are_disjoint(self):
         """Two consecutive batches never reissue an observed point."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -267,7 +270,7 @@ class TestInitialDesignNoDuplicates:
         )
 
     @pytest.mark.asyncio
-    async def test_exhausted_categorical_space_returns_structured_error(self, setup_database):
+    async def test_exhausted_categorical_space_returns_structured_error(self):
         """After all 4 combinations are observed, a further call errors cleanly."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -321,6 +324,7 @@ class TestInitialDesignNoDuplicates:
         assert details["n_available"] == 0
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestPendingPointsConditioning:
     """Regression tests for X_pending conditioning in acquisition.
 
@@ -338,7 +342,7 @@ class TestPendingPointsConditioning:
     """
 
     @pytest.mark.asyncio
-    async def test_consecutive_bo_calls_return_distinct_points(self, setup_database):
+    async def test_consecutive_bo_calls_return_distinct_points(self):
         """Two sequential BO calls (no results between) return distinct points.
 
         Without X_pending wiring, call 2 re-selects the same acquisition
@@ -419,6 +423,7 @@ class TestPendingPointsConditioning:
         )
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSuggestionQualityRegression:
     """Tests ensuring suggestion quality remains stable.
 
@@ -427,7 +432,7 @@ class TestSuggestionQualityRegression:
     """
 
     @pytest.mark.asyncio
-    async def test_branin_currin_hypervolume_regression(self, setup_database):
+    async def test_branin_currin_hypervolume_regression(self):
         """Hypervolume on Branin-Currin should reach minimum threshold.
 
         Reference: BoTorch Multi-Objective Tutorial
@@ -491,7 +496,7 @@ class TestSuggestionQualityRegression:
         assert diag["hypervolume"] > 0.1, f"Hypervolume too low: {diag['hypervolume']}"
 
     @pytest.mark.asyncio
-    async def test_quadratic_finds_minimum(self, setup_database):
+    async def test_quadratic_finds_minimum(self):
         """Simple quadratic function should find near-optimal solution.
 
         A simple test function with known minimum at (0.5, 0.5).
@@ -551,6 +556,7 @@ class TestSuggestionQualityRegression:
         assert diag["best_value"] < 0.1, f"Best value too high: {diag['best_value']}"
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestMethodSelectionStability:
     """Tests ensuring method selection logic remains stable.
 
@@ -559,7 +565,7 @@ class TestMethodSelectionStability:
     """
 
     @pytest.mark.asyncio
-    async def test_single_objective_uses_qlogei(self, setup_database):
+    async def test_single_objective_uses_qlogei(self):
         """Single-objective campaigns use qLogEI acquisition.
 
         Reference: BoTorch acquisition function recommendations
@@ -603,7 +609,7 @@ class TestMethodSelectionStability:
         assert "expected_improvement" in method or "ei" in method.lower()
 
     @pytest.mark.asyncio
-    async def test_multi_objective_uses_qlognehvi(self, setup_database):
+    async def test_multi_objective_uses_qlognehvi(self):
         """Multi-objective campaigns use qLogNEHVI acquisition.
 
         Reference: BoTorch multi-objective tutorial
@@ -650,7 +656,7 @@ class TestMethodSelectionStability:
         assert "hypervolume" in method or "multi_objective" in method
 
     @pytest.mark.asyncio
-    async def test_method_selection_explanation_present(self, setup_database):
+    async def test_method_selection_explanation_present(self):
         """Method selection includes explanation for transparency."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -677,11 +683,12 @@ class TestMethodSelectionStability:
         assert len(gen["method_selection"]["explanation"]) > 10  # Non-trivial explanation
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSuggestionBatchConsistency:
     """Tests ensuring batch suggestions are consistent and valid."""
 
     @pytest.mark.asyncio
-    async def test_batch_suggestions_within_bounds(self, setup_database):
+    async def test_batch_suggestions_within_bounds(self):
         """All batch suggestions must be within parameter bounds."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -726,7 +733,7 @@ class TestSuggestionBatchConsistency:
             await submit_results(campaign_id, _to_result_inputs(results), owner_id)
 
     @pytest.mark.asyncio
-    async def test_batch_suggestions_have_unique_provenance_indices(self, setup_database):
+    async def test_batch_suggestions_have_unique_provenance_indices(self):
         """Each suggestion in batch has unique batch_index in provenance."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -759,7 +766,7 @@ class TestSuggestionBatchConsistency:
             assert 0 <= idx < 5
 
     @pytest.mark.asyncio
-    async def test_batch_diversity_is_reported(self, setup_database):
+    async def test_batch_diversity_is_reported(self):
         """Batch diversity metrics are included in response.
 
         Reference: Section 1.5 - Batch Diversity Enforcement
@@ -797,11 +804,12 @@ class TestSuggestionBatchConsistency:
             assert gen["batch_diversity"]["diversity_score"] >= 0
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestIterationConsistency:
     """Tests ensuring iteration counting is consistent."""
 
     @pytest.mark.asyncio
-    async def test_iteration_matches_provenance(self, setup_database):
+    async def test_iteration_matches_provenance(self):
         """Response iteration matches provenance iteration in suggestions."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions

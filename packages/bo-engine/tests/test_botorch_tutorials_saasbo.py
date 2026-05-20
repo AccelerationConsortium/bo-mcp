@@ -455,12 +455,13 @@ class TestSAASBOSuggestionGeneration:
 
         from bo_engine.saasbo import generate_saasbo_suggestions
 
-        candidates, acq_values, metadata = generate_saasbo_suggestions(
+        candidates, _acq_values, metadata = generate_saasbo_suggestions(
             train_x, train_y, bounds, batch_size=2, config=config
         )
 
         assert candidates.shape == (2, 10)
-        assert (candidates >= 0).all() and (candidates <= 1).all()
+        assert (candidates >= 0).all()
+        assert (candidates <= 1).all()
         assert "parameter_importance" in metadata
         assert "top_important_parameters" in metadata
 

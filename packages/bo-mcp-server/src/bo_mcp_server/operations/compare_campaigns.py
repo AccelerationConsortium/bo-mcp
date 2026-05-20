@@ -34,6 +34,13 @@ from bo_mcp_server.storage import (
 
 logger = logging.getLogger(__name__)
 
+# Inclusive bounds for the number of campaigns that can be compared in a
+# single call. Exposed so the MCP tool schema can advertise the limit via
+# ``minItems`` / ``maxItems`` instead of letting agents discover it by
+# failing.
+MIN_COMPARE_CAMPAIGNS = 2
+MAX_COMPARE_CAMPAIGNS = 10
+
 
 async def _compute_campaign_metrics(
     spec: CampaignSpec,
@@ -180,9 +187,13 @@ def _compare_metrics(
     }
 
 
-def _make_compare_error(code: ErrorCode, message: str, **kwargs: Any) -> dict[str, Any]:
+def _make_compare_error(
+    code: ErrorCode,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a compare-specific error response."""
-    response = make_error_response(code, message=message, **kwargs)
+    response = make_error_response(code, message=message, details=details)
     response.update({"campaigns": [], "comparison": None})
     return response
 
@@ -197,18 +208,24 @@ def _validate_compare_inputs(
         verbosity_result.update({"campaigns": [], "comparison": None})
         return verbosity_result
 
-    if len(campaign_ids) < 2:
+    if len(campaign_ids) < MIN_COMPARE_CAMPAIGNS:
         return _make_compare_error(
             ErrorCode.VALIDATION_FAILED,
-            message="Need at least 2 campaigns to compare",
-            details={"provided_count": len(campaign_ids)},
+            message=f"Need at least {MIN_COMPARE_CAMPAIGNS} campaigns to compare",
+            details={
+                "provided_count": len(campaign_ids),
+                "min_campaigns": MIN_COMPARE_CAMPAIGNS,
+            },
         )
 
-    if len(campaign_ids) > 10:
+    if len(campaign_ids) > MAX_COMPARE_CAMPAIGNS:
         return _make_compare_error(
             ErrorCode.VALIDATION_FAILED,
-            message="Cannot compare more than 10 campaigns at once",
-            details={"provided_count": len(campaign_ids)},
+            message=(f"Cannot compare more than {MAX_COMPARE_CAMPAIGNS} campaigns at once"),
+            details={
+                "provided_count": len(campaign_ids),
+                "max_campaigns": MAX_COMPARE_CAMPAIGNS,
+            },
         )
 
     campaign_uuids: list[UUID] = []
@@ -276,7 +293,7 @@ async def compare_campaigns_operation(
                 "success": False,
                 "campaigns": campaign_metrics,
                 "comparison": None,
-                "errors": errors + ["Need at least 2 valid campaigns to compare"],
+                "errors": [*errors, "Need at least 2 valid campaigns to compare"],
             }
 
         comparison = _compare_metrics(campaign_metrics, campaign_names)

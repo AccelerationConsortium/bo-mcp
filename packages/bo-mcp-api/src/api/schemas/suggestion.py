@@ -3,7 +3,15 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from api.schemas.common import ResponseEnvelope
+
+# ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
+# keys raise 422 instead of being silently dropped. Response schemas remain
+# permissive because the MCP response formatter splices a ``_metadata``
+# envelope into every payload before it reaches the response model.
+_FORBID_EXTRA: ConfigDict = ConfigDict(extra="forbid")
 
 
 class SuggestionProvenance(BaseModel):
@@ -34,7 +42,7 @@ class SuggestionResponse(BaseModel):
     created_at: datetime
 
 
-class SuggestionsGenerateResponse(BaseModel):
+class SuggestionsGenerateResponse(ResponseEnvelope):
     """Response for suggestion generation."""
 
     success: bool
@@ -46,21 +54,25 @@ class SuggestionsGenerateResponse(BaseModel):
 class SuggestionStatusUpdateRequest(BaseModel):
     """Request to update a suggestion's status."""
 
+    model_config = _FORBID_EXTRA
+
     status: str = Field(pattern="^(accepted|rejected|expired)$")
 
 
-class SuggestionStatusUpdateResponse(BaseModel):
+class SuggestionStatusUpdateResponse(ResponseEnvelope):
     """Response for suggestion status update."""
 
     success: bool
     suggestion_id: str | None = None
     status: str | None = None
     previous_status: str | None = None
-    errors: list[str] = []
+    errors: list[str] = Field(default_factory=list)
 
 
 class SuggestionQueryRequest(BaseModel):
     """Suggestion query request with filtering and pagination."""
+
+    model_config = _FORBID_EXTRA
 
     status_filter: str | None = None
     limit: int = Field(default=50, ge=1, le=500)
@@ -68,7 +80,7 @@ class SuggestionQueryRequest(BaseModel):
     verbosity: str = "standard"
 
 
-class SuggestionQueryResponse(BaseModel):
+class SuggestionQueryResponse(ResponseEnvelope):
     """Suggestion query response with pagination envelope."""
 
     success: bool
@@ -79,7 +91,7 @@ class SuggestionQueryResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
-class SuggestionExplanationResponse(BaseModel):
+class SuggestionExplanationResponse(ResponseEnvelope):
     """Response for suggestion explanation."""
 
     success: bool

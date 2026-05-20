@@ -20,11 +20,12 @@ def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestCategoricalCampaignLifecycle:
     """E2E tests for categorical-only campaigns through the MCP tool layer."""
 
     @pytest.mark.asyncio
-    async def test_full_lifecycle_categorical_only(self, setup_database) -> None:
+    async def test_full_lifecycle_categorical_only(self) -> None:
         """End-to-end with 2 categorical params: all suggestions in each batch are unique.
 
         Creates a campaign with 2 categorical parameters (3 categories each),
@@ -118,7 +119,7 @@ class TestCategoricalCampaignLifecycle:
             )
 
     @pytest.mark.asyncio
-    async def test_categorical_suggestions_are_valid(self, setup_database) -> None:
+    async def test_categorical_suggestions_are_valid(self) -> None:
         """All returned category values must exist in the parameter spec."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -195,7 +196,7 @@ class TestCategoricalCampaignLifecycle:
             assert pv["solvent"] in valid_solvents, f"Invalid BO solvent: {pv['solvent']}"
 
     @pytest.mark.asyncio
-    async def test_categorical_campaign_with_large_space(self, setup_database) -> None:
+    async def test_categorical_campaign_with_large_space(self) -> None:
         """4 params x 5 categories each = 625 combos. Verifies optimize_acqf_discrete handles it."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions

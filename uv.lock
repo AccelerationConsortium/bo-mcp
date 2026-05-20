@@ -200,6 +200,7 @@ dependencies = [
     { name = "baybe" },
     { name = "bo-engine" },
     { name = "pandas" },
+    { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
@@ -218,6 +219,7 @@ requires-dist = [
     { name = "baybe", extras = ["insights"], marker = "extra == 'insights'", specifier = ">=0.14" },
     { name = "bo-engine", editable = "packages/bo-engine" },
     { name = "pandas", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
@@ -233,6 +235,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "openpyxl" },
     { name = "pandas" },
+    { name = "prometheus-client" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -253,6 +256,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.0" },
+    { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
@@ -273,7 +277,10 @@ dependencies = [
     { name = "bo-engine" },
     { name = "fastmcp" },
     { name = "mcp" },
+    { name = "prometheus-client" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-json-logger" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
@@ -298,12 +305,15 @@ requires-dist = [
     { name = "bo-engine", editable = "packages/bo-engine" },
     { name = "fastmcp", specifier = ">=0.4" },
     { name = "mcp", specifier = ">=1.0" },
+    { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
+    { name = "python-json-logger", specifier = ">=3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "testcontainers", extras = ["postgres"], marker = "extra == 'test'", specifier = ">=4.0" },

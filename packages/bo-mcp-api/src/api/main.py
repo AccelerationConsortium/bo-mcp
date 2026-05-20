@@ -6,34 +6,111 @@ import uuid as _uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from bo_mcp_server.storage import get_session, init_database
-from fastapi import FastAPI, Request, Response
+from bo_mcp_server.client import (
+    CorruptedJsonColumnError,
+    ensure_dev_user,
+    init_database,
+    ping_database_detailed,
+)
+from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan
+from bo_mcp_server.trace_context import bind_trace_id
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy import text
 
-from api.dev_auth import ensure_dev_user
+from api.body_size_middleware import BodySizeLimitMiddleware
+from api.error_handlers import (
+    handle_corrupted_json_column,
+    handle_unhandled_exception,
+    install_exception_handlers,
+)
+from api.limits import MAX_JSON_REQUEST_BODY_BYTES
+from api.metrics import install_metrics
+from api.request_context import install_request_id_log_filter, request_id_var
 from api.routes import campaigns, capabilities, diagnostics, results, suggestions
+from api.settings import WILDCARD_ORIGIN, ApiSettings, get_api_settings
+
+# Suffixes the body-size middleware exempts because they apply their
+# own per-route streaming reader. Listed as suffixes so both the
+# versioned ``/api/v1/results/{id}/upload`` and the legacy
+# ``/api/results/{id}/upload`` alias are matched.
+_UPLOAD_PATH_SUFFIXES: tuple[str, ...] = ("/upload",)
 
 logger = logging.getLogger(__name__)
 _api_start_time = time.time()
+install_request_id_log_filter()
 
-# Revert reference: `ensure_dev_user` can stay in `api.dev_auth`. To restore
-# real API-key auth, revert `get_current_user()` in `api.deps`.
+
+def _assert_dev_auth_safe(settings: ApiSettings) -> None:
+    """Refuse to start when development auth is enabled in production.
+
+    The dev-auth bootstrap creates a shared user whose API key is
+    checked into source control; allowing it in production would amount
+    to publishing a master credential. We fail loudly at startup rather
+    than silently leaving the bypass in place.
+    """
+    if settings.dev_auth and settings.api_env == "production":
+        msg = (
+            "DEV_AUTH=1 is not allowed when API_ENV=production. "
+            "Provision real API keys before deploying to production."
+        )
+        raise RuntimeError(msg)
+
+
+def _assert_cors_safe(settings: ApiSettings) -> None:
+    """Refuse to start with the wildcard / credentials CORS footgun.
+
+    Per the Fetch spec, ``Access-Control-Allow-Origin: *`` cannot be
+    combined with ``Access-Control-Allow-Credentials: true``. Starlette
+    works around this by echoing the request origin when both are
+    requested, which silently re-introduces the original CSRF surface.
+    """
+    if WILDCARD_ORIGIN in settings.cors_allowed_origins and settings.cors_allow_credentials:
+        msg = (
+            "CORS_ALLOWED_ORIGINS='*' is unsafe with CORS_ALLOW_CREDENTIALS=true. "
+            "Pin an explicit origin list or disable credentialed responses."
+        )
+        raise RuntimeError(msg)
+
+
+def _include_versioned_router(app: FastAPI, router: APIRouter, *, name: str, prefix: str) -> None:
+    """Mount a router at both the versioned and the legacy alias path.
+
+    The legacy alias keeps existing frontends working while clients
+    migrate to ``/api/v1/...``; it is excluded from the OpenAPI schema
+    so the public spec advertises only the supported prefix.
+    """
+    app.include_router(router, prefix=f"{prefix}/{name}", tags=[name])
+    app.include_router(router, prefix=f"/api/{name}", include_in_schema=False)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    """Application lifespan handler."""
-    # Initialize database on startup
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    """Application lifespan handler.
+
+    The ``_app`` parameter is required by FastAPI's lifespan protocol but
+    this implementation does not need a reference to the application
+    instance — startup state lives in module-level singletons.
+    """
+    settings = get_api_settings()
+    _assert_dev_auth_safe(settings)
     await init_database()
-    # Create dev user for testing
-    await ensure_dev_user()
-    yield
+    if settings.dev_auth:
+        await ensure_dev_user()
+        logger.warning(
+            "DEV_AUTH is enabled; the shared development user is bootstrapped. "
+            "This must not be set in production environments."
+        )
+    async with idempotency_gc_lifespan():
+        yield
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    settings = get_api_settings()
+    _assert_dev_auth_safe(settings)
+    _assert_cors_safe(settings)
+
     app = FastAPI(
         title="BO MCP API",
         description="REST API proxy for Bayesian Optimization MCP Service",
@@ -41,63 +118,119 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS middleware for frontend
+    if settings.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_allowed_origins),
+            allow_credentials=settings.cors_allow_credentials,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # Body-size cap. Pure ASGI middleware so the streaming receive
+    # wrapper sees the actual bytes regardless of the advertised
+    # ``Content-Length`` or transfer encoding. The upload route is
+    # exempted because it applies its own per-route streaming cap;
+    # every other route — JSON or not — is bounded here.
     app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        BodySizeLimitMiddleware,
+        max_body_size=MAX_JSON_REQUEST_BODY_BYTES,
+        upload_paths=_UPLOAD_PATH_SUFFIXES,
     )
+
+    # Prometheus instrumentation: registers ``/metrics`` and a per-request
+    # latency/counter middleware. Mounted before the request-id middleware
+    # so duration measurements cover the full handler invocation.
+    install_metrics(app)
+
+    install_exception_handlers(app)
 
     @app.middleware("http")
     async def add_request_id(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        """Inject a unique X-Request-ID header into every response."""
+        """Inject ``X-Request-ID`` and propagate ``X-Trace-Id`` for the request.
+
+        - ``X-Request-ID`` identifies the individual HTTP request; we
+          generate one when missing and bind it via a
+          :class:`~contextvars.ContextVar` so log records carry it.
+        - ``X-Trace-Id`` is the optional workflow id that ties multi-step
+          agent calls together. When supplied, it is bound for the
+          duration of the request via
+          :func:`bo_mcp_server.trace_context.bind_trace_id` so audit
+          events and response metadata echo it.
+
+        Unhandled exceptions raised below this middleware are caught
+        here and routed through :func:`handle_unhandled_exception`.
+        Starlette's :class:`BaseHTTPMiddleware` does not propagate
+        exceptions to ``app.add_exception_handler(Exception, ...)``
+        cleanly (`encode/starlette#1591`_), so catching at the
+        outermost user middleware is the only reliable way to keep
+        the sanitization contract for routes that raise after their
+        request body is parsed.
+
+        .. _encode/starlette#1591: https://github.com/encode/starlette/issues/1591
+        """
         request_id = request.headers.get("X-Request-ID", str(_uuid.uuid4()))
-        response = await call_next(request)
+        trace_id = request.headers.get("X-Trace-Id") or None
+        token = request_id_var.set(request_id)
+        try:
+            with bind_trace_id(trace_id):
+                try:
+                    response = await call_next(request)
+                except CorruptedJsonColumnError as exc:
+                    # Storage-layer JSON corruption gets the dedicated
+                    # ``DATA_INTEGRITY_ERROR`` envelope (non-retryable —
+                    # the row stays broken until an operator repairs it)
+                    # rather than the generic catch-all; without this
+                    # dispatch the middleware would mask a known
+                    # data-corruption signal as ``INTERNAL_ERROR``.
+                    response = await handle_corrupted_json_column(request, exc)
+                except Exception as exc:  # noqa: BLE001 - intentional catch-all
+                    response = await handle_unhandled_exception(request, exc)
+        finally:
+            request_id_var.reset(token)
         response.headers["X-Request-ID"] = request_id
+        if trace_id is not None:
+            response.headers["X-Trace-Id"] = trace_id
         return response
 
-    # Include routers — versioned prefix for forward compatibility.
-    # Legacy /api/* paths are kept as aliases so existing frontends don't break.
+    # Mount routers on the versioned prefix and keep legacy aliases
+    # for clients still on /api/* (excluded from the OpenAPI schema).
     api_prefix = "/api/v1"
-    app.include_router(campaigns.router, prefix=f"{api_prefix}/campaigns", tags=["campaigns"])
-    app.include_router(suggestions.router, prefix=f"{api_prefix}/suggestions", tags=["suggestions"])
-    app.include_router(results.router, prefix=f"{api_prefix}/results", tags=["results"])
-    app.include_router(diagnostics.router, prefix=f"{api_prefix}/diagnostics", tags=["diagnostics"])
-    app.include_router(
-        capabilities.router, prefix=f"{api_prefix}/capabilities", tags=["capabilities"]
-    )
-
-    # Backward-compat aliases at /api/* (no version) for existing clients
-    app.include_router(campaigns.router, prefix="/api/campaigns", include_in_schema=False)
-    app.include_router(suggestions.router, prefix="/api/suggestions", include_in_schema=False)
-    app.include_router(results.router, prefix="/api/results", include_in_schema=False)
-    app.include_router(diagnostics.router, prefix="/api/diagnostics", include_in_schema=False)
-    app.include_router(capabilities.router, prefix="/api/capabilities", include_in_schema=False)
+    _include_versioned_router(app, campaigns.router, name="campaigns", prefix=api_prefix)
+    _include_versioned_router(app, suggestions.router, name="suggestions", prefix=api_prefix)
+    _include_versioned_router(app, results.router, name="results", prefix=api_prefix)
+    _include_versioned_router(app, diagnostics.router, name="diagnostics", prefix=api_prefix)
+    _include_versioned_router(app, capabilities.router, name="capabilities", prefix=api_prefix)
 
     @app.get("/health")
-    async def health_check() -> dict[str, str | bool | int]:
-        """Health check endpoint for API readiness."""
-        db_status = "error"
-        try:
-            async with get_session() as session:
-                await session.execute(text("SELECT 1"))
-                db_status = "connected"
-        except Exception as e:  # noqa: BLE001 - health checks must never crash
-            logger.warning("API health check failed: %s", e)
+    async def health_check() -> dict[str, str | bool | int | None]:
+        """Health check endpoint for API readiness.
 
-        healthy = db_status == "connected"
+        Carries ``database_error`` when the probe fails so operators
+        can distinguish a connectivity outage (``OperationalError``)
+        from a credentials/permission issue (``ProgrammingError``) or
+        a timeout without grepping the server logs. The class name
+        only — exception arguments may include query fragments or
+        credentials and are deliberately not surfaced.
+        """
+        probe = await ping_database_detailed()
+        if not probe.healthy:
+            logger.warning(
+                "API health check: database not reachable (%s)",
+                probe.error_class or "unknown",
+            )
+
         uptime = int(time.time() - _api_start_time)
 
         return {
-            "healthy": healthy,
+            "healthy": probe.healthy,
             "service": "api",
             "version": app.version,
-            "database": db_status,
+            "database": "connected" if probe.healthy else "error",
+            "database_error": probe.error_class if not probe.healthy else None,
             "uptime_seconds": uptime,
         }
 

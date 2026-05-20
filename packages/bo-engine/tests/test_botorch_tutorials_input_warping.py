@@ -83,9 +83,8 @@ class TestKumaraswamyInputWarping:
         for a in [0.5, 1.0, 2.0]:
             for b in [0.5, 1.0, 2.0]:
                 warped = kumaraswamy_cdf(x, a, b)
-                assert (warped >= 0).all() and (warped <= 1).all(), (
-                    f"Warped values should be in [0, 1] for a={a}, b={b}"
-                )
+                assert (warped >= 0).all(), f"Warped values below 0 for a={a}, b={b}"
+                assert (warped <= 1).all(), f"Warped values above 1 for a={a}, b={b}"
 
     @pytest.mark.smoke
     def test_kumaraswamy_monotonic(self) -> None:
@@ -225,11 +224,15 @@ class TestWarpingVsNoWarping:
     """Compare warped vs standard GP performance."""
 
     @pytest.mark.slow
+    @pytest.mark.nightly
     def test_warped_gp_handles_non_stationarity(self) -> None:
         """Warped GP should fit non-stationary functions better than standard GP.
 
         Non-stationary: function behavior varies across input space.
         Example: function is smooth on one side, wiggly on the other.
+        The MSE-vs-threshold comparison is single-seed and sensitive to the
+        sampled training points, so this test is marked ``nightly`` in addition
+        to ``slow`` to be exercised against multi-seed runs.
         """
         torch.manual_seed(42)
         bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)

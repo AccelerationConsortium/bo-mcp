@@ -27,14 +27,20 @@ from botorch.acquisition import AcquisitionFunction
 from botorch.acquisition.analytic import ExpectedImprovement
 from botorch.acquisition.logei import qLogExpectedImprovement, qLogNoisyExpectedImprovement
 from botorch.acquisition.multi_objective.logei import qLogNoisyExpectedHypervolumeImprovement
+from botorch.acquisition.multi_objective.objective import IdentityMCMultiOutputObjective
 from botorch.acquisition.multi_objective.parego import qLogNParEGO
+from botorch.acquisition.objective import GenericMCObjective
 from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.optim import optimize_acqf
 from botorch.optim.optimize import optimize_acqf_discrete, optimize_acqf_mixed
 from torch import Tensor
 
-from bo_engine.constants import MIXED_CATEGORICAL_COMBO_THRESHOLD
+from bo_engine.constants import (
+    MIXED_CATEGORICAL_COMBO_THRESHOLD,
+    NUMERICAL_EPSILON,
+    RESTART_WARN_TOLERANCE,
+)
 from bo_engine.device import ensure_device, to_device
 from bo_engine.transforms import (
     SearchSpaceType,
@@ -56,27 +62,29 @@ def _assert_minimization_form(minimize: bool) -> None:
     factory.  See :mod:`bo_engine.types` for the convention.
     """
     if not minimize:
-        raise ValueError(
+        msg = (
             "bo_engine acquisition factories operate in minimization form "
             "(lower = better).  Negate maximization objectives at the call "
             "site and pass ``minimize=True``.  See the sign-convention note "
             "in bo_engine.types for details."
         )
+        raise ValueError(msg)
 
 
 def _assert_minimization_mask(minimize_mask: Tensor) -> None:
     """Multi-objective counterpart of :func:`_assert_minimization_form`."""
     if not bool(minimize_mask.all()):
-        raise ValueError(
+        msg = (
             "bo_engine multi-objective factories operate in minimization "
             "form (every objective treated as lower = better).  Negate any "
             "maximization columns at the call site before building the "
             "acquisition function.  See bo_engine.types for details."
         )
+        raise ValueError(msg)
 
 
 def create_single_objective_acquisition(
-    model: SingleTaskGP,
+    model: SingleTaskGP | ModelListGP,
     train_x: Tensor,
     train_y: Tensor,
     *,
@@ -91,8 +99,20 @@ def create_single_objective_acquisition(
     minimization form (lower = better).  See :mod:`bo_engine.types` for the
     sign convention and caller responsibilities.
 
+    When ``model`` is a :class:`ModelListGP` (objective at index 0 plus one
+    constraint GP per outcome constraint), we wrap a
+    :class:`~botorch.acquisition.objective.GenericMCObjective` that
+    extracts output channel 0 so qLogNEI's baseline / improvement logic
+    keeps reading the objective. The ``constraints`` callables are
+    expected to index into the constraint channels (``samples[..., 1+i]``)
+    so BoTorch's feasibility weighting reads the constraint GP's
+    posterior rather than the objective GP's samples — that was the bug
+    behind the historical outcome-constraint path.
+
     Args:
-        model: Fitted SingleTaskGP model (trained on minimization-form y)
+        model: Fitted ``SingleTaskGP`` *or* :class:`ModelListGP` whose
+            first output is the objective. Pass a model list when outcome
+            constraints are active.
         train_x: Training inputs for baseline sampling
         train_y: Training outputs in minimization form
         minimize: Direction of the user-facing objective.  Required keyword
@@ -104,7 +124,13 @@ def create_single_objective_acquisition(
         best_f: Best observed minimization-form value.  If ``None`` and
             ``use_noisy=False``, computed as ``train_y.min()``.
         use_noisy: If True, use noisy EI (handles noise), else EI
-        constraints: Optional list of constraint callables
+        constraints: Optional list of constraint callables. Each callable
+            receives ``samples`` of shape ``(..., n_outputs)`` when
+            ``model`` is a ``ModelListGP``. BoTorch's MC feasibility
+            convention is **negative return → feasible** (see
+            :func:`botorch.utils.objective.compute_smoothed_feasibility_indicator`);
+            the callable produced by :func:`_make_outcome_constraint_callable`
+            already follows that convention.
 
     Returns:
         Noisy EI or EI acquisition function
@@ -120,15 +146,45 @@ def create_single_objective_acquisition(
             "prune_baseline": True,
             "cache_root": False,
         }
+        if isinstance(model, ModelListGP):
+            # Multi-output model: the objective is channel 0 and constraint
+            # GPs occupy channels 1..k. Without an explicit objective
+            # callable BoTorch tries to reduce all channels into a scalar,
+            # which would silently mix constraint outputs into the EI
+            # improvement signal.
+            # ``GenericMCObjective`` calls our callable as
+            # ``objective(samples, X=X)`` — the parameter must be named
+            # ``X`` (BoTorch's convention) even though we don't read it.
+            acqf_kwargs["objective"] = GenericMCObjective(
+                lambda samples, X=None: samples[..., 0]  # noqa: N803, ARG005
+            )
         if constraints is not None and len(constraints) > 0:
             acqf_kwargs["constraints"] = constraints
         return qLogNoisyExpectedImprovement(**acqf_kwargs)
-    else:
-        # EI for noiseless observations - requires best_f
-        if best_f is None:
-            # train_y is in minimization form (lower = better); min() is best.
-            best_f = train_y.min().item()
-        return qLogExpectedImprovement(model=model, best_f=best_f)
+
+    # EI for noiseless observations - requires best_f.
+    # The analytic ``qLogExpectedImprovement`` path does not support
+    # multi-output models without an explicit objective / posterior
+    # transform; reject ``ModelListGP`` here with a clear error rather
+    # than letting BoTorch raise ``UnsupportedError`` deep inside its
+    # acquisition optimizer. The internal constrained dispatch upgrades
+    # to ``qLogNoisyExpectedImprovement`` before reaching this branch
+    # (see ``_create_single_objective_dispatch``), so this guard fires
+    # only when a direct caller wires a multi-output model into the
+    # analytic path.
+    if isinstance(model, ModelListGP):
+        msg = (
+            "Analytic EXPECTED_IMPROVEMENT (qLogExpectedImprovement) does "
+            "not support ModelListGP / multi-output models without an "
+            "explicit objective. Either pass a single-output SingleTaskGP "
+            "or switch to use_noisy=True (NOISY_EI) which accepts a "
+            "GenericMCObjective channel selector."
+        )
+        raise TypeError(msg)
+    if best_f is None:
+        # train_y is in minimization form (lower = better); min() is best.
+        best_f = train_y.min().item()
+    return qLogExpectedImprovement(model=model, best_f=best_f)
 
 
 def create_multi_objective_acquisition(
@@ -148,11 +204,24 @@ def create_multi_objective_acquisition(
     maximization columns pre-negated at the call site.  See
     :mod:`bo_engine.types` for the convention.
 
+    **Outcome-constraint bundling.** When the caller bundles outcome-
+    constraint GPs into ``model`` (so ``len(model.models) > n_objectives``)
+    the first ``n_objectives`` output channels are the optimization
+    targets and the remaining channels are constraint GPs. We pass an
+    :class:`IdentityMCMultiOutputObjective` restricted to the objective
+    channels so qLogNEHVI / qLogNParEGO compute hypervolume / scalarized
+    improvement over the objectives only; the ``constraints`` callables
+    are expected to index into the trailing constraint channels.
+
     Args:
-        model: Fitted ModelListGP (trained on minimization-form y)
+        model: Fitted ModelListGP (trained on minimization-form y). May
+            contain extra trailing output channels for outcome-constraint
+            GPs — see the note above.
         ref_point: Reference point in minimization form
         train_x: Training inputs for sampling baseline
-        train_y: Training outputs in minimization form
+        train_y: Training outputs in minimization form, shape
+            ``(n_samples, n_objectives)``. The column count determines
+            the objective channel set.
         minimize_mask: Boolean tensor of shape ``(n_objectives,)`` recording
             the user-facing direction of each objective.  Required keyword
             so the call site cannot silently pass mismatched signs; must be
@@ -166,6 +235,13 @@ def create_multi_objective_acquisition(
     _assert_minimization_mask(minimize_mask)
     train_x, train_y, ref_point = ensure_device(train_x, train_y, ref_point)
 
+    n_objectives = int(minimize_mask.numel())
+    objective_outcomes = list(range(n_objectives))
+    has_extra_outputs = isinstance(model, ModelListGP) and len(model.models) > n_objectives
+    mo_objective: IdentityMCMultiOutputObjective | None = (
+        IdentityMCMultiOutputObjective(outcomes=objective_outcomes) if has_extra_outputs else None
+    )
+
     if method == AcquisitionMethod.SCALARIZED_MULTI_OBJ:
         # qLogNParEGO: Random scalarization weights for Pareto exploration
         # When weights=None, qLogNParEGO uses random weights internally
@@ -176,24 +252,27 @@ def create_multi_objective_acquisition(
             "prune_baseline": True,
             "cache_root": False,
         }
+        if mo_objective is not None:
+            acqf_kwargs["objective"] = mo_objective
         if constraints is not None and len(constraints) > 0:
             acqf_kwargs["constraints"] = constraints
 
         return qLogNParEGO(**acqf_kwargs)
 
-    else:
-        # Default: hypervolume improvement (qLogNEHVI)
-        acqf_kwargs = {
-            "model": model,
-            "ref_point": ref_point.tolist(),
-            "X_baseline": train_x,
-            "prune_baseline": True,
-            "cache_root": False,
-        }
-        if constraints is not None and len(constraints) > 0:
-            acqf_kwargs["constraints"] = constraints
+    # Default: hypervolume improvement (qLogNEHVI)
+    acqf_kwargs: dict = {
+        "model": model,
+        "ref_point": ref_point.tolist(),
+        "X_baseline": train_x,
+        "prune_baseline": True,
+        "cache_root": False,
+    }
+    if mo_objective is not None:
+        acqf_kwargs["objective"] = mo_objective
+    if constraints is not None and len(constraints) > 0:
+        acqf_kwargs["constraints"] = constraints
 
-        return qLogNoisyExpectedHypervolumeImprovement(**acqf_kwargs)  # ty: ignore[invalid-argument-type]
+    return qLogNoisyExpectedHypervolumeImprovement(**acqf_kwargs)
 
 
 def create_acquisition_from_config(config: AcquisitionConfig) -> AcquisitionFunction:
@@ -282,11 +361,12 @@ def create_acquisition(
 
     if n_objectives == 1:
         if minimize is None:
-            raise ValueError(
+            msg = (
                 "create_acquisition requires ``minimize`` for "
                 "single-objective problems; see bo_engine.types for the "
                 "sign convention."
             )
+            raise ValueError(msg)
         return _create_single_objective_dispatch(
             model=model,
             train_x=train_x,
@@ -299,11 +379,12 @@ def create_acquisition(
         )
 
     if minimize_mask is None:
-        raise ValueError(
+        msg = (
             "create_acquisition requires ``minimize_mask`` for "
             "multi-objective problems; see bo_engine.types for the sign "
             "convention."
         )
+        raise ValueError(msg)
     return _create_multi_objective_dispatch(
         model=model,
         ref_point=ref_point,
@@ -312,6 +393,7 @@ def create_acquisition(
         minimize_mask=minimize_mask,
         method=method,
         constraints=constraints,
+        outcome_constraint_models=outcome_constraint_models,
     )
 
 
@@ -331,6 +413,17 @@ def _create_single_objective_dispatch(
     Handles model extraction from ModelListGP, cost-aware EIpu, and
     standard EI/noisy-EI with optional outcome constraints.
 
+    **Outcome-constraint wiring.** When ``outcome_constraint_models`` is
+    non-empty we bundle the objective GP plus every constraint GP into a
+    single :class:`ModelListGP` and rewrite the per-constraint callable
+    to index into the corresponding channel of the bundled posterior.
+    This is the bug-fix to the legacy path: the previous callable
+    ``samples - threshold`` operated on the *objective* model's samples
+    because that was the only model passed to BoTorch, so the constraint
+    GP we fit was discarded. With the bundle the callable reads the
+    constraint GP's posterior directly and BoTorch's feasibility
+    weighting becomes meaningful (Gardner et al. ICML 2014).
+
     Args:
         model: Fitted GP model (SingleTaskGP or single-model ModelListGP)
         train_x: Training inputs
@@ -344,15 +437,21 @@ def _create_single_objective_dispatch(
     Returns:
         Single-objective acquisition function
     """
-    if not isinstance(model, SingleTaskGP):
-        if isinstance(model, ModelListGP) and len(model.models) == 1:
-            model = cast(SingleTaskGP, model.models[0])
-        else:
-            raise ValueError("Single-objective requires SingleTaskGP model")
+    objective_gp: SingleTaskGP
+    if isinstance(model, SingleTaskGP):
+        objective_gp = model
+    elif isinstance(model, ModelListGP) and len(model.models) == 1:
+        objective_gp = cast(SingleTaskGP, model.models[0])
+    else:
+        msg = "Single-objective requires SingleTaskGP model"
+        raise ValueError(msg)
 
     if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
+        # EIpu path keeps its own constraint handling — it does not benefit
+        # from the ModelListGP bundle because EIpuAcquisition consumes
+        # constraint callables in a different way (see ``EIpuAcquisition``).
         return create_cost_aware_acquisition(
-            model=model,  # type: ignore[arg-type]
+            model=objective_gp,
             train_y=train_y,
             minimize=minimize,
             cost_model=cost_model,
@@ -365,14 +464,37 @@ def _create_single_objective_dispatch(
             "Falling back to standard Noisy Expected Improvement."
         )
 
+    use_noisy = method != AcquisitionMethod.EXPECTED_IMPROVEMENT
+    acq_model: SingleTaskGP | ModelListGP = objective_gp
     all_constraints = list(constraints) if constraints else []
     if outcome_constraint_models:
-        for constraint_model, threshold in outcome_constraint_models:
-            all_constraints.append(_make_outcome_constraint_callable(constraint_model, threshold))
-
-    use_noisy = method != AcquisitionMethod.EXPECTED_IMPROVEMENT
+        constraint_gps = [m for m, _ in outcome_constraint_models]
+        acq_model = ModelListGP(objective_gp, *constraint_gps)
+        for idx, (_constraint_gp, threshold) in enumerate(outcome_constraint_models):
+            all_constraints.append(
+                _make_outcome_constraint_callable(
+                    output_index=idx + 1,
+                    threshold=threshold,
+                )
+            )
+        # ``qLogExpectedImprovement`` (the analytic EI path) does not
+        # support multi-output models without an explicit objective /
+        # posterior transform, so a constrained run with
+        # ``EXPECTED_IMPROVEMENT`` would raise ``UnsupportedError`` deep
+        # inside BoTorch. The MC sibling ``qLogNoisyExpectedImprovement``
+        # accepts ``constraints=`` and a ``GenericMCObjective`` channel
+        # selector; we transparently upgrade and log a warning so the
+        # caller knows the analytic path was unavailable.
+        if not use_noisy:
+            logger.warning(
+                "AcquisitionMethod.EXPECTED_IMPROVEMENT does not support "
+                "outcome constraints. Routing through NOISY_EI so BoTorch "
+                "can apply the feasibility weighting; set "
+                "acquisition_method=NOISY_EI to suppress this warning."
+            )
+            use_noisy = True
     return create_single_objective_acquisition(
-        model=model,  # type: ignore[arg-type]
+        model=acq_model,
         train_x=train_x,
         train_y=train_y,
         minimize=minimize,
@@ -390,14 +512,30 @@ def _create_multi_objective_dispatch(
     minimize_mask: Tensor,
     method: AcquisitionMethod,
     constraints: list | None,
+    outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None = None,
 ) -> AcquisitionFunction:
     """Dispatch multi-objective acquisition function creation.
 
     Validates that a reference point is provided, then delegates to
     create_multi_objective_acquisition.
 
+    **Outcome-constraint wiring.** Mirrors the single-objective dispatch:
+    when ``outcome_constraint_models`` is non-empty we bundle the
+    per-objective ModelListGP with the constraint GPs into a single
+    composite ModelListGP whose first ``n_objectives`` output channels
+    are the targets and whose trailing channels are the constraint GPs.
+    The per-constraint callable returned by
+    :func:`_make_outcome_constraint_callable` indexes into the matching
+    trailing channel; :func:`create_multi_objective_acquisition` then
+    wraps an ``IdentityMCMultiOutputObjective`` restricted to the
+    objective channels so qLogNEHVI computes hypervolume only over the
+    targets, with BoTorch's feasibility weighting applied via the
+    constraint callables (Gardner et al. ICML 2014 — negative output =
+    feasible).
+
     Args:
-        model: Fitted ModelListGP
+        model: Fitted ModelListGP whose outputs match the objectives
+            declared in the spec.
         ref_point: Reference point for hypervolume computation, in
             minimization form
         train_x: Training inputs
@@ -406,46 +544,103 @@ def _create_multi_objective_dispatch(
             the user-facing direction of each objective (see
             :mod:`bo_engine.types`).
         method: Acquisition method
-        constraints: Optional constraint callables
+        constraints: Optional constraint callables passed through
+            unchanged (e.g. native acquisition constraints).
+        outcome_constraint_models: Optional list of ``(constraint_gp,
+            threshold)`` pairs; when non-empty the model is extended and
+            extra callables are appended for the constraint channels.
 
     Returns:
         Multi-objective acquisition function
     """
     if ref_point is None:
-        raise ValueError("Reference point required for multi-objective optimization")
+        msg = "Reference point required for multi-objective optimization"
+        raise ValueError(msg)
+
+    objective_model: ModelListGP
+    if isinstance(model, ModelListGP):
+        objective_model = model
+    else:
+        # Single-task model in the multi-objective path is a programming
+        # error upstream; surface it loudly here.
+        msg = "Multi-objective requires ModelListGP model"
+        raise TypeError(msg)
+
+    acq_model: ModelListGP = objective_model
+    all_constraints = list(constraints) if constraints else []
+    if outcome_constraint_models:
+        n_objectives = int(minimize_mask.numel())
+        constraint_gps = [m for m, _ in outcome_constraint_models]
+        # ``ModelListGP.models`` is a ``torch.nn.ModuleList`` of fitted GPs;
+        # unpacking it together with the constraint GPs yields a single
+        # ``ModelListGP`` whose first ``n_objectives`` outputs are the
+        # objectives and whose trailing outputs are the constraint GPs.
+        acq_model = ModelListGP(*objective_model.models, *constraint_gps)  # ty: ignore[invalid-argument-type]
+        for idx, (_constraint_gp, threshold) in enumerate(outcome_constraint_models):
+            all_constraints.append(
+                _make_outcome_constraint_callable(
+                    output_index=n_objectives + idx,
+                    threshold=threshold,
+                )
+            )
 
     return create_multi_objective_acquisition(
-        model=model,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        model=acq_model,  # type: ignore[arg-type]
         ref_point=ref_point,
         train_x=train_x,
         train_y=train_y,
         minimize_mask=minimize_mask,
         method=method,
-        constraints=constraints,
+        constraints=all_constraints if all_constraints else None,
     )
 
 
 def _make_outcome_constraint_callable(
-    _constraint_model: SingleTaskGP,
+    *,
+    output_index: int,
     threshold: float,
 ) -> Callable[[Tensor], Tensor]:
     """Create a constraint callable for outcome constraints.
 
+    The callable is consumed by BoTorch's
+    :func:`~botorch.utils.objective.compute_smoothed_feasibility_indicator`
+    via ``qLogNoisyExpectedImprovement.constraints`` (and the multi-
+    objective sibling). BoTorch's documented convention is that
+    **negative constraint values mean feasible** — the sigmoid
+    feasibility weight saturates toward 1 when the callable returns a
+    large negative number. We therefore return ``threshold - samples``,
+    which is negative exactly when ``samples > threshold``.
+
+    Sign-convention bookkeeping for the continuous outcome-constraint
+    path is done at fit time by ``_fit_outcome_constraint_model``: a
+    ``<=`` constraint trains on the negated objective values with a
+    matching negated threshold, so the same ``threshold - samples``
+    formula remains "negative = feasible" regardless of direction. The
+    legacy binary path interprets ``samples`` as ``P(feasible)`` and the
+    threshold as the per-constraint feasibility cut-off (default 0.5);
+    again ``threshold - samples`` is negative when ``P(feasible)`` exceeds
+    the cut-off.
+
     Args:
-        constraint_model: GP model predicting feasibility
-        threshold: Probability threshold (typically 0.5)
+        output_index: Channel index in the ``ModelListGP`` posterior that
+            holds the constraint GP's predictions (objective sits at 0,
+            constraints at 1..k).
+        threshold: Signed threshold (already encoded for the constraint
+            direction by the fitting helper).
 
     Returns:
-        Callable that returns constraint satisfaction (positive = satisfied)
+        Callable that returns constraint satisfaction in BoTorch's
+        signed-feasibility convention (negative = satisfied).
     """
 
     def constraint_callable(samples: Tensor) -> Tensor:
-        """Constraint function: positive means feasible."""
-        # samples shape: (num_samples, batch_size, 1)
-        # For outcome constraints, the model predicts P(feasible)
-        # We want P(feasible) > threshold
-        # Constraint is satisfied when samples > threshold
-        return samples.squeeze(-1) - threshold
+        """Constraint function: negative means feasible (BoTorch convention).
+
+        ``samples`` has shape ``(..., n_outputs)`` because the underlying
+        acquisition model is a ``ModelListGP``; we index into the
+        constraint channel rather than reducing over outputs.
+        """
+        return threshold - samples[..., output_index]
 
     return constraint_callable
 
@@ -586,14 +781,99 @@ class EIpuAcquisition(AcquisitionFunction):
         return eipu
 
 
+def _validate_linear_constraint_entry(
+    entry: tuple[Tensor, Tensor, float],
+    n_dims: int,
+    label: str,
+) -> None:
+    """Validate a single ``(indices, coefficients, rhs)`` tuple.
+
+    Encapsulates the per-entry shape checks so the outer driver can
+    iterate without exceeding cognitive-complexity limits.
+    """
+    if not isinstance(entry, tuple) or len(entry) != 3:
+        msg = f"{label} must be a (indices, coefficients, rhs) tuple"
+        raise ValueError(msg)
+    indices, coefficients, rhs = entry
+    if not isinstance(indices, Tensor) or indices.dim() != 1:
+        msg = f"{label}.indices must be a 1-D tensor"
+        raise ValueError(msg)
+    if not isinstance(coefficients, Tensor) or coefficients.dim() != 1:
+        msg = f"{label}.coefficients must be a 1-D tensor"
+        raise ValueError(msg)
+    if indices.numel() != coefficients.numel():
+        msg = (
+            f"{label} indices ({indices.numel()}) and "
+            f"coefficients ({coefficients.numel()}) must have the same length"
+        )
+        raise ValueError(msg)
+    if indices.numel() == 0:
+        msg = f"{label} must reference at least one parameter"
+        raise ValueError(msg)
+    if not torch.isfinite(torch.as_tensor(rhs, dtype=torch.float64)).item():
+        msg = f"{label}.rhs must be finite, got {rhs!r}"
+        raise ValueError(msg)
+    index_min = int(indices.min().item())
+    index_max = int(indices.max().item())
+    if index_min < 0 or index_max >= n_dims:
+        msg = (
+            f"{label} references parameter index out of range "
+            f"[0, {n_dims}); got min={index_min}, max={index_max}"
+        )
+        raise ValueError(msg)
+
+
+def _validate_linear_constraints(
+    constraints: list[tuple[Tensor, Tensor, float]] | None,
+    n_dims: int,
+    kind: str,
+) -> None:
+    """Shape-validate BoTorch linear constraints before they reach ``optimize_acqf``.
+
+    BoTorch surfaces shape mismatches deep inside its inner loops with messages
+    that don't name the offending tuple, so we check the contract here while we
+    still know which constraint failed.
+    """
+    if not constraints:
+        return
+    for position, entry in enumerate(constraints):
+        _validate_linear_constraint_entry(entry, n_dims, f"{kind}_constraints[{position}]")
+
+
+def _resolve_restart_budget(
+    spec: OptimizationSpec | None,
+    bounds: Tensor,
+    num_restarts: int | None,
+    raw_samples: int | None,
+) -> tuple[int, int]:
+    """Return the effective ``(num_restarts, raw_samples)`` for this call.
+
+    Explicit ``num_restarts`` / ``raw_samples`` arguments override the spec's
+    :class:`AcquisitionOptimizationConfig`. Otherwise the dimension-adaptive
+    defaults derived from the acquisition-input width of ``bounds`` apply.
+    """
+    from bo_engine.types import AcquisitionOptimizationConfig  # local to avoid cycles
+
+    n_dims = int(bounds.shape[-1])
+    config = (
+        spec.acquisition_optimization
+        if spec is not None and spec.acquisition_optimization is not None
+        else AcquisitionOptimizationConfig()
+    )
+    default_restarts, default_samples = config.resolve(n_dims)
+    restarts = int(num_restarts) if num_restarts is not None else default_restarts
+    samples = int(raw_samples) if raw_samples is not None else default_samples
+    return restarts, samples
+
+
 def optimize_acquisition(
     acqf: AcquisitionFunction,
     bounds: Tensor,
     batch_size: int = 1,
-    num_restarts: int = 20,
-    raw_samples: int = 512,
+    num_restarts: int | None = None,
+    raw_samples: int | None = None,
     spec: OptimizationSpec | None = None,
-    x_avoid: Tensor | None = None,  # noqa: N803
+    x_avoid: Tensor | None = None,
     inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     X_pending: Tensor | None = None,  # noqa: N803
@@ -611,8 +891,12 @@ def optimize_acquisition(
         acqf: Acquisition function to optimize
         bounds: Parameter bounds of shape (2, n_dims)
         batch_size: Number of candidates to generate
-        num_restarts: Number of optimization restarts
-        raw_samples: Number of raw samples for initialization
+        num_restarts: Optional override for the restart count. When ``None``,
+            the value is derived from ``spec.acquisition_optimization`` and
+            falls back to the dimension-adaptive default in
+            :class:`AcquisitionOptimizationConfig`.
+        raw_samples: Optional override for the raw-sample budget. Same
+            resolution rules as ``num_restarts``.
         spec: Optimization specification for discrete/mixed dispatch.
             If None, falls back to continuous optimization.
         x_avoid: Points to avoid (e.g., already-evaluated training data).
@@ -635,9 +919,22 @@ def optimize_acquisition(
         - acquisition_values has shape (batch_size,)
     """
     bounds = to_device(bounds)
+    n_dims = int(bounds.shape[-1])
+    _validate_linear_constraints(inequality_constraints, n_dims, "inequality")
+    _validate_linear_constraints(equality_constraints, n_dims, "equality")
 
     if X_pending is not None:
         X_pending = to_device(X_pending)
+
+    effective_restarts, effective_samples = _resolve_restart_budget(
+        spec, bounds, num_restarts, raw_samples
+    )
+    logger.debug(
+        "Acquisition optimization budget: n_dims=%d, num_restarts=%d, raw_samples=%d",
+        int(bounds.shape[-1]),
+        effective_restarts,
+        effective_samples,
+    )
 
     if spec is None:
         _apply_pending_to_acqf(acqf, X_pending)
@@ -645,8 +942,8 @@ def optimize_acquisition(
             acqf,
             bounds,
             batch_size,
-            num_restarts,
-            raw_samples,
+            effective_restarts,
+            effective_samples,
             inequality_constraints=inequality_constraints,
             equality_constraints=equality_constraints,
         )
@@ -656,29 +953,31 @@ def optimize_acquisition(
     if space_type == SearchSpaceType.PURELY_CATEGORICAL:
         merged_avoid = _merge_avoid_tensors(x_avoid, X_pending)
         return _optimize_discrete(acqf, spec, batch_size, merged_avoid)
-    elif space_type == SearchSpaceType.MIXED:
+    if space_type == SearchSpaceType.MIXED:
         n_combos = count_categorical_combinations(spec)
         if n_combos > MIXED_CATEGORICAL_COMBO_THRESHOLD:
-            raise NotImplementedError(
+            msg = (
                 f"Mixed spaces with more than {MIXED_CATEGORICAL_COMBO_THRESHOLD} "
                 f"categorical combinations are not yet supported (this space has "
                 f"{n_combos}). Consider reducing the number of categories. "
                 "A future version will support optimize_acqf_mixed_alternating "
                 "with integer encoding for larger mixed spaces."
             )
+            raise NotImplementedError(msg)
         _apply_pending_to_acqf(acqf, X_pending)
-        return _optimize_mixed(acqf, bounds, spec, batch_size, num_restarts, raw_samples)
-    else:
-        _apply_pending_to_acqf(acqf, X_pending)
-        return _optimize_continuous(
-            acqf,
-            bounds,
-            batch_size,
-            num_restarts,
-            raw_samples,
-            inequality_constraints=inequality_constraints,
-            equality_constraints=equality_constraints,
+        return _optimize_mixed(
+            acqf, bounds, spec, batch_size, effective_restarts, effective_samples
         )
+    _apply_pending_to_acqf(acqf, X_pending)
+    return _optimize_continuous(
+        acqf,
+        bounds,
+        batch_size,
+        effective_restarts,
+        effective_samples,
+        inequality_constraints=inequality_constraints,
+        equality_constraints=equality_constraints,
+    )
 
 
 def _apply_pending_to_acqf(
@@ -705,7 +1004,7 @@ def _apply_pending_to_acqf(
 
 
 def _merge_avoid_tensors(
-    x_avoid: Tensor | None,  # noqa: N803
+    x_avoid: Tensor | None,
     X_pending: Tensor | None,  # noqa: N803
 ) -> Tensor | None:
     """Concatenate pending rows into an ``x_avoid`` tensor.
@@ -745,14 +1044,23 @@ def _optimize_continuous(
 
     Returns:
         Tuple of (candidates, acquisition_values)
+
+    Diagnostics: when ``batch_size == 1`` we ask BoTorch for the full set of
+    per-restart results (``return_best_only=False``) and route them through
+    :func:`_log_restart_diagnostics` before collapsing to the best restart.
+    For ``batch_size > 1`` we keep the existing sequential greedy path —
+    BoTorch does not support ``return_best_only=False`` together with
+    sequential greedy optimization, so diagnostics are skipped there.
     """
+    capture_restarts = batch_size == 1
     kwargs: dict = {
         "acq_function": acqf,
         "bounds": bounds,
         "q": batch_size,
         "num_restarts": num_restarts,
         "raw_samples": raw_samples,
-        "sequential": True,
+        "sequential": not capture_restarts,
+        "return_best_only": not capture_restarts,
         "options": {
             "batch_limit": 5,
             "maxiter": 200,
@@ -764,7 +1072,72 @@ def _optimize_continuous(
         kwargs["equality_constraints"] = equality_constraints
 
     candidates, acq_values = optimize_acqf(**kwargs)
+
+    if capture_restarts:
+        _log_restart_diagnostics(acq_values, candidates)
+        best_idx = int(acq_values.argmax().item())
+        candidates = candidates[best_idx]
+        acq_values = acq_values[best_idx : best_idx + 1]
     return candidates, acq_values
+
+
+def _log_restart_diagnostics(acq_values: Tensor, candidates: Tensor) -> None:
+    """Log per-restart acquisition diagnostics for ``optimize_acqf``.
+
+    Captures the dispersion across the multi-start optimization so the
+    practitioner can tell whether the restarts are exploring distinct basins
+    or whether they all collapsed into the same neighbourhood — a hallmark of
+    pervasive local minima or a near-uniform acquisition landscape.
+
+    The top-3 (acquisition value, candidate) pairs are emitted at DEBUG; a
+    WARNING is emitted when the relative gap between the best and median
+    restart is below :data:`RESTART_WARN_TOLERANCE`, i.e.
+
+    ``(best - median) / max(|best|, |median|, ε) < RESTART_WARN_TOLERANCE``.
+
+    Args:
+        acq_values: Per-restart acquisition values of shape
+            ``(num_restarts,)`` from ``optimize_acqf(return_best_only=False)``.
+        candidates: Per-restart candidate solutions of shape
+            ``(num_restarts, q, d)``. Only used for the DEBUG dump.
+    """
+    if acq_values.numel() == 0:
+        return
+
+    values = acq_values.detach().reshape(-1)
+    n_restarts = int(values.numel())
+
+    sorted_vals, sorted_idx = torch.sort(values, descending=True)
+    top_n = min(3, n_restarts)
+    if logger.isEnabledFor(logging.DEBUG):
+        for rank in range(top_n):
+            idx = int(sorted_idx[rank].item())
+            value = float(sorted_vals[rank].item())
+            candidate = candidates[idx].detach().cpu().tolist()
+            logger.debug(
+                "Acquisition restart rank %d: value=%.6g candidate=%s",
+                rank + 1,
+                value,
+                candidate,
+            )
+
+    if n_restarts < 2:
+        return
+
+    best = float(sorted_vals[0].item())
+    median = float(values.median().item())
+    denom = max(abs(best), abs(median), NUMERICAL_EPSILON)
+    relative_gap = (best - median) / denom
+    if relative_gap < RESTART_WARN_TOLERANCE:
+        logger.warning(
+            "Acquisition restart dispersion is tight: best=%.6g median=%.6g "
+            "relative_gap=%.3g < %.3g. Restarts may be trapped in widespread "
+            "local minima or the acquisition surface may be near-uniform.",
+            best,
+            median,
+            relative_gap,
+            RESTART_WARN_TOLERANCE,
+        )
 
 
 def _optimize_discrete(
@@ -862,5 +1235,4 @@ def get_best_observed_value(
 
     if minimize:
         return train_y.min().item()
-    else:
-        return train_y.max().item()
+    return train_y.max().item()

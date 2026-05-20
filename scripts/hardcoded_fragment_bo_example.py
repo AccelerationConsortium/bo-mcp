@@ -93,7 +93,9 @@ GAP_EV: dict[Pair, float] = {
     Pair("phenothiazine", "benzothiadiazole"): 1.641,
     Pair("phenothiazine", "triazine"): 1.757,
 }
-assert len(GAP_EV) == 36
+if len(GAP_EV) != 36:
+    msg = f"GAP_EV must define all 36 donor×acceptor pairs, got {len(GAP_EV)}"
+    raise RuntimeError(msg)
 # Derive categories from GAP_EV keys to avoid duplicating source data.
 DONOR_CATEGORIES = list(dict.fromkeys(pair.donor for pair in GAP_EV))
 ACCEPTOR_CATEGORIES = list(dict.fromkeys(pair.acceptor for pair in GAP_EV))
@@ -106,19 +108,19 @@ CAMPAIGN_DATA = CampaignIntakeInput(
         "objective is to minimize HOMO–LUMO gap (eV) of the coupled molecule "
         "computed via fast DFT (B3LYP/def2-SVP)."
     ),
-    parameters=[
+    parameters=(
         InputParameter(
             name="donor",
             type=ParameterType.CATEGORICAL,
-            categories=DONOR_CATEGORIES,
+            categories=tuple(DONOR_CATEGORIES),
         ),
         InputParameter(
             name="acceptor",
             type=ParameterType.CATEGORICAL,
-            categories=ACCEPTOR_CATEGORIES,
+            categories=tuple(ACCEPTOR_CATEGORIES),
         ),
-    ],
-    objectives=[Objective(name="gap_eV", direction="minimize")],
+    ),
+    objectives=(Objective(name="gap_eV", direction="minimize"),),
     batch_size=EXPECTED_BATCH_SIZE,
     max_iterations=N_CYCLES,
     initial_design_size=2,
@@ -133,9 +135,8 @@ def _result_for(
     try:
         gap_e_v = float(GAP_EV[pair])
     except KeyError as exc:
-        raise KeyError(
-            f"Missing gap_eV for pair donor={pair.donor}, acceptor={pair.acceptor}"
-        ) from exc
+        msg = f"Missing gap_eV for pair donor={pair.donor}, acceptor={pair.acceptor}"
+        raise KeyError(msg) from exc
 
     return ResultSubmissionInput(
         suggestion_id=suggestion_id,
@@ -159,10 +160,11 @@ async def main() -> None:
 
     expected_pairs = len(DONOR_CATEGORIES) * len(ACCEPTOR_CATEGORIES)
     if len(GAP_EV) != expected_pairs:
-        raise ValueError(
+        msg = (
             f"GAP_EV has {len(GAP_EV)} entries, "
             f"but expected at least {expected_pairs} for full donor/acceptor coverage."
         )
+        raise ValueError(msg)
 
     async with lifespan():
         api_key_hash = hashlib.sha256(API_KEY.encode()).hexdigest()
@@ -323,7 +325,7 @@ async def main() -> None:
             plt.tight_layout()
 
             output_path = (
-                Path(__file__).resolve().parent
+                Path(__file__).parent
                 / "hardcoded_fragment_bo_example_cumulative_best_avg_100_runs.png"
             )
             plt.savefig(output_path, dpi=500)

@@ -444,16 +444,15 @@ class AdaptiveBODatabase:
                     }
 
                 # Evaluations
-                evaluations = []
-                for ev in sorted(it.evaluations, key=lambda x: x.batch_index):
-                    evaluations.append(
-                        {
-                            "batch_index": ev.batch_index,
-                            "parameter_values": ev.get_parameter_values(),
-                            "objective_values": ev.get_objective_values(),
-                            "suggestion_id": ev.suggestion_id,
-                        }
-                    )
+                evaluations = [
+                    {
+                        "batch_index": ev.batch_index,
+                        "parameter_values": ev.get_parameter_values(),
+                        "objective_values": ev.get_objective_values(),
+                        "suggestion_id": ev.suggestion_id,
+                    }
+                    for ev in sorted(it.evaluations, key=lambda x: x.batch_index)
+                ]
                 it_data["evaluations"] = evaluations
 
                 # Model metrics
@@ -599,17 +598,17 @@ class AdaptiveBODatabase:
             )
             iterations = result.scalars().all()
 
-            all_evals = []
+            all_evals: list[dict[str, Any]] = []
             for it in iterations:
-                for ev in sorted(it.evaluations, key=lambda x: x.batch_index):
-                    all_evals.append(
-                        {
-                            "iteration": it.iteration_number,
-                            "batch_index": ev.batch_index,
-                            "parameter_values": ev.get_parameter_values(),
-                            "objective_values": ev.get_objective_values(),
-                        }
-                    )
+                all_evals.extend(
+                    {
+                        "iteration": it.iteration_number,
+                        "batch_index": ev.batch_index,
+                        "parameter_values": ev.get_parameter_values(),
+                        "objective_values": ev.get_objective_values(),
+                    }
+                    for ev in sorted(it.evaluations, key=lambda x: x.batch_index)
+                )
             return all_evals
 
     async def close(self) -> None:

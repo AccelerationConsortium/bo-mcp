@@ -2,8 +2,10 @@
 
 from typing import Annotated, Any
 
-from bo_mcp_server.errors import http_status_for_error
-from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
+from bo_mcp_server.client import (
+    get_diagnostics_operation,
+    http_status_for_error,
+)
 from fastapi import APIRouter, HTTPException, Query
 
 from api.deps import CurrentUser, get_authorized_campaign

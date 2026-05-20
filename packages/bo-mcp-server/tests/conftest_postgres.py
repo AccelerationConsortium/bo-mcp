@@ -3,6 +3,18 @@
 These fixtures provide real PostgreSQL instances for integration testing,
 ensuring database behavior matches production environments.
 
+Test isolation uses the SQLAlchemy "savepoint + restart on commit" pattern
+rather than re-running ``Base.metadata.create_all`` per test. The schema is
+created once at session scope; each test runs inside an outer transaction
+and a nested ``SAVEPOINT`` that is restarted whenever the application code
+under test issues a ``commit``. At teardown the outer transaction is rolled
+back, so no writes survive — even if the production code path committed
+during the test.
+
+This pattern is documented in the SQLAlchemy 2.0 ORM section
+"Joining a Session into an External Transaction (such as for test suites)":
+https://docs.sqlalchemy.org/en/20/orm/session_transaction.html#joining-a-session-into-an-external-transaction-such-as-for-test-suites
+
 Reference: https://testcontainers-python.readthedocs.io/en/latest/modules/postgres/
 
 Usage:
@@ -19,6 +31,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Mark all tests in files using these fixtures as postgres tests
@@ -76,8 +89,7 @@ def postgres_url(postgres_container) -> str:
     # Replace postgresql:// with postgresql+asyncpg://
     async_url = sync_url.replace("postgresql://", "postgresql+asyncpg://")
     # Also handle psycopg2 driver if present
-    async_url = async_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
-    return async_url
+    return async_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
 
 
 @pytest.fixture(scope="session")
@@ -115,32 +127,54 @@ async def postgres_tables(postgres_engine):
 
 
 @pytest_asyncio.fixture
-async def postgres_session(postgres_engine, postgres_tables) -> AsyncGenerator[AsyncSession]:
+async def postgres_session(
+    request: pytest.FixtureRequest, postgres_engine
+) -> AsyncGenerator[AsyncSession]:
     """Create an async session for PostgreSQL integration tests.
 
-    Each test gets a fresh session that is rolled back after the test,
-    ensuring test isolation without recreating tables.
+    The session is bound to a dedicated connection that is wrapped in an
+    outer transaction plus a nested ``SAVEPOINT``. When the production code
+    under test calls ``commit`` the savepoint completes but the outer
+    transaction stays open, and the ``after_transaction_end`` listener
+    immediately starts a new savepoint so subsequent statements still see
+    a transactional context. At teardown the outer transaction is rolled
+    back unconditionally, so the schema is left untouched and the next
+    test sees a clean slate without paying the cost of recreating tables.
+
+    This pattern is the SQLAlchemy-recommended approach for test isolation
+    against PostgreSQL: it is correct under application-side commits (which
+    a flat ``async with session.begin()`` is not) and it is several orders
+    of magnitude faster than recreating the engine + schema per test.
 
     Yields:
         AsyncSession: Database session connected to PostgreSQL.
     """
-    async_session_factory = async_sessionmaker(
-        postgres_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
+    request.getfixturevalue("postgres_tables")
+    async with postgres_engine.connect() as connection:
+        outer_transaction = await connection.begin()
+        session = AsyncSession(bind=connection, expire_on_commit=True)
+        await session.begin_nested()
 
-    async with async_session_factory() as session:
-        # Use a savepoint for test isolation
-        async with session.begin():
+        @event.listens_for(session.sync_session, "after_transaction_end")
+        def _restart_savepoint(sync_session, transaction) -> None:  # noqa: ARG001
+            # When the inner SAVEPOINT ends (commit or rollback inside the
+            # test), immediately open a new one so subsequent statements
+            # still execute inside a transaction we can roll back.
+            sync_conn = connection.sync_connection
+            if sync_conn is not None and not sync_conn.in_nested_transaction():
+                sync_conn.begin_nested()
+
+        try:
             yield session
-            # Rollback after each test to maintain isolation
-            await session.rollback()
+        finally:
+            await session.close()
+            if outer_transaction.is_active:
+                await outer_transaction.rollback()
 
 
 @pytest_asyncio.fixture
 async def postgres_session_committed(
-    postgres_engine, postgres_tables
+    request: pytest.FixtureRequest, postgres_engine
 ) -> AsyncGenerator[AsyncSession]:
     """Create a session that commits changes (for tests that need persistence).
 
@@ -152,10 +186,11 @@ async def postgres_session_committed(
     Yields:
         AsyncSession: Database session that commits changes.
     """
+    request.getfixturevalue("postgres_tables")
     async_session_factory = async_sessionmaker(
         postgres_engine,
         class_=AsyncSession,
-        expire_on_commit=False,
+        expire_on_commit=True,
     )
 
     async with async_session_factory() as session:

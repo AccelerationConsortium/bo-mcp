@@ -142,7 +142,7 @@ def set_all_seeds(seed: int = 42) -> None:
     try:
         import numpy as np
 
-        np.random.seed(seed)
+        np.random.seed(seed)  # noqa: NPY002
     except ImportError:
         pass
 
@@ -176,13 +176,13 @@ def seed() -> int:
 
 
 @pytest.fixture
-def seeded(seed: int) -> Generator[int]:
-    """Fixture that sets torch seed and yields it.
+def seeded(seed: int) -> int:
+    """Fixture that sets torch seed and returns it.
 
     Use this for tests that need reproducibility but not full determinism.
     """
     set_all_seeds(seed)
-    yield seed
+    return seed
 
 
 @pytest.fixture
@@ -196,14 +196,13 @@ def rng() -> np.random.Generator:
 
 
 @pytest.fixture
-def torch_rng() -> Generator[None]:
+def torch_rng() -> None:
     """Fixture that seeds torch for reproducible model fitting and tensor ops.
 
     Use this for tests that call torch.rand(), create_and_fit_model(), or
     other torch-level stochastic operations.
     """
     torch.manual_seed(42)
-    yield
 
 
 @pytest.fixture
@@ -364,15 +363,20 @@ def sample_observations_multi() -> list[ObservationData]:
 
 
 @pytest.fixture
-def branin_training_data(dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+def branin_training_data(dtype: torch.dtype, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Create training data from Branin function for GP testing.
+
+    The fixture depends on the ``seed`` fixture, so callers that parameterize
+    the seed (e.g. via ``pytest.mark.parametrize("seed", [1, 2, 3])``) see
+    distinct training sets. Seeding is routed through ``set_all_seeds`` so
+    the full torch/numpy/random tuple is consistent.
 
     Returns:
         Tuple of (train_x, train_y) tensors
     """
     from bo_engine.benchmarks import branin, branin_bounds
 
-    torch.manual_seed(42)
+    set_all_seeds(seed)
     bounds = branin_bounds()
     # Generate Sobol points in [0, 1]^2 then scale to Branin bounds
     train_x_unit = torch.rand(10, 2, dtype=dtype)
@@ -382,15 +386,20 @@ def branin_training_data(dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor
 
 
 @pytest.fixture
-def hartmann6_training_data(dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+def hartmann6_training_data(dtype: torch.dtype, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Create training data from Hartmann6 function for GP testing.
+
+    The fixture depends on the ``seed`` fixture, so callers that parameterize
+    the seed (e.g. via ``pytest.mark.parametrize("seed", [1, 2, 3])``) see
+    distinct training sets. Seeding is routed through ``set_all_seeds`` so
+    the full torch/numpy/random tuple is consistent.
 
     Returns:
         Tuple of (train_x, train_y) tensors
     """
     from bo_engine.benchmarks import hartmann6
 
-    torch.manual_seed(42)
+    set_all_seeds(seed)
     train_x = torch.rand(15, 6, dtype=dtype)
     train_y = hartmann6(train_x).unsqueeze(-1)
     return train_x, train_y
@@ -410,9 +419,8 @@ def assert_tensor_in_bounds(tensor: torch.Tensor, bounds: torch.Tensor, msg: str
         msg: Optional message for assertion error
     """
     lower, upper = bounds[0], bounds[1]
-    assert (tensor >= lower - 1e-6).all() and (tensor <= upper + 1e-6).all(), (
-        f"Tensor values outside bounds. {msg}"
-    )
+    assert (tensor >= lower - 1e-6).all(), f"Tensor values below lower bound. {msg}"
+    assert (tensor <= upper + 1e-6).all(), f"Tensor values above upper bound. {msg}"
 
 
 def generate_sobol_points(

@@ -242,9 +242,7 @@ def apply_local_penalization(
     penalization = torch.exp(-(min_distances**2) / (2 * lengthscale**2))
 
     # Apply penalization (multiply by (1 - penalization))
-    penalized_acq = acq_values * (1 - penalization)
-
-    return penalized_acq
+    return acq_values * (1 - penalization)
 
 
 def _is_diverse_from_selected(

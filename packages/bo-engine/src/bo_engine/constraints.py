@@ -5,6 +5,7 @@ from collections.abc import Callable
 import torch
 from torch import Tensor
 
+from bo_engine.spec_ir import ConstraintTargetClass, classify_constraint_target
 from bo_engine.types import ConstraintSpec, ConstraintType, OptimizationSpec, ParameterType
 
 
@@ -41,7 +42,7 @@ def create_constraint_callable(
 
         return sum_equals
 
-    elif constraint.type == ConstraintType.SUM_LESS_THAN:
+    if constraint.type == ConstraintType.SUM_LESS_THAN:
 
         def sum_less_than(x: Tensor) -> Tensor:
             selected = x[..., param_indices]
@@ -51,7 +52,7 @@ def create_constraint_callable(
 
         return sum_less_than
 
-    elif constraint.type == ConstraintType.SUM_GREATER_THAN:
+    if constraint.type == ConstraintType.SUM_GREATER_THAN:
 
         def sum_greater_than(x: Tensor) -> Tensor:
             selected = x[..., param_indices]
@@ -61,7 +62,7 @@ def create_constraint_callable(
 
         return sum_greater_than
 
-    elif constraint.type == ConstraintType.LINEAR:
+    if constraint.type == ConstraintType.LINEAR:
 
         def linear_constraint(x: Tensor) -> Tensor:
             selected = x[..., param_indices]
@@ -73,9 +74,8 @@ def create_constraint_callable(
 
         return linear_constraint
 
-    else:
-        msg = f"Unknown constraint type: {constraint.type}"
-        raise ValueError(msg)
+    msg = f"Unknown constraint type: {constraint.type}"
+    raise ValueError(msg)
 
 
 def _get_parameter_indices(
@@ -91,7 +91,9 @@ def _get_parameter_indices(
 
     for param in spec.parameters:
         if param.type == ParameterType.CATEGORICAL:
-            assert param.categories is not None
+            if param.categories is None:
+                msg = f"Categorical parameter '{param.name}' has no categories"
+                raise ValueError(msg)
             n_cats = len(param.categories)
             if param.name in param_names:
                 # Include all one-hot indices for this categorical
@@ -188,13 +190,15 @@ def build_botorch_linear_constraints(
     for constraint in spec.constraints:
         indices = _get_parameter_indices(constraint.parameters, spec)
 
-        # Constraints on categorical (one-hot) params can't be native linear constraints
-        has_categorical = any(
-            p.type == ParameterType.CATEGORICAL
-            for p in spec.parameters
-            if p.name in constraint.parameters
-        )
-        if has_categorical:
+        # Any constraint that touches a categorical parameter cannot be
+        # expressed as a native BoTorch linear constraint (the parameter
+        # is one-hot encoded). The shared classifier returns CATEGORICAL
+        # for both all-categorical and mixed-with-categorical cases —
+        # the same dispatch BayBE uses to refuse those constraints.
+        if (
+            classify_constraint_target(constraint, spec.parameters)
+            == ConstraintTargetClass.CATEGORICAL
+        ):
             projection_constraints.append(constraint)
             continue
 
@@ -216,9 +220,20 @@ def build_botorch_linear_constraints(
             equality_constraints.append((idx_tensor, coeffs, constraint.value))
 
         elif constraint.type == ConstraintType.LINEAR:
+            # The intake-layer ``Constraint`` validator (bo_mcp_server.domain)
+            # rejects ``type=linear`` without coefficients, so a missing
+            # ``constraint.coefficients`` reaching this point indicates a
+            # third-party caller bypassing intake. Surface that as a hard
+            # error rather than silently rewriting the constraint into an
+            # unweighted sum.
             if constraint.coefficients is None:
-                projection_constraints.append(constraint)
-                continue
+                msg = (
+                    "Linear constraint reached the engine without "
+                    "coefficients. Intake validation should have rejected "
+                    "this; check that the caller is going through "
+                    "CampaignSpec / IntakeData."
+                )
+                raise ValueError(msg)
             # coefficients @ x[indices] <= value
             coeffs = torch.tensor(constraint.coefficients, dtype=torch.double)
             inequality_constraints.append((idx_tensor, coeffs, constraint.value))

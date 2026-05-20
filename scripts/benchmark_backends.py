@@ -303,7 +303,7 @@ def _run_single(
 
     # Set seeds for reproducibility
     random.seed(seed)
-    np.random.seed(seed)
+    np.random.seed(seed)  # noqa: NPY002
     torch.manual_seed(seed)
 
     result = BenchmarkResult(
@@ -403,10 +403,7 @@ def summarize(results: list[BenchmarkResult]) -> BenchmarkSummary:
 
     # Regret computation deferred until full benchmark run with known optima
     regrets: list[float] = []
-    if finals:
-        med_final = _median(finals)
-    else:
-        med_final = float("nan")
+    med_final = _median(finals) if finals else float("nan")
 
     return BenchmarkSummary(
         problem=results[0].problem,

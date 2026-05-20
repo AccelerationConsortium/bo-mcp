@@ -13,6 +13,7 @@ These tests verify:
 6. Fidelity-aware optimization behavior
 """
 
+import pytest
 import torch
 
 from bo_engine.multifidelity import (
@@ -91,10 +92,11 @@ class TestMultiFidelityConfig:
         assert config.raw_samples == 256
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestMultiFidelityModelCreation:
     """Test multi-fidelity model creation."""
 
-    def test_create_model_basic(self, torch_rng) -> None:
+    def test_create_model_basic(self) -> None:
         """Model can be created with fidelity dimension."""
         # 2 params + 1 fidelity = 3 columns, fidelity is last
         train_x = torch.rand(15, 3, dtype=torch.double)
@@ -104,7 +106,7 @@ class TestMultiFidelityModelCreation:
         model = create_multifidelity_model(train_x, train_y, fidelity_dim)
         assert model is not None
 
-    def test_create_model_with_1d_y(self, torch_rng) -> None:
+    def test_create_model_with_1d_y(self) -> None:
         """Model handles 1D y input."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, dtype=torch.double)
@@ -114,10 +116,11 @@ class TestMultiFidelityModelCreation:
         assert model is not None
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestMultiFidelityModelFitting:
     """Test multi-fidelity model fitting."""
 
-    def test_fit_model(self, torch_rng) -> None:
+    def test_fit_model(self) -> None:
         """Model can be fitted."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -133,7 +136,7 @@ class TestMultiFidelityModelFitting:
             posterior = fitted.posterior(test_x)
             assert posterior.mean.shape == (5, 1)
 
-    def test_create_and_fit_combined(self, torch_rng) -> None:
+    def test_create_and_fit_combined(self) -> None:
         """Combined create and fit function works."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -188,10 +191,11 @@ class TestCostModel:
         assert cost_high > cost_low
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestMFKGAcquisition:
     """Test qMFKG acquisition function creation."""
 
-    def test_create_acquisition(self, torch_rng) -> None:
+    def test_create_acquisition(self) -> None:
         """qMFKG acquisition can be created."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -215,7 +219,7 @@ class TestMFKGAcquisition:
 
         assert acqf is not None
 
-    def test_create_acquisition_without_cost(self, torch_rng) -> None:
+    def test_create_acquisition_without_cost(self) -> None:
         """qMFKG can be created without explicit cost model."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -239,10 +243,11 @@ class TestMFKGAcquisition:
         assert acqf is not None
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestMFKGOptimization:
     """Test qMFKG optimization."""
 
-    def test_optimize_mfkg(self, torch_rng) -> None:
+    def test_optimize_mfkg(self) -> None:
         """qMFKG can be optimized to produce candidates."""
         train_x = torch.rand(15, 3, dtype=torch.double)
         train_y = torch.rand(15, 1, dtype=torch.double)
@@ -261,7 +266,7 @@ class TestMFKGOptimization:
             raw_samples=32,
         )
 
-        candidates, acq_values = optimize_mfkg(
+        candidates, _acq_values = optimize_mfkg(
             acqf=acqf,
             bounds=bounds,
             batch_size=1,
@@ -294,7 +299,7 @@ class TestMultiFidelitySuggestionGeneration:
             raw_samples=32,
         )
 
-        candidates, acq_values, metadata = generate_multifidelity_suggestions(
+        candidates, _acq_values, _metadata = generate_multifidelity_suggestions(
             train_x, train_y, bounds, config, batch_size=1
         )
 
@@ -429,6 +434,7 @@ class TestMultiFidelityBehavior:
             assert pred_low.variance.item() >= 0
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestMultiFidelityEdgeCases:
     """Test edge cases and error handling."""
 
@@ -447,7 +453,7 @@ class TestMultiFidelityEdgeCases:
         model = create_and_fit_multifidelity_model(train_x, train_y, fidelity_dim)
         assert model is not None
 
-    def test_single_fidelity_level(self, torch_rng) -> None:
+    def test_single_fidelity_level(self) -> None:
         """Works with data at only one fidelity level."""
         train_x = torch.rand(10, 3, dtype=torch.double)
         train_x[:, 2] = 0.5  # All at same fidelity
@@ -457,7 +463,7 @@ class TestMultiFidelityEdgeCases:
         model = create_and_fit_multifidelity_model(train_x, train_y, fidelity_dim)
         assert model is not None
 
-    def test_high_dimensional_params(self, torch_rng) -> None:
+    def test_high_dimensional_params(self) -> None:
         """Works with many parameters + fidelity."""
         n_params = 10
         train_x = torch.rand(20, n_params + 1, dtype=torch.double)  # +1 for fidelity

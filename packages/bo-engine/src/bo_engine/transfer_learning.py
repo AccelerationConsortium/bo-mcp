@@ -33,6 +33,7 @@ from torch.distributions import Normal
 
 from bo_engine.constants import NUMERICAL_EPSILON, SAFE_DIVISION_EPSILON
 from bo_engine.device import ensure_device
+from bo_engine.types import AcquisitionOptimizationConfig
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,8 @@ class RGPE(torch.nn.Module):
     def weights(self) -> Tensor:
         """Get ensemble weights."""
         if self._weights is None:
-            raise ValueError("Weights not computed. Call compute_weights() first.")
+            msg = "Weights not computed. Call compute_weights() first."
+            raise ValueError(msg)
         return self._weights
 
     def compute_weights(
@@ -130,7 +132,7 @@ class RGPE(torch.nn.Module):
             Tensor of weights with shape (num_models,)
         """
         n_target = target_x.shape[0]
-        all_models = list(self.base_models) + [self.target_model]
+        all_models = [*list(self.base_models), self.target_model]
         n_models = len(all_models)
 
         # Compute mean squared error for each model on target data
@@ -185,7 +187,7 @@ class RGPE(torch.nn.Module):
         Returns:
             GPyTorchPosterior with weighted predictions
         """
-        all_models = list(self.base_models) + [self.target_model]
+        all_models = [*list(self.base_models), self.target_model]
         weights = self.weights
 
         # Get posteriors from all models
@@ -307,11 +309,12 @@ def create_rgpe_model(
     for prior_task in prior_tasks:
         prior_dim = prior_task.train_x.shape[-1]
         if prior_dim != target_dim:
-            raise ValueError(
+            msg = (
                 f"Prior task '{prior_task.name}' has {prior_dim} dimensions "
                 f"but target task has {target_dim}. All tasks must share the "
                 f"same parameter space dimensionality for transfer learning."
             )
+            raise ValueError(msg)
 
     # Create and fit base models from prior tasks
     base_models = []
@@ -450,10 +453,7 @@ class RGPEAcquisition(AcquisitionFunction):
         # Compute Expected Improvement
         # For minimization: EI = E[max(best_f - f(x), 0)]
         # For maximization: EI = E[max(f(x) - best_f, 0)]
-        if self.maximize:
-            z = (mean - self.best_f) / std
-        else:
-            z = (self.best_f - mean) / std
+        z = (mean - self.best_f) / std if self.maximize else (self.best_f - mean) / std
 
         # Standard normal distribution for EI computation
         normal = Normal(torch.zeros_like(z), torch.ones_like(z))
@@ -464,15 +464,10 @@ class RGPEAcquisition(AcquisitionFunction):
         ei = std * (z * cdf + pdf)
 
         # Average over q dimension for joint acquisition
-        if ei.dim() > 1 and ei.shape[-1] > 1:
-            ei = ei.mean(dim=-1)
-        else:
-            ei = ei.squeeze(-1)
+        ei = ei.mean(dim=-1) if ei.dim() > 1 and ei.shape[-1] > 1 else ei.squeeze(-1)
 
         # Ensure non-negative
-        ei = ei.clamp(min=0.0)
-
-        return ei
+        return ei.clamp(min=0.0)
 
 
 class RGPELogEI(AcquisitionFunction):
@@ -524,10 +519,7 @@ class RGPELogEI(AcquisitionFunction):
         mean = posterior.mean.squeeze(-1)
         std = posterior.variance.sqrt().squeeze(-1).clamp(min=1e-6)
 
-        if self.maximize:
-            z = (mean - self.best_f) / std
-        else:
-            z = (self.best_f - mean) / std
+        z = (mean - self.best_f) / std if self.maximize else (self.best_f - mean) / std
 
         # Log-EI computation for numerical stability
         # log(EI) = log(std) + log(z * Phi(z) + phi(z))
@@ -556,6 +548,7 @@ def generate_rgpe_suggestions(
     batch_size: int = 1,
     config: RGPEConfig | None = None,
     use_ensemble_acquisition: bool = True,
+    acquisition_optimization: AcquisitionOptimizationConfig | None = None,
 ) -> tuple[Tensor, Tensor, dict[str, Any]]:
     """Generate suggestions using RGPE transfer learning.
 
@@ -574,6 +567,9 @@ def generate_rgpe_suggestions(
         use_ensemble_acquisition: If True (default), use RGPEAcquisition which
             properly leverages ensemble predictions. If False, use only the
             target model (legacy behavior).
+        acquisition_optimization: Optional configuration controlling
+            acquisition-function optimization (number of restarts, raw
+            samples, etc.). Defaults are used when ``None``.
 
     Returns:
         Tuple of (candidates, acquisition_values, metadata)
@@ -618,12 +614,14 @@ def generate_rgpe_suggestions(
         acq_name = "qLogNoisyExpectedImprovement (Target Only)"
 
     # Optimize acquisition
+    acq_config = acquisition_optimization or AcquisitionOptimizationConfig()
+    num_restarts, raw_samples = acq_config.resolve(int(bounds.shape[-1]))
     candidates, acq_values = optimize_acqf(
         acq_function=acqf,
         bounds=bounds,
         q=batch_size,
-        num_restarts=20,
-        raw_samples=512,
+        num_restarts=num_restarts,
+        raw_samples=raw_samples,
         sequential=True,
     )
 

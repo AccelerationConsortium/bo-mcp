@@ -299,10 +299,7 @@ def _detect_outliers_single_objective(
             actual = test_y_fold.squeeze().item()
 
             # Compute standardized error
-            if pred_std > 1e-10:
-                std_error = abs(actual - pred_mean) / pred_std
-            else:
-                std_error = 0.0
+            std_error = abs(actual - pred_mean) / pred_std if pred_std > 1e-10 else 0.0
 
             # Check if outlier
             if std_error > sigma_threshold:
@@ -381,10 +378,7 @@ def compute_loo_standardized_errors(
                 pred_std = posterior.variance.sqrt().squeeze().item()
 
             actual = test_y_fold.squeeze().item()
-            if pred_std > 1e-10:
-                std_error = (actual - pred_mean) / pred_std
-            else:
-                std_error = 0.0
+            std_error = (actual - pred_mean) / pred_std if pred_std > 1e-10 else 0.0
             errors.append(std_error)
         except (RuntimeError, ValueError, TypeError):
             errors.append(0.0)

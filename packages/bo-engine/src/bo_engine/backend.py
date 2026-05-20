@@ -10,15 +10,25 @@ Usage:
 
     def my_operation(backend: BOBackend, ...):
         result = backend.generate_suggestions(spec, observations, ...)
+
+The companion :mod:`bo_engine.backend_base` module provides the
+recommended :class:`BaseBackend` abstract class — concrete backends
+inherit from it to get sensible defaults for the optional members of
+this protocol. Pure ``Protocol`` implementations remain supported for
+third-party plugins.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from bo_engine.progress import ProgressCallback
 from bo_engine.types import ObservationData, OptimizationSpec
+
+if TYPE_CHECKING:
+    from bo_engine.backend_base import BackendValidationResult
 
 
 class DiagnosticSection(StrEnum):
@@ -112,7 +122,28 @@ class BOBackend(Protocol):
 
     @property
     def supported_features(self) -> frozenset[Feature]:
-        """Set of features this backend supports."""
+        """Features this backend supports **unconditionally**.
+
+        Features that depend on spec shape (e.g. transfer learning
+        keyed on a task parameter) must NOT appear here — they
+        belong in :attr:`conditional_features` so callers can plan
+        around the precondition instead of hitting a late rejection.
+        """
+        ...
+
+    @property
+    def conditional_features(self) -> dict[Feature, str]:
+        """Features the backend supports **only under a precondition**.
+
+        Maps each :class:`Feature` to a short human-readable
+        description of the precondition (e.g. "Requires a parameter
+        with role='task'"). Reported alongside :attr:`supported_features`
+        on the capability surface so discovery accurately reflects
+        runtime behaviour.
+
+        The default is an empty mapping; backends with no conditional
+        features can ignore this property.
+        """
         ...
 
     # ----- Validation -----
@@ -129,7 +160,25 @@ class BOBackend(Protocol):
         and optimization cannot proceed.  For gracefully-degraded
         operation return warnings instead.
 
-        The default implementation returns ``[]`` (no warnings).
+        The default implementation returns ``[]`` (no warnings). New
+        code should prefer :meth:`validate_capabilities` for the
+        structured per-feature, per-option capability report.
+        """
+        ...
+
+    def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
+        """Return a spec-aware capability descriptor.
+
+        Backends implement this to report per-feature and per-option
+        capability classifications (``SUPPORTED`` / ``DEGRADED`` /
+        ``IGNORED`` / ``UNSUPPORTED``). ``resolve_backend_name("auto",
+        ...)`` consumes :attr:`BackendValidationResult.is_compatible`
+        instead of the coarse ``supported_features`` boolean set.
+
+        Implementations may fall back to the default
+        :class:`bo_engine.backend_base.BaseBackend` implementation, which
+        derives a report from ``supported_features`` plus the active
+        attributes on ``spec``.
         """
         ...
 
@@ -155,6 +204,7 @@ class BOBackend(Protocol):
         iteration: int,
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
         """Generate model-guided suggestions.
 
@@ -169,6 +219,11 @@ class BOBackend(Protocol):
                 batch / parallel acquisition (e.g. BoTorch) should forward
                 these to the acquisition optimizer as ``X_pending`` so new
                 candidates do not cluster around the pending batch.
+            progress_callback: Optional synchronous hook invoked at coarse
+                milestones (GP fit start, acquisition start/done, etc.).
+                See :class:`bo_engine.progress.ProgressEvent` for the
+                contract. Backends are free to ignore the callback —
+                ``None`` is the default and recovers the silent behavior.
 
         Returns:
             SuggestionBatch with suggestions and updated state.
@@ -231,6 +286,7 @@ class BOBackend(Protocol):
         spec: OptimizationSpec,
         observations: list[ObservationData],
         sections: frozenset[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Compute model-based diagnostics for a campaign.
 
@@ -247,6 +303,10 @@ class BOBackend(Protocol):
             sections: Which diagnostic sections to compute.  When *None*,
                 compute all.  Valid values are defined in
                 :class:`DiagnosticSection`.
+            progress_callback: Optional synchronous hook for coarse
+                milestone reporting (see
+                :class:`bo_engine.progress.ProgressEvent`). Backends may
+                ignore it.
 
         Returns:
             Dictionary with computed diagnostics.  Keys depend on

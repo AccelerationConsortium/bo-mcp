@@ -18,6 +18,7 @@ References:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,7 @@ from botorch.models import ModelListGP, SingleTaskGP
 from torch import Tensor
 
 from bo_engine.constants import (
+    NUMERICAL_EPSILON,
     THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE,
     THOMPSON_NUM_CANDIDATES,
     THOMPSON_NUM_POSTERIOR_SAMPLES,
@@ -35,6 +37,8 @@ from bo_engine.device import get_device, get_dtype
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -169,7 +173,20 @@ def generate_thompson_samples(
             with torch.no_grad():
                 posterior = model.posterior(x)
                 mean = posterior.mean.item()
-                std = posterior.variance.sqrt().item()
+                # Clamp posterior variance to NUMERICAL_EPSILON so finite-
+                # precision GP fits that drift into negative variance
+                # surface as a near-zero std instead of NaN; warn once
+                # per call if the clamp fires so silently broken posteriors
+                # are still visible in logs.
+                raw_variance = posterior.variance.item()
+                if raw_variance < NUMERICAL_EPSILON:
+                    logger.warning(
+                        "Posterior variance %.3e below NUMERICAL_EPSILON; "
+                        "clamping before sqrt to avoid NaN std",
+                        raw_variance,
+                    )
+                clamped_variance = max(raw_variance, NUMERICAL_EPSILON)
+                std = clamped_variance**0.5
                 # Get a sampled value for this point
                 sampled = posterior.rsample().item()
 
@@ -375,7 +392,7 @@ def generate_diverse_thompson_batch(
                 best_sample = batch.samples[0]
                 best_min_dist = min_dist
                 break
-            elif min_dist > best_min_dist:
+            if min_dist > best_min_dist:
                 best_sample = batch.samples[0]
                 best_min_dist = min_dist
 
@@ -432,10 +449,8 @@ def _thompson_via_max_posterior_sampling(
                 best_idx = sampled_values.argmin()
                 samples.append(candidates[best_idx : best_idx + 1])
         return torch.cat(samples, dim=0)
-    else:
-        # Maximization: use MPS directly
-        selected = mps(candidates, num_samples=n_samples)
-        return selected
+    # Maximization: use MPS directly
+    return mps(candidates, num_samples=n_samples)
 
 
 def _thompson_manual(
@@ -458,10 +473,7 @@ def _thompson_manual(
             sampled_values = posterior.rsample().squeeze()
 
             # Find optimum of this sample
-            if minimize:
-                best_idx = sampled_values.argmin()
-            else:
-                best_idx = sampled_values.argmax()
+            best_idx = sampled_values.argmin() if minimize else sampled_values.argmax()
 
             samples.append(candidates[best_idx : best_idx + 1])
 
@@ -484,9 +496,7 @@ def _generate_sobol_candidates(
     # Scale to bounds
     lower = bounds[0]
     upper = bounds[1]
-    candidates = lower + candidates * (upper - lower)
-
-    return candidates
+    return lower + candidates * (upper - lower)
 
 
 def _compute_batch_diversity(samples: Tensor, bounds: Tensor) -> float:

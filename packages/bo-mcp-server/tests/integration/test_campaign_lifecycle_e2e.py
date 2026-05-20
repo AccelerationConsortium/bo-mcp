@@ -27,6 +27,7 @@ def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSingleObjectiveLifecycle:
     """End-to-end tests for single-objective optimization campaigns.
 
@@ -35,7 +36,7 @@ class TestSingleObjectiveLifecycle:
     """
 
     @pytest.mark.asyncio
-    async def test_full_lifecycle_single_objective_minimization(self, setup_database):
+    async def test_full_lifecycle_single_objective_minimization(self):
         """Complete lifecycle: create -> suggest -> submit -> suggest -> diagnose.
 
         Validates that single-objective minimization campaigns:
@@ -150,7 +151,7 @@ class TestSingleObjectiveLifecycle:
         assert diag["health_status"] in ["healthy", "warning", "critical"]
 
     @pytest.mark.asyncio
-    async def test_full_lifecycle_single_objective_maximization(self, setup_database):
+    async def test_full_lifecycle_single_objective_maximization(self):
         """Complete lifecycle for maximization objective.
 
         Validates that maximization direction is handled correctly throughout.
@@ -214,6 +215,7 @@ class TestSingleObjectiveLifecycle:
         assert diag["best_value"] > 0
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestMultiObjectiveLifecycle:
     """End-to-end tests for multi-objective optimization campaigns.
 
@@ -222,7 +224,7 @@ class TestMultiObjectiveLifecycle:
     """
 
     @pytest.mark.asyncio
-    async def test_full_lifecycle_multi_objective(self, setup_database):
+    async def test_full_lifecycle_multi_objective(self):
         """Complete lifecycle for bi-objective optimization.
 
         Validates that multi-objective campaigns correctly:
@@ -308,7 +310,7 @@ class TestMultiObjectiveLifecycle:
                 assert hypervolumes[i + 1] >= hypervolumes[i] - 1e-6
 
     @pytest.mark.asyncio
-    async def test_multi_objective_with_three_objectives(self, setup_database):
+    async def test_multi_objective_with_three_objectives(self):
         """Complete lifecycle for three-objective optimization.
 
         Validates that >2 objective problems work correctly.
@@ -367,6 +369,7 @@ class TestMultiObjectiveLifecycle:
         assert diag["pareto_front"] is not None
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestMixedParameterLifecycle:
     """End-to-end tests for campaigns with mixed parameter types.
 
@@ -375,7 +378,7 @@ class TestMixedParameterLifecycle:
     """
 
     @pytest.mark.asyncio
-    async def test_lifecycle_with_categorical_parameters(self, setup_database):
+    async def test_lifecycle_with_categorical_parameters(self):
         """Complete lifecycle with continuous and categorical parameters."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -433,7 +436,7 @@ class TestMixedParameterLifecycle:
         assert diag["best_value"] is not None
 
     @pytest.mark.asyncio
-    async def test_lifecycle_with_discrete_parameters(self, setup_database):
+    async def test_lifecycle_with_discrete_parameters(self):
         """Complete lifecycle with continuous and discrete parameters."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -487,6 +490,7 @@ class TestMixedParameterLifecycle:
         assert diag["success"] is True
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestConstrainedLifecycle:
     """End-to-end tests for campaigns with constraints.
 
@@ -495,7 +499,7 @@ class TestConstrainedLifecycle:
     """
 
     @pytest.mark.asyncio
-    async def test_lifecycle_with_sum_constraint(self, setup_database):
+    async def test_lifecycle_with_sum_constraint(self):
         """Complete lifecycle with sum-equals constraint."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -553,6 +557,7 @@ class TestConstrainedLifecycle:
         assert diag["success"] is True
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestLongRunningLifecycle:
     """Tests for campaigns running multiple iterations.
 
@@ -562,7 +567,7 @@ class TestLongRunningLifecycle:
 
     @pytest.mark.asyncio
     @pytest.mark.slow
-    async def test_lifecycle_converges_over_iterations(self, setup_database):
+    async def test_lifecycle_converges_over_iterations(self):
         """Campaign improves over multiple iterations.
 
         This test runs 5 iterations and verifies that:
@@ -640,6 +645,7 @@ class TestLongRunningLifecycle:
         assert best_values[-1] < 2.0
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestCampaignStateTransitions:
     """Tests for campaign state transitions throughout lifecycle.
 
@@ -648,7 +654,7 @@ class TestCampaignStateTransitions:
     """
 
     @pytest.mark.asyncio
-    async def test_state_transitions_created_to_running(self, setup_database):
+    async def test_state_transitions_created_to_running(self):
         """Campaign transitions from CREATED to RUNNING on first suggestion."""
         from bo_mcp_server.storage import CampaignRepository, get_session
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -685,7 +691,7 @@ class TestCampaignStateTransitions:
             assert campaign.status.value == "running"
 
     @pytest.mark.asyncio
-    async def test_iteration_tracking_throughout_lifecycle(self, setup_database):
+    async def test_iteration_tracking_throughout_lifecycle(self):
         """Iteration counter increments correctly throughout lifecycle."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions

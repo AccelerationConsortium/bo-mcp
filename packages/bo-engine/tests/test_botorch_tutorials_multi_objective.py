@@ -164,12 +164,15 @@ class TestBraninCurrinMultiObjective:
             assert "f2" in obs.objective_values
 
     @pytest.mark.slow
+    @pytest.mark.nightly
     def test_qnehvi_hypervolume_improvement(self) -> None:
         """qNEHVI should achieve significant hypervolume improvement over random.
 
         Reference: Tutorial shows qNEHVI achieves ~57.77 vs random ~0.64
 
-        Due to stochasticity, we use a relaxed threshold: hypervolume > 20
+        Due to stochasticity, we use a relaxed threshold: hypervolume > 20.
+        The hypervolume threshold is sensitive to the seed, so this test is
+        marked ``nightly`` (multi-seed) in addition to ``slow``.
         """
         torch.manual_seed(42)
 
@@ -547,10 +550,14 @@ class TestRandomVsBO:
     """
 
     @pytest.mark.slow
+    @pytest.mark.nightly
     def test_bo_outperforms_random(self) -> None:
         """BO should achieve better hypervolume than random sampling.
 
-        This is the key result from the multi-objective BO tutorial.
+        This is the key result from the multi-objective BO tutorial. The
+        comparison ``hv_bo >= 0.5 * hv_random`` is inherently single-seed and
+        statistical, so the test is marked ``nightly`` in addition to ``slow``
+        and runs against the multi-seed nightly gate.
         """
         torch.manual_seed(42)
         n_total_points = 20

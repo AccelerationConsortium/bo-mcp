@@ -7,6 +7,31 @@ v1.1: Added acquisition method selection and input warping support
 v1.2: Added TuRBO integration for high-dimensional optimization
 v1.3: Added outcome constraints and cost-aware optimization
 v2.3: Added GPU auto-detection and acceleration
+
+The implementation has been split across companion modules so each file
+owns one concern and stays well under the 1k LOC cognitive-load ceiling:
+
+* :mod:`bo_engine.initial_design` — Sobol initial-design draws,
+  exclusion / deduplication, and the purely-categorical exhaustion
+  guard. (Pre-existing split.)
+* :mod:`bo_engine.suggestions_training` — training-data assembly
+  helpers (``_prepare_training_data``, ``_prepare_train_yvar``,
+  ``_prepare_cost_data``) and pending-point encoding.
+* :mod:`bo_engine.suggestions_outcome_constraints` — outcome-constraint
+  GP construction plus the
+  :class:`OutcomeConstraintConfigurationError` typed error.
+* :mod:`bo_engine.suggestions_single_objective` — single-objective
+  acquisition pipeline (model fit, TuRBO trust region, provenance).
+* :mod:`bo_engine.suggestions_multi_objective` — multi-objective
+  acquisition pipeline (hypervolume improvement, Pareto provenance).
+* :mod:`bo_engine.suggestions_common` — prediction-extraction and
+  confidence-level helpers shared by both batch builders.
+
+This module retains the public dispatcher (:func:`generate_next_batch`),
+the seed / noise-prior resolution helpers, the TuRBO post-evaluation
+update, and the typed exceptions. Private helper symbols that the test
+suite imports from ``bo_engine.suggestions`` continue to resolve here
+through explicit re-exports below.
 """
 
 from __future__ import annotations
@@ -14,442 +39,140 @@ from __future__ import annotations
 import logging
 import random
 import warnings
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from botorch.models import SingleTaskGP
-    from botorch.models.model_list_gp_regression import ModelListGP
-
-    GPModel = SingleTaskGP | ModelListGP
+from typing import Any
 
 import numpy as np
 import torch
-from torch import Tensor
-from torch.quasirandom import SobolEngine
+from gpytorch.priors import GammaPrior
 
-from bo_engine.acquisition import (
-    create_acquisition,
-    optimize_acquisition,
-)
 from bo_engine.constants import (
-    CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD,
-    CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD,
-    DUPLICATE_DETECTION_TOLERANCE,
-    INITIAL_DESIGN_MULTIPLIER,
     MAX_RANDOM_SEED,
     MIN_OBSERVATIONS_FOR_MODEL,
-    SEED_ITERATION_OFFSET,
 )
-from bo_engine.constraints import (
-    _get_parameter_indices,
-    apply_sum_constraint,
-    build_botorch_linear_constraints,
+
+# Re-exports — initial-design helpers live in :mod:`bo_engine.initial_design`
+# after the suggestions god-module split. Imports from this module continue
+# to resolve here so external callers do not need to change.
+from bo_engine.initial_design import (
+    _apply_constraints_to_samples,
+    _guard_categorical_space_exhaustion,
+    generate_initial_design,
 )
-from bo_engine.device import get_device, get_dtype
-from bo_engine.models import (
-    create_and_fit_model,
-    create_and_fit_single_task_model,
+from bo_engine.reproducibility import derive_seed
+from bo_engine.suggestions_common import (
+    _extract_scalar_prediction,
+    _get_confidence_level,
+    _get_model_predictions,
 )
-from bo_engine.reference_point import (
-    ReferencePointConfig,
-    ReferencePointStrategy,
-    get_reference_point_dynamic,
+from bo_engine.suggestions_multi_objective import (
+    _build_multi_objective_explanation,
+    _build_multi_objective_provenance,
+    _create_multi_objective_suggestions,
+    _generate_multi_objective_batch,
 )
-from bo_engine.transforms import (
-    SearchSpaceType,
-    classify_search_space,
-    count_categorical_combinations,
-    decode_categorical,
-    encode_categorical,
-    get_bounds_tensor,
-    get_n_dims,
-    stack_encoded_values,
+from bo_engine.suggestions_outcome_constraints import (
+    OutcomeConstraintConfigurationError,
+    _build_outcome_constraint_models,
+    _collect_constraint_values,
+    _fit_outcome_constraint_model,
 )
+from bo_engine.suggestions_single_objective import (
+    _build_single_objective_provenance,
+    _compute_turbo_bounds,
+    _create_single_objective_suggestions,
+    _generate_single_objective_batch,
+    _initialize_turbo_state,
+)
+from bo_engine.suggestions_training import (
+    _encode_pending_points,
+    _prepare_cost_data,
+    _prepare_train_yvar,
+    _prepare_training_data,
+)
+from bo_engine.transforms import get_bounds_tensor
 from bo_engine.turbo import (
     TurboState,
-    create_turbo_state,
-    get_turbo_bounds,
-    should_use_turbo,
     update_turbo_state,
 )
 from bo_engine.types import (
     AcquisitionMethod,
-    ConstraintType,
     GenerationContext,
     ObservationData,
     OptimizationSpec,
-    ParameterType,
     SuggestionResult,
 )
 
 logger = logging.getLogger(__name__)
 
-# Oversampling factor used when filtering Sobol draws against a non-empty
-# exclusion set — draw ~OVERSAMPLE_FACTOR * n_points candidates so the
-# post-filter still leaves enough unique designs for the requested batch.
-SOBOL_EXCLUSION_OVERSAMPLE_FACTOR = 4
+
+__all__ = [
+    # Public surface
+    "MultiFidelityNotSupportedError",
+    "OutcomeConstraintConfigurationError",
+    # Re-exported private helpers — test suite imports these by name.
+    "_apply_constraints_to_samples",
+    "_build_multi_objective_explanation",
+    "_build_multi_objective_provenance",
+    "_build_outcome_constraint_models",
+    "_build_single_objective_provenance",
+    "_collect_constraint_values",
+    "_compute_turbo_bounds",
+    "_create_multi_objective_suggestions",
+    "_create_single_objective_suggestions",
+    "_encode_pending_points",
+    "_extract_scalar_prediction",
+    "_fit_outcome_constraint_model",
+    "_generate_multi_objective_batch",
+    "_generate_single_objective_batch",
+    "_get_confidence_level",
+    "_get_model_predictions",
+    "_guard_categorical_space_exhaustion",
+    "_initialize_turbo_state",
+    "_prepare_cost_data",
+    "_prepare_train_yvar",
+    "_prepare_training_data",
+    "_resolve_acquisition_seed",
+    "_resolve_noise_prior",
+    "generate_initial_design",
+    "generate_next_batch",
+    "update_turbo_after_evaluation",
+]
 
 
-class SearchSpaceExhaustedError(RuntimeError):
-    """Raised when the finite search space cannot yield more unique points.
+class MultiFidelityNotSupportedError(ValueError):
+    """Raised when a spec requests multi-fidelity dispatch.
 
-    Triggered when the caller asks for ``n_points`` initial-design draws
-    but every candidate is already in the supplied exclusion set *and*
-    the space is small/finite enough that no further fresh combinations
-    exist.  Only applicable to purely-categorical spaces today; continuous
-    spaces have effectively infinite cardinality and fall back to Sobol
-    continuation instead.
+    The ``bo_engine.multifidelity`` module exposes standalone helpers, but
+    the active suggestion pipeline does not route
+    ``AcquisitionMethod.MULTI_FIDELITY_KG`` to BoTorch's qMFKG and does
+    not build a ``SingleTaskMultiFidelityGP`` when
+    ``spec.fidelity_parameter`` is set. Raising here keeps the
+    advertisement honest — silent downgrade to single-fidelity would let
+    callers think they were getting cost-amortized exploration when they
+    were not.
     """
 
-    def __init__(
-        self,
-        *,
-        n_requested: int,
-        n_available: int,
-        n_total_combinations: int | None = None,
-    ) -> None:
+
+def _resolve_noise_prior(spec: OptimizationSpec) -> GammaPrior | None:
+    """Build a :class:`GammaPrior` from ``spec.noise_prior_params`` when set.
+
+    Returns ``None`` when the spec does not override the prior so the
+    model factory falls back to its ``_default_noise_prior`` (calibrated
+    for unit-standardized targets). The override is only consulted on the
+    trainable-noise path; the ``FixedNoiseGaussianLikelihood`` path bypasses
+    the prior entirely.
+    """
+    if spec.noise_prior_params is None:
+        return None
+
+    concentration, rate = spec.noise_prior_params
+    if concentration <= 0 or rate <= 0:
         msg = (
-            f"Cannot generate {n_requested} unique initial-design points: "
-            f"only {n_available} unseen combinations remain"
+            "noise_prior_params must be positive (concentration, rate); "
+            f"got {(concentration, rate)}."
         )
-        if n_total_combinations is not None:
-            msg += f" ({n_available}/{n_total_combinations} total)"
-        msg += "."
-        super().__init__(msg)
-        self.n_requested = n_requested
-        self.n_available = n_available
-        self.n_total_combinations = n_total_combinations
-
-
-def _values_match(
-    a: Any,
-    b: Any,
-    is_continuous: bool,
-    tolerance: float,
-) -> bool:
-    """Compare a single pair of parameter values by type semantics."""
-    if not is_continuous:
-        return a == b
-    try:
-        return abs(float(a) - float(b)) <= tolerance
-    except (TypeError, ValueError):
-        return False
-
-
-def _design_matches(
-    design: dict[str, Any],
-    other: dict[str, Any],
-    spec: OptimizationSpec,
-    tolerance: float,
-) -> bool:
-    """Check whether two decoded parameter dicts describe the same point.
-
-    Categorical / discrete params must match exactly; continuous params
-    must match within ``tolerance`` (absolute).  Missing keys in either
-    side are treated as non-matching so we never silently accept partial
-    candidates.
-    """
-    for param in spec.parameters:
-        name = param.name
-        if name not in design or name not in other:
-            return False
-        is_continuous = param.type == ParameterType.CONTINUOUS
-        if not _values_match(design[name], other[name], is_continuous, tolerance):
-            return False
-    return True
-
-
-def _exclude_known_designs(
-    designs: list[dict[str, Any]],
-    excluded: list[dict[str, Any]],
-    spec: OptimizationSpec,
-    tolerance: float,
-) -> list[dict[str, Any]]:
-    """Return ``designs`` with entries that match any ``excluded`` dropped.
-
-    The comparison uses :func:`_design_matches`, so categorical equality
-    is exact and continuous equality is within ``tolerance``.  Relative
-    ordering is preserved so the caller still sees the first-N behaviour
-    of the Sobol sequence.
-    """
-    if not excluded:
-        return list(designs)
-    result: list[dict[str, Any]] = []
-    for d in designs:
-        if not any(_design_matches(d, other, spec, tolerance) for other in excluded):
-            result.append(d)
-    return result
-
-
-def _deduplicate_designs(
-    designs: list[dict[str, Any]],
-    spec: OptimizationSpec,
-    tolerance: float,
-) -> list[dict[str, Any]]:
-    """Drop within-batch duplicates while preserving order."""
-    kept: list[dict[str, Any]] = []
-    for d in designs:
-        if not any(_design_matches(d, k, spec, tolerance) for k in kept):
-            kept.append(d)
-    return kept
-
-
-def _guard_categorical_space_exhaustion(
-    spec: OptimizationSpec,
-    observations: list[ObservationData],
-    batch_size: int,
-) -> None:
-    """Raise if every unique combination of a purely-categorical space is observed.
-
-    This short-circuits before the BO and initial-design paths so callers
-    get a clean ``SearchSpaceExhaustedError`` instead of an opaque failure
-    from ``optimize_acqf_discrete`` (which raises when ``X_avoid`` covers
-    the entire choice set) or a warning-return from
-    :func:`generate_initial_design`.
-    """
-    if classify_search_space(spec) != SearchSpaceType.PURELY_CATEGORICAL:
-        return
-    n_total = count_categorical_combinations(spec)
-    if n_total <= 0:
-        return
-    observed_params = [obs.parameter_values for obs in observations]
-    unique_observed = _deduplicate_designs(observed_params, spec, DUPLICATE_DETECTION_TOLERANCE)
-    if len(unique_observed) >= n_total:
-        raise SearchSpaceExhaustedError(
-            n_requested=batch_size,
-            n_available=0,
-            n_total_combinations=n_total,
-        )
-
-
-def _enumerate_unobserved_categorical_combinations(
-    spec: OptimizationSpec,
-    excluded: list[dict[str, Any]],
-    tolerance: float,
-) -> list[dict[str, Any]]:
-    """Enumerate categorical combinations not present in ``excluded``.
-
-    Only valid for purely-categorical spaces.  Used as a deterministic
-    fallback when Sobol continuation cannot supply enough unseen points.
-    """
-    import itertools
-
-    cat_axes: list[list[str]] = []
-    for param in spec.parameters:
-        if param.type != ParameterType.CATEGORICAL or param.categories is None:
-            raise ValueError("Enumeration fallback requires a purely-categorical space.")
-        cat_axes.append(list(param.categories))
-
-    param_names = [p.name for p in spec.parameters]
-    unseen: list[dict[str, Any]] = []
-    for combo in itertools.product(*cat_axes):
-        candidate = dict(zip(param_names, combo, strict=True))
-        if not any(_design_matches(candidate, e, spec, tolerance) for e in excluded):
-            unseen.append(candidate)
-    return unseen
-
-
-def generate_initial_design(
-    spec: OptimizationSpec,
-    n_points: int | None = None,
-    *,
-    n_drawn: int = 0,
-    excluded_points: list[dict[str, Any]] | None = None,
-    dedup_tolerance: float = 1e-6,
-) -> list[dict[str, Any]]:
-    """Generate initial design using Sobol sequence.
-
-    Applies constraints (sum_equals, sum_less_than, sum_greater_than) to
-    project samples onto the constraint surface.
-
-    Consecutive calls on the same campaign should pass ``n_drawn`` equal
-    to the number of points already produced for that campaign so the
-    low-discrepancy Sobol sequence continues where it left off instead of
-    restarting with a fresh scramble.  Determinism requires
-    ``spec.random_seed`` to be set; otherwise ``SobolEngine`` uses an
-    OS-level scramble that changes on every construction.
-
-    When ``excluded_points`` is supplied, any candidate that matches one
-    of them (exactly for categorical/discrete, within ``dedup_tolerance``
-    for continuous) is dropped.  For purely-categorical spaces the
-    function falls back to enumerating the remaining combinations if
-    Sobol continuation cannot supply enough fresh designs, and raises
-    :class:`SearchSpaceExhaustedError` only when the space is truly
-    exhausted.
-
-    Args:
-        spec: Campaign specification.
-        n_points: Number of points to generate (default: 2 * n_dims + 1).
-        n_drawn: Number of prior Sobol draws to skip (fast-forward).
-        excluded_points: Points that must not appear in the output.
-        dedup_tolerance: Absolute tolerance for continuous equality.
-
-    Returns:
-        List of parameter value dictionaries of length ``n_points``.
-
-    Raises:
-        SearchSpaceExhaustedError: Purely-categorical space whose remaining
-            unseen combinations are fewer than ``n_points``.
-    """
-    n_dims = get_n_dims(spec)
-
-    if n_points is None:
-        n_points = spec.initial_design_size or (INITIAL_DESIGN_MULTIPLIER * spec.n_parameters + 1)
-
-    excluded: list[dict[str, Any]] = list(excluded_points) if excluded_points else []
-
-    # Fast-forward only makes sense when the Sobol sequence is stable across
-    # calls (i.e. ``spec.random_seed`` is set).  With ``seed=None`` every
-    # construction of ``SobolEngine`` picks a fresh OS-level scramble, so
-    # continuing from position ``n_drawn`` of a different sequence buys us
-    # nothing and changes user-visible output for existing unseeded tests.
-    effective_n_drawn = n_drawn if spec.random_seed is not None else 0
-
-    # Oversample Sobol draws only when we actually need to filter — for
-    # continuous campaigns with no exclusion the extra draws would be wasted
-    # and (worse) would shift the position-0 point, regressing deterministic
-    # tutorial-style tests that pin specific Sobol outputs.
-    space_type = classify_search_space(spec)
-    is_finite_space = space_type != SearchSpaceType.CONTINUOUS
-    need_filter = bool(excluded) and is_finite_space
-    draw_count = (
-        max(n_points, n_points * SOBOL_EXCLUSION_OVERSAMPLE_FACTOR) if need_filter else n_points
-    )
-    designs = _draw_sobol_designs(spec, n_dims, draw_count, n_drawn=effective_n_drawn)
-
-    if excluded:
-        designs = _exclude_known_designs(designs, excluded, spec, dedup_tolerance)
-    if is_finite_space:
-        designs = _deduplicate_designs(designs, spec, dedup_tolerance)
-
-    if len(designs) >= n_points:
-        return designs[:n_points]
-
-    # Sobol alone could not supply enough unique designs.  For purely
-    # categorical spaces, fall back to deterministic enumeration — this
-    # is the only way to certify exhaustion.
-    space_type = classify_search_space(spec)
-    if space_type == SearchSpaceType.PURELY_CATEGORICAL:
-        already_selected = list(excluded) + list(designs)
-        extra = _enumerate_unobserved_categorical_combinations(
-            spec, already_selected, dedup_tolerance
-        )
-        designs = designs + extra
-        designs = _deduplicate_designs(designs, spec, dedup_tolerance)
-        if len(designs) < n_points:
-            total = count_categorical_combinations(spec) or None
-            raise SearchSpaceExhaustedError(
-                n_requested=n_points,
-                n_available=len(designs),
-                n_total_combinations=total,
-            )
-        return designs[:n_points]
-
-    # Continuous / mixed spaces are effectively infinite; surface a warning
-    # but return what we have so downstream callers can decide.
-    logger.warning(
-        "Sobol continuation produced %d unique designs for a batch of %d "
-        "after filtering against %d excluded points; returning the smaller batch.",
-        len(designs),
-        n_points,
-        len(excluded),
-    )
-    return designs
-
-
-def _draw_sobol_designs(
-    spec: OptimizationSpec,
-    n_dims: int,
-    draw_count: int,
-    *,
-    n_drawn: int,
-) -> list[dict[str, Any]]:
-    """Sample ``draw_count`` Sobol points and decode them to parameter dicts.
-
-    Honours ``spec.random_seed`` (when non-None) so consecutive calls with
-    the same seed produce the same low-discrepancy sequence, and advances
-    past ``n_drawn`` prior draws via ``fast_forward``.
-    """
-    sobol = SobolEngine(dimension=n_dims, scramble=True, seed=spec.random_seed)
-    if n_drawn > 0:
-        sobol.fast_forward(n_drawn)
-    samples = sobol.draw(draw_count).to(device=get_device(), dtype=get_dtype())
-
-    bounds = get_bounds_tensor(spec)
-    lower = bounds[0]
-    upper = bounds[1]
-    scaled_samples = samples * (upper - lower) + lower
-    scaled_samples = _apply_constraints_to_samples(scaled_samples, spec, bounds)
-
-    return [decode_categorical(scaled_samples[i], spec) for i in range(draw_count)]
-
-
-def _apply_constraints_to_samples(
-    samples: Tensor,
-    spec: OptimizationSpec,
-    bounds: Tensor,
-) -> Tensor:
-    """Apply constraints to projected samples.
-
-    For sum_equals constraints, normalizes parameters to satisfy the constraint.
-    For inequality constraints, clips values as needed.
-
-    Args:
-        samples: Tensor of shape (n_samples, n_dims)
-        spec: Optimization specification with constraints
-        bounds: Tensor of shape (2, n_dims) with lower and upper bounds
-
-    Returns:
-        Samples with constraints applied
-    """
-    result = samples.clone()
-
-    for constraint in spec.constraints:
-        param_indices = _get_parameter_indices(constraint.parameters, spec)
-
-        if constraint.type == ConstraintType.SUM_EQUALS:
-            # Project onto sum = value constraint surface
-            result = apply_sum_constraint(result, param_indices, constraint.value)
-            # Clip to bounds after normalization
-            result = torch.clamp(result, bounds[0], bounds[1])
-            # Re-apply constraint after clipping (may need iteration for tight bounds)
-            result = apply_sum_constraint(result, param_indices, constraint.value)
-
-        elif constraint.type == ConstraintType.SUM_LESS_THAN:
-            # Scale down if sum exceeds limit
-            selected = result[..., param_indices]
-            current_sum = selected.sum(dim=-1, keepdim=True)
-            excess_mask = current_sum > constraint.value
-            if excess_mask.any():
-                scale = torch.where(
-                    excess_mask,
-                    constraint.value / current_sum,
-                    torch.ones_like(current_sum),
-                )
-                result[..., param_indices] = selected * scale
-
-        elif constraint.type == ConstraintType.SUM_GREATER_THAN:
-            # Scale up if sum is below minimum
-            selected = result[..., param_indices]
-            current_sum = selected.sum(dim=-1, keepdim=True)
-            deficit_mask = current_sum < constraint.value
-            if deficit_mask.any():
-                # Avoid division by zero
-                safe_sum = torch.where(
-                    current_sum.abs() < 1e-10,
-                    torch.ones_like(current_sum),
-                    current_sum,
-                )
-                scale = torch.where(
-                    deficit_mask,
-                    constraint.value / safe_sum,
-                    torch.ones_like(current_sum),
-                )
-                result[..., param_indices] = selected * scale
-            # Clip to bounds
-            result = torch.clamp(result, bounds[0], bounds[1])
-
-    return result
+        raise ValueError(msg)
+    return GammaPrior(float(concentration), float(rate))
 
 
 def _resolve_acquisition_seed(
@@ -463,16 +186,19 @@ def _resolve_acquisition_seed(
 
     1. ``rng`` wins whenever supplied so external callers keep control
        of their RNG pipeline.
-    2. ``spec.random_seed`` seeds a deterministic per-iteration stride
-       so two independent replays of the same campaign state produce
-       identical acquisition candidates.
+    2. ``spec.random_seed`` flows through
+       :func:`bo_engine.reproducibility.derive_seed` with role tag
+       ``"acquisition:iter_{iteration}"`` so two independent replays of the
+       same campaign state produce identical acquisition candidates and
+       the seed for any other phase at the same iteration (Sobol initial
+       design, MCMC chain) cannot collide with it.
     3. Falls back to :func:`random.randint` only when neither is
        supplied; this path is documented as non-reproducible.
     """
     if rng is not None:
         return int(rng.integers(0, MAX_RANDOM_SEED))
     if spec.random_seed is not None:
-        return (spec.random_seed + iteration * SEED_ITERATION_OFFSET) % MAX_RANDOM_SEED
+        return derive_seed(spec.random_seed, f"acquisition:iter_{iteration}")
     # Deliberately non-reproducible — no seed was supplied. Used in tests
     # and ad-hoc campaigns where reproducibility is not required.
     return random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
@@ -516,11 +242,13 @@ def generate_next_batch(
            precedence over any other source so callers that already
            manage a :class:`numpy.random.Generator` stay in control.
         2. ``spec.random_seed`` is set — the seed is derived
-           deterministically as
-           ``(spec.random_seed + iteration * SEED_ITERATION_OFFSET)
-           % MAX_RANDOM_SEED``.  Two independent calls on the same
-           campaign state at the same iteration therefore produce
-           identical acquisition candidates.
+           deterministically via
+           :func:`bo_engine.reproducibility.derive_seed` with role tag
+           ``"acquisition:iter_{iteration}"``. Two independent calls on
+           the same campaign state at the same iteration therefore
+           produce identical acquisition candidates, and the per-phase
+           role tag prevents the Sobol initial design from sharing the
+           same seed as the acquisition multi-start.
         3. Neither is provided — the seed is drawn from the Python
            stdlib ``random`` module, which is explicitly
            non-reproducible across process runs.
@@ -539,6 +267,24 @@ def generate_next_batch(
     """
     if batch_size is None:
         batch_size = spec.batch_size
+
+    # Multi-fidelity routing is not implemented end-to-end in this pipeline.
+    # Reject loudly rather than silently downgrading to single-fidelity —
+    # the latter is what the audit specifically called out as misleading
+    # advertisement (cf. ``BoTorchBackend.supported_features``).
+    if (
+        spec.fidelity_parameter is not None
+        or spec.acquisition_method == AcquisitionMethod.MULTI_FIDELITY_KG
+    ):
+        msg = (
+            "Multi-fidelity dispatch (qMFKG / SingleTaskMultiFidelityGP) is "
+            "not wired into generate_next_batch. Remove "
+            "spec.fidelity_parameter and acquisition_method="
+            "MULTI_FIDELITY_KG to proceed with single-fidelity BO; the "
+            "standalone helpers in bo_engine.multifidelity remain available "
+            "for direct multi-fidelity workflows."
+        )
+        raise MultiFidelityNotSupportedError(msg)
 
     random_seed = _resolve_acquisition_seed(spec, iteration, rng)
 
@@ -599,6 +345,11 @@ def generate_next_batch(
         train_x, train_y = _prepare_training_data(observations, spec)
         bounds = get_bounds_tensor(spec)
 
+        # Per-observation measurement uncertainty (variance). Only used when
+        # every observation carries every objective's stddev; partial
+        # coverage falls back to the trainable noise prior.
+        train_yvar = _prepare_train_yvar(observations, spec)
+
         # Prepare cost data if cost-aware optimization is enabled
         train_costs = None
         if spec.use_cost_aware:
@@ -622,10 +373,12 @@ def generate_next_batch(
             observations=observations,
             train_costs=train_costs,
             pending_x=pending_tensor,
+            train_yvar=train_yvar,
         )
 
+        noise_prior = _resolve_noise_prior(spec)
         if is_single_objective:
-            return _generate_single_objective_batch(ctx)
+            return _generate_single_objective_batch(ctx, noise_prior=noise_prior)
 
         # TuRBO not supported for multi-objective
         if turbo_state is not None or spec.use_turbo:
@@ -636,701 +389,8 @@ def generate_next_batch(
                 UserWarning,
                 stacklevel=2,
             )
-        suggestions = _generate_multi_objective_batch(ctx)
+        suggestions = _generate_multi_objective_batch(ctx, noise_prior=noise_prior)
         return suggestions, None
-
-
-def _encode_pending_points(
-    pending_points: list[dict[str, Any]] | None,
-    spec: OptimizationSpec,
-) -> Tensor | None:
-    """Encode pending parameter dicts into the tensor form consumed by BoTorch.
-
-    Returns ``None`` when no pending points are supplied or when every
-    candidate is missing at least one spec parameter (encoding would raise
-    ``KeyError``).  Malformed entries are skipped with a debug log rather
-    than crashing the suggestion path — the acquisition still benefits
-    from the subset that encodes cleanly.
-    """
-    if not pending_points:
-        return None
-    valid: list[dict[str, Any]] = []
-    for params in pending_points:
-        if all(p.name in params for p in spec.parameters):
-            valid.append(params)
-        else:
-            logger.debug("Skipping pending point missing required parameter(s): %s", params)
-    if not valid:
-        return None
-    return stack_encoded_values(valid, spec)
-
-
-def _initialize_turbo_state(
-    spec: OptimizationSpec,
-    train_y_bo: Tensor,
-    batch_size: int,
-    turbo_state: TurboState | None,
-) -> TurboState | None:
-    """Initialize TuRBO state if applicable.
-
-    Args:
-        spec: Optimization specification
-        train_y_bo: Training outputs (BoTorch convention - minimization)
-        batch_size: Number of suggestions per batch
-        turbo_state: Existing TuRBO state if any
-
-    Returns:
-        Initialized TuRBO state or None if not using TuRBO
-    """
-    use_turbo = spec.use_turbo or (turbo_state is not None) or should_use_turbo(spec.n_parameters)
-    if use_turbo and turbo_state is None:
-        best_y = train_y_bo.min().item()
-        turbo_state = create_turbo_state(
-            dim=spec.n_parameters,
-            batch_size=batch_size,
-            initial_best_value=-best_y,
-        )
-    return turbo_state
-
-
-def _compute_turbo_bounds(
-    turbo_state: TurboState | None,
-    train_x: Tensor,
-    train_y_bo: Tensor,
-    model: SingleTaskGP,
-    bounds: Tensor,
-) -> tuple[Tensor, str]:
-    """Compute trust region bounds for TuRBO.
-
-    Args:
-        turbo_state: Current TuRBO state
-        train_x: Training inputs
-        train_y_bo: Training outputs (BoTorch convention)
-        model: Fitted single-objective GP model
-        bounds: Original parameter bounds
-
-    Returns:
-        Tuple of (optimization_bounds, turbo_info_string)
-    """
-    if turbo_state is None or turbo_state.restart_triggered:
-        return bounds.clone(), ""
-
-    tr_lb, tr_ub = get_turbo_bounds(turbo_state, train_x, train_y_bo, model)
-    opt_bounds = torch.stack(
-        [
-            bounds[0] + tr_lb * (bounds[1] - bounds[0]),
-            bounds[0] + tr_ub * (bounds[1] - bounds[0]),
-        ]
-    )
-    turbo_info = f" TuRBO length={turbo_state.length:.4f}."
-    return opt_bounds, turbo_info
-
-
-def _get_model_predictions(model: GPModel, candidates: Tensor) -> tuple[Tensor, Tensor]:
-    """Get model predictions (mean and std) at candidate points.
-
-    Args:
-        model: Fitted GP model
-        candidates: Candidate points to evaluate
-
-    Returns:
-        Tuple of (means, stds) where each has shape matching the model output
-    """
-    model.eval()
-    with torch.no_grad():
-        posterior = model.posterior(candidates)
-        means = posterior.mean.squeeze(-1)
-        variances = posterior.variance.squeeze(-1)
-        if means.dim() == 0:
-            means = means.unsqueeze(0)
-        if variances.dim() == 0:
-            variances = variances.unsqueeze(0)
-        stds = variances.sqrt()
-    return means, stds
-
-
-def _extract_scalar_prediction(
-    tensor: Tensor,
-    index: int,
-) -> float | None:
-    """Safely extract a scalar from a 0-d or 1-d tensor at the given index.
-
-    Returns None if the index is out of bounds.
-
-    Args:
-        tensor: Tensor of acquisition values, means, or stds
-        index: Batch index
-
-    Returns:
-        Float value or None
-    """
-    if tensor.dim() == 0:
-        return tensor.item() if index == 0 else None
-    return tensor[index].item() if index < tensor.numel() else None
-
-
-def _build_single_objective_provenance(
-    means: Tensor,
-    stds: Tensor,
-    acq_values: Tensor,
-    index: int,
-    obj_name: str,
-    minimize: bool,
-) -> tuple[
-    float | None,
-    float | None,
-    float | None,
-    dict[str, float] | None,
-    dict[str, float] | None,
-]:
-    """Build provenance data for a single-objective candidate.
-
-    Extracts acquisition value, uncertainty, and predicted objectives for one
-    candidate in the batch.
-
-    Args:
-        means: Posterior mean predictions
-        stds: Posterior std predictions
-        acq_values: Acquisition function values
-        index: Candidate index in the batch
-        obj_name: Objective name
-        minimize: Whether the objective is minimized
-
-    Returns:
-        Tuple of (acq_val, std_val, confidence_level_unused,
-                  predicted_objectives, predicted_std)
-    """
-    std_val = _extract_scalar_prediction(stds, index)
-    acq_val = _extract_scalar_prediction(acq_values, index)
-
-    # For minimization, means are negated (BoTorch convention) — un-negate for storage.
-    pred_mean = _extract_scalar_prediction(means, index)
-    if pred_mean is not None and not minimize:
-        pred_mean = -pred_mean  # undo BoTorch negation
-
-    predicted_objectives = {obj_name: pred_mean} if pred_mean is not None else None
-    predicted_std_dict = {obj_name: std_val} if std_val is not None else None
-
-    return acq_val, std_val, None, predicted_objectives, predicted_std_dict
-
-
-def _create_single_objective_suggestions(
-    candidates: Tensor,
-    acq_values: Tensor,
-    means: Tensor,
-    stds: Tensor,
-    spec: OptimizationSpec,
-    train_y: Tensor,
-    iteration: int,
-    random_seed: int,
-    method: AcquisitionMethod,
-    turbo_state: TurboState | None,
-    turbo_info: str,
-) -> list[SuggestionResult]:
-    """Create SuggestionResult objects from optimization results.
-
-    Args:
-        candidates: Optimized candidate points
-        acq_values: Acquisition function values
-        means: Posterior mean predictions at candidates
-        stds: Posterior std predictions at candidates
-        spec: Optimization specification
-        train_y: Original training outputs (not negated)
-        iteration: Current iteration number
-        random_seed: Random seed for reproducibility
-        method: Acquisition method used
-        turbo_state: Optional TuRBO state
-        turbo_info: TuRBO info string for explanation
-
-    Returns:
-        List of SuggestionResult objects
-    """
-    minimize = spec.objectives[0].minimize
-    batch_size = candidates.shape[0]
-
-    # Get best observed value for context
-    if minimize:
-        best_observed = train_y.min().item()
-        best_str = "lowest"
-    else:
-        best_observed = train_y.max().item()
-        best_str = "highest"
-
-    obj_name = spec.objectives[0].name
-    acq_name = method.value
-    gen_method = "bo" if turbo_state is None else "turbo"
-
-    suggestions = []
-    for i in range(batch_size):
-        values = decode_categorical(candidates[i], spec)
-
-        acq_val, std_val, _, predicted_objectives, predicted_std_dict = (
-            _build_single_objective_provenance(means, stds, acq_values, i, obj_name, minimize)
-        )
-        confidence_level = _get_confidence_level(std_val)
-
-        explanation = (
-            f"Suggested by {acq_name} acquisition function. "
-            f"Current {best_str} observed value: {best_observed:.4f}. "
-            f"This point is predicted to improve the objective.{turbo_info}"
-        )
-
-        suggestion = SuggestionResult(
-            parameter_values=values,
-            iteration=iteration,
-            batch_index=i,
-            generation_method=gen_method,
-            random_seed=random_seed,
-            acquisition_value=acq_val,
-            model_uncertainty=std_val,
-            acquisition_function=acq_name,
-            model_type="SingleTaskGP (Gaussian Process)",
-            model_version=iteration,
-            confidence_level=confidence_level,
-            explanation=explanation,
-            predicted_objectives=predicted_objectives,
-            predicted_std=predicted_std_dict,
-        )
-        suggestions.append(suggestion)
-
-    return suggestions
-
-
-def _generate_single_objective_batch(
-    ctx: GenerationContext,
-) -> tuple[list[SuggestionResult], TurboState | None]:
-    """Generate suggestions for single-objective optimization.
-
-    Uses noisy EI (or EI) acquisition function. Supports TuRBO for
-    high-dimensional problems, outcome constraints, and cost-aware optimization.
-
-    Args:
-        ctx: Generation context containing all parameters
-
-    Returns:
-        Tuple of (suggestions, updated turbo_state)
-    """
-    spec = ctx.spec
-    train_x = ctx.train_x
-    train_y = ctx.train_y
-    bounds = ctx.bounds
-    batch_size = ctx.batch_size
-    turbo_state = ctx.turbo_state
-    observations = ctx.observations
-    train_costs = ctx.train_costs
-
-    minimize = spec.objectives[0].minimize
-
-    # Negate if maximizing (BoTorch assumes minimization)
-    train_y_bo = -train_y if not minimize else train_y.clone()
-
-    # Create and fit model
-    model = create_and_fit_single_task_model(
-        train_x, train_y_bo, bounds, use_input_warping=spec.use_input_warping
-    )
-
-    # Outcome constraint models (constraints on OUTPUT space)
-    outcome_constraints = None
-    if spec.outcome_constraints and observations:
-        outcome_constraints = _build_outcome_constraint_models(spec, observations, train_x, bounds)
-
-    # Cost model for EIpu
-    cost_model = None
-    if spec.use_cost_aware and train_costs is not None:
-        cost_model = create_and_fit_single_task_model(
-            train_x, train_costs.unsqueeze(-1), bounds, use_input_warping=False
-        )
-
-    # TuRBO state management
-    turbo_state = _initialize_turbo_state(spec, train_y_bo, batch_size, turbo_state)
-    opt_bounds, turbo_info = _compute_turbo_bounds(turbo_state, train_x, train_y_bo, model, bounds)
-
-    # Acquisition method selection
-    method = spec.acquisition_method
-    if method == AcquisitionMethod.AUTO:
-        method = (
-            AcquisitionMethod.COST_WEIGHTED_EI
-            if spec.use_cost_aware
-            else AcquisitionMethod.NOISY_EI
-        )
-
-    # Build native linear constraints for the optimizer
-    ineq_constraints = None
-    eq_constraints = None
-    projection_constraints: list = []
-    if spec.constraints:
-        ineq_constraints, eq_constraints, projection_constraints = build_botorch_linear_constraints(
-            spec
-        )
-
-    # Create acquisition function.  ``train_y_bo`` is already in the
-    # canonical minimization form (see bo_engine.types) because we
-    # negated above when ``not minimize``; the factory therefore always
-    # receives ``minimize=True``.
-    acqf = create_acquisition(
-        model=model,
-        ref_point=None,
-        train_x=train_x,
-        train_y=train_y_bo,
-        n_objectives=1,
-        minimize=True,
-        method=method,
-        constraints=None,
-        outcome_constraint_models=outcome_constraints,
-        cost_model=cost_model,
-    )
-    # Optimize with native constraints where possible
-    candidates, acq_values = optimize_acquisition(
-        acqf,
-        opt_bounds,
-        batch_size,
-        spec=spec,
-        x_avoid=train_x,
-        inequality_constraints=ineq_constraints or None,
-        equality_constraints=eq_constraints or None,
-        X_pending=ctx.pending_x,
-    )
-
-    # Post-hoc projection only for constraints that couldn't be handled natively
-    if projection_constraints:
-        candidates = _apply_constraints_to_samples(candidates, spec, bounds)
-
-    # Get model predictions and create suggestions
-    means, stds = _get_model_predictions(model, candidates)
-    suggestions = _create_single_objective_suggestions(
-        candidates,
-        acq_values,
-        means,
-        stds,
-        spec,
-        train_y,
-        ctx.iteration,
-        ctx.random_seed,
-        method,
-        turbo_state,
-        turbo_info,
-    )
-
-    return suggestions, turbo_state
-
-
-def _build_multi_objective_provenance(
-    means: Tensor,
-    stds: Tensor,
-    acq_values: Tensor,
-    index: int,
-    spec: OptimizationSpec,
-) -> tuple[float | None, float | None, dict[str, float], dict[str, float]]:
-    """Build provenance data for a multi-objective candidate.
-
-    Extracts acquisition value, average uncertainty, and per-objective
-    predictions for one candidate in the batch.
-
-    Args:
-        means: Posterior mean predictions (batch x n_objectives)
-        stds: Posterior std predictions (batch x n_objectives)
-        acq_values: Acquisition function values
-        index: Candidate index in the batch
-        spec: Optimization specification
-
-    Returns:
-        Tuple of (acq_val, avg_std, predicted_objectives, predicted_std)
-    """
-    acq_val = _extract_scalar_prediction(acq_values, index)
-
-    # Average std across objectives for confidence level
-    if stds.dim() > 1 and index < stds.shape[0]:
-        avg_std: float | None = stds[index].mean().item()
-    elif index < stds.numel():
-        avg_std = stds[index].item()
-    else:
-        avg_std = None
-
-    # Per-objective predictions; un-negate maximization objectives.
-    predicted_objectives: dict[str, float] = {}
-    predicted_std_dict: dict[str, float] = {}
-    for j, obj in enumerate(spec.objectives):
-        if means.dim() > 1 and index < means.shape[0] and j < means.shape[1]:
-            pred = means[index, j].item()
-            predicted_objectives[obj.name] = pred if obj.minimize else -pred
-        if stds.dim() > 1 and index < stds.shape[0] and j < stds.shape[1]:
-            predicted_std_dict[obj.name] = stds[index, j].item()
-
-    return acq_val, avg_std, predicted_objectives, predicted_std_dict
-
-
-def _build_multi_objective_explanation(
-    acq_name: str,
-    acq_val: float | None,
-) -> str:
-    """Build a human-readable explanation for a multi-objective suggestion.
-
-    Args:
-        acq_name: Name of the acquisition function
-        acq_val: Acquisition function value (may be None)
-
-    Returns:
-        Explanation string
-    """
-    if acq_val is not None and acq_val > 0:
-        return (
-            f"Suggested by {acq_name} acquisition function with expected improvement "
-            f"of {acq_val:.4f}. This point is predicted to expand the Pareto front."
-        )
-    return (
-        f"Suggested by {acq_name} acquisition function to explore promising regions "
-        "and expand the Pareto front of non-dominated solutions."
-    )
-
-
-def _create_multi_objective_suggestions(
-    candidates: Tensor,
-    acq_values: Tensor,
-    means: Tensor,
-    stds: Tensor,
-    spec: OptimizationSpec,
-    iteration: int,
-    random_seed: int,
-    method: AcquisitionMethod,
-) -> list[SuggestionResult]:
-    """Create SuggestionResult objects for multi-objective optimization.
-
-    Args:
-        candidates: Optimized candidate points
-        acq_values: Acquisition function values
-        means: Posterior mean predictions at candidates (shape: batch x n_objectives)
-        stds: Posterior std predictions at candidates (shape: batch x n_objectives)
-        spec: Optimization specification
-        iteration: Current iteration number
-        random_seed: Random seed for reproducibility
-        method: Acquisition method used
-
-    Returns:
-        List of SuggestionResult objects
-    """
-    batch_size = candidates.shape[0]
-    acq_name = method.value
-    suggestions = []
-
-    for i in range(batch_size):
-        values = decode_categorical(candidates[i], spec)
-
-        acq_val, avg_std, predicted_objectives, predicted_std_dict = (
-            _build_multi_objective_provenance(means, stds, acq_values, i, spec)
-        )
-        confidence_level = _get_confidence_level(avg_std)
-        explanation = _build_multi_objective_explanation(acq_name, acq_val)
-
-        suggestion = SuggestionResult(
-            parameter_values=values,
-            iteration=iteration,
-            batch_index=i,
-            generation_method="bo",
-            random_seed=random_seed,
-            acquisition_value=acq_val,
-            model_uncertainty=avg_std,
-            acquisition_function=acq_name,
-            model_type="ModelListGP (Gaussian Process)",
-            model_version=iteration,
-            confidence_level=confidence_level,
-            explanation=explanation,
-            predicted_objectives=predicted_objectives or None,
-            predicted_std=predicted_std_dict or None,
-        )
-        suggestions.append(suggestion)
-
-    return suggestions
-
-
-def _generate_multi_objective_batch(
-    ctx: GenerationContext,
-) -> list[SuggestionResult]:
-    """Generate suggestions for multi-objective optimization.
-
-    Uses hypervolume improvement or scalarized multi-objective acquisition.
-
-    Args:
-        ctx: Generation context containing all parameters
-
-    Returns:
-        List of suggestion results
-    """
-    spec = ctx.spec
-    train_x = ctx.train_x
-    train_y = ctx.train_y
-    bounds = ctx.bounds
-    batch_size = ctx.batch_size
-
-    # Get minimize mask for objectives
-    minimize_mask = torch.tensor([obj.minimize for obj in spec.objectives], dtype=torch.bool)
-
-    # Negate maximization objectives (BoTorch assumes minimization)
-    train_y_bo = train_y.clone()
-    train_y_bo[:, ~minimize_mask] = -train_y_bo[:, ~minimize_mask]
-
-    # Create and fit model
-    model = create_and_fit_model(
-        train_x, train_y_bo, bounds, use_input_warping=spec.use_input_warping
-    )
-
-    # Get reference point (using STATIC strategy for backward compatibility;
-    # DYNAMIC can be enabled via ReferencePointConfig when exposed in OptimizationSpec)
-    ref_point_config = ReferencePointConfig(strategy=ReferencePointStrategy.STATIC)
-    ref_point, _info = get_reference_point_dynamic(train_y_bo, minimize_mask, ref_point_config)
-
-    # Determine acquisition method
-    method = spec.acquisition_method
-    if method == AcquisitionMethod.AUTO:
-        method = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
-
-    # Build native linear constraints for the optimizer
-    ineq_constraints = None
-    eq_constraints = None
-    projection_constraints: list = []
-    if spec.constraints:
-        ineq_constraints, eq_constraints, projection_constraints = build_botorch_linear_constraints(
-            spec
-        )
-
-    # Create acquisition function.  ``train_y_bo`` has maximization
-    # columns pre-negated so every objective is in minimization form
-    # (see bo_engine.types); the factory therefore receives an
-    # all-True ``minimize_mask``.
-    acqf = create_acquisition(
-        model=model,
-        ref_point=ref_point,
-        train_x=train_x,
-        train_y=train_y_bo,
-        n_objectives=spec.n_objectives,
-        minimize_mask=torch.ones(spec.n_objectives, dtype=torch.bool),
-        method=method,
-        constraints=None,
-    )
-    # Optimize with native constraints where possible
-    candidates, acq_values = optimize_acquisition(
-        acqf,
-        bounds,
-        batch_size,
-        spec=spec,
-        x_avoid=train_x,
-        inequality_constraints=ineq_constraints or None,
-        equality_constraints=eq_constraints or None,
-        X_pending=ctx.pending_x,
-    )
-
-    # Post-hoc projection only for constraints that couldn't be handled natively
-    if projection_constraints:
-        candidates = _apply_constraints_to_samples(candidates, spec, bounds)
-
-    # Get model predictions for provenance
-    means, stds = _get_model_predictions(model, candidates)
-
-    return _create_multi_objective_suggestions(
-        candidates,
-        acq_values,
-        means,
-        stds,
-        spec,
-        ctx.iteration,
-        ctx.random_seed,
-        method,
-    )
-
-
-def _get_confidence_level(uncertainty: float | None) -> str:
-    """Determine confidence level from uncertainty."""
-    if uncertainty is None:
-        return "medium"
-    if uncertainty < CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD:
-        return "high"
-    elif uncertainty < CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD:
-        return "medium"
-    else:
-        return "low"
-
-
-def _prepare_cost_data(
-    observations: list[ObservationData], use_cost_aware: bool = False
-) -> Tensor | None:
-    """Extract cost data from observations.
-
-    Args:
-        observations: List of observations with optional cost field
-        use_cost_aware: Whether cost-aware mode was requested (for warning)
-
-    Returns:
-        Tensor of costs if all observations have costs, else None
-    """
-    costs = []
-    has_some_costs = False
-    for obs in observations:
-        if obs.cost is None:
-            if has_some_costs and use_cost_aware:
-                logger.warning(
-                    "Cost-aware mode requested but %d/%d observations lack cost data. "
-                    "Falling back to non-cost-aware optimization.",
-                    sum(1 for o in observations if o.cost is None),
-                    len(observations),
-                )
-            return None
-        has_some_costs = True
-        costs.append(obs.cost)
-    return torch.tensor(costs, dtype=get_dtype(), device=get_device())
-
-
-def _build_outcome_constraint_models(
-    spec: OptimizationSpec,
-    observations: list[ObservationData],
-    train_x: Tensor,
-    bounds: Tensor,
-) -> list[tuple[Any, float]] | None:
-    """Build constraint models for outcome constraints.
-
-    For each outcome constraint, trains a GP to predict feasibility
-    and returns (model, threshold) pairs for use in constrained acquisition.
-
-    Args:
-        spec: Optimization specification with outcome_constraints
-        observations: Historical observations
-        train_x: Training inputs (already encoded)
-        bounds: Parameter bounds
-
-    Returns:
-        List of (constraint_model, threshold) tuples, or None if no constraints
-    """
-    if not spec.outcome_constraints:
-        return None
-
-    constraint_models = []
-    for oc in spec.outcome_constraints:
-        # Extract the objective values for this constraint
-        obj_values = []
-        for obs in observations:
-            if oc.objective_name not in obs.objective_values:
-                logger.warning(
-                    "Outcome constraint on '%s' disabled: observation missing this objective. "
-                    "All observations must include the constrained objective.",
-                    oc.objective_name,
-                )
-                return None
-            obj_values.append(obs.objective_values[oc.objective_name])
-
-        obj_tensor = torch.tensor(obj_values, dtype=get_dtype(), device=get_device()).unsqueeze(-1)
-
-        # Compute feasibility (binary: 1 if feasible, 0 if not)
-        if oc.greater_than:
-            feasible = (obj_tensor >= oc.threshold).double()
-        else:
-            feasible = (obj_tensor <= oc.threshold).double()
-
-        # Train constraint GP on feasibility
-        constraint_model = create_and_fit_single_task_model(
-            train_x, feasible, bounds, use_input_warping=False
-        )
-        # Use per-constraint feasibility threshold from the spec (default 0.5)
-        constraint_models.append((constraint_model, oc.feasibility_threshold))
-
-    return constraint_models if constraint_models else None
 
 
 def update_turbo_after_evaluation(
@@ -1359,40 +419,7 @@ def update_turbo_after_evaluation(
     obj_name = spec.objectives[0].name
     y_values = [obs.objective_values[obj_name] for obs in new_observations]
 
+    from bo_engine.device import get_device, get_dtype
+
     y_tensor = torch.tensor(y_values, dtype=get_dtype(), device=get_device())
     return update_turbo_state(turbo_state, y_tensor, minimize=minimize)
-
-
-def _prepare_training_data(
-    observations: list[ObservationData],
-    spec: OptimizationSpec,
-) -> tuple[Tensor, Tensor]:
-    """Prepare training data from observations.
-
-    Args:
-        observations: List of ObservationData entities
-        spec: Optimization specification
-
-    Returns:
-        Tuple of (train_x, train_y) tensors
-    """
-    x_list = []
-    y_list = []
-
-    for obs in observations:
-        # Encode parameters
-        x = encode_categorical(obs.parameter_values, spec)
-        x_list.append(x)
-
-        # Get objective values in spec order
-        y = torch.tensor(
-            [obs.objective_values[obj.name] for obj in spec.objectives],
-            dtype=get_dtype(),
-            device=get_device(),
-        )
-        y_list.append(y)
-
-    train_x = torch.stack(x_list)
-    train_y = torch.stack(y_list)
-
-    return train_x, train_y

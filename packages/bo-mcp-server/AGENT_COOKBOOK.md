@@ -117,6 +117,20 @@ Error Code E101 "Model fitting failed"
 → Action: Check data quality, may need more observations (minimum 2)
 ```
 
+### Per-Error-Code Recovery Reference
+
+| Code | Symptom | Concrete recovery |
+|------|---------|-------------------|
+| E001 (`VALIDATION_FAILED`) | Payload rejected by Pydantic | Inspect `field_errors` for dotted-path location; resend with the field corrected. |
+| E002 (`CAMPAIGN_NOT_FOUND`) | Campaign UUID unknown | Call `bo_list_campaigns` (or read `campaigns://list`) to recover the real id. |
+| E003 (`INVALID_STATE_TRANSITION`) | Wrong lifecycle action for current status | Read `campaign://{id}` for the current status; use the matrix in *Suggestion-Status Lifecycle* below for the legal next move. |
+| E004 (`DUPLICATE_RESULT_DETECTED`) | Same parameter row already submitted | Re-submit with `force=true` if the duplicate is intentional; otherwise drop the row from the batch. |
+| E005 (`CONCURRENT_MODIFICATION`) | Optimistic-lock conflict | Re-read the campaign, rebuild your write against the new `version`, and retry. |
+| E006 (`IDEMPOTENCY_CONFLICT`) | Same idempotency key reused with a different payload | Generate a fresh UUIDv7 idempotency key for the new payload. |
+| E101 (`MODEL_FITTING_FAILED`) | GP fit blew up on noisy / extreme data | Drop NaN/Inf rows, dampen outliers, or submit more clean observations before retrying. |
+| E104 (`INSUFFICIENT_DATA`) | <2 observations available | Submit at least two valid result rows before calling `bo_generate_suggestions`. |
+| E105 (`SUGGESTION_NOT_FOUND`) | Suggestion id unknown or already terminal | Re-list suggestions via `bo_list_suggestions`; only `pending` / `accepted` rows are mutable. |
+
 ## Verbosity Selection Guide
 
 | Verbosity | ~Tokens | Use Case |
@@ -124,6 +138,20 @@ Error Code E101 "Model fitting failed"
 | minimal   | 50      | Tight optimization loops, monitoring many campaigns |
 | standard  | 200     | Normal operation, debugging workflows |
 | detailed  | 500+    | Deep debugging, analyzing model behavior |
+
+### Per-Tool Default Verbosity
+
+| Tool | Default verbosity | Notes |
+|------|-------------------|-------|
+| `bo_create_campaign` | `standard` | Mutation: emit warnings + spec summary by default. |
+| `bo_generate_suggestions` | `standard` | Drops to `minimal` inside agent loops to save tokens. |
+| `bo_submit_results` | `standard` | Pre-set in the tool decorator. |
+| `bo_get_diagnostics` | `standard` | `minimal` retains the `next_action_recommendation`. |
+| `bo_batch_get_status` | `minimal` | Optimized for monitoring many campaigns. |
+| `bo_list_campaigns` / `bo_list_suggestions` / `bo_list_results` | `standard` | Query tools — switch to `detailed` for full provenance. |
+| `bo_compare_campaigns` | `standard` | Use `detailed` when you need per-campaign breakdowns. |
+| `bo_discover_transfer_candidates` | `standard` | `detailed` exposes per-component similarity scores. |
+| `bo_health_check`, `bo_list_capabilities` | (no verbosity) | Always returns the full envelope. |
 
 ## Tool Selection Quick Reference
 
@@ -169,6 +197,23 @@ Error Code E101 "Model fitting failed"
 // Agent follows the recommendation without manual interpretation
 ```
 
+### `next_action_recommendation` Decision Tree
+
+`bo_get_diagnostics` (any verbosity) and `bo_batch_get_status` (minimal verbosity)
+embed a `next_action_recommendation` block with an `action`, a human-readable
+`reason`, and an `urgency` (`low` | `normal` | `high`). Use this table to map
+each action directly to a concrete follow-up tool call:
+
+| `action` | When emitted | Concrete follow-up |
+|----------|--------------|--------------------|
+| `bo_generate_suggestions` | Campaign is healthy and ready for the next batch (or has no results yet). | Call `bo_generate_suggestions` with the same `campaign_id`. |
+| `bo_submit_results` | One or more pending suggestions await results. | Run the experiments, call `bo_submit_results` for those rows. |
+| `consider_stopping` | Convergence detector tripped (improvement rate or hypervolume stable). | Read `bo_get_diagnostics` at `detailed` verbosity to confirm, then call `bo_terminate_campaign` (consider `dry_run=true` first). |
+| `review_outliers` | Diagnostics flag suspicious result rows (≥1 outlier among >5 results). | Inspect the offending result rows via `bo_list_results`; resubmit corrected values or call `bo_update_suggestion_status` with `rejected`. |
+| `monitor_progress` | Campaign health is `warning`. | Keep optimizing but request `bo_get_diagnostics` at `standard` verbosity after each iteration. |
+| `investigate_issues` | Campaign health is `critical`. | Read the `warnings` list, inspect `bo_get_diagnostics` at `detailed`, escalate to a human; do not auto-recover. |
+| `review_campaign_status` | Campaign is `paused`, `completed`, or `failed`. | Read `campaign://{id}`; if intentional resume with `bo_resume_campaign`, otherwise create a new campaign. |
+
 ### Pattern 2: Upload Historical Data
 ```json
 // Use bo_upload_results_file with CSV format
@@ -200,6 +245,103 @@ Error Code E101 "Model fitting failed"
 | bo_get_diagnostics | 1-5s | Cached for 120s |
 
 **Note**: High-dimensional problems (>20 params) and large batches increase suggestion generation time.
+
+## Concurrency Envelope
+
+The server uses optimistic concurrency on every campaign mutation
+(`bo_pause_campaign`, `bo_resume_campaign`, `bo_terminate_campaign`,
+`bo_submit_results`, `bo_update_suggestion_status`). A `version`
+counter is incremented on every successful write; the next writer
+that re-uses a stale `version` receives the structured envelope:
+
+```json
+{
+  "success": false,
+  "errors": ["..."],
+  "code": "E005",
+  "details": {
+    "expected_version": 7,
+    "actual_version": 8,
+    "campaign_id": "abc-123",
+    "action": "pause"
+  }
+}
+```
+
+**Recovery recipe.** Re-read the resource (`campaign://{id}` or
+`bo_get_diagnostics`), rebuild the mutation against the fresh
+`version`, then retry. Multi-step orchestrations should also re-fetch
+any cached suggestion / result lists touched by the same transaction.
+Do not blindly retry without re-reading — the second write would just
+hit the same conflict.
+
+**Idempotency keys** (`bo_create_campaign`, `bo_submit_results`,
+`bo_update_suggestion_status`) protect against retry storms: re-using
+the same UUIDv7 with the same payload replays the original response
+verbatim (with `idempotency_replay: true`); re-using with a different
+payload returns a `VALIDATION_FAILED` envelope flagged
+`details.idempotency_conflict=true`.
+
+**Dry-run preview.** All state-mutating tools accept `dry_run=true`.
+The response carries `dry_run: true` and a `preview` block describing
+what *would* change without persisting anything. Use this before
+irreversible operations (`bo_terminate_campaign`) or to confirm a
+plan with the human in the loop.
+
+## Suggestion-Status Lifecycle
+
+Suggestions move through the following states. Transitions marked **manual**
+require a `bo_update_suggestion_status` call; **automatic** transitions are
+written by the server when results are submitted.
+
+```text
+        ┌────────── manual ──────────┐
+        │                            ▼
+   PENDING ──manual──▶ ACCEPTED ──manual──▶ REJECTED
+        │                  │                 │
+        │                  │                 │
+        ├──manual──▶ EXPIRED ◀──manual───────┘
+        │                  ▲
+        └──automatic──▶ COMPLETED (set by bo_submit_results)
+```
+
+**State semantics.**
+
+- `PENDING` — generated by `bo_generate_suggestions`, awaiting human review.
+- `ACCEPTED` — explicitly approved (e.g. queued for an experimental run).
+- `REJECTED` — operator declined; suggestion is dropped from the active queue
+  but *retained* in storage so future calls to `bo_list_suggestions` can show
+  it for audit purposes. **Rejected suggestions are not re-issued.**
+- `EXPIRED` — suggestion is no longer relevant (e.g. instrument changed).
+  Same persistence semantics as `REJECTED`; the distinction is *intent* —
+  `REJECTED` is "I evaluated this and said no", `EXPIRED` is "context changed
+  out from under it". Use `EXPIRED` when the suggestion was sound at
+  generation time but stopped being applicable.
+- `COMPLETED` — `bo_submit_results` accepted a result row whose
+  `suggestion_id` matched this suggestion. Set automatically; manual
+  callers cannot write `COMPLETED` directly.
+
+**Re-usability.** Terminal statuses (`REJECTED`, `EXPIRED`, `COMPLETED`)
+are absorbing: the same suggestion cannot be revived. If you change your
+mind, call `bo_generate_suggestions` for a fresh batch — the prior row
+remains queryable but inactive.
+
+## Workflow Trace Propagation
+
+Multi-step agent workflows can correlate their audit + log trail by
+attaching an opaque trace id once per workflow:
+
+- **REST** — pass the trace id in the `X-Trace-Id` request header. The
+  middleware binds it for the duration of the request and echoes it
+  back on the response header.
+- **MCP** — the trace context is honored when the host binds it before
+  invoking a tool (e.g. by wrapping the call in
+  `bo_mcp_server.trace_context.bind_trace_id(...)`).
+
+When set, every audit event records `trace_id` inside
+`input_summary`, and every formatted response includes it under
+`_metadata.trace_id`. When unset, neither field appears, so the
+metadata envelope stays compact for one-off calls.
 
 ## Batch Operations
 
@@ -505,6 +647,64 @@ The system uses Sobol sequence for initial exploration before model-based optimi
 - Multi-fidelity campaigns (need diverse fidelity samples)
 
 ---
+
+## Resource Subscriptions for Long-Running Workflows
+
+Long-running orchestration loops can stop polling `campaign://{id}` and
+let the server push state-change notifications instead. The server
+implements MCP `resources/subscribe` so the initialize handshake
+advertises `resources.subscribe = true`.
+
+### Lifecycle
+
+1. **Subscribe** to a campaign URI immediately after `bo_create_campaign`
+   returns (or any time before you would otherwise poll):
+
+   ```python
+   await session.subscribe_resource("campaign://abc-123-def")
+   ```
+
+2. **Listen** for `notifications/resources/updated` on your MCP session
+   transport. The server emits one notification per campaign-status
+   transition (CREATED→RUNNING via `bo_generate_suggestions`,
+   RUNNING↔PAUSED via `bo_pause_campaign` / `bo_resume_campaign`,
+   ANY→COMPLETED via `bo_terminate_campaign`).
+
+3. **Re-read** the resource when notified to fetch the new state:
+
+   ```python
+   updated = await session.read_resource("campaign://abc-123-def")
+   ```
+
+4. **Unsubscribe** when the campaign reaches a terminal state
+   (`COMPLETED`, `FAILED`) or when your agent finishes:
+
+   ```python
+   await session.unsubscribe_resource("campaign://abc-123-def")
+   ```
+
+### What you do NOT receive
+
+- **Iteration bumps.** Subscriptions push on `Campaign.status`
+  transitions only; new suggestion batches against an already-RUNNING
+  campaign do not push. Use `bo_get_diagnostics` to poll iteration
+  counts when needed.
+- **Result submissions.** `bo_submit_results` does not change campaign
+  status, so it does not push. Use `bo_list_results` if you need to
+  observe new results.
+- **Errors.** A failed lifecycle transition (rejected by the state
+  machine) does not push -- subscriptions only signal observed state
+  changes.
+
+### Notification delivery semantics
+
+- Best-effort: a subscriber whose transport fails delivery is silently
+  dropped from the registry (re-subscribe to re-arm).
+- Sessions are tracked weakly: dropped transports do not need an
+  explicit `unsubscribe` to be cleaned up.
+- Notifications fire after the campaign-status write commits, so a
+  subscriber that immediately re-reads the resource sees the new
+  status.
 
 ## Related Documentation
 

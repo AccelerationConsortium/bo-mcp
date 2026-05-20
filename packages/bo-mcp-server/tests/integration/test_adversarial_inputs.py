@@ -26,6 +26,7 @@ def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestNaNAndInfInputs:
     """Tests for handling NaN and Inf values in various inputs.
 
@@ -34,7 +35,7 @@ class TestNaNAndInfInputs:
     """
 
     @pytest.mark.asyncio
-    async def test_submit_results_with_nan_objective(self, setup_database):
+    async def test_submit_results_with_nan_objective(self):
         """NaN objective values should be rejected or handled gracefully."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -69,7 +70,7 @@ class TestNaNAndInfInputs:
             assert any("nan" in e.lower() or "invalid" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_with_inf_objective(self, setup_database):
+    async def test_submit_results_with_inf_objective(self):
         """Inf objective values should be rejected or handled gracefully."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -103,7 +104,7 @@ class TestNaNAndInfInputs:
             assert any("inf" in e.lower() or "invalid" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_with_negative_inf(self, setup_database):
+    async def test_submit_results_with_negative_inf(self):
         """Negative Inf objective values should be handled."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -135,7 +136,7 @@ class TestNaNAndInfInputs:
             assert any("inf" in e.lower() or "invalid" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_with_nan_parameter(self, setup_database):
+    async def test_submit_results_with_nan_parameter(self):
         """NaN parameter values should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -169,6 +170,7 @@ class TestNaNAndInfInputs:
             assert len(result["errors"]) > 0
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestExtremeBounds:
     """Tests for campaigns with extreme parameter bounds.
 
@@ -177,7 +179,7 @@ class TestExtremeBounds:
     """
 
     @pytest.mark.asyncio
-    async def test_very_small_bounds(self, setup_database):
+    async def test_very_small_bounds(self):
         """Campaign with very small parameter range should work."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -202,7 +204,7 @@ class TestExtremeBounds:
             assert 0.0 <= s["parameter_values"]["x"] <= 1e-10
 
     @pytest.mark.asyncio
-    async def test_very_large_bounds(self, setup_database):
+    async def test_very_large_bounds(self):
         """Campaign with very large parameter range should work."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -227,7 +229,7 @@ class TestExtremeBounds:
             assert 0.0 <= s["parameter_values"]["x"] <= 1e10
 
     @pytest.mark.asyncio
-    async def test_negative_to_positive_bounds(self, setup_database):
+    async def test_negative_to_positive_bounds(self):
         """Campaign with negative to positive bounds should work."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -250,7 +252,7 @@ class TestExtremeBounds:
         assert gen["success"] is True
 
     @pytest.mark.asyncio
-    async def test_inverted_bounds_rejected(self, setup_database):
+    async def test_inverted_bounds_rejected(self):
         """Campaign with inverted bounds (lower > upper) should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -270,7 +272,7 @@ class TestExtremeBounds:
         assert any("bound" in e.lower() for e in create_result["errors"])
 
     @pytest.mark.asyncio
-    async def test_equal_bounds_rejected(self, setup_database):
+    async def test_equal_bounds_rejected(self):
         """Campaign with equal bounds (zero range) should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -290,6 +292,7 @@ class TestExtremeBounds:
         assert any("bound" in e.lower() for e in create_result["errors"])
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestConflictingConstraints:
     """Tests for campaigns with conflicting or impossible constraints.
 
@@ -298,7 +301,7 @@ class TestConflictingConstraints:
     """
 
     @pytest.mark.asyncio
-    async def test_impossible_sum_constraint(self, setup_database):
+    async def test_impossible_sum_constraint(self):
         """Constraint that cannot be satisfied should be rejected or warn."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -328,7 +331,7 @@ class TestConflictingConstraints:
             )
 
     @pytest.mark.asyncio
-    async def test_constraint_referencing_nonexistent_param(self, setup_database):
+    async def test_constraint_referencing_nonexistent_param(self):
         """Constraint referencing unknown parameter should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -350,6 +353,7 @@ class TestConflictingConstraints:
         assert any("nonexistent" in e.lower() for e in result["errors"])
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestInvalidUUIDs:
     """Tests for handling invalid UUID inputs.
 
@@ -358,7 +362,7 @@ class TestInvalidUUIDs:
     """
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_empty_uuid(self, setup_database):
+    async def test_generate_suggestions_empty_uuid(self):
         """Empty string for campaign_id should be rejected."""
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -367,7 +371,7 @@ class TestInvalidUUIDs:
         assert any("campaign_id" in e.lower() or "invalid" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_malformed_uuid(self, setup_database):
+    async def test_generate_suggestions_malformed_uuid(self):
         """Malformed UUID should be rejected."""
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -375,7 +379,7 @@ class TestInvalidUUIDs:
         assert result["success"] is False
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_partial_uuid(self, setup_database):
+    async def test_generate_suggestions_partial_uuid(self):
         """Partial UUID should be rejected."""
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -383,14 +387,14 @@ class TestInvalidUUIDs:
         assert result["success"] is False
 
     @pytest.mark.asyncio
-    async def test_submit_results_null_campaign_id(self, setup_database):
+    async def test_submit_results_null_campaign_id(self):
         """None/null for campaign_id should be rejected."""
         from bo_mcp_server.tools.submit_results import submit_results
 
         # Python None will fail differently than string, but should handle gracefully
         try:
             result = await submit_results(
-                campaign_id=None,  # type: ignore
+                campaign_id=None,  # type: ignore[arg-type]
                 results=_to_result_inputs(
                     [{"parameter_values": {"x": 0.5}, "objective_values": {"f": 1.0}}]
                 ),
@@ -401,7 +405,7 @@ class TestInvalidUUIDs:
             pass  # Also acceptable behavior
 
     @pytest.mark.asyncio
-    async def test_diagnostics_sql_injection_attempt(self, setup_database):
+    async def test_diagnostics_sql_injection_attempt(self):
         """SQL injection attempt in campaign_id should be safely handled."""
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
@@ -411,11 +415,12 @@ class TestInvalidUUIDs:
         # Should fail due to invalid UUID format, not execute SQL
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestMissingAndEmptyFields:
     """Tests for handling missing or empty required fields."""
 
     @pytest.mark.asyncio
-    async def test_create_campaign_empty_parameters(self, setup_database):
+    async def test_create_campaign_empty_parameters(self):
         """Campaign with no parameters should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -432,7 +437,7 @@ class TestMissingAndEmptyFields:
         assert any("parameter" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_create_campaign_empty_objectives(self, setup_database):
+    async def test_create_campaign_empty_objectives(self):
         """Campaign with no objectives should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -449,7 +454,7 @@ class TestMissingAndEmptyFields:
         assert any("objective" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_create_campaign_missing_parameter_name(self, setup_database):
+    async def test_create_campaign_missing_parameter_name(self):
         """Parameter without name should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -465,7 +470,7 @@ class TestMissingAndEmptyFields:
         assert result["success"] is False
 
     @pytest.mark.asyncio
-    async def test_create_campaign_missing_objective_direction(self, setup_database):
+    async def test_create_campaign_missing_objective_direction(self):
         """Objective without direction should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -481,7 +486,7 @@ class TestMissingAndEmptyFields:
         assert result["success"] is False
 
     @pytest.mark.asyncio
-    async def test_submit_empty_results_list(self, setup_database):
+    async def test_submit_empty_results_list(self):
         """Empty results list should be rejected."""
         from bo_mcp_server.tools.submit_results import submit_results
 
@@ -495,6 +500,7 @@ class TestMissingAndEmptyFields:
         assert any("at least one" in e.lower() or "empty" in e.lower() for e in result["errors"])
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestBoundaryValues:
     """Tests for boundary value handling.
 
@@ -503,7 +509,7 @@ class TestBoundaryValues:
     """
 
     @pytest.mark.asyncio
-    async def test_parameter_at_exact_lower_bound(self, setup_database):
+    async def test_parameter_at_exact_lower_bound(self):
         """Parameter value exactly at lower bound should be accepted."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -533,7 +539,7 @@ class TestBoundaryValues:
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_parameter_at_exact_upper_bound(self, setup_database):
+    async def test_parameter_at_exact_upper_bound(self):
         """Parameter value exactly at upper bound should be accepted."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -563,7 +569,7 @@ class TestBoundaryValues:
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_parameter_outside_bounds_rejected(self, setup_database):
+    async def test_parameter_outside_bounds_rejected(self):
         """Parameter value outside bounds should be rejected or warned."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -596,12 +602,13 @@ class TestBoundaryValues:
 
         # Should either reject or provide warning
         if result["success"]:
-            assert "warnings" in result and len(result["warnings"]) > 0
+            assert "warnings" in result
+            assert len(result["warnings"]) > 0
         else:
             assert any("bounds" in e.lower() or "range" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_zero_batch_size(self, setup_database):
+    async def test_zero_batch_size(self):
         """Batch size of 0 should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -619,7 +626,7 @@ class TestBoundaryValues:
         assert any("batch" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_negative_batch_size(self, setup_database):
+    async def test_negative_batch_size(self):
         """Negative batch size should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -636,6 +643,7 @@ class TestBoundaryValues:
         assert result["success"] is False
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestDuplicateAndConflictingData:
     """Tests for handling duplicate and conflicting input data.
 
@@ -643,7 +651,7 @@ class TestDuplicateAndConflictingData:
     """
 
     @pytest.mark.asyncio
-    async def test_duplicate_parameter_names(self, setup_database):
+    async def test_duplicate_parameter_names(self):
         """Duplicate parameter names should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -663,7 +671,7 @@ class TestDuplicateAndConflictingData:
         assert any("duplicate" in e.lower() or "unique" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_duplicate_objective_names(self, setup_database):
+    async def test_duplicate_objective_names(self):
         """Duplicate objective names should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -683,7 +691,7 @@ class TestDuplicateAndConflictingData:
         assert any("duplicate" in e.lower() or "unique" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_near_duplicate_results_warning(self, setup_database):
+    async def test_near_duplicate_results_warning(self):
         """Near-duplicate results should trigger duplicate detection.
 
         Reference: Section 1.2 - Duplicate detection with tolerance 1e-6
@@ -734,11 +742,12 @@ class TestDuplicateAndConflictingData:
             assert "duplicates_detected" in result or "warnings" in result
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestExtremeCampaignConfigurations:
     """Tests for extreme but valid campaign configurations."""
 
     @pytest.mark.asyncio
-    async def test_many_parameters(self, setup_database):
+    async def test_many_parameters(self):
         """Campaign with many parameters (high-dimensional) should work."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -766,7 +775,7 @@ class TestExtremeCampaignConfigurations:
         assert len(gen["suggestions"]) == 2
 
     @pytest.mark.asyncio
-    async def test_many_objectives(self, setup_database):
+    async def test_many_objectives(self):
         """Campaign with many objectives should work (though may be slow)."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -794,7 +803,7 @@ class TestExtremeCampaignConfigurations:
         assert gen["success"] is True
 
     @pytest.mark.asyncio
-    async def test_large_batch_size(self, setup_database):
+    async def test_large_batch_size(self):
         """Campaign with large batch size should work."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -817,7 +826,7 @@ class TestExtremeCampaignConfigurations:
         assert len(gen["suggestions"]) == 20
 
     @pytest.mark.asyncio
-    async def test_very_long_parameter_name(self, setup_database):
+    async def test_very_long_parameter_name(self):
         """Campaign with very long parameter name should work or be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -837,7 +846,7 @@ class TestExtremeCampaignConfigurations:
             assert any("name" in e.lower() or "length" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_special_characters_in_names(self, setup_database):
+    async def test_special_characters_in_names(self):
         """Parameter names with special characters should be handled."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 

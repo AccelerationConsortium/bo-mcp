@@ -3,6 +3,7 @@
 from bo_mcp_server.domain.campaign import Campaign, CampaignStatus
 from bo_mcp_server.domain.campaign_spec import (
     AcquisitionMethod,
+    AcquisitionOptimizationConfig,
     Bounds,
     CampaignSpec,
     Constraint,
@@ -18,7 +19,7 @@ from bo_mcp_server.domain.campaign_spec import (
 )
 from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.domain.intake_models import CampaignIntakeInput, ResultSubmissionInput
-from bo_mcp_server.domain.result import Result, ResultSource
+from bo_mcp_server.domain.result import ExternalRef, Result, ResultMetadata, ResultSource
 from bo_mcp_server.domain.suggestion import Suggestion, SuggestionProvenance, SuggestionStatus
 from bo_mcp_server.domain.user import User
 
@@ -26,28 +27,31 @@ __version__ = "0.1.0"
 
 __all__ = [
     "AcquisitionMethod",
+    "AcquisitionOptimizationConfig",
+    "Bounds",
     "Campaign",
-    "Event",
-    "EventType",
     "CampaignIntakeInput",
     "CampaignSpec",
     "CampaignStatus",
-    "Bounds",
     "Constraint",
     "ConstraintType",
+    "Event",
+    "EventType",
+    "ExternalRef",
     "FidelityParameter",
     "InputParameter",
     "Objective",
     "OutcomeConstraint",
     "ParameterType",
     "Result",
-    "ResultSubmissionInput",
+    "ResultMetadata",
     "ResultSource",
+    "ResultSubmissionInput",
+    "SaasboConfig",
     "Suggestion",
     "SuggestionProvenance",
     "SuggestionStatus",
     "TransferLearningConfig",
     "TurboConfig",
-    "SaasboConfig",
     "User",
 ]

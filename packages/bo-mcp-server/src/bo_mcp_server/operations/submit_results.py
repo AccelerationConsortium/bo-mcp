@@ -3,17 +3,30 @@
 Backend calls that touch the BO engine (hypervolume, TuRBO state updates)
 are offloaded via ``asyncio.to_thread`` so they cannot block the FastAPI /
 MCP event loop during concurrent result submissions.
+
+The previously-monolithic submit_results module has been split into
+three companion files so each file owns one concern and
+stays well below the 1k LOC cognitive-load ceiling:
+
+* :mod:`.submit_results_validation` — per-row shape validation
+  (parameter presence, spec-bound enforcement, finite measurement
+  uncertainty) plus the mutable bookkeeping (``_RowError``,
+  ``_SubmitTracking``, ``_record_row_error``).
+* :mod:`.submit_results_pipeline` — duplicate detection, suggestion-id
+  classification / atomic resolution, and the phase-1 / phase-2 batch
+  orchestration that materializes the in-flight ``Result`` entities.
+* This module — input parsing, error envelope helpers, post-save
+  campaign-state update, and the public
+  :func:`submit_results_operation` entry point.
 """
 
 import asyncio
 import logging
-import math
-from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
 
 from bo_engine.backend import BOBackend
-from bo_engine.constants import DUPLICATE_DETECTION_TOLERANCE
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.backend import get_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
@@ -23,22 +36,28 @@ from bo_mcp_server.domain import (
     Result,
     ResultSource,
     ResultSubmissionInput,
-    SuggestionStatus,
 )
-from bo_mcp_server.domain.campaign_spec import InputParameter, ParameterType
 from bo_mcp_server.errors import (
     ErrorCode,
     make_concurrent_modification_response,
     make_error_response,
 )
+from bo_mcp_server.idempotency import session_scope
 from bo_mcp_server.operations.helpers import (
     parse_campaign_id,
     parse_verbosity,
     results_to_observations,
 )
+from bo_mcp_server.operations.submit_results_pipeline import (
+    _validate_and_create_results,
+)
+from bo_mcp_server.operations.submit_results_validation import (
+    _SubmitTracking,
+)
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_submit_results_response,
+    with_response_metadata,
 )
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -46,7 +65,6 @@ from bo_mcp_server.storage import (
     ConcurrentModificationError,
     ResultRepository,
     SuggestionRepository,
-    get_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +76,7 @@ def _make_submit_error(
     details: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
     duplicates: list[dict[str, Any]] | None = None,
+    field_errors: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Build a standardized error response for submit_results."""
     response = make_error_response(code, message=message, details=details)
@@ -66,9 +85,79 @@ def _make_submit_error(
             "result_ids": [],
             "warnings": warnings or [],
             "duplicates_detected": duplicates or [],
+            "field_errors": field_errors or {},
         }
     )
     return response
+
+
+def _build_submit_dry_run_response(
+    campaign_id: str,
+    submitted_rows: int,
+    persisted_rows: int,
+    tracking: _SubmitTracking,
+) -> dict[str, Any]:
+    """Compose the dry-run preview envelope for ``submit_results``."""
+    logger.info(
+        "Dry-run submit for campaign %s: %d row(s) would persist",
+        campaign_id,
+        persisted_rows,
+    )
+    return {
+        "success": True,
+        "dry_run": True,
+        "result_ids": [],
+        "errors": tracking.errors,
+        "field_errors": tracking.field_errors,
+        "warnings": tracking.warnings,
+        "duplicates_detected": tracking.duplicates_detected,
+        "preview": {
+            "rows_submitted": submitted_rows,
+            "rows_would_persist": persisted_rows,
+            "rows_filtered": submitted_rows - persisted_rows,
+        },
+    }
+
+
+def _short_circuit_submit(
+    campaign_id: str,
+    atomic: bool,
+    force: bool,
+    continue_on_error: bool,
+    dry_run: bool,
+    result_entities: list[Result],
+    submitted_rows: int,
+    tracking: _SubmitTracking,
+) -> dict[str, Any] | None:
+    """Return the response envelope iff submit_results must exit before save.
+
+    Handles three short-circuit paths in one place so the parent operation
+    can stay below ruff's 6-return ceiling: atomic-batch validation
+    failure, an empty result set after filtering, and ``dry_run=True``.
+    """
+    atomic_error = _check_atomic_failures(atomic, force, continue_on_error, campaign_id, tracking)
+    if atomic_error is not None:
+        return atomic_error
+
+    if not result_entities:
+        response_data: dict[str, Any] = {
+            "success": False,
+            "result_ids": [],
+            "errors": (tracking.errors if tracking.errors else ["No valid results to submit"]),
+            "field_errors": tracking.field_errors,
+            "warnings": tracking.warnings,
+            "duplicates_detected": tracking.duplicates_detected,
+        }
+        if not atomic and continue_on_error:
+            response_data["partial_results"] = tracking.partial_results
+        return response_data
+
+    if dry_run:
+        return _build_submit_dry_run_response(
+            campaign_id, submitted_rows, len(result_entities), tracking
+        )
+
+    return None
 
 
 def _validate_submit_inputs(
@@ -96,6 +185,7 @@ def _validate_submit_inputs(
                 "result_ids": [],
                 "warnings": [],
                 "duplicates_detected": [],
+                "field_errors": {"campaign_id": ["invalid UUID format"]},
             }
         )
         return campaign_id_result
@@ -109,6 +199,7 @@ def _validate_submit_inputs(
             ErrorCode.VALIDATION_FAILED,
             message="Invalid submitted_by format",
             details={"submitted_by": submitted_by},
+            field_errors={"submitted_by": ["invalid UUID format"]},
         )
 
     try:
@@ -118,319 +209,17 @@ def _validate_submit_inputs(
             ErrorCode.VALIDATION_FAILED,
             message=f"Invalid source '{source}', must be gui, file_upload, or api",
             details={"source": source},
+            field_errors={"source": [f"must be gui, file_upload, or api; got '{source}'"]},
         )
 
     if not results:
         return _make_submit_error(
             ErrorCode.VALIDATION_FAILED,
             message="At least one result is required",
+            field_errors={"results": ["at least one result is required"]},
         )
 
     return verbosity_level, campaign_uuid, submitter_uuid, result_source
-
-
-def _check_duplicates_for_result(
-    index: int,
-    params: dict[str, Any],
-    existing_params: list[dict[str, Any]],
-    backend: BOBackend,
-    atomic: bool,
-    warnings: list[str],
-    duplicates_detected: list[dict[str, Any]],
-) -> str | None:
-    """Run duplicate detection for a single result. Returns error string or None."""
-    if not existing_params:
-        return None
-    duplicates = backend.detect_duplicates(
-        new_params=params,
-        existing_params=existing_params,
-        tolerance=DUPLICATE_DETECTION_TOLERANCE,
-    )
-    if not duplicates:
-        return None
-
-    result_error = None
-    for dup in duplicates:
-        duplicates_detected.append(
-            {
-                "result_index": index,
-                "duplicate_of_index": dup.index,
-                "is_exact": dup.is_exact,
-                "parameter_distance": dup.parameter_distance,
-            }
-        )
-        if dup.is_exact:
-            warnings.append(
-                f"Result {index} appears to be an exact duplicate of "
-                f"existing result at index {dup.index}. Use force=True to submit anyway."
-            )
-            if atomic:
-                result_error = f"Result {index} is exact duplicate. Use force=True to override."
-        else:
-            warnings.append(
-                f"Result {index} is very close to existing result at "
-                f"index {dup.index} (distance={dup.parameter_distance:.6f}). "
-                "This may indicate a duplicate measurement."
-            )
-    return result_error
-
-
-async def _resolve_suggestion_id(
-    suggestion_id_str: str | None,
-    index: int,
-    campaign_uuid: UUID,
-    suggestion_repo: SuggestionRepository,
-    warnings: list[str],
-) -> UUID | None:
-    """Resolve and validate a suggestion_id, marking it completed if valid."""
-    if not suggestion_id_str:
-        return None
-    try:
-        suggestion_id = UUID(suggestion_id_str)
-    except ValueError:
-        warnings.append(f"Result {index}: invalid suggestion_id format")
-        return None
-
-    suggestion = await suggestion_repo.get(suggestion_id)
-    if suggestion is None:
-        warnings.append(f"Result {index}: suggestion {suggestion_id_str} not found")
-        return None
-    if suggestion.campaign_id != campaign_uuid:
-        warnings.append(f"Result {index}: suggestion belongs to different campaign")
-        return None
-    await suggestion_repo.save(suggestion.with_status(SuggestionStatus.COMPLETED))
-    return suggestion_id
-
-
-@dataclass
-class _SubmitTracking:
-    """Mutable state accumulated during result validation."""
-
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    duplicates_detected: list[dict[str, Any]] = field(default_factory=list)
-    partial_results: dict[int, str | dict[str, str]] = field(default_factory=dict)
-
-
-async def _validate_and_create_results(
-    results: list[ResultSubmissionInput],
-    spec: CampaignSpec,
-    campaign_uuid: UUID,
-    submitter_uuid: UUID,
-    result_source: ResultSource,
-    backend: BOBackend,
-    existing_params: list[dict[str, Any]],
-    suggestion_repo: SuggestionRepository,
-    force: bool,
-    atomic: bool,
-    continue_on_error: bool,
-    tracking: _SubmitTracking,
-) -> tuple[list[Result], dict[int, int]]:
-    """Validate inputs and materialize Result entities.
-
-    The function runs in two phases so that the ``atomic`` flag can honor its
-    all-or-nothing contract. Phase 1 is purely read-only: it inspects each
-    submission against the spec and the existing parameter set, collecting
-    errors, warnings and duplicate findings on ``tracking`` without issuing
-    any DB writes. In atomic mode, a non-empty error list after phase 1 skips
-    phase 2 entirely — the surrounding session therefore has nothing to commit
-    and the campaign state is unchanged. Phase 2 only runs for submissions
-    that passed phase 1 and is where suggestion-status updates (a write) and
-    ``Result`` entity construction happen.
-
-    Returns (result_entities, entity_to_input_index).
-    """
-    param_names = {p.name for p in spec.parameters}
-    objective_names = {o.name for o in spec.objectives}
-    parameters = list(spec.parameters)
-
-    # Phase 1 — pure validation; no writes hit the session.
-    valid_submissions: list[tuple[int, ResultSubmissionInput]] = []
-    for i, r in enumerate(results):
-        result_error = _validate_single_result(
-            i,
-            r,
-            param_names,
-            objective_names,
-            existing_params,
-            backend,
-            force,
-            atomic,
-            tracking.warnings,
-            tracking.duplicates_detected,
-            parameters=parameters,
-        )
-
-        if result_error is not None:
-            tracking.errors.append(result_error)
-            if not atomic and continue_on_error:
-                tracking.partial_results[i] = {"error": result_error}
-            continue
-
-        valid_submissions.append((i, r))
-
-    # Atomic contract: any validation error aborts the write path entirely so
-    # no suggestion-status updates or result rows leak out of the transaction.
-    if atomic and tracking.errors:
-        return [], {}
-
-    # Phase 2 — mutate suggestion status and build result entities for the
-    # submissions that cleared validation. All writes happen in the same
-    # session and share a single commit/rollback boundary with save_batch
-    # and any downstream campaign-state update.
-    result_entities: list[Result] = []
-    entity_to_input_index: dict[int, int] = {}
-    for i, r in valid_submissions:
-        suggestion_id = await _resolve_suggestion_id(
-            r.suggestion_id,
-            i,
-            campaign_uuid,
-            suggestion_repo,
-            tracking.warnings,
-        )
-
-        result = Result(
-            campaign_id=campaign_uuid,
-            suggestion_id=suggestion_id,
-            parameter_values=r.parameter_values,
-            objective_values=r.objective_values,
-            source=result_source,
-            submitted_by=submitter_uuid,
-            measurement_uncertainty=r.measurement_uncertainty,
-            metadata=r.metadata,
-        )
-        entity_to_input_index[len(result_entities)] = i
-        result_entities.append(result)
-
-    return result_entities, entity_to_input_index
-
-
-def _check_numeric_bounds(
-    param: InputParameter,
-    value: int | float | str,
-    index: int,
-    warnings: list[str],
-) -> None:
-    """Check a numeric value against parameter bounds."""
-    if param.bounds is None:
-        return
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        pname = param.name
-        vtype = type(value).__name__
-        warnings.append(f"Result {index}: parameter '{pname}' expected numeric, got {vtype}")
-        return
-    if numeric < param.bounds.lower or numeric > param.bounds.upper:
-        warnings.append(
-            f"Result {index}: parameter '{param.name}' value {numeric} "
-            f"is outside spec bounds "
-            f"[{param.bounds.lower}, {param.bounds.upper}]"
-        )
-
-
-def _validate_parameter_value(
-    param: InputParameter,
-    value: int | float | str,
-    index: int,
-    warnings: list[str],
-) -> None:
-    """Check a single parameter value against its spec definition.
-
-    Out-of-bounds values are reported as warnings rather than hard errors
-    because real experiments may intentionally exceed spec bounds.
-    """
-    if param.type == ParameterType.CONTINUOUS:
-        _check_numeric_bounds(param, value, index, warnings)
-    elif param.type == ParameterType.DISCRETE:
-        if param.values is not None and value not in param.values:
-            warnings.append(
-                f"Result {index}: parameter '{param.name}' value {value} "
-                f"is not in allowed discrete values {param.values}"
-            )
-        else:
-            _check_numeric_bounds(param, value, index, warnings)
-    elif param.type == ParameterType.CATEGORICAL:
-        if param.categories is not None and value not in param.categories:
-            warnings.append(
-                f"Result {index}: parameter '{param.name}' value "
-                f"'{value}' is not in allowed categories "
-                f"{param.categories}"
-            )
-
-
-def _validate_measurement_uncertainty(
-    uncertainty: dict[str, float],
-    objective_names: set[str],
-    index: int,
-    warnings: list[str],
-) -> None:
-    """Validate measurement uncertainty keys and values."""
-    invalid_keys = set(uncertainty.keys()) - objective_names
-    if invalid_keys:
-        warnings.append(
-            f"Result {index}: measurement_uncertainty has unknown "
-            f"objective keys: {sorted(invalid_keys)}"
-        )
-    for obj_name, unc_val in uncertainty.items():
-        if not isinstance(unc_val, (int, float)) or math.isnan(unc_val) or math.isinf(unc_val):
-            warnings.append(
-                f"Result {index}: measurement_uncertainty['{obj_name}'] "
-                f"is not a finite number: {unc_val}"
-            )
-        elif unc_val < 0:
-            warnings.append(
-                f"Result {index}: measurement_uncertainty['{obj_name}'] "
-                f"is negative ({unc_val}); expected non-negative std"
-            )
-
-
-def _validate_single_result(
-    index: int,
-    r: ResultSubmissionInput,
-    param_names: set[str],
-    objective_names: set[str],
-    existing_params: list[dict[str, Any]],
-    backend: BOBackend,
-    force: bool,
-    atomic: bool,
-    warnings: list[str],
-    duplicates_detected: list[dict[str, Any]],
-    parameters: list[InputParameter] | None = None,
-) -> str | None:
-    """Validate a single result's parameters, duplicates, and objectives. Returns error or None."""
-    if missing_params := (param_names - set(r.parameter_values.keys())):
-        return f"Result {index} missing parameters: {missing_params}"
-
-    # Validate parameter values against spec bounds/categories
-    if parameters is not None:
-        param_by_name = {p.name: p for p in parameters}
-        for pname, pvalue in r.parameter_values.items():
-            if pname in param_by_name:
-                _validate_parameter_value(param_by_name[pname], pvalue, index, warnings)
-
-    if not force:
-        dup_error = _check_duplicates_for_result(
-            index,
-            r.parameter_values,
-            existing_params,
-            backend,
-            atomic,
-            warnings,
-            duplicates_detected,
-        )
-        if dup_error is not None:
-            return dup_error
-
-    if missing_objectives := (objective_names - set(r.objective_values.keys())):
-        return f"Result {index} missing objectives: {missing_objectives}"
-
-    if r.measurement_uncertainty is not None:
-        _validate_measurement_uncertainty(
-            r.measurement_uncertainty, objective_names, index, warnings
-        )
-
-    return None
 
 
 async def _update_campaign_state(
@@ -516,23 +305,26 @@ async def _fetch_campaign_and_spec(
 def _check_atomic_failures(
     atomic: bool,
     force: bool,
+    continue_on_error: bool,
     campaign_id: str,
     tracking: _SubmitTracking,
 ) -> dict[str, Any] | None:
-    """Check for atomic-mode failures (validation errors, exact duplicates).
+    """Check for all-or-nothing failures (validation errors, exact duplicates).
+
+    Atomic mode is always all-or-nothing. Non-atomic mode is also all-or-
+    nothing unless the caller opted into partial writes by passing
+    ``continue_on_error=True`` — without that opt-in we must not commit
+    rows while returning ``success=False``.
 
     Returns error response dict or None.
     """
-    if atomic and tracking.errors:
-        logger.warning("Result submission validation failed (atomic mode): %s", tracking.errors)
-        return {
-            "success": False,
-            "result_ids": [],
-            "errors": tracking.errors,
-            "warnings": tracking.warnings,
-            "duplicates_detected": tracking.duplicates_detected,
-        }
-
+    # Exact duplicates get the standardized ``ErrorCode.DUPLICATE_RESULT``
+    # envelope (with recovery_action) before the generic-errors branch
+    # fires. Without this ordering, atomic mode would return a plain
+    # ``success=False / errors=[...]`` shape because
+    # ``_check_duplicates_for_result`` also appends a row-level error to
+    # ``tracking.errors`` -- clients would lose the duplicate-specific
+    # response shape and the ``Use force=True`` recovery hint.
     exact_duplicates = [d for d in tracking.duplicates_detected if d.get("is_exact")]
     if atomic and exact_duplicates and not force:
         logger.warning(
@@ -546,7 +338,22 @@ def _check_atomic_failures(
             details={"duplicate_count": len(exact_duplicates)},
             warnings=tracking.warnings,
             duplicates=tracking.duplicates_detected,
+            field_errors=tracking.field_errors,
         )
+
+    all_or_nothing = atomic or not continue_on_error
+    if all_or_nothing and tracking.errors:
+        mode = "atomic mode" if atomic else "non-atomic, continue_on_error=False"
+        logger.warning("Result submission validation failed (%s): %s", mode, tracking.errors)
+        return {
+            "success": False,
+            "result_ids": [],
+            "errors": tracking.errors,
+            "field_errors": tracking.field_errors,
+            "warnings": tracking.warnings,
+            "duplicates_detected": tracking.duplicates_detected,
+        }
+
     return None
 
 
@@ -565,6 +372,7 @@ def _build_submit_response(
         "success": overall_success,
         "result_ids": result_ids,
         "errors": tracking.errors,
+        "field_errors": tracking.field_errors,
         "warnings": tracking.warnings,
         "duplicates_detected": tracking.duplicates_detected,
     }
@@ -573,6 +381,44 @@ def _build_submit_response(
     return response_data
 
 
+async def _handle_submit_results_cm_error(
+    err: ConcurrentModificationError,
+    campaign_id: str,
+    session: AsyncSession | None,
+    tracking: _SubmitTracking,
+) -> dict[str, Any]:
+    """Build the structured envelope for an optimistic-lock conflict.
+
+    When a caller (typically ``apply_idempotency``'s session-aware
+    path) supplied the session, ``session_scope`` only yields it —
+    partial writes that landed before the conflict (Result rows saved
+    via ``result_repo.save_batch`` at phase 2 before
+    ``_update_campaign_state`` raised) would otherwise survive the
+    outer commit. Roll back explicitly so the conflict leaves no
+    observable state.
+    """
+    if session is not None:
+        await session.rollback()
+    logger.warning(
+        "Concurrent modification while submitting results for campaign %s: %s",
+        campaign_id,
+        err,
+    )
+    response = make_concurrent_modification_response(
+        err, extra_details={"campaign_id": campaign_id}
+    )
+    response.update(
+        {
+            "result_ids": [],
+            "warnings": tracking.warnings,
+            "duplicates_detected": tracking.duplicates_detected,
+            "field_errors": tracking.field_errors,
+        }
+    )
+    return response
+
+
+@with_response_metadata
 async def submit_results_operation(
     campaign_id: str,
     results: list[ResultSubmissionInput],
@@ -582,6 +428,9 @@ async def submit_results_operation(
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
+    *,
+    session: AsyncSession | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Submit experimental results for a campaign.
 
@@ -596,6 +445,13 @@ async def submit_results_operation(
     partial persistence is expected; callers MUST inspect
     ``partial_results`` to see which indices succeeded.
 
+    When ``dry_run`` is true the operation runs full validation
+    (parameter bounds, duplicate detection, suggestion-id resolution,
+    atomic-failure gates) but returns before persisting any row or
+    advancing campaign / backend state. The response carries
+    ``dry_run: True`` plus a ``preview`` block summarizing how many
+    rows would persist and how many were filtered.
+
     Args:
         campaign_id: UUID of the campaign
         results: List of result payloads
@@ -607,6 +463,11 @@ async def submit_results_operation(
             valid rows are persisted (subject to ``continue_on_error``).
         continue_on_error: If True, continue after errors (ignored if atomic)
         verbosity: Response detail level
+        session: Optional AsyncSession to reuse (e.g. from a test or an
+            outer transaction). When ``None``, a fresh session scope is
+            opened via :func:`session_scope`.
+        dry_run: If True, perform full validation and return a preview
+            without persisting anything.
 
     Returns:
         Dictionary with success, result_ids, errors, warnings, duplicates_detected.
@@ -627,11 +488,11 @@ async def submit_results_operation(
     tracking = _SubmitTracking()
 
     try:
-        async with get_session() as session:
-            campaign_repo = CampaignRepository(session)
-            spec_repo = CampaignSpecRepository(session)
-            result_repo = ResultRepository(session)
-            suggestion_repo = SuggestionRepository(session)
+        async with session_scope(session) as db:
+            campaign_repo = CampaignRepository(db)
+            spec_repo = CampaignSpecRepository(db)
+            result_repo = ResultRepository(db)
+            suggestion_repo = SuggestionRepository(db)
 
             fetched = await _fetch_campaign_and_spec(
                 campaign_id,
@@ -660,25 +521,21 @@ async def submit_results_operation(
                 atomic,
                 continue_on_error,
                 tracking,
+                dry_run=dry_run,
             )
 
-            atomic_error = _check_atomic_failures(atomic, force, campaign_id, tracking)
-            if atomic_error is not None:
-                return atomic_error
-
-            if not result_entities:
-                response_data: dict[str, Any] = {
-                    "success": False,
-                    "result_ids": [],
-                    "errors": (
-                        tracking.errors if tracking.errors else ["No valid results to submit"]
-                    ),
-                    "warnings": tracking.warnings,
-                    "duplicates_detected": tracking.duplicates_detected,
-                }
-                if not atomic and continue_on_error:
-                    response_data["partial_results"] = tracking.partial_results
-                return response_data
+            short_circuit = _short_circuit_submit(
+                campaign_id,
+                atomic,
+                force,
+                continue_on_error,
+                dry_run,
+                result_entities,
+                len(results),
+                tracking,
+            )
+            if short_circuit is not None:
+                return short_circuit
 
             saved_results = await result_repo.save_batch(result_entities)
             result_ids = [str(r.id) for r in saved_results]
@@ -710,19 +567,4 @@ async def submit_results_operation(
                 verbosity_level,
             )
     except ConcurrentModificationError as err:
-        logger.warning(
-            "Concurrent modification while submitting results for campaign %s: %s",
-            campaign_id,
-            err,
-        )
-        response = make_concurrent_modification_response(
-            err, extra_details={"campaign_id": campaign_id}
-        )
-        response.update(
-            {
-                "result_ids": [],
-                "warnings": tracking.warnings,
-                "duplicates_detected": tracking.duplicates_detected,
-            }
-        )
-        return response
+        return await _handle_submit_results_cm_error(err, campaign_id, session, tracking)

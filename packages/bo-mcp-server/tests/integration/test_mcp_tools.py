@@ -142,6 +142,7 @@ class TestValidateIntake:
         assert any("unknown" in e.lower() for e in result["errors"])
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestCreateCampaign:
     """Tests for create_campaign MCP tool.
 
@@ -150,7 +151,7 @@ class TestCreateCampaign:
     """
 
     @pytest.mark.asyncio
-    async def test_create_campaign_success(self, setup_database):
+    async def test_create_campaign_success(self):
         """Successfully creates a campaign with valid intake data."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -184,7 +185,7 @@ class TestCreateCampaign:
         UUID(result["spec_id"])
 
     @pytest.mark.asyncio
-    async def test_create_campaign_invalid_owner_id(self, setup_database):
+    async def test_create_campaign_invalid_owner_id(self):
         """Fails when owner_id is not a valid UUID."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -201,7 +202,7 @@ class TestCreateCampaign:
         assert any("owner_id" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_create_campaign_invalid_intake(self, setup_database):
+    async def test_create_campaign_invalid_intake(self):
         """Fails when intake data is invalid."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -219,7 +220,7 @@ class TestCreateCampaign:
         assert len(result["errors"]) > 0
 
     @pytest.mark.asyncio
-    async def test_create_campaign_with_constraints(self, setup_database):
+    async def test_create_campaign_with_constraints(self):
         """Creates campaign with constraints."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -243,7 +244,7 @@ class TestCreateCampaign:
         assert result["campaign_id"] is not None
 
     @pytest.mark.asyncio
-    async def test_create_campaign_multi_objective(self, setup_database):
+    async def test_create_campaign_multi_objective(self):
         """Creates multi-objective campaign."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -264,7 +265,7 @@ class TestCreateCampaign:
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_create_campaign_categorical_param(self, setup_database):
+    async def test_create_campaign_categorical_param(self):
         """Creates campaign with categorical parameter."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -282,6 +283,7 @@ class TestCreateCampaign:
         assert result["success"] is True
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestGenerateSuggestions:
     """Tests for generate_suggestions MCP tool.
 
@@ -290,7 +292,7 @@ class TestGenerateSuggestions:
     """
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_invalid_campaign_id(self, setup_database):
+    async def test_generate_suggestions_invalid_campaign_id(self):
         """Fails with invalid campaign_id format."""
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -300,7 +302,7 @@ class TestGenerateSuggestions:
         assert any("campaign_id" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_campaign_not_found(self, setup_database):
+    async def test_generate_suggestions_campaign_not_found(self):
         """Fails when campaign does not exist."""
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
@@ -310,7 +312,7 @@ class TestGenerateSuggestions:
         assert any("not found" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_initial_design(self, setup_database):
+    async def test_generate_suggestions_initial_design(self):
         """Generates initial design suggestions for new campaign."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -343,7 +345,7 @@ class TestGenerateSuggestions:
             assert 0.0 <= sugg["parameter_values"]["x"] <= 1.0
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_custom_batch_size(self, setup_database):
+    async def test_generate_suggestions_custom_batch_size(self):
         """Generates custom number of suggestions."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -367,7 +369,7 @@ class TestGenerateSuggestions:
         assert len(result["suggestions"]) == 2
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_multi_param(self, setup_database):
+    async def test_generate_suggestions_multi_param(self):
         """Generates suggestions for multi-parameter campaign."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -394,7 +396,7 @@ class TestGenerateSuggestions:
             assert 1.0 <= sugg["parameter_values"]["pressure"] <= 10.0
 
     @pytest.mark.asyncio
-    async def test_generate_suggestions_returns_method_selection(self, setup_database):
+    async def test_generate_suggestions_returns_method_selection(self):
         """Method selection is returned for transparency."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -418,6 +420,7 @@ class TestGenerateSuggestions:
         assert "explanation" in method_selection
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSubmitResults:
     """Tests for submit_results MCP tool.
 
@@ -426,7 +429,7 @@ class TestSubmitResults:
     """
 
     @pytest.mark.asyncio
-    async def test_submit_results_invalid_campaign_id(self, setup_database):
+    async def test_submit_results_invalid_campaign_id(self):
         """Fails with invalid campaign_id format."""
         from bo_mcp_server.tools.submit_results import submit_results
 
@@ -440,7 +443,7 @@ class TestSubmitResults:
         assert any("campaign_id" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_invalid_submitted_by(self, setup_database):
+    async def test_submit_results_invalid_submitted_by(self):
         """Fails with invalid submitted_by format."""
         from bo_mcp_server.tools.submit_results import submit_results
 
@@ -454,7 +457,7 @@ class TestSubmitResults:
         assert any("submitted_by" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_empty_results(self, setup_database):
+    async def test_submit_results_empty_results(self):
         """Fails when results list is empty."""
         from bo_mcp_server.tools.submit_results import submit_results
 
@@ -468,7 +471,7 @@ class TestSubmitResults:
         assert any("at least one" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_campaign_not_found(self, setup_database):
+    async def test_submit_results_campaign_not_found(self):
         """Fails when campaign does not exist."""
         from bo_mcp_server.tools.submit_results import submit_results
 
@@ -484,7 +487,7 @@ class TestSubmitResults:
         assert any("not found" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_success(self, setup_database):
+    async def test_submit_results_success(self):
         """Successfully submits results."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -523,7 +526,7 @@ class TestSubmitResults:
         assert len(result["errors"]) == 0
 
     @pytest.mark.asyncio
-    async def test_submit_results_missing_parameters(self, setup_database):
+    async def test_submit_results_missing_parameters(self):
         """Fails when parameter values are missing."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -557,7 +560,7 @@ class TestSubmitResults:
         assert any("missing" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_missing_objectives(self, setup_database):
+    async def test_submit_results_missing_objectives(self):
         """Fails when objective values are missing."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -593,7 +596,7 @@ class TestSubmitResults:
         assert any("missing" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_submit_results_invalid_source(self, setup_database):
+    async def test_submit_results_invalid_source(self):
         """Fails with invalid source value."""
         from bo_mcp_server.tools.submit_results import submit_results
 
@@ -610,6 +613,7 @@ class TestSubmitResults:
         assert any("source" in e.lower() for e in result["errors"])
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestSubmitResultsBatchOperations:
     """Tests for submit_results batch operations enhancement (v3.1 12.5).
 
@@ -621,7 +625,7 @@ class TestSubmitResultsBatchOperations:
     """
 
     @pytest.mark.asyncio
-    async def test_atomic_mode_rollback_on_error(self, setup_database):
+    async def test_atomic_mode_rollback_on_error(self):
         """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -649,7 +653,7 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    async def test_continue_on_error_partial_success(self, setup_database):
+    async def test_continue_on_error_partial_success(self):
         """Continue on error mode allows partial success."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -709,7 +713,7 @@ class TestSubmitResultsBatchOperations:
         assert "error" in result["partial_results"][1]
 
     @pytest.mark.asyncio
-    async def test_non_atomic_without_continue_on_error(self, setup_database):
+    async def test_non_atomic_without_continue_on_error(self):
         """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -737,7 +741,7 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    async def test_partial_results_contains_result_ids(self, setup_database):
+    async def test_partial_results_contains_result_ids(self):
         """Partial results contain actual result IDs for successful saves."""
         from uuid import UUID
 
@@ -781,7 +785,7 @@ class TestSubmitResultsBatchOperations:
             UUID(result_id)  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_all_results_fail_in_continue_mode(self, setup_database):
+    async def test_all_results_fail_in_continue_mode(self):
         """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -808,7 +812,7 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    async def test_atomic_default_true(self, setup_database):
+    async def test_atomic_default_true(self):
         """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -835,7 +839,7 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
     @pytest.mark.asyncio
-    async def test_continue_on_error_ignored_when_atomic(self, setup_database):
+    async def test_continue_on_error_ignored_when_atomic(self):
         """Malformed payloads fail fast during typed input validation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -862,6 +866,7 @@ class TestSubmitResultsBatchOperations:
             _to_result_inputs(invalid_payload)
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestGetDiagnostics:
     """Tests for get_diagnostics MCP tool.
 
@@ -870,7 +875,7 @@ class TestGetDiagnostics:
     """
 
     @pytest.mark.asyncio
-    async def test_get_diagnostics_invalid_campaign_id(self, setup_database):
+    async def test_get_diagnostics_invalid_campaign_id(self):
         """Fails with invalid campaign_id format."""
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
@@ -880,7 +885,7 @@ class TestGetDiagnostics:
         assert any("campaign_id" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_get_diagnostics_campaign_not_found(self, setup_database):
+    async def test_get_diagnostics_campaign_not_found(self):
         """Fails when campaign does not exist."""
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
@@ -890,7 +895,7 @@ class TestGetDiagnostics:
         assert any("not found" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_get_diagnostics_new_campaign(self, setup_database):
+    async def test_get_diagnostics_new_campaign(self):
         """Returns diagnostics for campaign without results."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
@@ -913,7 +918,7 @@ class TestGetDiagnostics:
         assert "health_status" in result
 
     @pytest.mark.asyncio
-    async def test_get_diagnostics_single_objective(self, setup_database):
+    async def test_get_diagnostics_single_objective(self):
         """Returns correct diagnostics for single-objective campaign with results."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -956,7 +961,7 @@ class TestGetDiagnostics:
         assert result["pareto_front"] is None  # Single-objective
 
     @pytest.mark.asyncio
-    async def test_get_diagnostics_multi_objective(self, setup_database):
+    async def test_get_diagnostics_multi_objective(self):
         """Returns correct diagnostics for multi-objective campaign."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1000,7 +1005,7 @@ class TestGetDiagnostics:
         assert result["n_pareto_points"] is not None
 
     @pytest.mark.asyncio
-    async def test_get_diagnostics_includes_model_info(self, setup_database):
+    async def test_get_diagnostics_includes_model_info(self):
         """Diagnostics include model information."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
@@ -1023,11 +1028,12 @@ class TestGetDiagnostics:
         assert "acquisition_function" in model_info
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestGetSuggestionExplanation:
     """Tests for get_suggestion_explanation MCP tool."""
 
     @pytest.mark.asyncio
-    async def test_get_explanation_invalid_id(self, setup_database):
+    async def test_get_explanation_invalid_id(self):
         """Fails with invalid suggestion_id format."""
         from bo_mcp_server.tools.get_suggestion_explanation import get_suggestion_explanation
 
@@ -1037,7 +1043,7 @@ class TestGetSuggestionExplanation:
         assert any("suggestion_id" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_get_explanation_not_found(self, setup_database):
+    async def test_get_explanation_not_found(self):
         """Fails when suggestion does not exist."""
         from bo_mcp_server.tools.get_suggestion_explanation import get_suggestion_explanation
 
@@ -1047,7 +1053,7 @@ class TestGetSuggestionExplanation:
         assert any("not found" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_get_explanation_success(self, setup_database):
+    async def test_get_explanation_success(self):
         """Returns explanation for existing suggestion."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1072,6 +1078,7 @@ class TestGetSuggestionExplanation:
         assert "generation_method" in result["provenance"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestUploadResultsFile:
     """Tests for upload_results_file MCP tool.
 
@@ -1079,7 +1086,7 @@ class TestUploadResultsFile:
     """
 
     @pytest.mark.asyncio
-    async def test_upload_invalid_format(self, setup_database):
+    async def test_upload_invalid_format(self):
         """Fails with unsupported file format."""
         from bo_mcp_server.tools.upload_results_file import upload_results_file
 
@@ -1093,7 +1100,27 @@ class TestUploadResultsFile:
         assert any("unsupported" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_upload_invalid_campaign_id(self, setup_database):
+    async def test_upload_early_validation_envelope_echoes_trace_id(self):
+        """A traced upload that fails early validation still carries the trace id.
+
+        Before the inner pipeline was wrapped with ``with_response_metadata``
+        the unsupported-format / oversized-file / invalid-UUID exits emitted
+        raw envelopes with no ``_metadata`` block, so a traced upload that
+        failed validation was the only upload return that dropped the trace.
+        """
+        from bo_mcp_server.tools.upload_results_file import upload_results_file
+
+        result = await upload_results_file(
+            campaign_id=str(uuid4()),
+            file_content="",
+            file_format="xml",
+            trace_id="trace-upload-bad-format",
+        )
+        assert result["success"] is False
+        assert result.get("_metadata", {}).get("trace_id") == "trace-upload-bad-format"
+
+    @pytest.mark.asyncio
+    async def test_upload_invalid_campaign_id(self):
         """Fails with invalid campaign_id format."""
         from bo_mcp_server.tools.upload_results_file import upload_results_file
 
@@ -1106,7 +1133,7 @@ class TestUploadResultsFile:
         assert any("campaign_id" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_upload_csv_success(self, setup_database):
+    async def test_upload_csv_success(self):
         """Successfully uploads CSV results."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.upload_results_file import upload_results_file
@@ -1137,7 +1164,7 @@ class TestUploadResultsFile:
         assert len(result["errors"]) == 0
 
     @pytest.mark.asyncio
-    async def test_upload_csv_missing_param_columns(self, setup_database):
+    async def test_upload_csv_missing_param_columns(self):
         """Reports error when parameter columns are missing."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.upload_results_file import upload_results_file
@@ -1166,7 +1193,7 @@ class TestUploadResultsFile:
         assert any("param_" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_upload_csv_missing_obj_columns(self, setup_database):
+    async def test_upload_csv_missing_obj_columns(self):
         """Reports error when objective columns are missing."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.upload_results_file import upload_results_file
@@ -1195,7 +1222,7 @@ class TestUploadResultsFile:
         assert any("obj_" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_upload_csv_invalid_objective_value(self, setup_database):
+    async def test_upload_csv_invalid_objective_value(self):
         """Reports error for non-numeric objective values."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.upload_results_file import upload_results_file
@@ -1227,6 +1254,7 @@ class TestUploadResultsFile:
         assert any("invalid" in e.lower() for e in result["errors"])
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestEndToEndWorkflow:
     """End-to-end workflow tests.
 
@@ -1238,7 +1266,7 @@ class TestEndToEndWorkflow:
     """
 
     @pytest.mark.asyncio
-    async def test_complete_single_objective_workflow(self, setup_database):
+    async def test_complete_single_objective_workflow(self):
         """Complete workflow: create -> suggest -> result -> suggest again."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1292,7 +1320,7 @@ class TestEndToEndWorkflow:
         assert diag["best_value"] is not None
 
     @pytest.mark.asyncio
-    async def test_complete_multi_objective_workflow(self, setup_database):
+    async def test_complete_multi_objective_workflow(self):
         """Complete multi-objective workflow with Pareto front computation."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1335,6 +1363,7 @@ class TestEndToEndWorkflow:
         assert diag["n_pareto_points"] >= 2  # All three points should be Pareto-optimal
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestAgentUsabilityDiagnostics:
     """Tests for agent usability diagnostics (v2.4).
 
@@ -1346,7 +1375,7 @@ class TestAgentUsabilityDiagnostics:
     """
 
     @pytest.mark.asyncio
-    async def test_diagnostics_includes_uncertainty_trend(self, setup_database):
+    async def test_diagnostics_includes_uncertainty_trend(self):
         """Diagnostics include uncertainty trend information."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1387,7 +1416,7 @@ class TestAgentUsabilityDiagnostics:
         assert "uncertainty_trend" in diag
 
     @pytest.mark.asyncio
-    async def test_diagnostics_includes_exploration_exploitation(self, setup_database):
+    async def test_diagnostics_includes_exploration_exploitation(self):
         """Diagnostics include exploration/exploitation balance."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1427,7 +1456,7 @@ class TestAgentUsabilityDiagnostics:
         assert "exploration_exploitation" in diag
 
     @pytest.mark.asyncio
-    async def test_diagnostics_includes_hyperparameters(self, setup_database):
+    async def test_diagnostics_includes_hyperparameters(self):
         """Diagnostics include GP hyperparameters when model is fitted."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1470,7 +1499,7 @@ class TestAgentUsabilityDiagnostics:
             assert "interpretation" in diag["hyperparameters"]
 
     @pytest.mark.asyncio
-    async def test_diagnostics_includes_constraint_satisfaction(self, setup_database):
+    async def test_diagnostics_includes_constraint_satisfaction(self):
         """Diagnostics include constraint satisfaction metrics."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1521,7 +1550,7 @@ class TestAgentUsabilityDiagnostics:
             assert "interpretation" in diag["constraint_satisfaction"]
 
     @pytest.mark.asyncio
-    async def test_diagnostics_includes_suggestion_diversity(self, setup_database):
+    async def test_diagnostics_includes_suggestion_diversity(self):
         """Diagnostics include suggestion diversity metrics."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1552,6 +1581,7 @@ class TestAgentUsabilityDiagnostics:
             assert "interpretation" in diag["suggestion_diversity"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestCompareCampaigns:
     """Tests for compare_campaigns MCP tool.
 
@@ -1559,7 +1589,7 @@ class TestCompareCampaigns:
     """
 
     @pytest.mark.asyncio
-    async def test_compare_campaigns_insufficient_campaigns(self, setup_database):
+    async def test_compare_campaigns_insufficient_campaigns(self):
         """Fails when fewer than 2 campaigns provided."""
         from bo_mcp_server.tools.compare_campaigns import compare_campaigns
 
@@ -1569,7 +1599,7 @@ class TestCompareCampaigns:
         assert any("at least 2" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_compare_campaigns_too_many_campaigns(self, setup_database):
+    async def test_compare_campaigns_too_many_campaigns(self):
         """Fails when more than 10 campaigns provided."""
         from bo_mcp_server.tools.compare_campaigns import compare_campaigns
 
@@ -1579,7 +1609,7 @@ class TestCompareCampaigns:
         assert any("10" in e for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_compare_campaigns_invalid_id(self, setup_database):
+    async def test_compare_campaigns_invalid_id(self):
         """Fails with invalid campaign_id format."""
         from bo_mcp_server.tools.compare_campaigns import compare_campaigns
 
@@ -1589,7 +1619,7 @@ class TestCompareCampaigns:
         assert any("invalid" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_compare_campaigns_success(self, setup_database):
+    async def test_compare_campaigns_success(self):
         """Successfully compares two campaigns."""
         from bo_mcp_server.tools.compare_campaigns import compare_campaigns
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -1638,6 +1668,7 @@ class TestCompareCampaigns:
         assert "recommendation" in result["comparison"]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestDiscoverTransferCandidates:
     """Tests for discover_transfer_candidates MCP tool.
 
@@ -1646,7 +1677,7 @@ class TestDiscoverTransferCandidates:
     """
 
     @pytest.mark.asyncio
-    async def test_discover_invalid_campaign_id(self, setup_database):
+    async def test_discover_invalid_campaign_id(self):
         """Fails with invalid campaign_id format."""
         from bo_mcp_server.tools.discover_transfer_candidates import (
             discover_transfer_candidates,
@@ -1658,7 +1689,7 @@ class TestDiscoverTransferCandidates:
         assert any("invalid" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_discover_campaign_not_found(self, setup_database):
+    async def test_discover_campaign_not_found(self):
         """Fails when campaign does not exist."""
         from bo_mcp_server.tools.discover_transfer_candidates import (
             discover_transfer_candidates,
@@ -1670,7 +1701,7 @@ class TestDiscoverTransferCandidates:
         assert any("not found" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_discover_invalid_threshold(self, setup_database):
+    async def test_discover_invalid_threshold(self):
         """Fails with invalid similarity threshold."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.discover_transfer_candidates import (
@@ -1693,7 +1724,7 @@ class TestDiscoverTransferCandidates:
         assert any("threshold" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_discover_no_candidates(self, setup_database):
+    async def test_discover_no_candidates(self):
         """Returns empty candidates when no similar campaigns exist."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.discover_transfer_candidates import (
@@ -1715,7 +1746,7 @@ class TestDiscoverTransferCandidates:
         assert "overall_recommendation" in result
 
     @pytest.mark.asyncio
-    async def test_discover_finds_similar_campaign(self, setup_database):
+    async def test_discover_finds_similar_campaign(self):
         """Finds similar campaign for transfer learning."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.discover_transfer_candidates import (
@@ -1783,12 +1814,97 @@ class TestDiscoverTransferCandidates:
             assert "similarity_score" in result["candidates"][0]
             assert "recommendation" in result["candidates"][0]
 
+    @pytest.mark.asyncio
+    async def test_transfer_candidates_uses_parameter_aliases(self):
+        """``parameter_aliases`` bridges naming drift across related campaigns.
+
+        Without aliases, ``temperature`` and ``temp_c`` look like distinct
+        parameters and the Jaccard intersection collapses to zero. With the
+        alias map, the canonical name unifies the two so the parameter
+        similarity recovers the value it would have had under matching names.
+        """
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.discover_transfer_candidates import (
+            discover_transfer_candidates,
+        )
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        owner_id = str(uuid4())
+
+        source_intake = {
+            "name": "Aliased Source",
+            "parameters": [
+                {"name": "temperature", "type": "continuous", "bounds": [20.0, 100.0]},
+            ],
+            "objectives": [{"name": "yield", "direction": "maximize"}],
+        }
+        source = await create_campaign(source_intake, owner_id)
+        await generate_suggestions(source["campaign_id"])
+        await submit_results(
+            source["campaign_id"],
+            _to_result_inputs(
+                [
+                    {
+                        "parameter_values": {"temperature": 25},
+                        "objective_values": {"yield": 0.5},
+                    },
+                    {
+                        "parameter_values": {"temperature": 50},
+                        "objective_values": {"yield": 0.7},
+                    },
+                    {
+                        "parameter_values": {"temperature": 75},
+                        "objective_values": {"yield": 0.6},
+                    },
+                ]
+            ),
+            owner_id,
+        )
+
+        target_intake = {
+            "name": "Aliased Target",
+            "parameters": [
+                {"name": "temp_c", "type": "continuous", "bounds": [30.0, 90.0]},
+            ],
+            "objectives": [{"name": "yield", "direction": "maximize"}],
+        }
+        target = await create_campaign(target_intake, owner_id)
+
+        without_aliases = await discover_transfer_candidates(
+            target["campaign_id"],
+            similarity_threshold=0.0,
+            verbosity="detailed",
+        )
+        with_aliases = await discover_transfer_candidates(
+            target["campaign_id"],
+            similarity_threshold=0.0,
+            verbosity="detailed",
+            parameter_aliases={"temperature": ["temp_c"]},
+        )
+
+        # Find the source candidate scores; if not present, the aliases must at
+        # least surface a non-empty candidate set.
+        aliased_candidates = with_aliases["candidates"]
+        assert aliased_candidates, "aliases must reveal the aliased source"
+        aliased_top = aliased_candidates[0]
+        baseline_top = next(
+            (c for c in without_aliases["candidates"] if c["name"] == aliased_top["name"]),
+            None,
+        )
+        if baseline_top is not None:
+            assert (
+                aliased_top["component_scores"]["parameter_similarity"]
+                > baseline_top["component_scores"]["parameter_similarity"]
+            )
+
 
 # =============================================================================
 # v3.3 Agent Efficiency Tools Tests
 # =============================================================================
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestListCampaigns:
     """Tests for list_campaigns MCP tool.
 
@@ -1797,7 +1913,7 @@ class TestListCampaigns:
     """
 
     @pytest.mark.asyncio
-    async def test_list_campaigns_empty(self, setup_database):
+    async def test_list_campaigns_empty(self):
         """Returns empty list when no campaigns exist."""
         from bo_mcp_server.tools.list_campaigns import list_campaigns
 
@@ -1808,7 +1924,7 @@ class TestListCampaigns:
         assert result["total_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_list_campaigns_with_campaigns(self, setup_database):
+    async def test_list_campaigns_with_campaigns(self):
         """Lists existing campaigns."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.list_campaigns import list_campaigns
@@ -1830,7 +1946,7 @@ class TestListCampaigns:
         assert result["total_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_list_campaigns_filter_by_owner(self, setup_database):
+    async def test_list_campaigns_filter_by_owner(self):
         """Filters campaigns by owner_id."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.list_campaigns import list_campaigns
@@ -1853,7 +1969,7 @@ class TestListCampaigns:
         assert result["total_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_list_campaigns_filter_by_status(self, setup_database):
+    async def test_list_campaigns_filter_by_status(self):
         """Filters campaigns by status."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -1884,7 +2000,7 @@ class TestListCampaigns:
         assert result["campaigns"][0]["status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_list_campaigns_verbosity_levels(self, setup_database):
+    async def test_list_campaigns_verbosity_levels(self):
         """Tests verbosity levels affect response size."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.list_campaigns import list_campaigns
@@ -1911,6 +2027,7 @@ class TestListCampaigns:
         assert "spec_summary" in detailed_result["campaigns"][0]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestCampaignLifecycleTools:
     """Tests for individual campaign lifecycle tools.
 
@@ -1919,7 +2036,7 @@ class TestCampaignLifecycleTools:
     """
 
     @pytest.mark.asyncio
-    async def test_pause_campaign(self, setup_database):
+    async def test_pause_campaign(self):
         """bo_pause_campaign transitions running campaign to paused."""
         from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -1944,7 +2061,7 @@ class TestCampaignLifecycleTools:
         assert result["previous_status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_resume_campaign(self, setup_database):
+    async def test_resume_campaign(self):
         """bo_resume_campaign transitions paused campaign to running."""
         from bo_mcp_server.tools.campaign_lifecycle import pause_campaign, resume_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -1970,7 +2087,7 @@ class TestCampaignLifecycleTools:
         assert result["previous_status"] == "paused"
 
     @pytest.mark.asyncio
-    async def test_terminate_campaign(self, setup_database):
+    async def test_terminate_campaign(self):
         """bo_terminate_campaign completes the campaign."""
         from bo_mcp_server.tools.campaign_lifecycle import terminate_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -1990,7 +2107,7 @@ class TestCampaignLifecycleTools:
         assert result["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_invalid_state_transition(self, setup_database):
+    async def test_invalid_state_transition(self):
         """Pausing an already paused campaign returns error."""
         from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -2016,6 +2133,7 @@ class TestCampaignLifecycleTools:
         assert "cannot pause" in errors_str or "paused" in errors_str
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestBatchGetStatus:
     """Tests for batch_get_status tool.
 
@@ -2024,7 +2142,7 @@ class TestBatchGetStatus:
     """
 
     @pytest.mark.asyncio
-    async def test_batch_get_status_multiple_campaigns(self, setup_database):
+    async def test_batch_get_status_multiple_campaigns(self):
         """Gets status for multiple campaigns in one call."""
         from bo_mcp_server.tools.batch_operations import batch_get_status
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -2048,7 +2166,7 @@ class TestBatchGetStatus:
         assert len(result["failed_ids"]) == 0
 
     @pytest.mark.asyncio
-    async def test_batch_get_status_handles_missing(self, setup_database):
+    async def test_batch_get_status_handles_missing(self):
         """Handles missing campaign IDs gracefully."""
         from bo_mcp_server.tools.batch_operations import batch_get_status
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -2070,7 +2188,7 @@ class TestBatchGetStatus:
         assert len(result["failed_ids"]) == 1
 
     @pytest.mark.asyncio
-    async def test_batch_get_status_verbosity_levels(self, setup_database):
+    async def test_batch_get_status_verbosity_levels(self):
         """Tests verbosity levels affect response."""
         from bo_mcp_server.tools.batch_operations import batch_get_status
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -2084,10 +2202,12 @@ class TestBatchGetStatus:
         create_result = await create_campaign(intake, owner_id)
         campaign_ids = [create_result["campaign_id"]]
 
-        # Minimal - basic fields only
+        # Minimal - basic fields only, plus a lightweight next-action hint
         minimal = await batch_get_status(campaign_ids, verbosity="minimal")
         campaign_info = minimal["campaigns"][create_result["campaign_id"]]
         assert "health" not in campaign_info
+        assert "next_action_recommendation" in campaign_info
+        assert campaign_info["next_action_recommendation"]["action"] == "bo_generate_suggestions"
 
         # Detailed - includes all fields
         detailed = await batch_get_status(campaign_ids, verbosity="detailed")
@@ -2095,7 +2215,7 @@ class TestBatchGetStatus:
         assert "owner_id" in campaign_info
 
     @pytest.mark.asyncio
-    async def test_batch_get_status_empty_list(self, setup_database):
+    async def test_batch_get_status_empty_list(self):
         """Empty campaign list returns error."""
         from bo_mcp_server.tools.batch_operations import batch_get_status
 
@@ -2104,6 +2224,7 @@ class TestBatchGetStatus:
         assert result["success"] is False
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestNextActionRecommendation:
     """Tests for next_action_recommendation in get_diagnostics.
 
@@ -2111,7 +2232,7 @@ class TestNextActionRecommendation:
     """
 
     @pytest.mark.asyncio
-    async def test_next_action_generate_suggestions(self, setup_database):
+    async def test_next_action_generate_suggestions(self):
         """Recommends generating suggestions for new campaign."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
@@ -2132,7 +2253,7 @@ class TestNextActionRecommendation:
         assert result["next_action_recommendation"]["action"] == "bo_generate_suggestions"
 
     @pytest.mark.asyncio
-    async def test_next_action_submit_results(self, setup_database):
+    async def test_next_action_submit_results(self):
         """Recommends submitting results when suggestions pending."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -2153,7 +2274,7 @@ class TestNextActionRecommendation:
         assert result["next_action_recommendation"]["action"] == "bo_submit_results"
 
     @pytest.mark.asyncio
-    async def test_next_action_in_minimal_response(self, setup_database):
+    async def test_next_action_in_minimal_response(self):
         """Next action is included even in minimal verbosity."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
@@ -2172,6 +2293,7 @@ class TestNextActionRecommendation:
         assert "next_action" in result
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestVerbosityOnExistingTools:
     """Tests for verbosity parameter on existing tools.
 
@@ -2179,7 +2301,7 @@ class TestVerbosityOnExistingTools:
     """
 
     @pytest.mark.asyncio
-    async def test_create_campaign_verbosity_levels(self, setup_database):
+    async def test_create_campaign_verbosity_levels(self):
         """Tests verbosity levels on create_campaign."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
@@ -2202,7 +2324,7 @@ class TestVerbosityOnExistingTools:
         assert "spec_id" in standard
 
     @pytest.mark.asyncio
-    async def test_submit_results_verbosity_levels(self, setup_database):
+    async def test_submit_results_verbosity_levels(self):
         """Tests verbosity levels on submit_results."""
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions

@@ -159,9 +159,7 @@ def compute_standardized_residuals(
     std = torch.clamp(std, min=1e-8)
 
     # Compute standardized residuals
-    residuals = (train_y - mean) / std
-
-    return residuals
+    return (train_y - mean) / std
 
 
 def analyze_residuals(
@@ -212,7 +210,7 @@ def analyze_residuals(
     )
 
 
-def test_residual_normality(
+def check_residual_normality(
     residuals: Tensor,
     alpha: float = POSTERIOR_CHECK_NORMALITY_ALPHA,
 ) -> list[NormalityTestResult]:
@@ -233,24 +231,24 @@ def test_residual_normality(
     results: list[NormalityTestResult] = []
 
     # Shapiro-Wilk test (best for small samples, n < 50)
-    if n >= 3:  # Minimum required for Shapiro-Wilk
-        if n <= 5000:  # Shapiro-Wilk has sample size limits
-            stat, p_val = scipy_stats.shapiro(r_np)
-            is_normal = p_val > alpha
-            interpretation = (
-                "Residuals appear normally distributed (Shapiro-Wilk)"
-                if is_normal
-                else "Residuals may not be normally distributed (Shapiro-Wilk)"
+    # Shapiro-Wilk has both a lower minimum (n>=3) and an upper sample-size limit (n<=5000).
+    if 3 <= n <= 5000:
+        stat, p_val = scipy_stats.shapiro(r_np)
+        is_normal = p_val > alpha
+        interpretation = (
+            "Residuals appear normally distributed (Shapiro-Wilk)"
+            if is_normal
+            else "Residuals may not be normally distributed (Shapiro-Wilk)"
+        )
+        results.append(
+            NormalityTestResult(
+                test_name="Shapiro-Wilk",
+                statistic=float(stat),
+                p_value=float(p_val),
+                is_normal=is_normal,
+                interpretation=interpretation,
             )
-            results.append(
-                NormalityTestResult(
-                    test_name="Shapiro-Wilk",
-                    statistic=float(stat),
-                    p_value=float(p_val),
-                    is_normal=is_normal,
-                    interpretation=interpretation,
-                )
-            )
+        )
 
     # D'Agostino-Pearson test (requires n >= 20)
     if n >= 20:
@@ -387,7 +385,7 @@ def run_posterior_checks(
     )
 
     # Test normality
-    normality_tests = test_residual_normality(
+    normality_tests = check_residual_normality(
         residuals=residual_analysis.standardized_residuals,
         alpha=alpha,
     )
@@ -552,13 +550,11 @@ def get_posterior_check_summary(report: PosteriorCheckReport) -> str:
     if report.warnings:
         lines.append("")
         lines.append("Warnings:")
-        for w in report.warnings:
-            lines.append(f"  - {w}")
+        lines.extend(f"  - {w}" for w in report.warnings)
 
     if report.recommendations:
         lines.append("")
         lines.append("Recommendations:")
-        for r in report.recommendations:
-            lines.append(f"  - {r}")
+        lines.extend(f"  - {r}" for r in report.recommendations)
 
     return "\n".join(lines)

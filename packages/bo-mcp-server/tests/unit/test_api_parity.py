@@ -46,6 +46,10 @@ TOOL_TO_HTTP_ROUTE: dict[str, str] = {
 
 EXEMPT_TOOLS: dict[str, str] = {
     "bo_health_check": "Infrastructure tool, not a business capability. HTTP has its own /health.",
+    "bo_check_progress": (
+        "Poll fallback for the MCP push progress channel; REST already supports "
+        "long-poll/SSE patterns at the transport layer, so no HTTP parity is needed."
+    ),
 }
 
 

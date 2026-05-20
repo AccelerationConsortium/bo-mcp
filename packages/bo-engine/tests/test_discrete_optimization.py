@@ -129,7 +129,7 @@ class TestOptimizeDiscrete:
             model=model, train_x=train_x, train_y=train_y, minimize=True
         )
 
-        candidates, acq_values = optimize_acquisition(
+        candidates, _acq_values = optimize_acquisition(
             acqf=acqf,
             bounds=bounds,
             batch_size=2,
@@ -419,7 +419,8 @@ class TestContinuousFallback:
         )
 
         assert candidates.shape == (2, 2)
-        assert torch.all(candidates >= -1e-6) and torch.all(candidates <= 1.0 + 1e-6)
+        assert torch.all(candidates >= -1e-6)
+        assert torch.all(candidates <= 1.0 + 1e-6)
 
     def test_continuous_spec_uses_continuous(self) -> None:
         """Continuous spec should route to _optimize_continuous."""

@@ -29,6 +29,7 @@ References:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -42,6 +43,10 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from sklearn.metrics import roc_auc_score
 from torch import Tensor
 
+from bo_engine.constants import (
+    CONSTRAINT_CALIBRATION_N_BINS,
+    CONSTRAINT_CALIBRATION_WARN_THRESHOLD,
+)
 from bo_engine.device import ensure_device, get_device, get_dtype, to_device
 
 
@@ -253,23 +258,18 @@ def compute_constraint_probability(
 ) -> Tensor:
     """Compute probability of constraint satisfaction.
 
-    This function supports two signatures:
+    This function supports two signatures, dispatched on the first argument.
 
-    1. Simple signature for direct computation:
-       compute_constraint_probability(mean, std, bound, constraint_type)
-
-       Args:
-           mean: Predicted mean values
-           std: Predicted standard deviations
-           bound: Constraint threshold
-           constraint_type: "<=" for less-than, ">=" for greater-than
-
-    2. Model-based signature for GP models:
-       compute_constraint_probability(model_result, x)
-
-       Args:
-           model_result: Fitted constraint model result
-           x: Candidate points of shape (..., n_dims)
+    Args:
+        mean_or_model: Either the predicted mean tensor (direct signature)
+            *or* a fitted :class:`ConstraintModelResult` (model-based
+            signature).
+        std_or_x: Either the predicted-std tensor (direct) *or* candidate
+            points of shape ``(..., n_dims)`` (model-based).
+        bound: Constraint threshold (direct signature only; read from the
+            model spec otherwise).
+        constraint_type: ``"<="`` for less-than, ``">="`` for greater-than
+            (direct signature only; read from the model spec otherwise).
 
     Returns:
         Probability of feasibility
@@ -280,32 +280,28 @@ def compute_constraint_probability(
         mean = mean_or_model
         std = std_or_x
         if std is None:
-            raise ValueError("std is required when using the simple signature")
+            msg = "std is required when using the simple signature"
+            raise ValueError(msg)
         if constraint_type is None:
             constraint_type = "<="
 
         std = std.clamp(min=1e-6)
         z = (bound - mean) / std
 
-        if constraint_type == ">=":
-            # P(objective >= bound) = 1 - Phi((bound - mean) / std)
-            prob = 1.0 - _standard_normal_cdf(z)
-        else:
-            # P(objective <= bound) = Phi((bound - mean) / std)
-            prob = _standard_normal_cdf(z)
-
-        return prob
+        # `>=`: P(objective >= bound) = 1 - Phi((bound - mean) / std)
+        # `<=`: P(objective <= bound) = Phi((bound - mean) / std)
+        return 1.0 - _standard_normal_cdf(z) if constraint_type == ">=" else _standard_normal_cdf(z)
 
     # Model-based signature: compute_constraint_probability(model_result, x)
     model_result = mean_or_model
     x = std_or_x
 
     if not isinstance(model_result, ConstraintModelResult):
-        raise TypeError(
-            "First argument must be Tensor (for simple signature) or ConstraintModelResult"
-        )
+        msg = "First argument must be Tensor (for simple signature) or ConstraintModelResult"
+        raise TypeError(msg)
     if x is None:
-        raise ValueError("x is required when using the model-based signature")
+        msg = "x is required when using the model-based signature"
+        raise ValueError(msg)
 
     x = to_device(x)
     model = model_result.model
@@ -388,7 +384,7 @@ def compute_expected_constraint_violation(
 
 def create_constraint_callable_continuous(
     model_result: ConstraintModelResult,
-) -> Any:
+) -> Callable[[Tensor], Tensor]:
     """Create a constraint callable for use with BoTorch acquisition functions.
 
     This callable returns positive values when the constraint is satisfied
@@ -420,12 +416,10 @@ def create_constraint_callable_continuous(
                 # Want objective >= threshold
                 # Return positive when satisfied
                 return samples.squeeze(-1) - obj_threshold
-            else:
-                # Want objective <= threshold
-                return obj_threshold - samples.squeeze(-1)
-        else:
-            # For binary, samples are P(feasible) predictions
-            return samples.squeeze(-1) - threshold
+            # Want objective <= threshold
+            return obj_threshold - samples.squeeze(-1)
+        # For binary, samples are P(feasible) predictions
+        return samples.squeeze(-1) - threshold
 
     return constraint_callable
 
@@ -461,7 +455,8 @@ def build_outcome_constraint_models(
         obj_values = []
         for obs in observations:
             if spec.objective_name not in obs:
-                raise ValueError(f"Objective '{spec.objective_name}' not found in observations")
+                msg = f"Objective '{spec.objective_name}' not found in observations"
+                raise ValueError(msg)
             obj_values.append(obs[spec.objective_name])
 
         obj_tensor = torch.tensor(obj_values, dtype=get_dtype(), device=get_device())
@@ -487,6 +482,28 @@ def assess_constraint_model_quality(
     Computes metrics to help understand if the constraint model is
     well-calibrated and provides accurate probability estimates.
 
+    Calibration metrics:
+
+    * ``calibration_error`` — mean absolute deviation between predicted
+      feasibility probability and the binary realized label. Cheap and
+      intuitive but not a strictly proper scoring rule.
+    * ``brier_score`` — mean squared error between predicted probability
+      and the binary label (Brier, 1950; "Verification of Forecasts
+      Expressed in Terms of Probability"). Strictly proper, so an
+      overconfident classifier is penalized even when accuracy is high.
+    * ``expected_calibration_error`` — bucket the predictions into
+      ``CONSTRAINT_CALIBRATION_N_BINS`` equal-width probability bins, then
+      report the weighted average ``|mean(prob) - frac(feasible)|`` per
+      bin (Naeini et al., 2015; Guo et al., ICML 2017). Targets the
+      reliability-curve gap that drives infeasible-suggestion regret.
+    * ``is_calibrated`` — convenience flag mirroring the diagnostics
+      threshold ``CONSTRAINT_CALIBRATION_WARN_THRESHOLD``.
+
+    The metrics are computed on the training data the constraint model
+    saw; they cannot detect generalization failure but they do detect
+    confidently-wrong predictions on the data the model was actually
+    fit to.
+
     Args:
         model_result: Fitted constraint model
         train_x: Training inputs
@@ -494,10 +511,15 @@ def assess_constraint_model_quality(
 
     Returns:
         Dictionary with quality metrics:
-        - calibration_error: Average difference between predicted and actual
+        - calibration_error: Mean abs(predicted - actual) feasibility
+        - brier_score: Mean squared error of feasibility predictions
+        - expected_calibration_error: Reliability-curve gap (ECE, 10 bins)
+        - is_calibrated: Whether calibration_error <=
+          CONSTRAINT_CALIBRATION_WARN_THRESHOLD
         - auc: Area under ROC curve for binary classification
         - boundary_uncertainty: Mean uncertainty near constraint boundary
         - feasibility_rate: Fraction of feasible training points
+        - method: Modeling method used
     """
     train_x, objective_values = ensure_device(train_x, objective_values)
 
@@ -515,8 +537,19 @@ def assess_constraint_model_quality(
     else:
         actual_feasible = (objective_values.squeeze() <= spec.threshold).float()
 
-    # Calibration error (for binary outcomes)
-    calibration_error = (probs - actual_feasible).abs().mean().item()
+    probs_flat = probs.detach().reshape(-1)
+    actual_flat = actual_feasible.detach().reshape(-1)
+
+    # Calibration error (mean absolute deviation — fast sanity check)
+    calibration_error = (probs_flat - actual_flat).abs().mean().item()
+
+    # Brier score — strictly proper scoring rule for binary outcomes
+    brier_score = ((probs_flat - actual_flat) ** 2).mean().item()
+
+    # Expected calibration error — reliability-curve gap
+    expected_calibration_error = _expected_calibration_error(probs_flat, actual_flat)
+
+    is_calibrated = calibration_error <= CONSTRAINT_CALIBRATION_WARN_THRESHOLD
 
     # Compute AUC if we have both classes
     auc = 0.5  # Default to random
@@ -553,11 +586,138 @@ def assess_constraint_model_quality(
 
     return {
         "calibration_error": calibration_error,
+        "brier_score": brier_score,
+        "expected_calibration_error": expected_calibration_error,
+        "is_calibrated": is_calibrated,
         "auc": auc,
         "boundary_uncertainty": boundary_uncertainty,
         "feasibility_rate": model_result.feasibility_rate,
         "method": model_result.method.value,
     }
+
+
+def compute_outcome_constraint_calibration(
+    constraint_specs: list[OutcomeConstraintSpec],
+    train_x: Tensor,
+    objective_values: dict[str, Tensor],
+    bounds: Tensor,
+    method: ConstraintModelingMethod = ConstraintModelingMethod.BINARY,
+) -> list[dict[str, Any]]:
+    """Fit constraint models and assess calibration against realized labels.
+
+    Convenience wrapper for the diagnostics path: takes the same training
+    data the suggestion pipeline saw, fits a per-constraint GP using the
+    requested ``method`` (defaults to ``BINARY`` to mirror what
+    :func:`bo_engine.suggestions._build_outcome_constraint_models` uses at
+    suggestion time), and returns the calibration / discrimination metrics
+    from :func:`assess_constraint_model_quality` along with a copy of the
+    constraint spec so callers can rebuild a per-constraint report.
+
+    The probabilities are evaluated on the training points the GP was fit on
+    — this catches confidently-wrong predictions on data the model has
+    already seen but cannot detect generalization failure. For held-out
+    calibration the caller should pass a cross-validated set.
+
+    Args:
+        constraint_specs: Outcome constraints to assess.
+        train_x: Training inputs of shape ``(n_samples, n_dims)``.
+        objective_values: Map from objective name to the raw observed
+            values, shape ``(n_samples,)`` each. Each constraint reads from
+            this map by ``OutcomeConstraintSpec.objective_name``.
+        bounds: Parameter bounds of shape ``(2, n_dims)``.
+        method: Modeling method to use (defaults to ``BINARY`` to match the
+            runtime path).
+
+    Returns:
+        A list of per-constraint metric dictionaries. Each entry combines
+        the keys from :func:`assess_constraint_model_quality` with:
+        ``constraint_name`` (the objective name), ``threshold``, and
+        ``greater_than``. If a constraint references an objective that is
+        not present in ``objective_values`` the entry contains
+        ``error``: ``"missing_objective"`` and the calibration metrics are
+        omitted.
+    """
+    config = ConstraintModelConfig(method=method)
+
+    reports: list[dict[str, Any]] = []
+    for spec in constraint_specs:
+        if spec.objective_name not in objective_values:
+            reports.append(
+                {
+                    "constraint_name": spec.objective_name,
+                    "threshold": spec.threshold,
+                    "greater_than": spec.greater_than,
+                    "error": "missing_objective",
+                }
+            )
+            continue
+
+        obj_tensor = objective_values[spec.objective_name].to(
+            dtype=get_dtype(), device=get_device()
+        )
+
+        if method == ConstraintModelingMethod.CONTINUOUS:
+            result = build_constraint_model_continuous(train_x, obj_tensor, bounds, spec, config)
+        else:
+            result = build_constraint_model_binary(train_x, obj_tensor, bounds, spec, config)
+
+        metrics = assess_constraint_model_quality(result, train_x, obj_tensor)
+        metrics.update(
+            {
+                "constraint_name": spec.objective_name,
+                "threshold": spec.threshold,
+                "greater_than": spec.greater_than,
+            }
+        )
+        reports.append(metrics)
+    return reports
+
+
+def _expected_calibration_error(
+    probs: Tensor,
+    labels: Tensor,
+    n_bins: int = CONSTRAINT_CALIBRATION_N_BINS,
+) -> float:
+    """Compute Expected Calibration Error (ECE) over equal-width bins.
+
+    ECE bins predictions by their forecast probability, computes the gap
+    between predicted-mean and empirical-feasibility within each bin, and
+    averages weighted by bin occupancy. Empty bins contribute zero.
+
+    References:
+        - Naeini, Cooper, Hauskrecht "Obtaining Well Calibrated
+          Probabilities Using Bayesian Binning" AAAI 2015.
+        - Guo et al., "On Calibration of Modern Neural Networks" ICML 2017.
+
+    Args:
+        probs: 1-D tensor of predicted probabilities, values in [0, 1].
+        labels: 1-D tensor of binary realized labels (0 or 1).
+        n_bins: Number of equal-width probability bins.
+
+    Returns:
+        ECE in [0, 1]. Lower is better; 0.0 means perfect reliability.
+    """
+    n = int(probs.numel())
+    if n == 0:
+        return 0.0
+    probs_clamped = probs.clamp(0.0, 1.0)
+    boundaries = torch.linspace(0.0, 1.0, n_bins + 1, device=probs.device, dtype=probs.dtype)
+    ece = 0.0
+    for b in range(n_bins):
+        lo = boundaries[b]
+        hi = boundaries[b + 1]
+        # Last bin is closed on the right so probs == 1.0 lands in a bin.
+        if b == n_bins - 1:
+            in_bin = (probs_clamped >= lo) & (probs_clamped <= hi)
+        else:
+            in_bin = (probs_clamped >= lo) & (probs_clamped < hi)
+        count = int(in_bin.sum().item())
+        if count == 0:
+            continue
+        bin_conf = float(probs_clamped[in_bin].mean().item())
+        bin_acc = float(labels[in_bin].mean().item())
+        ece += (count / n) * abs(bin_conf - bin_acc)
+    return ece
 
 
 def _standard_normal_cdf(z: Tensor) -> Tensor:

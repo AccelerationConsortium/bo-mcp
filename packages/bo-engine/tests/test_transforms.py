@@ -118,6 +118,58 @@ class TestTransforms:
         assert decoded["x1"] == 5.0
         assert decoded["cat"] == "B"
 
+    def test_decode_categorical_argmax_independent_of_relaxation(self):
+        """Decoding picks the argmax over the one-hot block deterministically.
+
+        ``softmax`` is monotone, so removing it must not change the picked
+        category for any continuous relaxation. We sweep a few representative
+        relaxed encodings (logits, soft-positive, near-uniform) to pin the
+        invariant: the largest entry's category is returned.
+
+        Reference: BoTorch tutorial on mixed-integer / categorical search
+        spaces (https://botorch.org/tutorials/) treats categorical decoding
+        as argmax over the one-hot block.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="cat",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["A", "B", "C"],
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        for encoded, expected in [
+            (torch.tensor([0.1, 0.9, 0.0]), "B"),
+            (torch.tensor([0.34, 0.33, 0.33]), "A"),
+            (torch.tensor([-1.0, -0.5, 0.7]), "C"),
+            (torch.tensor([5.0, 1.0, 1.0]), "A"),
+        ]:
+            decoded = decode_categorical(encoded, spec)
+            assert decoded["cat"] == expected
+
+    def test_decode_categorical_ties_resolve_to_first_index(self):
+        """Equal one-hot entries decode to the *first* listed category.
+
+        ``torch.argmax`` returns the lowest index on ties, matching the
+        encoder's ordering. This is the deterministic tie-breaking rule the
+        new comment in ``_decode_param_value`` documents.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="cat",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["A", "B", "C"],
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        # All three categories tied; argmax must pick index 0 == "A".
+        encoded = torch.tensor([0.5, 0.5, 0.5])
+        assert decode_categorical(encoded, spec)["cat"] == "A"
+
     def test_normalize_unnormalize(self):
         """normalize_inputs and unnormalize_inputs are inverses."""
         bounds = torch.tensor([[0.0, -5.0], [10.0, 5.0]])

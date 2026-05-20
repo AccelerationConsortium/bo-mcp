@@ -55,7 +55,10 @@ jobs:
   # =============================================================================
   # Fast Tests (PR Checks) - Run on every push/PR
   # =============================================================================
-  # These tests must always pass and run quickly (< 5 min total)
+  # These tests must always pass and run quickly (< 5 min total).
+  # The marker expression deselects integration/slow/docker/postgres/nightly
+  # suites so the PR gate stays under the 5-minute budget. Integration tests
+  # are exercised in a separate matrix below.
   testing-fast:
     name: Fast Tests (${{ matrix.package }}, py${{ matrix.python-version }})
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -73,12 +76,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - uses: ./.github/actions/setup
-      - run: uv sync --dev
+      - run: uv sync --all-packages
       - name: Run fast tests for ${{ matrix.package }}
         run: |
           cd packages/${{ matrix.package }}
           uv run pytest -v --durations=10 --cov --cov-report=xml \
-            -m "not slow and not nightly and not docker and not postgres" \
+            -m "not integration and not slow and not nightly and not docker and not postgres" \
             --timeout=60
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -86,13 +89,45 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
         if: matrix.python-version == '3.13' && matrix.package == 'bo-engine'
   # =============================================================================
+  # Integration Tests - Run on every push/PR
+  # =============================================================================
+  # Integration tests (auto-marked via tests/integration/) exercise multi-module
+  # flows but exclude infrastructure-dependent docker/postgres suites so the
+  # job stays self-contained. They run separately from fast tests so a slow
+  # integration failure can't drag the PR gate over budget.
+  testing-integration:
+    name: Integration Tests (${{ matrix.package }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    needs: [lock-file]
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ['bo-mcp-server']
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: ./.github/actions/setup
+      - run: uv sync --all-packages
+      - name: Run integration tests for ${{ matrix.package }}
+        run: |
+          cd packages/${{ matrix.package }}
+          uv run pytest -v --durations=20 \
+            -m "integration and not slow and not nightly and not docker and not postgres" \
+            --timeout=120
+  # =============================================================================
   # Slow Tests - Run on main branch pushes only
   # =============================================================================
-  # These tests take longer but are required for main branch integrity
+  # These tests take longer but are required for main branch integrity.
+  # Slow includes integration-tier tests by design — once a PR has merged we
+  # want the full picture of behavior, not just the under-30s subset.
   testing-slow:
     name: Slow Tests (${{ matrix.package }})
     runs-on: ubuntu-latest
-    needs: [lock-file, testing-fast]
+    needs: [lock-file, testing-fast, testing-integration]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
@@ -105,7 +140,7 @@ jobs:
         with:
           python-version: '3.13'
       - uses: ./.github/actions/setup
-      - run: uv sync --dev
+      - run: uv sync --all-packages
       - name: Run slow tests for ${{ matrix.package }}
         run: |
           cd packages/${{ matrix.package }}
@@ -135,7 +170,7 @@ jobs:
         with:
           python-version: '3.13'
       - uses: ./.github/actions/setup
-      - run: uv sync --dev
+      - run: uv sync --all-packages
       - name: Run comprehensive tests for ${{ matrix.package }}
         run: |
           cd packages/${{ matrix.package }}
@@ -154,3 +189,34 @@ jobs:
           echo "- SAASBO full MCMC convergence" >> $GITHUB_STEP_SUMMARY
           echo "- Multi-objective optimization statistical properties" >> $GITHUB_STEP_SUMMARY
           echo "- TuRBO trust region dynamics" >> $GITHUB_STEP_SUMMARY
+  # =============================================================================
+  # Nightly tolerance calibration drift gate
+  # =============================================================================
+  # Re-runs the Monte-Carlo calibration and fails the nightly build when
+  # the recommended CI tolerances have drifted past the configured band
+  # against the checked-in baseline. A drift means the algorithm or a
+  # library bump has changed the variance profile; the next step is to
+  # triage the cause and refresh the baseline via `--output`.
+  calibration-drift:
+    name: Calibration Drift Check
+    runs-on: ubuntu-latest
+    needs: [lock-file]
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: ./.github/actions/setup
+      - run: uv sync --all-packages
+      - name: Run calibration drift gate
+        run: |
+          uv run python scripts/calibrate_test_tolerances.py \
+            --iterations 50 \
+            --check scripts/test_tolerances_baseline.json
+        # The exit code reflects divergence: 0 means the baseline still
+        # holds, non-zero means the run breached the drift threshold and
+        # the nightly build is red. Operators refresh the baseline by
+        # re-running with `--output scripts/test_tolerances_baseline.json`
+        # once the cause is triaged.

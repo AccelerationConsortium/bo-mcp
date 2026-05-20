@@ -3,16 +3,37 @@
 The cache uses version-aware keys (e.g. "diagnostics:{id}:{version}") so
 entries become unreachable after mutations — no explicit invalidation needed.
 
+TTL behaviour is exercised against an injected fake clock so tests advance
+time deterministically and do not depend on wall-clock ``asyncio.sleep`` —
+which made the suite flaky on slow CI and inflated runtime.
+
 Reference: BO-MCP-UI Implementation Plan Step 5, Section 2.5.
 """
 
-import asyncio
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 
 from bo_mcp_server.cache import MAX_CACHE_ENTRIES, ResponseCache, diagnostics_cache
+
+
+class FakeClock:
+    """Mutable clock for deterministic TTL tests.
+
+    The cache calls ``clock()`` whenever it needs to read "now"; the test
+    advances ``current`` directly instead of sleeping.
+    """
+
+    def __init__(self, start: datetime | None = None) -> None:
+        self.current = start or datetime(2026, 5, 14, 12, 0, 0, tzinfo=UTC)
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance(self, seconds: float) -> None:
+        self.current = self.current + timedelta(seconds=seconds)
 
 
 class TestResponseCache:
@@ -53,16 +74,20 @@ class TestResponseCache:
         """Cache entries should expire after TTL.
 
         Reference: TTL-based caching is essential for balancing freshness
-        with avoiding redundant computation during optimization loops.
+        with avoiding redundant computation during optimization loops. The
+        TTL is exercised against a fake clock so this test does not depend
+        on wall-clock sleeps (which were a documented source of flakiness
+        on slow CI runners).
         """
-        cache = ResponseCache(ttl_seconds=1)
+        clock = FakeClock()
+        cache = ResponseCache(ttl_seconds=1, clock=clock)
         await cache.set("test-key", {"value": 42})
 
         # Immediately after set, value should be retrievable
         assert await cache.get("test-key") == {"value": 42}
 
-        # Wait for TTL to expire
-        await asyncio.sleep(1.1)
+        # Advance virtual time past the TTL.
+        clock.advance(1.1)
 
         # After TTL, value should be None
         assert await cache.get("test-key") is None
@@ -119,20 +144,27 @@ class TestResponseCache:
 
     @pytest.mark.asyncio
     async def test_cache_overwrite_existing_key(self) -> None:
-        """Setting same key should overwrite previous value and reset TTL."""
-        cache = ResponseCache(ttl_seconds=2)
+        """Setting same key should overwrite previous value and reset TTL.
+
+        The set→advance→overwrite→advance sequence uses a fake clock so the
+        TTL boundary is hit deterministically rather than relying on
+        ``asyncio.sleep`` (which slow CI was failing intermittently on).
+        """
+        clock = FakeClock()
+        cache = ResponseCache(ttl_seconds=2, clock=clock)
 
         await cache.set("test-key", {"version": 1})
-        await asyncio.sleep(1)
+        clock.advance(1)
 
-        # Overwrite with new value
+        # Overwrite with new value — this resets the TTL anchor for the key.
         await cache.set("test-key", {"version": 2})
 
         # Value should be updated
         assert await cache.get("test-key") == {"version": 2}
 
-        # Wait a bit more - original entry would have expired, but new one shouldn't
-        await asyncio.sleep(1.1)
+        # Advance past the original entry's TTL but still within the
+        # refreshed window from the overwrite.
+        clock.advance(1.1)
         assert await cache.get("test-key") == {"version": 2}
 
     @pytest.mark.asyncio
@@ -162,7 +194,7 @@ class TestResponseCache:
         }
 
         await cache.set("diagnostics:complex-test:5", complex_data)
-        result = await cache.get("diagnostics:complex-test:5")
+        result = cast("dict[str, Any] | None", await cache.get("diagnostics:complex-test:5"))
 
         assert result is not None
         assert result == complex_data

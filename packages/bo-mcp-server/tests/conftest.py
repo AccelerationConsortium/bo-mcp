@@ -61,7 +61,7 @@ def sample_categorical_param() -> InputParameter:
     return InputParameter(
         name="catalyst",
         type=ParameterType.CATEGORICAL,
-        categories=["Pt", "Pd", "Rh"],
+        categories=("Pt", "Pd", "Rh"),
         description="Catalyst type",
     )
 
@@ -97,8 +97,8 @@ def sample_campaign_spec(
     return CampaignSpec(
         name="Test Campaign",
         description="A test optimization campaign",
-        parameters=[sample_continuous_param, sample_discrete_param],
-        objectives=[sample_objective_minimize, sample_objective_maximize],
+        parameters=(sample_continuous_param, sample_discrete_param),
+        objectives=(sample_objective_minimize, sample_objective_maximize),
         batch_size=2,
     )
 
@@ -119,9 +119,29 @@ def sample_user() -> User:
 async def setup_database():
     """Initialize fresh in-memory database for each test.
 
-    Ensures complete isolation between tests by resetting the
-    database engine singleton. This is critical for test isolation
-    when using in-memory SQLite databases.
+    SQLite in-memory test isolation is implemented by recreating the engine
+    singleton — the in-memory database is bound to the connection lifetime,
+    so disposing the engine wipes everything in a few hundred microseconds.
+    This is cheap enough that switching to savepoint isolation would not
+    materially improve runtime here.
+
+    PostgreSQL integration tests use a different, savepoint-based fixture
+    (``postgres_session`` in ``conftest_postgres.py``) because the
+    engine-recreate path on PG implies re-running migrations / ``create_all``
+    per test, which is both slow and incorrect — application code that
+    commits mid-test would survive into the next test under outer-transaction
+    isolation. The savepoint pattern documented there avoids both issues.
+
+    See ``conftest_postgres.py::postgres_session`` for the PG-side
+    implementation. When a test needs to run against both backends,
+    parametrize the database fixture rather than duplicating the test
+    body::
+
+        @pytest.mark.parametrize(
+            "session_fixture",
+            ["setup_database", "postgres_session"],
+            indirect=True,
+        )
 
     Reference: SQLAlchemy async engine lifecycle documentation
     https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html
@@ -140,7 +160,7 @@ async def setup_database():
     database._session_factory = async_sessionmaker(
         database._engine,
         class_=AsyncSession,
-        expire_on_commit=False,
+        expire_on_commit=True,
     )
 
     await init_database()

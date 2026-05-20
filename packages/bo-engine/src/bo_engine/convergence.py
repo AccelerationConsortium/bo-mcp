@@ -8,7 +8,10 @@ References:
 - Hypervolume improvement tracking: https://botorch.org/docs/multi_objective/
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from enum import StrEnum
 
 from bo_engine.constants import (
     CONVERGENCE_IMPROVEMENT_THRESHOLD,
@@ -16,6 +19,7 @@ from bo_engine.constants import (
     CONVERGENCE_WINDOW_SIZE,
     IMPROVEMENT_TOLERANCE_ABSOLUTE,
 )
+from bo_engine.types import ObjectiveSpec, ObservationData, OptimizationSpec
 
 
 @dataclass
@@ -41,6 +45,55 @@ class ConvergenceReport:
     recommendation: str
 
 
+def _history_scale(history: list[float]) -> float:
+    """Compute a robust scale for the history that does not depend on absolute magnitude.
+
+    Uses the inter-quartile range (IQR) of the recorded values; falls back
+    to the sample standard deviation when the IQR collapses (rare on
+    real-valued metric streams but possible on plateaus); finally falls
+    back to the absolute value of the latest reading or
+    ``IMPROVEMENT_TOLERANCE_ABSOLUTE``. The scale is only consulted by
+    :func:`_step_denominator` when the per-step ``|prev|`` is below the
+    absolute floor, so high-magnitude trajectories keep their per-step
+    semantics and low-magnitude trajectories get a meaningful scale-based
+    normalization (this is the audit's concrete fix; see :func:`detect_convergence`).
+    """
+    if not history:
+        return IMPROVEMENT_TOLERANCE_ABSOLUTE
+    sorted_history = sorted(history)
+    n = len(sorted_history)
+    if n >= 4:
+        q1 = sorted_history[n // 4]
+        q3 = sorted_history[(3 * n) // 4]
+        iqr = q3 - q1
+        if iqr > IMPROVEMENT_TOLERANCE_ABSOLUTE:
+            return iqr
+    if n >= 2:
+        mean = sum(history) / n
+        variance = sum((v - mean) ** 2 for v in history) / max(n - 1, 1)
+        std = variance**0.5
+        if std > IMPROVEMENT_TOLERANCE_ABSOLUTE:
+            return std
+    return max(abs(history[-1]), IMPROVEMENT_TOLERANCE_ABSOLUTE)
+
+
+def _step_denominator(prev_value: float, history_scale: float) -> float:
+    """Return the scale-invariant denominator for one step of the improvement loop.
+
+    Uses ``|prev_value|`` when it is meaningfully above the absolute
+    floor; otherwise falls back to the history-level scale (IQR / std).
+    This keeps the historical per-step semantics for high-magnitude
+    metrics (so existing convergence thresholds calibrated against a
+    1.0-scale metric remain meaningful) and switches to a trajectory-
+    derived scale only for low-magnitude metrics, which is exactly the
+    case the audit called out as silently misbehaving under the old
+    ``max(|prev|, ABS_TOL)`` formula.
+    """
+    if abs(prev_value) > IMPROVEMENT_TOLERANCE_ABSOLUTE:
+        return abs(prev_value)
+    return history_scale
+
+
 def detect_convergence(
     metric_history: list[float],
     window_size: int = CONVERGENCE_WINDOW_SIZE,
@@ -51,6 +104,15 @@ def detect_convergence(
 
     Analyzes the improvement rate over recent iterations to determine
     if optimization has reached a point of diminishing returns.
+
+    **Scale-invariant normalization.** Per-iteration deltas are divided by
+    a robust scale derived from the full history (IQR → std → abs latest
+    → ``IMPROVEMENT_TOLERANCE_ABSOLUTE``). This makes the same campaign
+    rescaled by 1000× (e.g. cost in dollars vs cents) converge at the
+    same iteration count — the previous formula divided by
+    ``abs(prev)``, which scales with the absolute magnitude of the
+    metric and therefore returned different "still improving" verdicts
+    for the same underlying optimization run.
 
     Args:
         metric_history: History of optimization metric (e.g., hypervolume, best value)
@@ -91,23 +153,27 @@ def detect_convergence(
             recommendation="Continue optimization to enable convergence detection.",
         )
 
-    # Compute improvements over recent window using combined relative-absolute criterion
-    # to avoid instability when values are near zero
+    # Robust scale derived from the full history — only consulted by
+    # :func:`_step_denominator` when the per-step ``|prev|`` is below the
+    # absolute floor, so high-magnitude trajectories keep their historical
+    # per-step relative semantics.
+    scale = _history_scale(metric_history)
+
+    # Compute improvements over recent window using the hybrid scale
+    # (per-step ``|prev|`` when meaningful, history scale otherwise).
     recent = metric_history[-window_size:]
     improvements = []
     for i in range(1, len(recent)):
         delta = recent[i] - recent[i - 1]
-        denominator = max(abs(recent[i - 1]), IMPROVEMENT_TOLERANCE_ABSOLUTE)
-        improvements.append(delta / denominator)
+        improvements.append(delta / _step_denominator(recent[i - 1], scale))
 
     avg_improvement = sum(improvements) / len(improvements) if improvements else 0.0
 
-    # Count iterations without meaningful improvement
+    # Count iterations without meaningful improvement (same hybrid scale).
     iterations_without_improvement = 0
     for i in range(n - 1, 0, -1):
         delta = metric_history[i] - metric_history[i - 1]
-        denominator = max(abs(metric_history[i - 1]), IMPROVEMENT_TOLERANCE_ABSOLUTE)
-        rel_improvement = delta / denominator
+        rel_improvement = delta / _step_denominator(metric_history[i - 1], scale)
 
         if rel_improvement > improvement_threshold:
             break
@@ -208,16 +274,156 @@ def detect_single_objective_convergence(
         ConvergenceReport with single-objective specific analysis
     """
     # For minimization, we negate so that improvement is positive
-    if minimize:
-        metric_history = [-v for v in best_value_history]
-    else:
-        metric_history = best_value_history
+    metric_history = [-v for v in best_value_history] if minimize else best_value_history
 
     return detect_convergence(
         metric_history=metric_history,
         window_size=window_size,
         improvement_threshold=improvement_threshold,
         min_observations=min_observations,
+    )
+
+
+class StoppingReason(StrEnum):
+    """Reason a campaign was instructed to stop generating suggestions."""
+
+    BUDGET_EXCEEDED_ITERATIONS = "budget_exceeded_iterations"
+    BUDGET_EXCEEDED_OBSERVATIONS = "budget_exceeded_observations"
+    CONVERGED = "converged"
+
+
+@dataclass(frozen=True)
+class StoppingDecision:
+    """Outcome of the budget / convergence check.
+
+    Attributes:
+        should_stop: True iff the suggestion entry point must short-circuit.
+        reason: Discriminator describing why the decision was reached. Only
+            meaningful when ``should_stop`` is True.
+        message: User-facing message for the response envelope.
+        details: Structured payload (iteration/observation counts, threshold,
+            etc.) — included verbatim in the ``next_action_recommendation``
+            response so agent loops can branch on it.
+    """
+
+    should_stop: bool
+    reason: StoppingReason | None
+    message: str
+    details: dict[str, object]
+
+
+def _best_value_history(
+    observations: list[ObservationData], objective: ObjectiveSpec
+) -> list[float]:
+    """Build the running-best trajectory of a single objective.
+
+    Used only by :func:`evaluate_stopping_decision` to feed
+    ``detect_single_objective_convergence``. The full history is returned
+    (not just the last window) so the detector can decide its own
+    minimum-observation gate.
+    """
+    history: list[float] = []
+    running_best: float | None = None
+    for obs in observations:
+        if objective.name not in obs.objective_values:
+            continue
+        value = float(obs.objective_values[objective.name])
+        is_better = running_best is None or (
+            value < running_best if objective.minimize else value > running_best
+        )
+        if is_better:
+            running_best = value
+        # ``running_best`` is set on the first observation, so it is no longer
+        # ``None`` here -- but the static type checker cannot see that, hence
+        # the explicit fallback.
+        history.append(running_best if running_best is not None else value)
+    return history
+
+
+def evaluate_stopping_decision(
+    spec: OptimizationSpec,
+    observations: list[ObservationData],
+    next_iteration: int,
+) -> StoppingDecision:
+    """Decide whether to stop suggestion generation based on spec budgets.
+
+    The check runs in three deterministic stages so the response envelope
+    is predictable for agent loops:
+
+    1. ``max_iterations`` cap — compared against the *next* iteration the
+       caller is about to start (``campaign.iteration + 1``). Reaching the
+       budget short-circuits suggestion generation before any BO work runs.
+    2. ``max_observations`` cap — compared against the count of stored
+       observations regardless of iteration grouping.
+    3. ``convergence_tolerance`` — forwarded to the existing
+       :func:`detect_single_objective_convergence` detector for the first
+       objective. Multi-objective campaigns are out of scope here because
+       hypervolume tracking lives in the diagnostics layer.
+
+    When no budget field is configured the decision is a no-op
+    (``should_stop=False``).
+    """
+    if spec.max_iterations is not None and next_iteration > int(spec.max_iterations):
+        return StoppingDecision(
+            should_stop=True,
+            reason=StoppingReason.BUDGET_EXCEEDED_ITERATIONS,
+            message=(
+                f"Reached max_iterations={spec.max_iterations}; "
+                "campaign has exhausted its iteration budget."
+            ),
+            details={
+                "next_iteration": next_iteration,
+                "max_iterations": int(spec.max_iterations),
+                "next_action_recommendation": "terminate_campaign",
+            },
+        )
+
+    n_obs = len(observations)
+    if spec.max_observations is not None and n_obs >= int(spec.max_observations):
+        return StoppingDecision(
+            should_stop=True,
+            reason=StoppingReason.BUDGET_EXCEEDED_OBSERVATIONS,
+            message=(
+                f"Reached max_observations={spec.max_observations}; "
+                "campaign has exhausted its observation budget."
+            ),
+            details={
+                "n_observations": n_obs,
+                "max_observations": int(spec.max_observations),
+                "next_action_recommendation": "terminate_campaign",
+            },
+        )
+
+    # Engine-level defense in depth: the server domain rejects
+    # ``convergence_tolerance`` on multi-objective specs at create time, but
+    # callers using the engine directly might bypass that validation. Treat
+    # multi-objective specs as a silent no-op rather than picking objective 0.
+    if spec.convergence_tolerance is not None and len(spec.objectives) == 1:
+        history = _best_value_history(observations, spec.objectives[0])
+        report = detect_single_objective_convergence(
+            best_value_history=history,
+            minimize=spec.objectives[0].minimize,
+            improvement_threshold=float(spec.convergence_tolerance),
+        )
+        if report.converged:
+            return StoppingDecision(
+                should_stop=True,
+                reason=StoppingReason.CONVERGED,
+                message=("Convergence detected: " + report.reason + ". " + report.recommendation),
+                details={
+                    "avg_improvement": report.avg_improvement,
+                    "convergence_score": report.convergence_score,
+                    "iterations_without_improvement": (report.iterations_without_improvement),
+                    "convergence_tolerance": float(spec.convergence_tolerance),
+                    "next_action_recommendation": "terminate_campaign",
+                },
+            )
+
+    return StoppingDecision(
+        should_stop=False,
+        reason=None,
+        message="",
+        details={},
     )
 
 
@@ -244,10 +450,11 @@ def estimate_remaining_iterations(
 
     # Compute recent improvement rate
     recent = metric_history[-5:]
-    improvements = []
-    for i in range(1, len(recent)):
-        if abs(recent[i - 1]) > 1e-10:
-            improvements.append((recent[i] - recent[i - 1]) / abs(recent[i - 1]))
+    improvements = [
+        (recent[i] - recent[i - 1]) / abs(recent[i - 1])
+        for i in range(1, len(recent))
+        if abs(recent[i - 1]) > 1e-10
+    ]
 
     if not improvements:
         return None

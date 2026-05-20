@@ -54,12 +54,59 @@ def _compute_convergence(hypervolume_history: list[float]) -> dict[str, Any]:
     return convergence_info
 
 
-def _build_minimal_info(name: str, campaign: Campaign, n_results: int) -> dict[str, Any]:
+def _minimal_next_action(
+    status: CampaignStatus,
+    n_results: int,
+    n_pending: int,
+) -> dict[str, str]:
+    """Lightweight next-action hint for the minimal-verbosity batch envelope.
+
+    Mirrors the decision tree in
+    :func:`bo_mcp_server.operations.diagnostics.actions.compute_next_action_recommendation`
+    but consumes only the fields available at minimal verbosity (no
+    convergence / outlier / health-status counters).  Callers that need
+    the richer recommendation should request ``verbosity="detailed"``.
+    """
+    if status in (CampaignStatus.PAUSED, CampaignStatus.COMPLETED, CampaignStatus.FAILED):
+        return {
+            "action": "review_campaign_status",
+            "reason": f"Campaign is {status.value}; resume, terminate, or create a new one.",
+            "urgency": "low",
+        }
+    if n_pending > 0:
+        return {
+            "action": "bo_submit_results",
+            "reason": f"{n_pending} pending suggestion(s) awaiting results.",
+            "urgency": "normal",
+        }
+    if n_results == 0:
+        return {
+            "action": "bo_generate_suggestions",
+            "reason": "No results yet — generate initial suggestions to start optimization.",
+            "urgency": "normal",
+        }
+    return {
+        "action": "bo_generate_suggestions",
+        "reason": (
+            f"Campaign healthy with {n_results} result(s); request the next batch. "
+            "Use bo_get_diagnostics or verbosity='detailed' for convergence/outlier checks."
+        ),
+        "urgency": "normal",
+    }
+
+
+def _build_minimal_info(
+    name: str,
+    campaign: Campaign,
+    n_results: int,
+    n_pending: int,
+) -> dict[str, Any]:
     return {
         "name": name,
         "status": campaign.status.value,
         "iteration": campaign.iteration,
         "n_results": n_results,
+        "next_action_recommendation": _minimal_next_action(campaign.status, n_results, n_pending),
     }
 
 
@@ -148,7 +195,7 @@ def _build_campaign_info(
 ) -> dict[str, Any]:
     """Build campaign info dict based on verbosity."""
     if verbosity_level == VerbosityLevel.MINIMAL:
-        return _build_minimal_info(name, campaign, n_results)
+        return _build_minimal_info(name, campaign, n_results, n_pending)
     if verbosity_level == VerbosityLevel.STANDARD:
         return _build_standard_info(name, campaign, n_results, n_pending, spec)
     return _build_detailed_info(name, campaign, n_results, n_pending, spec)
@@ -197,18 +244,19 @@ async def batch_get_status_operation(
         uuid_list = list(id_str_map.keys())
         campaigns = await campaign_repo.get_by_ids(uuid_list)
 
-        for uuid in uuid_list:
-            if uuid not in campaigns:
-                failed_ids.append(id_str_map[uuid])
+        failed_ids.extend(id_str_map[uuid] for uuid in uuid_list if uuid not in campaigns)
 
         found_uuids = list(campaigns.keys())
         spec_ids = list({c.spec_id for c in campaigns.values()})
         specs = await spec_repo.get_by_ids(spec_ids)
         result_counts = await result_repo.count_by_campaigns(found_uuids)
 
-        pending_counts: dict[UUID, int] = {}
-        if verbosity_level != VerbosityLevel.MINIMAL:
-            pending_counts = await suggestion_repo.count_pending_by_campaigns(found_uuids)
+        # Pending counts are required at every verbosity level: the minimal
+        # envelope now surfaces a lightweight next-action recommendation that
+        # depends on ``n_pending_suggestions`` (see _minimal_next_action).
+        pending_counts: dict[UUID, int] = await suggestion_repo.count_pending_by_campaigns(
+            found_uuids
+        )
 
         for campaign_uuid, campaign in campaigns.items():
             cid = id_str_map[campaign_uuid]

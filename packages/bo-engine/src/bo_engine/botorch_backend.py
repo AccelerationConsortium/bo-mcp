@@ -7,18 +7,25 @@ existing bo-engine modules without duplicating logic.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import torch
+from botorch.models import SingleTaskGP
+from botorch.models.model_list_gp_regression import ModelListGP
 
 from bo_engine.backend import (
-    BatchDiversityMetrics,
-    DuplicateInfo,
     Feature,
     SuggestionBatch,
 )
-from bo_engine.batch_diversity import compute_batch_diversity
-from bo_engine.device import get_device, get_dtype
+from bo_engine.backend_base import (
+    BackendValidationResult,
+    BaseBackend,
+    CapabilityReport,
+    CapabilityStatus,
+    option_is_active,
+    required_features,
+    wrap_backend_exception,
+)
 from bo_engine.diagnostics import (
     LOOCVMetrics,
     compute_best_value,
@@ -32,12 +39,13 @@ from bo_engine.diagnostics import (
     summarize_pareto_front,
 )
 from bo_engine.feature_importance import compute_feature_importance
+from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.method_selector import select_methods
 from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
+from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reference_point import get_reference_point
-from bo_engine.result_validation import detect_duplicates, detect_outliers
+from bo_engine.result_validation import detect_outliers
 from bo_engine.suggestions import (
-    generate_initial_design,
     generate_next_batch,
     update_turbo_after_evaluation,
 )
@@ -82,31 +90,56 @@ def _turbo_state_to_dict(state: TurboState) -> dict[str, Any]:
     }
 
 
-class BoTorchBackend:
+class BoTorchBackend(BaseBackend):
     """BoTorch-based Bayesian Optimization backend.
 
     Wraps existing bo-engine functions behind the BOBackend protocol.
+    Inherits Sobol initial design, duplicate detection, batch diversity,
+    and JSON state-envelope helpers from :class:`BaseBackend`; overrides
+    metric and diagnostic helpers that need BoTorch-specific GP work.
     """
 
     @property
     def name(self) -> str:
+        """Backend identifier used by the registry."""
         return "botorch"
 
     @property
     def supported_features(self) -> frozenset[Feature]:
-        return frozenset(Feature)  # BoTorch supports all features
+        """Features this backend supports **unconditionally**.
 
-    def validate_spec(self, spec: OptimizationSpec) -> list[str]:
-        return []  # BoTorch supports all features
+        ``Feature.MULTI_FIDELITY`` is deliberately excluded — the
+        ``bo_engine.multifidelity`` module provides standalone
+        ``SingleTaskMultiFidelityGP`` helpers, but the active
+        ``generate_next_batch`` pipeline does not dispatch
+        ``AcquisitionMethod.MULTI_FIDELITY_KG`` to ``qMFKG`` and does not
+        construct a multi-fidelity GP when ``spec.fidelity_parameter`` is
+        set. Until the suggestion pipeline routes multi-fidelity end to
+        end, advertising the capability would silently downgrade callers
+        to single-fidelity behaviour.
+        """
+        return frozenset(f for f in Feature if f is not Feature.MULTI_FIDELITY)
+
+    def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
+        """BoTorch supports every neutral feature and option in the spec."""
+        feature_reports = [
+            CapabilityReport(key=str(f), status=CapabilityStatus.SUPPORTED)
+            for f in sorted(required_features(spec))
+        ]
+        from bo_engine.backend_base import _SPEC_OPTION_KEYS
+
+        option_reports = [
+            CapabilityReport(key=key, status=CapabilityStatus.SUPPORTED)
+            for key in _SPEC_OPTION_KEYS
+            if option_is_active(spec, key)
+        ]
+        return BackendValidationResult(
+            backend=self.name,
+            feature_reports=tuple(feature_reports),
+            option_reports=tuple(option_reports),
+        )
 
     # ----- Suggestion Generation -----
-
-    def generate_initial_design(
-        self,
-        spec: OptimizationSpec,
-        n_points: int,
-    ) -> list[dict[str, Any]]:
-        return generate_initial_design(spec, n_points)
 
     def generate_suggestions(
         self,
@@ -116,19 +149,55 @@ class BoTorchBackend:
         iteration: int,
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
+        """Build a GP, optimize the acquisition function and return the next batch."""
+        # Accept either the new envelope or a legacy bare payload.
+        inner_state = self.unwrap_state(backend_state)
         turbo_state = None
         use_turbo = spec.use_turbo or should_use_turbo(spec.n_parameters)
-        if use_turbo and spec.n_objectives == 1 and backend_state is not None:
-            turbo_state = _dict_to_turbo_state(backend_state)
+        if use_turbo and spec.n_objectives == 1 and inner_state is not None:
+            turbo_state = _dict_to_turbo_state(inner_state)
 
-        results, new_turbo = generate_next_batch(
-            spec=spec,
-            observations=observations,
-            batch_size=batch_size,
-            iteration=iteration,
-            turbo_state=turbo_state,
-            pending_points=pending_points,
+        emit(
+            progress_callback,
+            ProgressEvent(
+                phase="generate_suggestions_start",
+                message=(
+                    f"Fitting GP and optimizing acquisition for {batch_size} "
+                    f"suggestion(s) on {len(observations)} observation(s)"
+                ),
+            ),
+        )
+
+        # SearchSpaceExhaustedError is a domain signal interpreted by the
+        # operations layer; it is not a backend bug, so let it propagate
+        # untouched. All other library-level exceptions are wrapped via
+        # ``wrap_backend_exception`` so the MCP error mapper sees a
+        # typed :class:`BackendError` rather than a leaky torch/gpytorch
+        # exception class.
+        try:
+            results, new_turbo = generate_next_batch(
+                spec=spec,
+                observations=observations,
+                batch_size=batch_size,
+                iteration=iteration,
+                turbo_state=turbo_state,
+                pending_points=pending_points,
+            )
+        except SearchSpaceExhaustedError:
+            raise
+        except Exception as exc:
+            raise wrap_backend_exception(exc, backend_name=self.name) from exc
+
+        emit(
+            progress_callback,
+            ProgressEvent(
+                phase="generate_suggestions_done",
+                message=f"Produced {len(results)} suggestion(s)",
+                progress=float(len(results)),
+                total=float(batch_size),
+            ),
         )
 
         suggestions = [
@@ -153,7 +222,8 @@ class BoTorchBackend:
             for sr in results
         ]
 
-        new_state = _turbo_state_to_dict(new_turbo) if new_turbo else None
+        new_payload = _turbo_state_to_dict(new_turbo) if new_turbo else None
+        new_state = self.wrap_state(new_payload)
         method_info = self.select_methods(spec, len(observations))
 
         batch_warnings: list[str] = []
@@ -163,6 +233,16 @@ class BoTorchBackend:
                 "cost data in metadata. Falling back to standard optimization. "
                 "Add 'cost' to result metadata to enable cost weighting."
             )
+
+        # ``model_warnings`` is stamped onto every SuggestionResult in the
+        # batch — collapse duplicates before lifting them to the SuggestionBatch.
+        seen: set[str] = set()
+        for sr in results:
+            for warning in sr.model_warnings:
+                if warning in seen:
+                    continue
+                seen.add(warning)
+                batch_warnings.append(warning)
 
         return SuggestionBatch(
             suggestions=suggestions,
@@ -178,6 +258,7 @@ class BoTorchBackend:
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> float | None:
+        """Return the hypervolume of the observed Pareto front, or ``None`` if not applicable."""
         if spec.n_objectives < 2:
             return None
         if len(observations) < 2:
@@ -207,70 +288,33 @@ class BoTorchBackend:
 
         return compute_hypervolume(pareto_y, ref_point)
 
-    def detect_duplicates(
-        self,
-        new_params: dict[str, Any],
-        existing_params: list[dict[str, Any]],
-        tolerance: float,
-    ) -> list[DuplicateInfo]:
-        raw = detect_duplicates(new_params, existing_params, tolerance)
-        return [
-            DuplicateInfo(
-                index=d.index,
-                is_exact=d.is_exact,
-                parameter_distance=d.parameter_distance,
-            )
-            for d in raw
-        ]
-
     def update_state_after_results(
         self,
         spec: OptimizationSpec,
         new_observations: list[ObservationData],
         backend_state: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
+        """Advance the TuRBO trust-region state given newly observed results."""
         if spec.n_objectives != 1 or backend_state is None:
             return None
 
-        turbo_state = _dict_to_turbo_state(backend_state)
+        inner = self.unwrap_state(backend_state)
+        if inner is None:
+            return None
+        turbo_state = _dict_to_turbo_state(inner)
         new_turbo = update_turbo_after_evaluation(
             turbo_state=turbo_state,
             new_observations=new_observations,
             spec=spec,
         )
-        return _turbo_state_to_dict(new_turbo)
-
-    def compute_batch_diversity(
-        self,
-        spec: OptimizationSpec,
-        candidates: list[dict[str, Any]],
-    ) -> BatchDiversityMetrics | None:
-        if len(candidates) < 2:
-            return None
-
-        try:
-            bounds = get_bounds_tensor(spec)
-            param_names = [p.name for p in spec.parameters]
-
-            values = [[float(c.get(name, 0.0)) for name in param_names] for c in candidates]
-            tensor = torch.tensor(values, device=get_device(), dtype=get_dtype())
-
-            m = compute_batch_diversity(tensor, bounds)
-            return BatchDiversityMetrics(
-                min_pairwise_distance=m.min_pairwise_distance,
-                mean_pairwise_distance=m.mean_pairwise_distance,
-                diversity_score=m.diversity_score,
-                is_diverse=m.is_diverse,
-            )
-        except (RuntimeError, ValueError, TypeError) as e:
-            logger.debug("Batch diversity computation failed: %s", e)
-            return None
+        return self.wrap_state(_turbo_state_to_dict(new_turbo))
 
     def select_methods(
         self,
         spec: OptimizationSpec,
         n_observations: int,
     ) -> dict[str, Any]:
+        """Return method metadata (model type, acquisition, transforms) for diagnostics."""
         ms = select_methods(spec, n_observations)
         return {
             "model_type": ms.model_type,
@@ -290,24 +334,49 @@ class BoTorchBackend:
         spec: OptimizationSpec,
         observations: list[ObservationData],
         sections: frozenset[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Compute model-based diagnostics using BoTorch/GPyTorch."""
         all_sections = frozenset(["objectives", "model", "outliers", "suggestions_tensor"])
         requested = all_sections if sections is None else sections
         result: dict[str, Any] = {}
         is_single = spec.n_objectives == 1
+        completed = 0
+        total = float(len(requested))
+
+        def announce(phase: str, message: str) -> None:
+            nonlocal completed
+            emit(
+                progress_callback,
+                ProgressEvent(
+                    phase=phase,
+                    message=message,
+                    progress=float(completed),
+                    total=total,
+                ),
+            )
+
+        announce("diagnostics_start", f"Computing diagnostics: {sorted(requested)}")
 
         if "objectives" in requested:
             result.update(self._compute_objective_diagnostics(spec, observations))
+            completed += 1
+            announce("diagnostics_objectives_done", "Objective metrics complete")
 
         if "model" in requested:
             result.update(self._compute_model_diagnostics(spec, observations, is_single))
+            completed += 1
+            announce("diagnostics_model_done", "Model fitting and LOO-CV complete")
 
         if "outliers" in requested:
             result.update(self._compute_outlier_diagnostics(spec, observations))
+            completed += 1
+            announce("diagnostics_outliers_done", "Outlier detection complete")
 
         if "suggestions_tensor" in requested:
             result.update(self._compute_hyperparameters(spec, observations, is_single))
+            completed += 1
+            announce("diagnostics_hyperparameters_done", "Hyperparameter extraction complete")
 
         return result
 
@@ -438,19 +507,18 @@ class BoTorchBackend:
                 include_shap=False,
             )
             loo = self._loo_cv(model, train_x, train_y, obj_names, len(observations))
-
-            return {
-                "model_correlation": corr,
-                "feature_importance": fi,
-                "loo_cv_metrics": loo,
-            }
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Model diagnostics failed: %s", e)
             return empty
+        return {
+            "model_correlation": corr,
+            "feature_importance": fi,
+            "loo_cv_metrics": loo,
+        }
 
     def _model_correlation(
         self,
-        model: Any,
+        model: SingleTaskGP | ModelListGP,
         train_x: torch.Tensor,
         train_y: torch.Tensor,
         is_single: bool,
@@ -469,7 +537,7 @@ class BoTorchBackend:
 
     def _loo_cv(
         self,
-        model: Any,
+        model: SingleTaskGP | ModelListGP,
         train_x: torch.Tensor,
         train_y: torch.Tensor,
         obj_names: list[str],
@@ -482,15 +550,16 @@ class BoTorchBackend:
             loo = compute_loo_cv_for_model(model, train_x, train_y)
             loo_by_obj: dict[str, dict[str, float]] = {}
             if isinstance(loo, dict):
+                loo_dict = cast("dict[int, LOOCVMetrics]", loo)
                 for idx, name in enumerate(obj_names):
-                    if idx in loo:
-                        loo_by_obj[name] = self._loo_to_dict(loo[idx])
+                    if idx in loo_dict:
+                        loo_by_obj[name] = self._loo_to_dict(loo_dict[idx])
             elif obj_names:
                 loo_by_obj[obj_names[0]] = self._loo_to_dict(loo)
-            return loo_by_obj
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("LOO-CV failed: %s", e)
             return None
+        return loo_by_obj
 
     def _compute_outlier_diagnostics(
         self,
@@ -514,28 +583,29 @@ class BoTorchBackend:
                 bounds=bounds,
                 objective_names=obj_names,
             )
-            if outliers:
-                info = [
-                    {
-                        "result_index": o.index,
-                        "standardized_error": round(o.standardized_error, 2),
-                        "actual_value": round(o.actual_value, 4),
-                        "predicted_value": round(o.predicted_value, 4),
-                        "objective": o.objective_name,
-                        "parameter_values": observations[o.index].parameter_values,
-                    }
-                    for o in outliers
-                ]
-                return {
-                    "outliers": {
-                        "count": len(outliers),
-                        "outlier_results": info,
-                    }
-                }
-            return {"outliers": {"count": 0, "outlier_results": []}}
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Outlier detection failed: %s", e)
             return {"outliers": None}
+
+        if outliers:
+            info = [
+                {
+                    "result_index": o.index,
+                    "standardized_error": round(o.standardized_error, 2),
+                    "actual_value": round(o.actual_value, 4),
+                    "predicted_value": round(o.predicted_value, 4),
+                    "objective": o.objective_name,
+                    "parameter_values": observations[o.index].parameter_values,
+                }
+                for o in outliers
+            ]
+            return {
+                "outliers": {
+                    "count": len(outliers),
+                    "outlier_results": info,
+                }
+            }
+        return {"outliers": {"count": 0, "outlier_results": []}}
 
     def _compute_hyperparameters(
         self,
@@ -567,18 +637,18 @@ class BoTorchBackend:
                     use_input_warping=spec.use_input_warping,
                 )
             hp = extract_hyperparameters(model, param_names)
-            return {
-                "hyperparameters": {
-                    "lengthscales": hp.lengthscales,
-                    "noise_variance": hp.noise_variance,
-                    "output_scale": hp.output_scale,
-                    "kernel_type": hp.kernel_type,
-                    "model_type": hp.model_type,
-                }
-            }
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Hyperparameter extraction failed: %s", e)
             return {"hyperparameters": None}
+        return {
+            "hyperparameters": {
+                "lengthscales": hp.lengthscales,
+                "noise_variance": hp.noise_variance,
+                "output_scale": hp.output_scale,
+                "kernel_type": hp.kernel_type,
+                "model_type": hp.model_type,
+            }
+        }
 
     def _prepare_training_data(
         self,

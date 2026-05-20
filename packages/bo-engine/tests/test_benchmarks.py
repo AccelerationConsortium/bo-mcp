@@ -130,7 +130,7 @@ class TestMultiObjectiveBenchmarks:
     def test_c2_dtlz2_feasibility(self):
         """c2_dtlz2 constraint identifies feasible/infeasible points."""
         x = torch.rand(100, 4)
-        f, c = c2_dtlz2(x, n_objectives=2, r=0.2)
+        _f, c = c2_dtlz2(x, n_objectives=2, r=0.2)
         # Some points should be feasible (c >= 0), some infeasible
         n_feasible = (c >= 0).sum().item()
         n_infeasible = (c < 0).sum().item()

@@ -23,11 +23,12 @@ def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
+@pytest.mark.usefixtures("setup_database")
 class TestFragmentLifecycleE2E:
     """End-to-end lifecycle test for donor/acceptor categorical campaign."""
 
     @pytest.mark.asyncio
-    async def test_fragment_campaign_should_complete_six_cycles_without_force(self, setup_database):
+    async def test_fragment_campaign_should_complete_six_cycles_without_force(self):
         """Desired behavior: normal run completes 6 cycles and returns a best pair."""
 
         owner_id = str(uuid4())
@@ -59,19 +60,19 @@ class TestFragmentLifecycleE2E:
         intake_data = CampaignIntakeInput(
             name="BO normal-run six-cycle completion test",
             description="Track when normal categorical run can complete all six cycles.",
-            parameters=[
+            parameters=(
                 InputParameter(
                     name="donor",
                     type=ParameterType.CATEGORICAL,
-                    categories=donor_categories,
+                    categories=tuple(donor_categories),
                 ),
                 InputParameter(
                     name="acceptor",
                     type=ParameterType.CATEGORICAL,
-                    categories=acceptor_categories,
+                    categories=tuple(acceptor_categories),
                 ),
-            ],
-            objectives=[Objective(name="gap_eV", direction="minimize")],
+            ),
+            objectives=(Objective(name="gap_eV", direction="minimize"),),
             batch_size=batch_size,
             max_iterations=n_cycles,
             initial_design_size=3,

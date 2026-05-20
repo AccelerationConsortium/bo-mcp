@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 async def export_campaign_operation(
     campaign_id: str,
-    format: str = "csv",
+    output_format: str = "csv",
 ) -> dict[str, Any]:
     """Export all results for a campaign as CSV.
 
@@ -29,18 +29,18 @@ async def export_campaign_operation(
 
     Args:
         campaign_id: UUID string of the campaign.
-        format: Export format. Currently only "csv" is supported.
+        output_format: Export format. Currently only "csv" is supported.
 
     Returns:
         Dictionary with success, format, content, n_results, errors.
     """
-    logger.info("Exporting campaign %s as %s", campaign_id, format)
+    logger.info("Exporting campaign %s as %s", campaign_id, output_format)
 
-    if format != "csv":
+    if output_format != "csv":
         return make_error_response(
             ErrorCode.VALIDATION_FAILED,
-            message=f"Unsupported export format: {format}. Only 'csv' supported.",
-            details={"format": format},
+            message=f"Unsupported export format: {output_format}. Only 'csv' supported.",
+            details={"format": output_format},
         )
 
     try:

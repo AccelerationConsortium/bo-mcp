@@ -2,8 +2,12 @@
 
 Supports:
 - Multi-objective: Pareto front, hypervolume, improvement tracking
-- Single-objective: Best value tracking, improvement history
-- Model quality: LOO cross-validation, calibration, coverage
+- Single-objective: Best value tracking, improvement history (split into
+  :mod:`bo_engine.diagnostics_single`)
+- Model quality: LOO cross-validation, calibration, coverage (split into
+  :mod:`bo_engine.diagnostics_loo`)
+- Agent usability: uncertainty trend, hyperparameter readout, constraint
+  satisfaction (split into :mod:`bo_engine.diagnostics_usability`)
 
 v1.0.1: Added single-objective diagnostic functions
 v1.1: Added LOO cross-validation for model quality assessment
@@ -11,24 +15,17 @@ v2.3: Added GPU auto-detection and acceleration
 """
 
 import logging
+import math
 from dataclasses import dataclass
-from typing import Any, overload
+from typing import Any
 
 import torch
-from botorch.cross_validation import batch_cross_validation, gen_loo_cv_folds
-from botorch.fit import fit_gpytorch_mll
-from botorch.models import SingleTaskGP
-from botorch.models.model_list_gp_regression import ModelListGP
-from botorch.models.transforms.input import Normalize
-from botorch.models.transforms.outcome import Standardize
 from botorch.utils.multi_objective.hypervolume import Hypervolume
 from botorch.utils.multi_objective.pareto import is_non_dominated
-from gpytorch.mlls import ExactMarginalLogLikelihood
 from scipy import stats as scipy_stats
 from torch import Tensor
 
 from bo_engine.constants import (
-    CI_95_Z_SCORE,
     DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS,
     DIAGNOSTICS_HYPERVOLUME_DECREASE_WARNING,
     DIAGNOSTICS_MIN_RESULTS,
@@ -38,15 +35,14 @@ from bo_engine.constants import (
     DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS,
     DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS,
     EXPECTED_DISTANCE_HYPERCUBE_DIVISOR,
-    EXPLOITATION_HEAVY_THRESHOLD,
     EXPLORATION_EXPLOITATION_OFFSET,
-    EXPLORATION_HEAVY_THRESHOLD,
-    EXPLORATION_RATIO_MULTIPLIER,
-    IMPROVEMENT_TOLERANCE_ABSOLUTE,
+    FALLBACK_HYPERVOLUME_IMPROVEMENT,
+    HYPERVOLUME_STABILITY_THRESHOLD,
+    MIN_IMPROVEMENT_RATE,
+    NUMERICAL_EPSILON,
     PROGRESS_IMPROVING_THRESHOLD,
     PROGRESS_REGRESSING_THRESHOLD,
-    SATISFACTION_TREND_THRESHOLD,
-    UNCERTAINTY_TREND_SLOPE_THRESHOLD,
+    is_zero,
 )
 from bo_engine.device import ensure_device, to_device
 
@@ -86,10 +82,7 @@ def compute_pareto_front(
     y = to_device(y)
 
     # BoTorch is_non_dominated expects maximization, so we negate for minimization
-    if minimize:
-        pareto_mask = is_non_dominated(-y)
-    else:
-        pareto_mask = is_non_dominated(y)
+    pareto_mask = is_non_dominated(-y) if minimize else is_non_dominated(y)
 
     pareto_y = y[pareto_mask]
     return pareto_y, pareto_mask
@@ -143,7 +136,7 @@ def compute_hypervolume_improvement(
     Returns:
         Relative improvement (0.0 if no previous)
     """
-    if previous_hv <= 0:
+    if previous_hv <= NUMERICAL_EPSILON:
         return 0.0
     return (current_hv - previous_hv) / previous_hv
 
@@ -183,7 +176,7 @@ def assess_model_health(
     # Compute calibration (observed variance / predicted variance)
     observed_variance = squared_errors.mean()
     predicted_variance = uncertainties.mean()
-    calibration = (observed_variance / (predicted_variance + 1e-10)).item()
+    calibration = (observed_variance / (predicted_variance + NUMERICAL_EPSILON)).item()
 
     return {
         "rmse": rmse,
@@ -218,7 +211,7 @@ def compute_convergence_metric(
     recent_avg = sum(recent) / len(recent)
     previous_avg = sum(previous) / len(previous)
 
-    if previous_avg <= 0:
+    if previous_avg <= NUMERICAL_EPSILON:
         return 1.0
 
     return (recent_avg - previous_avg) / previous_avg
@@ -273,10 +266,10 @@ def compute_rank_correlation(
     try:
         result = scipy_stats.spearmanr(pred_np, actual_np)
         corr = float(result.statistic)  # type: ignore[union-attr]
-        return corr if corr == corr else 0.0  # Handle NaN
     except (RuntimeError, ValueError, TypeError) as e:
-        logger.debug(f"Rank correlation calculation failed with {len(pred_np)} samples: {e!r}")
+        logger.debug("Rank correlation calculation failed with %d samples: %r", len(pred_np), e)
         return 0.0
+    return corr if corr == corr else 0.0  # Handle NaN
 
 
 def determine_health_status(
@@ -330,13 +323,12 @@ def determine_health_status(
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CRITICAL
     ):
         return "critical", warnings
-    elif (
+    if (
         iterations_without_improvement >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
         or model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
     ):
         return "warning", warnings
-    else:
-        return "healthy", warnings
+    return "healthy", warnings
 
 
 def _classify_improvement(rate: float) -> str:
@@ -366,17 +358,143 @@ def determine_progress_status(
 
     if len(hypervolume_history) < window * 2:
         last, prev = hypervolume_history[-1], hypervolume_history[-2]
-        rate = (last - prev) / abs(prev) if prev != 0 else 1.0
+        rate = (last - prev) / abs(prev) if not is_zero(prev) else 1.0
         return _classify_improvement(rate)
 
     recent_avg = sum(hypervolume_history[-window:]) / window
     previous_avg = sum(hypervolume_history[-2 * window : -window]) / window
 
-    if previous_avg <= 0:
+    if previous_avg <= NUMERICAL_EPSILON:
         return "improving"
 
     improvement_rate = (recent_avg - previous_avg) / previous_avg
     return _classify_improvement(improvement_rate)
+
+
+def analyze_hypervolume_history(
+    hypervolume_history: list[float],
+    n_results: int,
+    current_hypervolume: float = 0.0,
+) -> tuple[float, int]:
+    """Summarize a hypervolume trajectory for multi-objective health checks.
+
+    Returns the **signed** last-step delta so
+    :func:`determine_health_status` can detect a genuine hypervolume
+    decrease (its ``DIAGNOSTICS_HYPERVOLUME_DECREASE_WARNING`` threshold
+    is negative, so a clamp to ``>= 0`` would silently suppress the
+    warning). Stagnation is reported separately as a count of recent
+    iterations whose step was below
+    :data:`HYPERVOLUME_STABILITY_THRESHOLD` (scaled by the magnitude of
+    the last value so flat-but-large hypervolumes are not mis-flagged).
+
+    When fewer than two history samples exist but enough results have
+    accumulated to expect a hypervolume reading, ``current_hypervolume``
+    is used as a presence signal: a non-zero value yields the synthetic
+    :data:`FALLBACK_HYPERVOLUME_IMPROVEMENT` so the campaign is not
+    driven into ``critical`` purely on missing-history grounds.
+
+    Returns:
+        ``(recent_delta, iterations_stagnant)`` ready to hand to
+        :func:`determine_health_status`. ``recent_delta`` is signed —
+        negative when the last step regressed.
+    """
+    if len(hypervolume_history) >= 2:
+        recent_delta = hypervolume_history[-1] - hypervolume_history[-2]
+        threshold = (
+            HYPERVOLUME_STABILITY_THRESHOLD * abs(hypervolume_history[-1])
+            if not math.isclose(hypervolume_history[-1], 0.0, abs_tol=1e-12)
+            else HYPERVOLUME_STABILITY_THRESHOLD
+        )
+        iters_stagnant = 0
+        for i in range(len(hypervolume_history) - 1, 0, -1):
+            if hypervolume_history[i] - hypervolume_history[i - 1] < threshold:
+                iters_stagnant += 1
+            else:
+                break
+        return recent_delta, iters_stagnant
+
+    if n_results >= 2:
+        has_hv = current_hypervolume > NUMERICAL_EPSILON
+        hv_improvement = FALLBACK_HYPERVOLUME_IMPROVEMENT if has_hv else 0.0
+        return hv_improvement, 0
+
+    return 0.0, 0
+
+
+def compute_single_objective_progress_status(improvement_rate: float) -> str:
+    """Classify a single-objective campaign's progress from a scalar rate.
+
+    A rate strictly greater than :data:`MIN_IMPROVEMENT_RATE` is reported as
+    ``"improving"``; anything at or below is ``"stable"``. The thresholds
+    live in bo-engine so server / API layers cannot diverge on what counts
+    as "still making progress" for a single-objective campaign.
+    """
+    return "improving" if improvement_rate > MIN_IMPROVEMENT_RATE else "stable"
+
+
+def compute_campaign_health(
+    *,
+    is_single_objective: bool,
+    n_results: int,
+    diagnostics: dict[str, Any],
+    model_correlation: float,
+    hypervolume_history: list[float],
+) -> tuple[str, list[str], str]:
+    """End-to-end campaign-health computation.
+
+    Combines the existing single- and multi-objective status helpers with
+    the hypervolume-history analysis so the server / API layers do not have
+    to assemble (status, warnings, progress) themselves — and cannot drift
+    in *how* they assemble it. The function does not mutate
+    ``diagnostics``; callers persist the returned tuple under their own
+    transport keys.
+
+    Args:
+        is_single_objective: True for single-objective campaigns.
+        n_results: Number of observed results (used by both branches).
+        diagnostics: Diagnostics dict from
+            :func:`compute_improvement_history` / multi-objective
+            counterparts. Reads ``improvement_history`` (single-obj),
+            ``improvement_rate`` (single-obj), and ``hypervolume``
+            (multi-obj fallback).
+        model_correlation: Spearman rank correlation between GP
+            predictions and observed objectives.
+        hypervolume_history: Hypervolume samples per iteration (newest
+            last). Empty list signals no history yet.
+
+    Returns:
+        ``(status, warnings, progress_status)`` triple. Statuses are
+        ``"healthy"``/``"warning"``/``"critical"`` and progress is
+        ``"improving"``/``"stable"`` (single-obj) or
+        ``"improving"``/``"stagnant"``/``"regressing"`` (multi-obj).
+    """
+    if is_single_objective:
+        improvement_history = diagnostics.get("improvement_history", [])
+        status, warnings = determine_single_objective_health_status(
+            improvement_history=improvement_history,
+            model_correlation=model_correlation,
+        )
+        progress = compute_single_objective_progress_status(
+            float(diagnostics.get("improvement_rate", 0.0))
+        )
+        return status, warnings, progress
+
+    hv_improvement, iters_stagnant = analyze_hypervolume_history(
+        hypervolume_history,
+        n_results=n_results,
+        current_hypervolume=float(diagnostics.get("hypervolume", 0.0)),
+    )
+    status, warnings = determine_health_status(
+        n_results=n_results,
+        hypervolume_improvement=hv_improvement,
+        model_correlation=model_correlation,
+        iterations_without_improvement=iters_stagnant,
+    )
+    hv_for_progress = (
+        hypervolume_history if hypervolume_history else [float(diagnostics.get("hypervolume", 0.0))]
+    )
+    progress = determine_progress_status(hv_for_progress)
+    return status, warnings, progress
 
 
 def compute_exploration_exploitation_ratio(
@@ -403,7 +521,7 @@ def compute_exploration_exploitation_ratio(
 
     # Normalize: high distance + high uncertainty = exploration
     # Simple heuristic: if uncertainty is high relative to distance, it's exploration
-    if avg_distance > 0:
+    if avg_distance > NUMERICAL_EPSILON:
         ratio = min(1.0, avg_uncertainty / (avg_distance + EXPLORATION_EXPLOITATION_OFFSET))
     else:
         ratio = 0.5
@@ -445,806 +563,72 @@ def compute_suggestion_diversity(
     n_dims = suggestions.shape[1]
     expected_distance = (n_dims / EXPECTED_DISTANCE_HYPERCUBE_DIVISOR) ** 0.5
 
-    diversity = min(1.0, avg_distance / (expected_distance + EXPLORATION_EXPLOITATION_OFFSET))
-    return diversity
-
-
-# =============================================================================
-# LOO Cross-Validation (v1.1)
-# =============================================================================
-
-
-def compute_loo_cv_metrics(
-    train_x: Tensor,
-    train_y: Tensor,
-    bounds: Tensor,
-) -> LOOCVMetrics:
-    """Compute leave-one-out cross-validation metrics for model quality.
-
-    LOO-CV provides an unbiased estimate of generalization error by training
-    on n-1 points and predicting the held-out point, for all n points.
-
-    Args:
-        train_x: Training inputs of shape (n_samples, n_dims)
-        train_y: Training outputs of shape (n_samples, 1) or (n_samples,)
-        bounds: Parameter bounds of shape (2, n_dims)
-
-    Returns:
-        LOOCVMetrics with RMSE, MAE, R², and per-fold errors
-    """
-    train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
-
-    # Ensure train_y is 2D
-    if train_y.dim() == 1:
-        train_y = train_y.unsqueeze(-1)
-
-    n_samples = train_x.shape[0]
-
-    # Need at least 3 samples for meaningful CV
-    if n_samples < 3:
-        return LOOCVMetrics(
-            rmse=float("nan"),
-            mae=float("nan"),
-            r_squared=float("nan"),
-            mean_standardized_error=float("nan"),
-            per_fold_errors=[],
-        )
-
-    # Generate LOO CV folds
-    cv_folds = gen_loo_cv_folds(train_X=train_x, train_Y=train_y)
-
-    # Collect predictions and errors
-    predictions = []
-    actuals = []
-    standardized_errors = []
-    per_fold_errors = []
-
-    for fold_idx in range(n_samples):
-        train_fold = cv_folds.train_X[fold_idx]
-        train_y_fold = cv_folds.train_Y[fold_idx]
-        test_fold = cv_folds.test_X[fold_idx]
-        test_y_fold = cv_folds.test_Y[fold_idx]
-
-        # Skip if not enough training data
-        if train_fold.shape[0] < 2:
-            continue
-
-        try:
-            # Create and fit model on training fold
-            model = SingleTaskGP(
-                train_X=train_fold,
-                train_Y=train_y_fold,
-                input_transform=Normalize(d=train_x.shape[-1], bounds=bounds),
-                outcome_transform=Standardize(m=1),
-            )
-            mll = ExactMarginalLogLikelihood(model.likelihood, model)
-            fit_gpytorch_mll(mll)
-
-            # Predict on test fold
-            model.eval()
-            with torch.no_grad():
-                posterior = model.posterior(test_fold)
-                pred_mean = posterior.mean
-                pred_var = posterior.variance
-
-            # Compute error
-            error = (pred_mean - test_y_fold).abs().item()
-            per_fold_errors.append(error)
-            predictions.append(pred_mean.squeeze().item())
-            actuals.append(test_y_fold.squeeze().item())
-
-            # Standardized error (for calibration check)
-            std_err = (pred_mean - test_y_fold).abs() / (pred_var.sqrt() + 1e-10)
-            standardized_errors.append(std_err.item())
-
-        except (RuntimeError, ValueError, TypeError) as e:  # noqa: S112 - intentionally skip failed folds
-            # Skip folds that fail to fit, but log for debugging
-            logger.debug(f"LOO-CV fold {fold_idx} failed to fit: {type(e).__name__}: {e}")
-            continue
-
-    if len(predictions) < 2:
-        return LOOCVMetrics(
-            rmse=float("nan"),
-            mae=float("nan"),
-            r_squared=float("nan"),
-            mean_standardized_error=float("nan"),
-            per_fold_errors=per_fold_errors,
-        )
-
-    # Compute aggregate metrics
-    predictions_t = torch.tensor(predictions)
-    actuals_t = torch.tensor(actuals)
-    errors = (predictions_t - actuals_t).abs()
-
-    rmse = (errors**2).mean().sqrt().item()
-    mae = errors.mean().item()
-
-    # R² (coefficient of determination)
-    ss_res = ((predictions_t - actuals_t) ** 2).sum()
-    ss_tot = ((actuals_t - actuals_t.mean()) ** 2).sum()
-    r_squared = 1 - (ss_res / (ss_tot + 1e-10)).item() if ss_tot > 0 else 0.0
-
-    mean_std_error = sum(standardized_errors) / len(standardized_errors)
-
-    return LOOCVMetrics(
-        rmse=rmse,
-        mae=mae,
-        r_squared=r_squared,
-        mean_standardized_error=mean_std_error,
-        per_fold_errors=per_fold_errors,
-    )
-
-
-@overload
-def compute_loo_cv_for_model(
-    model: SingleTaskGP,
-    train_x: Tensor,
-    train_y: Tensor,
-) -> LOOCVMetrics: ...
-
-
-@overload
-def compute_loo_cv_for_model(
-    model: ModelListGP,
-    train_x: Tensor,
-    train_y: Tensor,
-) -> dict[int, LOOCVMetrics]: ...
-
-
-def compute_loo_cv_for_model(
-    model: SingleTaskGP | ModelListGP,
-    train_x: Tensor,
-    train_y: Tensor,
-) -> LOOCVMetrics | dict[int, LOOCVMetrics]:
-    """Compute LOO-CV metrics for a fitted model.
-
-    Uses BoTorch's batch_cross_validation for efficiency.
-
-    Args:
-        model: Fitted GP model
-        train_x: Training inputs
-        train_y: Training outputs (n_samples, n_objectives)
-
-    Returns:
-        LOOCVMetrics for single-objective models, or
-        Dictionary mapping objective index to LOOCVMetrics for multi-objective
-    """
-    if isinstance(model, SingleTaskGP):
-        # Single model - return LOOCVMetrics directly
-        cv_folds = gen_loo_cv_folds(train_X=train_x, train_Y=train_y)
-        try:
-            cv_results = batch_cross_validation(
-                model_cls=SingleTaskGP,
-                mll_cls=ExactMarginalLogLikelihood,
-                cv_folds=cv_folds,
-            )
-            # Extract predictions and compute metrics
-            pred_mean = cv_results.posterior.mean.squeeze()
-            pred_var = cv_results.posterior.variance.squeeze()
-            actuals = train_y.squeeze()
-            errors = (pred_mean - actuals).abs()
-
-            rmse = (errors**2).mean().sqrt().item()
-            mae = errors.mean().item()
-
-            ss_res = ((pred_mean - actuals) ** 2).sum()
-            ss_tot = ((actuals - actuals.mean()) ** 2).sum()
-            r_squared = 1 - (ss_res / (ss_tot + 1e-10)).item() if ss_tot > 0 else 0.0
-
-            # Compute standardized errors and coverage
-            std = pred_var.sqrt().clamp(min=1e-6)
-            standardized_errors = errors / std
-            mean_std_error = standardized_errors.mean().item()
-
-            # Coverage: fraction within 1.96 std (95% CI)
-            within_95ci = standardized_errors < CI_95_Z_SCORE
-            coverage_95 = within_95ci.float().mean().item()
-
-            return LOOCVMetrics(
-                rmse=rmse,
-                mae=mae,
-                r_squared=r_squared,
-                mean_standardized_error=mean_std_error,
-                per_fold_errors=errors.tolist(),
-                coverage_95=coverage_95,
-            )
-        except (RuntimeError, ValueError, TypeError) as e:
-            logger.debug(
-                f"Cross-validation for single-objective model failed: {type(e).__name__}: {e}"
-            )
-            return LOOCVMetrics(
-                rmse=float("nan"),
-                mae=float("nan"),
-                r_squared=float("nan"),
-                mean_standardized_error=float("nan"),
-                per_fold_errors=[],
-                coverage_95=float("nan"),
-            )
-    else:
-        # ModelListGP - compute CV for each objective
-        results: dict[int, LOOCVMetrics] = {}
-        for i, _m in enumerate(model.models):
-            train_y_i = train_y[:, i : i + 1]
-            cv_folds = gen_loo_cv_folds(train_X=train_x, train_Y=train_y_i)
-            try:
-                cv_results = batch_cross_validation(
-                    model_cls=SingleTaskGP,
-                    mll_cls=ExactMarginalLogLikelihood,
-                    cv_folds=cv_folds,
-                )
-                pred_mean = cv_results.posterior.mean.squeeze()
-                pred_var = cv_results.posterior.variance.squeeze()
-                actuals = train_y_i.squeeze()
-                errors = (pred_mean - actuals).abs()
-
-                rmse = (errors**2).mean().sqrt().item()
-                mae = errors.mean().item()
-
-                ss_res = ((pred_mean - actuals) ** 2).sum()
-                ss_tot = ((actuals - actuals.mean()) ** 2).sum()
-                r_squared = 1 - (ss_res / (ss_tot + 1e-10)).item() if ss_tot > 0 else 0.0
-
-                # Compute standardized errors and coverage
-                std = pred_var.sqrt().clamp(min=1e-6)
-                standardized_errors = errors / std
-                mean_std_error = standardized_errors.mean().item()
-
-                within_95ci = standardized_errors < CI_95_Z_SCORE
-                coverage_95 = within_95ci.float().mean().item()
-
-                results[i] = LOOCVMetrics(
-                    rmse=rmse,
-                    mae=mae,
-                    r_squared=r_squared,
-                    mean_standardized_error=mean_std_error,
-                    per_fold_errors=errors.tolist(),
-                    coverage_95=coverage_95,
-                )
-            except (RuntimeError, ValueError, TypeError) as e:
-                logger.debug(f"Cross-validation for objective {i} failed: {type(e).__name__}: {e}")
-                results[i] = LOOCVMetrics(
-                    rmse=float("nan"),
-                    mae=float("nan"),
-                    r_squared=float("nan"),
-                    mean_standardized_error=float("nan"),
-                    per_fold_errors=[],
-                    coverage_95=float("nan"),
-                )
-
-        return results
-
-
-# =============================================================================
-# Single-Objective Diagnostics (v1.0.1)
-# =============================================================================
-
-
-@dataclass
-class SingleObjectiveDiagnostics:
-    """Diagnostics for single-objective optimization."""
-
-    best_value: float
-    best_parameters: dict[str, float]
-    n_evaluations: int
-    improvement_history: list[float]
-    improvement_rate: float
-    health_status: str
-    warnings: list[str]
-
-
-def compute_best_value(
-    objective_values: list[float],
-    minimize: bool = True,
-) -> tuple[float, int]:
-    """Get best observed value and its index.
-
-    Args:
-        objective_values: List of observed objective values
-        minimize: If True, best is minimum; else maximum
-
-    Returns:
-        Tuple of (best_value, best_index)
-    """
-    if not objective_values:
-        return float("nan"), -1
-
-    if minimize:
-        best_idx = int(torch.tensor(objective_values).argmin().item())
-    else:
-        best_idx = int(torch.tensor(objective_values).argmax().item())
-
-    return objective_values[best_idx], best_idx
-
-
-def compute_improvement_history(
-    objective_values: list[float],
-    minimize: bool = True,
-) -> list[float]:
-    """Compute running best value over iterations.
-
-    Args:
-        objective_values: List of observed objective values
-        minimize: If True, track running minimum; else running maximum
-
-    Returns:
-        List of running best values (same length as input)
-    """
-    if not objective_values:
-        return []
-
-    history = []
-    if minimize:
-        running_best = float("inf")
-        for val in objective_values:
-            running_best = min(running_best, val)
-            history.append(running_best)
-    else:
-        running_best = float("-inf")
-        for val in objective_values:
-            running_best = max(running_best, val)
-            history.append(running_best)
-
-    return history
-
-
-def compute_single_objective_improvement_rate(
-    improvement_history: list[float],
-    window: int = 5,
-) -> float:
-    """Compute recent improvement rate for single-objective optimization.
-
-    Args:
-        improvement_history: Running best values over iterations
-        window: Window size for rate computation
-
-    Returns:
-        Improvement rate (positive = improving, near zero = stagnant)
-    """
-    if len(improvement_history) < 2:
-        return 0.0
-
-    if len(improvement_history) < window:
-        # Compare first and last
-        initial = improvement_history[0]
-        final = improvement_history[-1]
-    else:
-        # Compare window ago to now
-        initial = improvement_history[-window]
-        final = improvement_history[-1]
-
-    if abs(initial) < 1e-10:
-        return 0.0
-
-    return abs(final - initial) / abs(initial)
-
-
-def _count_stagnant_iterations(
-    improvement_history: list[float],
-    max_lookback: int,
-) -> int:
-    """Count consecutive iterations without improvement from the end of history."""
-    count = 0
-    n = len(improvement_history)
-    for i in range(1, min(max_lookback + 1, n)):
-        diff = abs(improvement_history[-1] - improvement_history[-i - 1])
-        if diff < IMPROVEMENT_TOLERANCE_ABSOLUTE:
-            count += 1
-        else:
-            break
-    return count
-
-
-def _collect_health_warnings(
-    stagnant: int,
-    stagnation_threshold: int,
-    model_correlation: float,
-    n_results: int,
-) -> list[str]:
-    """Build the warnings list for single-objective health."""
-    warnings: list[str] = []
-    if stagnant >= stagnation_threshold:
-        warnings.append(
-            f"Optimization has not improved in {stagnant} iterations. "
-            "Consider: reviewing constraints, expanding search space, or stopping."
-        )
-    if (
-        model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
-        and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CORRELATION_WARNING
-    ):
-        warnings.append(
-            "Model predictions are not matching experimental results (low correlation). "
-            "The model may need more data or the problem may not suit BO."
-        )
-    return warnings
-
-
-def determine_single_objective_health_status(
-    improvement_history: list[float],
-    model_correlation: float,
-    stagnation_threshold: int = DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS,
-) -> tuple[str, list[str]]:
-    """Determine health status for single-objective optimization.
-
-    Returns:
-        Tuple of (status, warnings)
-    """
-    n_results = len(improvement_history)
-    if n_results < DIAGNOSTICS_MIN_RESULTS:
-        return "healthy", ["Collecting initial data - diagnostics will improve with more results"]
-
-    stagnant = _count_stagnant_iterations(improvement_history, stagnation_threshold)
-    warnings = _collect_health_warnings(
-        stagnant, stagnation_threshold, model_correlation, n_results
-    )
-
-    if stagnant >= stagnation_threshold or (
-        model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
-        and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CRITICAL
-    ):
-        return "critical", warnings
-    if (
-        stagnant >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
-        or model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
-    ):
-        return "warning", warnings
-    return "healthy", warnings
-
-
-# =============================================================================
-# Agent Usability Diagnostics (v2.4)
-# =============================================================================
-
-
-@dataclass
-class UncertaintyTrend:
-    """Uncertainty trend over iterations.
-
-    Tracks how model uncertainty is evolving to help agents understand
-    if the model is becoming more confident over time.
-    """
-
-    mean_uncertainty: float
-    std_uncertainty: float
-    trend: str  # "decreasing", "stable", "increasing"
-    slope: float  # Linear regression slope (negative = decreasing)
-    history: list[float]  # Uncertainty values over iterations
-
-
-@dataclass
-class ExplorationExploitationMetrics:
-    """Exploration vs exploitation balance metrics.
-
-    Helps agents understand whether the optimization is exploring
-    new regions or exploiting known good areas.
-    """
-
-    exploration_ratio: float  # 0-1, higher = more exploration
-    diversity_score: float  # 0-1, higher = more diverse suggestions
-    average_distance_to_best: float  # Normalized distance to best point
-    balance_assessment: str  # "exploration_heavy", "balanced", "exploitation_heavy"
-    recommendation: str  # Agent-friendly recommendation
-
-
-@dataclass
-class HyperparameterInfo:
-    """Exposed GP hyperparameters for agent visibility.
-
-    Provides transparency into model configuration for debugging
-    and advanced agent decision-making.
-    """
-
-    lengthscales: dict[str, float]  # Parameter name -> lengthscale
-    noise_variance: float  # Observation noise estimate
-    output_scale: float  # Kernel output scale
-    kernel_type: str  # e.g., "Matern52ARD"
-    model_type: str  # e.g., "SingleTaskGP", "ModelListGP"
-
-
-@dataclass
-class ConstraintSatisfactionMetrics:
-    """Constraint satisfaction tracking over time.
-
-    Helps agents monitor if constraints are being respected
-    and identify potential feasibility issues.
-    """
-
-    satisfaction_rate: float  # 0-1, fraction of feasible points
-    recent_satisfaction_rate: float  # 0-1, in last 10 points
-    feasible_count: int
-    infeasible_count: int
-    trend: str  # "improving", "stable", "worsening"
-
-
-def compute_uncertainty_trend(
-    uncertainty_history: list[float],
-    window: int = 5,
-) -> UncertaintyTrend:
-    """Compute uncertainty trend from history.
-
-    Analyzes model uncertainty over iterations to determine if
-    the model is becoming more confident.
-
-    Args:
-        uncertainty_history: List of mean uncertainties per iteration
-        window: Window size for trend analysis (uses last ``window`` points for slope)
-
-    Returns:
-        UncertaintyTrend with trend assessment
-    """
-    if len(uncertainty_history) < 2:
-        return UncertaintyTrend(
-            mean_uncertainty=uncertainty_history[0] if uncertainty_history else 0.0,
-            std_uncertainty=0.0,
-            trend="stable",
-            slope=0.0,
-            history=uncertainty_history,
-        )
-
-    mean_unc = sum(uncertainty_history) / len(uncertainty_history)
-    variance = sum((u - mean_unc) ** 2 for u in uncertainty_history) / len(uncertainty_history)
-    std_unc = variance**0.5
-
-    # Use the last `window` points for trend computation
-    recent = uncertainty_history[-window:]
-    n = len(recent)
-    x_mean = (n - 1) / 2
-    y_mean = sum(recent) / n
-
-    numerator = sum((i - x_mean) * (y - y_mean) for i, y in enumerate(recent))
-    denominator = sum((i - x_mean) ** 2 for i in range(n))
-
-    slope = numerator / denominator if denominator > 0 else 0.0
-
-    # Determine trend based on slope relative to mean
-    relative_slope = slope / (mean_unc + 1e-10)
-    if relative_slope < -UNCERTAINTY_TREND_SLOPE_THRESHOLD:
-        trend = "decreasing"
-    elif relative_slope > UNCERTAINTY_TREND_SLOPE_THRESHOLD:
-        trend = "increasing"
-    else:
-        trend = "stable"
-
-    return UncertaintyTrend(
-        mean_uncertainty=mean_unc,
-        std_uncertainty=std_unc,
-        trend=trend,
-        slope=slope,
-        history=uncertainty_history,
-    )
-
-
-def compute_exploration_exploitation_metrics(
-    suggestions: Tensor,
-    best_point: Tensor | None,
-    uncertainties: list[float],
-    bounds: Tensor,
-) -> ExplorationExploitationMetrics:
-    """Compute exploration/exploitation balance metrics.
-
-    Analyzes recent suggestions to determine the balance between
-    exploring new regions and exploiting known good areas.
-
-    Args:
-        suggestions: Recent suggestion parameter values (n_suggestions, n_params)
-        best_point: Current best point (n_params,) or None
-        uncertainties: Model uncertainties at suggestion points
-        bounds: Parameter bounds (2, n_params)
-
-    Returns:
-        ExplorationExploitationMetrics with balance assessment
-    """
-    # Compute diversity score
-    diversity = compute_suggestion_diversity(suggestions)
-
-    # Compute distance to best
-    avg_distance_to_best = 0.0
-    if best_point is not None and suggestions.shape[0] > 0:
-        # Normalize by bounds range
-        ranges = bounds[1] - bounds[0]
-        ranges = torch.where(ranges < 1e-6, torch.ones_like(ranges), ranges)
-
-        normalized_suggestions = (suggestions - bounds[0]) / ranges
-        normalized_best = (best_point - bounds[0]) / ranges
-
-        distances = torch.norm(normalized_suggestions - normalized_best, dim=1)
-        avg_distance_to_best = distances.mean().item()
-
-    # Compute exploration ratio from uncertainties
-    if uncertainties:
-        # Higher uncertainty at suggestion points = more exploration
-        avg_uncertainty = sum(uncertainties) / len(uncertainties)
-        # Normalize to 0-1 (assume uncertainty > 0.5 is high)
-        exploration_ratio = min(1.0, avg_uncertainty * EXPLORATION_RATIO_MULTIPLIER)
-    else:
-        exploration_ratio = 0.5
-
-    balance, recommendation = _classify_exploration_balance(exploration_ratio, diversity)
-
-    return ExplorationExploitationMetrics(
-        exploration_ratio=exploration_ratio,
-        diversity_score=diversity,
-        average_distance_to_best=avg_distance_to_best,
-        balance_assessment=balance,
-        recommendation=recommendation,
-    )
-
-
-def _classify_exploration_balance(
-    exploration_ratio: float,
-    diversity: float,
-) -> tuple[str, str]:
-    """Classify the exploration/exploitation balance and return (label, recommendation)."""
-    combined_score = (exploration_ratio + diversity) / 2
-
-    if combined_score > EXPLORATION_HEAVY_THRESHOLD:
-        return (
-            "exploration_heavy",
-            "Suggestions are primarily exploring new regions. "
-            "If optimization is mature, consider reducing exploration.",
-        )
-    if combined_score < EXPLOITATION_HEAVY_THRESHOLD:
-        return (
-            "exploitation_heavy",
-            "Suggestions are focused near known good points. "
-            "If stuck in local optima, consider increasing exploration.",
-        )
-    return ("balanced", "Good balance between exploration and exploitation.")
-
-
-def _extract_gp_kernel_info(
-    gp: Any,
-) -> tuple[str, Tensor, float, float]:
-    """Extract kernel type, lengthscales, noise variance, and output scale from a single GP."""
-    covar = gp.covar_module
-    kernel = getattr(covar, "base_kernel", covar)
-    kernel_type = type(kernel).__name__
-
-    ls = kernel.lengthscale.detach().squeeze()
-
-    noise_variance = 0.0
-    if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
-        noise_variance = float(gp.likelihood.noise.item())
-
-    output_scale = 1.0
-    if hasattr(covar, "outputscale"):
-        output_scale = float(covar.outputscale.item())
-
-    return kernel_type, ls, noise_variance, output_scale
-
-
-def _lengthscales_to_dict(ls: Tensor, param_names: list[str]) -> dict[str, float]:
-    """Convert a lengthscale tensor to a named dict."""
-    result: dict[str, float] = {}
-    for i, name in enumerate(param_names):
-        if ls.numel() == 1:
-            result[name] = round(float(ls.item()), 4)
-        elif i < ls.numel():
-            result[name] = round(float(ls[i].item()), 4)
-    return result
-
-
-def extract_hyperparameters(
-    model: SingleTaskGP | ModelListGP,
-    param_names: list[str],
-) -> HyperparameterInfo:
-    """Extract GP hyperparameters for visibility.
-
-    Provides transparency into model configuration for debugging
-    and advanced agent decision-making.
-
-    Args:
-        model: Fitted GP model
-        param_names: Names of input parameters
-
-    Returns:
-        HyperparameterInfo with extracted hyperparameters
-    """
-    model_type = type(model).__name__
-
-    if isinstance(model, ModelListGP):
-        all_info = [_extract_gp_kernel_info(gp) for gp in model.models]
-        kernel_type = all_info[-1][0] if all_info else "Unknown"
-        all_ls = [info[1] for info in all_info]
-        avg_ls = torch.stack(all_ls).mean(dim=0) if all_ls else torch.tensor([])
-        lengthscales_dict = _lengthscales_to_dict(avg_ls, param_names)
-        noise_values = [info[2] for info in all_info]
-        noise_variance = sum(noise_values) / len(noise_values) if noise_values else 0.0
-        scale_values = [info[3] for info in all_info]
-        output_scale = sum(scale_values) / len(scale_values) if scale_values else 1.0
-    else:
-        kernel_type, ls, noise_variance, output_scale = _extract_gp_kernel_info(model)
-        lengthscales_dict = _lengthscales_to_dict(ls, param_names)
-
-    return HyperparameterInfo(
-        lengthscales=lengthscales_dict,
-        noise_variance=round(noise_variance, 6),
-        output_scale=round(output_scale, 4),
-        kernel_type=kernel_type,
-        model_type=model_type,
-    )
-
-
-def _check_constraint_feasibility(result: dict[str, float], constraint: dict) -> bool:
-    """Check if a single result satisfies a single constraint."""
-    ctype = constraint.get("type", "")
-    params = constraint.get("parameters", [])
-    value = constraint.get("value", 0.0)
-    coefficients = constraint.get("coefficients")
-
-    param_values = [result.get(p, 0.0) for p in params]
-
-    if ctype == "sum_equals":
-        return abs(sum(param_values) - value) < 1e-6
-    if ctype == "sum_less_than":
-        return sum(param_values) <= value
-    if ctype == "sum_greater_than":
-        return sum(param_values) >= value
-    if ctype == "linear" and coefficients:
-        weighted_sum = sum(c * v for c, v in zip(coefficients, param_values, strict=True))
-        return weighted_sum <= value
-    return True
-
-
-def _compute_satisfaction_trend(
-    feasibility_history: list[bool],
-    recent_rate: float,
-    window: int,
-) -> str:
-    """Determine the satisfaction trend from history."""
-    if len(feasibility_history) < 2 * window:
-        return "stable"
-    previous = feasibility_history[-2 * window : -window]
-    previous_rate = sum(previous) / len(previous)
-    if recent_rate > previous_rate + SATISFACTION_TREND_THRESHOLD:
-        return "improving"
-    if recent_rate < previous_rate - SATISFACTION_TREND_THRESHOLD:
-        return "worsening"
-    return "stable"
-
-
-def compute_constraint_satisfaction(
-    results: list[dict[str, float]],
-    constraints: list[dict],
-    window: int = 10,
-) -> ConstraintSatisfactionMetrics:
-    """Compute constraint satisfaction metrics over time.
-
-    Tracks feasibility rate to help agents identify constraint issues.
-
-    Args:
-        results: List of result dicts with parameter values
-        constraints: List of constraint definitions
-        window: Window for recent satisfaction rate
-
-    Returns:
-        ConstraintSatisfactionMetrics
-    """
-    if not results or not constraints:
-        return ConstraintSatisfactionMetrics(
-            satisfaction_rate=1.0,
-            recent_satisfaction_rate=1.0,
-            feasible_count=len(results),
-            infeasible_count=0,
-            trend="stable",
-        )
-
-    feasibility_history = [
-        all(_check_constraint_feasibility(result, c) for c in constraints) for result in results
-    ]
-
-    feasible_count = sum(feasibility_history)
-    infeasible_count = len(feasibility_history) - feasible_count
-    satisfaction_rate = feasible_count / len(feasibility_history)
-
-    recent = feasibility_history[-window:]
-    recent_satisfaction_rate = sum(recent) / len(recent) if recent else 1.0
-
-    trend = _compute_satisfaction_trend(feasibility_history, recent_satisfaction_rate, window)
-
-    return ConstraintSatisfactionMetrics(
-        satisfaction_rate=round(satisfaction_rate, 4),
-        recent_satisfaction_rate=round(recent_satisfaction_rate, 4),
-        feasible_count=feasible_count,
-        infeasible_count=infeasible_count,
-        trend=trend,
-    )
+    return min(1.0, avg_distance / (expected_distance + EXPLORATION_EXPLOITATION_OFFSET))
+
+
+# ---------------------------------------------------------------------------
+# Re-exports for backwards compatibility with the original god-module API.
+# The implementations live in topic-specific modules; importing them here
+# keeps ``from bo_engine.diagnostics import X`` working for every existing
+# caller while reducing the cognitive load on this file.
+# ---------------------------------------------------------------------------
+
+from bo_engine.diagnostics_loo import (  # noqa: E402
+    compute_loo_cv_for_model,
+    compute_loo_cv_metrics,
+)
+from bo_engine.diagnostics_single import (  # noqa: E402
+    SingleObjectiveDiagnostics,
+    compute_best_value,
+    compute_improvement_history,
+    compute_single_objective_improvement_rate,
+    determine_single_objective_health_status,
+)
+from bo_engine.diagnostics_usability import (  # noqa: E402
+    ConstraintSatisfactionMetrics,
+    ExplorationExploitationMetrics,
+    HyperparameterInfo,
+    UncertaintyTrend,
+    compute_constraint_satisfaction,
+    compute_exploration_exploitation_metrics,
+    compute_uncertainty_trend,
+    extract_hyperparameters,
+)
+
+__all__ = [
+    # Data classes
+    "ConstraintSatisfactionMetrics",
+    "ExplorationExploitationMetrics",
+    "HyperparameterInfo",
+    "LOOCVMetrics",
+    "SingleObjectiveDiagnostics",
+    "UncertaintyTrend",
+    # Multi-objective + campaign health (defined in this module)
+    "analyze_hypervolume_history",
+    "assess_model_health",
+    # Single-objective diagnostics
+    "compute_best_value",
+    "compute_campaign_health",
+    # Agent-usability diagnostics
+    "compute_constraint_satisfaction",
+    "compute_convergence_metric",
+    "compute_exploration_exploitation_metrics",
+    "compute_exploration_exploitation_ratio",
+    "compute_hypervolume",
+    "compute_hypervolume_improvement",
+    "compute_improvement_history",
+    # LOO cross-validation
+    "compute_loo_cv_for_model",
+    "compute_loo_cv_metrics",
+    "compute_pareto_front",
+    "compute_rank_correlation",
+    "compute_single_objective_improvement_rate",
+    "compute_single_objective_progress_status",
+    "compute_suggestion_diversity",
+    "compute_uncertainty_trend",
+    "determine_health_status",
+    "determine_progress_status",
+    "determine_single_objective_health_status",
+    "extract_hyperparameters",
+    "summarize_pareto_front",
+]

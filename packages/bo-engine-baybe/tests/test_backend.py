@@ -172,7 +172,11 @@ class TestGenerateSuggestions:
         assert "kernel_type" in result.method_info
 
     def test_backend_state_serialization(self, simple_spec: OptimizationSpec) -> None:
-        """Verify Campaign is serialized into backend_state for Approach B."""
+        """Verify Campaign is serialized into backend_state for Approach B.
+
+        State is wrapped in a :class:`BackendStateEnvelope`; the campaign
+        JSON lives under ``payload.campaign_json``.
+        """
         backend = BayBEBackend()
         observations = [
             ObservationData(parameter_values={"x1": 0.5, "x2": 0.5}, objective_values={"y": 1.0}),
@@ -186,7 +190,9 @@ class TestGenerateSuggestions:
             iteration=1,
         )
         assert result.backend_state is not None
-        assert "campaign_json" in result.backend_state
+        assert result.backend_state["backend"] == "baybe"
+        assert "payload" in result.backend_state
+        assert "campaign_json" in result.backend_state["payload"]
 
     def test_state_restore_produces_suggestions(self, simple_spec: OptimizationSpec) -> None:
         """Verify Approach B: restore from state and generate new suggestions."""
@@ -391,8 +397,12 @@ class TestDeltaMeasurements:
         state = batch1.backend_state
 
         # Iteration 2 — restores from state, adds only delta
-        obs2 = obs + [
-            ObservationData(parameter_values={"x1": 0.1, "x2": 0.9}, objective_values={"y": 0.3}),
+        obs2 = [
+            *obs,
+            ObservationData(
+                parameter_values={"x1": 0.1, "x2": 0.9},
+                objective_values={"y": 0.3},
+            ),
         ]
         batch2 = backend.generate_suggestions(
             simple_spec,
@@ -403,9 +413,11 @@ class TestDeltaMeasurements:
         )
         assert isinstance(batch2, SuggestionBatch)
         assert len(batch2.suggestions) == 1
-        # The state should be serializable and not bloated
+        # The state should be serializable and not bloated; envelope wraps
+        # the BayBE campaign JSON under ``payload.campaign_json``.
         assert batch2.backend_state is not None
-        assert "campaign_json" in batch2.backend_state
+        assert batch2.backend_state["backend"] == "baybe"
+        assert "campaign_json" in batch2.backend_state["payload"]
 
 
 class TestComputeDiagnostics:

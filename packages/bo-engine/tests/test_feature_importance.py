@@ -1,5 +1,8 @@
 """Tests for feature importance module."""
 
+import logging
+
+import pytest
 import torch
 
 from bo_engine.feature_importance import (
@@ -9,10 +12,11 @@ from bo_engine.feature_importance import (
 from bo_engine.models import create_and_fit_model
 
 
+@pytest.mark.usefixtures("torch_rng")
 class TestFeatureImportance:
     """Tests for feature importance functions."""
 
-    def test_extract_lengthscales(self, torch_rng):
+    def test_extract_lengthscales(self):
         """extract_lengthscales returns lengthscales from fitted model."""
         # Simple 2D problem with 1 objective
         X = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
@@ -68,7 +72,32 @@ class TestFeatureImportance:
         agg = importance["aggregate"]
         assert abs(agg["x1"] - agg["x2"]) < 0.2
 
-    def test_end_to_end_importance(self, torch_rng):
+    def test_near_zero_lengthscale_is_clamped(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A near-zero lengthscale is clamped to ``NUMERICAL_EPSILON`` before reciprocal.
+
+        Without the clamp, ``1.0 / 0`` would yield ``inf``, which then
+        propagates through the normalization as ``nan`` and corrupts the
+        downstream importance dict. The clamp keeps the importance
+        finite, the warning surface keeps a poorly-conditioned GP fit
+        visible to operators.
+
+        Numerical-safety rule: do not hardcode bare zero comparisons on
+        computed floats; clamp to ``NUMERICAL_EPSILON`` before reciprocal.
+        """
+        lengthscales = {
+            "objective_0": torch.tensor([0.0, 1.0]),
+        }
+        with caplog.at_level(logging.WARNING, logger="bo_engine.feature_importance"):
+            importance = compute_lengthscale_importance(lengthscales, ["x1", "x2"])
+
+        # Importance values must remain finite and sum to 1.
+        agg = importance["aggregate"]
+        assert all(abs(v) < float("inf") for v in agg.values())
+        assert abs(sum(agg.values()) - 1.0) < 1e-3
+        # Clamp fires a warning that explicitly names the objective.
+        assert any("objective_0" in rec.message for rec in caplog.records)
+
+    def test_end_to_end_importance(self):
         """Full pipeline: fit model and compute importance."""
         # Create data where x1 clearly matters more than x2
         X = torch.tensor(

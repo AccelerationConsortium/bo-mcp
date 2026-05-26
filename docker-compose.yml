@@ -67,7 +67,12 @@ services:
       - BO_BACKEND=${BO_BACKEND:-botorch}
       - BO_MCP_LOG_LEVEL=${BO_MCP_LOG_LEVEL:-INFO}
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8001/sse", "-o", "/dev/null"]
+      # Use /health (non-streaming JSON) — /sse is a Server-Sent Events
+      # stream that never closes, so plain curl would block until this
+      # 10s timeout fires and the container would always be unhealthy.
+      # --max-time is belt-and-suspenders: if /health ever regresses to
+      # a streaming response, the probe still fails fast.
+      test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://localhost:8001/health"]
       interval: 30s
       timeout: 10s
       retries: 3

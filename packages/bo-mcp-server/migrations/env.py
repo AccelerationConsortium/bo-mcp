@@ -109,8 +109,30 @@ def _apply_postgres_statement_timeout(connection: Connection) -> None:
     caps apply across every per-revision transaction Alembic opens
     during the upgrade.
 
+    The trailing ``connection.commit()`` is load-bearing. SQLAlchemy
+    2.0 ``Connection`` autobegins an implicit transaction on the first
+    ``execute()`` (the first SET above), so by the time Alembic calls
+    ``context.begin_transaction()`` the connection is already inside a
+    transaction. Alembic detects that and turns its own
+    ``begin_transaction()`` into a no-op context manager
+    (``_in_connection_transaction()`` branch). Every per-revision DDL
+    statement then runs inside the implicit transaction started by the
+    SETs — never inside a transaction Alembic owns. When the async
+    ``connect()`` block in :func:`run_async_migrations` exits without
+    an explicit commit, SQLAlchemy 2.0 rolls the implicit transaction
+    back (documented "begin once" behaviour), discarding the schema
+    changes silently while Alembic still exits 0. Committing here
+    closes that implicit transaction so Alembic opens and commits its
+    own. The session-scoped SETs survive the commit because they were
+    issued with ``SET`` (not ``SET LOCAL``) — that is exactly why the
+    helper does not wrap them in ``SET LOCAL``: ``SET LOCAL`` would
+    bind the cap to the transaction we are about to commit and the
+    timeouts would vanish for Alembic's subsequent transactions.
+
     Reference: PostgreSQL docs on these GUCs —
     https://www.postgresql.org/docs/current/runtime-config-client.html.
+    SQLAlchemy 2.0 autobegin / commit-on-close contract —
+    https://docs.sqlalchemy.org/en/20/core/connections.html#commit-as-you-go.
     """
     if connection.dialect.name != "postgresql":
         return
@@ -119,6 +141,11 @@ def _apply_postgres_statement_timeout(connection: Connection) -> None:
     connection.execute(text(f"SET statement_timeout = {timeout_ms}"))
     connection.execute(text(f"SET lock_timeout = {timeout_ms}"))
     connection.execute(text(f"SET idle_in_transaction_session_timeout = {timeout_ms}"))
+    # Close the implicit transaction opened by the SETs so Alembic's
+    # context.begin_transaction() opens a real, Alembic-owned
+    # transaction whose commit persists the DDL. See the docstring
+    # above for the autobegin / rollback-on-close trap this avoids.
+    connection.commit()
 
 
 def run_migrations_offline() -> None:

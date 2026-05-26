@@ -16,6 +16,8 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,35 @@ mcp = FastMCP(
         allowed_origins=_build_allowed_origins(),
     ),
 )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def _health_endpoint(request: Request) -> Response:
+    """Non-streaming liveness probe for orchestrators (docker, k8s).
+
+    Docker's healthcheck has no notion of a streaming endpoint, so
+    pointing ``curl`` at the SSE ``/sse`` route causes the probe to
+    block until docker's healthcheck timeout fires — even though the
+    server is healthy. This route returns a single small response
+    that orchestrators can poll without keeping a connection open.
+
+    Liveness-only by design: a 200 here means the FastMCP uvicorn
+    process is serving HTTP. It does NOT probe downstream
+    dependencies (database, BO backend). Those failures are surfaced
+    per-tool-call (the api container's own ``/health`` probes the DB)
+    rather than by yanking the whole MCP container out of rotation,
+    where a transient DB blip would cascade into MCP being marked
+    unhealthy and break the docker-compose ``depends_on``
+    ``service_healthy`` chain.
+
+    Registered at module level (not inside ``create_mcp_server()``)
+    so the route is appended to ``mcp._custom_starlette_routes``
+    exactly once at import time. ``create_mcp_server()`` is called
+    repeatedly from tests; an inline ``@mcp.custom_route`` there
+    would register duplicate routes on each call.
+    """
+    del request  # Starlette handler signature requires it; we do not read it.
+    return JSONResponse({"status": "ok"})
 
 
 def create_mcp_server() -> FastMCP:

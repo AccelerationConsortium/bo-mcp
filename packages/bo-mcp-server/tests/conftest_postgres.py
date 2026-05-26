@@ -57,7 +57,7 @@ def postgres_container():
         PostgresContainer: Running PostgreSQL container with connection details.
     """
     try:
-        from testcontainers.postgres import (  # ty: ignore[unresolved-import]
+        from testcontainers.postgres import (
             PostgresContainer,  # type: ignore[import-not-found]
         )
     except ImportError:
@@ -68,7 +68,11 @@ def postgres_container():
 
     with PostgresContainer(
         image="postgres:16-alpine",
-        user="test_user",
+        # testcontainers-python 4.x renamed `user` → `username` (and
+        # `dbname` → `dbname`/`db` depending on minor); using the
+        # current name keeps this fixture working against the pinned
+        # `testcontainers[postgres]>=4.0`.
+        username="test_user",
         password="test_password",  # noqa: S106 - test container credentials
         dbname="test_bo_mcp",
     ) as postgres:

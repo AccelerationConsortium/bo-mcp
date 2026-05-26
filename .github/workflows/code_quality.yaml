@@ -51,6 +51,16 @@ jobs:
       - uses: ./.github/actions/setup
       # Sync all workspace packages to install dependencies (torch, botorch, etc.)
       - run: uv sync --all-packages
+      # Also install bo-mcp-server's `test` extra so ty can resolve
+      # `testcontainers` imports in tests/conftest_postgres.py. Without
+      # this step the type-check job sees `unresolved-import` for files
+      # the slow / postgres test jobs run against, even though those
+      # jobs install the extra themselves at execution time. Keeping
+      # the type-check env in lockstep with the test env avoids env-
+      # conditional `# ty: ignore` directives breaking CI when local
+      # developers (who have test extras installed) cannot reproduce
+      # the failure with pre-commit.
+      - run: uv sync --package bo-mcp-server --extra test --inexact
       - run: uv run ty check
   # =============================================================================
   # Fast Tests (PR Checks) - Run on every push/PR

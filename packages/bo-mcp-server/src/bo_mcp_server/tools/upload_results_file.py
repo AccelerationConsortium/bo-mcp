@@ -8,10 +8,11 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bo_mcp_server.client import AuthenticationConfigurationError, resolve_mcp_user
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.idempotency import apply_idempotency, digest_large_field
 from bo_mcp_server.operations.submit_results import submit_results_operation
-from bo_mcp_server.response_formatter import with_response_metadata
+from bo_mcp_server.response_formatter import attach_response_metadata, with_response_metadata
 from bo_mcp_server.result_upload_parser import parse_prefixed_result_rows
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
@@ -93,12 +94,47 @@ def _parse_uuids(campaign_id: str, submitted_by: str | None) -> dict[str, Any] |
     return campaign_uuid, submitter_uuid
 
 
-@mcp.tool(name="bo_upload_results_file", annotations=NON_IDEMPOTENT_MUTATION)
+def _mcp_identity_error(exc: AuthenticationConfigurationError) -> dict[str, Any]:
+    """Return a structured error when MCP cannot resolve a current user."""
+    return attach_response_metadata(
+        make_error_response(
+            ErrorCode.INTERNAL_ERROR,
+            message=str(exc),
+            details={"transport": "mcp", "missing_identity": True},
+        )
+    )
+
+
 async def upload_results_file(
     campaign_id: str,
     file_content: str,
     file_format: str = "csv",
     submitted_by: str | None = None,
+    idempotency_key: str | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """Compatibility helper for Python callers that already have a user id.
+
+    The registered MCP tool below resolves ``submitted_by`` internally and
+    does not expose database user ids to agents.
+    """
+    with bind_trace_id(trace_id):
+        return await _upload_dispatch(
+            campaign_id=campaign_id,
+            file_content=file_content,
+            file_format=file_format,
+            submitted_by=submitted_by,
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
+        )
+
+
+@mcp.tool(name="bo_upload_results_file", annotations=NON_IDEMPOTENT_MUTATION)
+async def _upload_results_file_tool(
+    campaign_id: str,
+    file_content: str,
+    file_format: str = "csv",
     idempotency_key: str | None = None,
     dry_run: bool = False,
     trace_id: str | None = None,
@@ -112,33 +148,20 @@ async def upload_results_file(
     - param_<name>: Parameter values (e.g., param_temperature, param_pressure)
     - obj_<name>: Objective values (e.g., obj_yield, obj_cost)
 
-    Args:
-        campaign_id: UUID of the campaign
-        file_content: File content as string (CSV format)
-        file_format: File format ("csv" supported)
-        submitted_by: UUID of user submitting (optional, defaults to campaign_id)
-        idempotency_key: Optional client-supplied key (recommended: UUIDv7
-            per logical upload). Replays the prior response with
-            ``idempotency_replay: True`` if the same key + payload was
-            seen in the last 24 hours instead of re-ingesting the file.
-        dry_run: If True, parse the CSV and fully validate every row
-            (parameter bounds, duplicates, suggestion linkage) but
-            persist nothing. Dry-runs bypass the idempotency cache so
-            the slot stays free for a real upload.
-        trace_id: Optional workflow trace id. See ``bo_create_campaign``.
-
-    Returns:
-        Dictionary with:
-            - success: Boolean
-            - results_created: Number of results saved
-            - errors: List of row-level errors
+    The MCP transport resolves ``submitted_by`` internally from the current
+    BO-MCP user identity. Agents must not provide database user ids.
     """
     with bind_trace_id(trace_id):
+        try:
+            user = await resolve_mcp_user()
+        except AuthenticationConfigurationError as exc:
+            return _mcp_identity_error(exc)
+
         return await _upload_dispatch(
             campaign_id=campaign_id,
             file_content=file_content,
             file_format=file_format,
-            submitted_by=submitted_by,
+            submitted_by=str(user.id),
             idempotency_key=idempotency_key,
             dry_run=dry_run,
         )

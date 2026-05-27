@@ -19,6 +19,7 @@ from uuid import UUID
 
 from bo_mcp_server.domain import Campaign, CampaignSpec, Result, Suggestion, User
 from bo_mcp_server.domain.suggestion import SuggestionStatus
+from bo_mcp_server.settings import get_api_env, get_dev_auth
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -63,6 +64,10 @@ class InvalidIdentifierError(ClientError):
         super().__init__(f"Invalid {name} format: {value!r}")
         self.name = name
         self.value = value
+
+
+class AuthenticationConfigurationError(ClientError):
+    """The transport cannot resolve a current user from its configuration."""
 
 
 def parse_uuid(value: str, name: str = "id") -> UUID:
@@ -363,3 +368,40 @@ async def ensure_dev_user() -> User:
         saved.id,
     )
     return saved
+
+
+def assert_dev_auth_safe() -> None:
+    """Refuse the shared development user in production mode."""
+    if get_dev_auth() and get_api_env() == "production":
+        msg = (
+            "DEV_AUTH=1 is not allowed when API_ENV=production. "
+            "Provision real API keys before deploying to production."
+        )
+        raise AuthenticationConfigurationError(msg)
+
+
+async def ensure_mcp_startup_user() -> User | None:
+    """Bootstrap the shared development user for MCP startup when enabled."""
+    assert_dev_auth_safe()
+    if not get_dev_auth():
+        return None
+    return await ensure_dev_user()
+
+
+async def resolve_mcp_user() -> User:
+    """Resolve the user identity for MCP tool mutations.
+
+    The current MCP transport does not carry a per-request authentication
+    principal, so local development/eval mode resolves to the shared dev user.
+    Production must wire real MCP authentication here before exposing mutating
+    tools without ``DEV_AUTH``.
+    """
+    user = await ensure_mcp_startup_user()
+    if user is not None:
+        return user
+    msg = (
+        "MCP user identity is not configured. Enable DEV_AUTH=1 for local "
+        "development/evals, or configure real MCP authentication before using "
+        "mutating BO-MCP tools."
+    )
+    raise AuthenticationConfigurationError(msg)

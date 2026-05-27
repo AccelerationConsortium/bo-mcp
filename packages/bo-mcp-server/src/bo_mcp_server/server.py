@@ -148,8 +148,8 @@ def create_mcp_server() -> FastMCP:
     register_subscription_handlers(mcp)
 
     # Convert FastMCP's argument-validation ``ToolError`` (raised when
-    # callers send missing / wrongly-typed scalars like ``owner_id``,
-    # ``campaign_id``, ``submitted_by``, or boolean flags) into our
+    # callers send missing / wrongly-typed scalars like ``campaign_id``
+    # or boolean flags) into our
     # structured ``field_errors`` envelope. Without this, FastMCP
     # would intercept those failures before the tool body runs and
     # agents would see opaque ToolError text instead of an

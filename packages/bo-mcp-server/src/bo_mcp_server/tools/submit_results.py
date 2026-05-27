@@ -6,8 +6,10 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bo_mcp_server.client import AuthenticationConfigurationError, resolve_mcp_user
 from bo_mcp_server.domain import ResultSubmissionInput
 from bo_mcp_server.domain.intake_models import RESULT_SUBMISSION_JSON_SCHEMA
+from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.field_errors import shape_envelope, validation_envelope
 from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.idempotency_wrapper import (
@@ -138,8 +140,18 @@ def _rebase_row_validation_error(error: ValidationError, row_index: int) -> Vali
     )
 
 
-@mcp.tool(name="bo_submit_results", annotations=NON_IDEMPOTENT_MUTATION)
-async def submit_results(
+def _mcp_identity_error(exc: AuthenticationConfigurationError) -> dict[str, Any]:
+    """Return a structured error when MCP cannot resolve a current user."""
+    return attach_response_metadata(
+        make_error_response(
+            ErrorCode.INTERNAL_ERROR,
+            message=str(exc),
+            details={"transport": "mcp", "missing_identity": True},
+        )
+    )
+
+
+async def _submit_results_for_user(
     campaign_id: str,
     results: ResultsPayload,
     submitted_by: str,
@@ -152,41 +164,11 @@ async def submit_results(
     dry_run: bool = False,
     trace_id: str | None = None,
 ) -> dict[str, Any]:
-    """Submit experimental results for a campaign.
+    """Submit results for a concrete user id.
 
-    Workflow: Call after running experiments from bo_generate_suggestions.
-    Follow up with bo_get_diagnostics to check progress and convergence.
-
-    Args:
-        campaign_id: UUID of the campaign.
-        results: List of result payloads with parameter_values and
-            objective_values.
-        submitted_by: UUID of the user submitting results.
-        source: Result source (gui, file_upload, or api).
-        force: If True, skip duplicate detection.
-        atomic: If True (default), the batch is pre-validated and rejected
-            on the first error — no result row or suggestion-status update
-            is persisted. If False, invalid rows are skipped and valid rows
-            are saved individually.
-        continue_on_error: If True, continue after errors (non-atomic).
-        verbosity: Response verbosity level (minimal, standard, detailed).
-        idempotency_key: Optional client-supplied key (recommended: UUIDv7
-            per logical batch). If supplied and the same key was used in
-            the last 24 hours with an identical payload, the prior
-            response is replayed with ``idempotency_replay: True`` instead
-            of re-executing the submission. Re-using a key with a
-            different payload returns a ``VALIDATION_FAILED`` envelope
-            (``details.idempotency_conflict=True``).
-        dry_run: If True, fully validate the batch (parameter bounds,
-            duplicates, suggestion linkage) and return a preview without
-            persisting any row or advancing campaign state. The response
-            carries ``dry_run: True`` and a ``preview`` block; the
-            idempotency cache is bypassed so the slot stays free for a
-            real submission.
-        trace_id: Optional workflow trace id. See ``bo_create_campaign``.
-
-    Returns:
-        Dictionary with success, result_ids, errors, warnings.
+    This helper intentionally remains importable for internal scripts/tests
+    that exercise the operation layer directly. The registered MCP tool below
+    resolves ``submitted_by`` internally and does not expose it to agents.
     """
     # ``bind_trace_id`` wraps the entire wrapper body — including the
     # pre-operation row-shape validation — so a malformed payload still
@@ -247,3 +229,73 @@ async def submit_results(
             request_payload=request_payload,
             executor=run,
         )
+
+
+async def submit_results(
+    campaign_id: str,
+    results: ResultsPayload,
+    submitted_by: str,
+    source: str = "api",
+    force: bool = False,
+    atomic: bool = True,
+    continue_on_error: bool = False,
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard",
+    idempotency_key: str | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """Compatibility helper for Python callers that already have a user id."""
+    return await _submit_results_for_user(
+        campaign_id=campaign_id,
+        results=results,
+        submitted_by=submitted_by,
+        source=source,
+        force=force,
+        atomic=atomic,
+        continue_on_error=continue_on_error,
+        verbosity=verbosity,
+        idempotency_key=idempotency_key,
+        dry_run=dry_run,
+        trace_id=trace_id,
+    )
+
+
+@mcp.tool(name="bo_submit_results", annotations=NON_IDEMPOTENT_MUTATION)
+async def _submit_results_tool(
+    campaign_id: str,
+    results: ResultsPayload,
+    source: str = "api",
+    force: bool = False,
+    atomic: bool = True,
+    continue_on_error: bool = False,
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard",
+    idempotency_key: str | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """Submit experimental results for a campaign.
+
+    Workflow: Call after running experiments from bo_generate_suggestions.
+    Follow up with bo_get_diagnostics to check progress and convergence.
+
+    The MCP transport resolves ``submitted_by`` internally from the current
+    BO-MCP user identity. Agents must not provide database user ids.
+    """
+    try:
+        user = await resolve_mcp_user()
+    except AuthenticationConfigurationError as exc:
+        return _mcp_identity_error(exc)
+
+    return await _submit_results_for_user(
+        campaign_id=campaign_id,
+        results=results,
+        submitted_by=str(user.id),
+        source=source,
+        force=force,
+        atomic=atomic,
+        continue_on_error=continue_on_error,
+        verbosity=verbosity,
+        idempotency_key=idempotency_key,
+        dry_run=dry_run,
+        trace_id=trace_id,
+    )

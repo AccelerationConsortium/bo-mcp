@@ -11,6 +11,7 @@ from bo_mcp_server import __version__
 
 dotenv.load_dotenv()
 
+from bo_mcp_server.client import ensure_mcp_startup_user  # noqa: E402
 from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan  # noqa: E402
 from bo_mcp_server.server import create_mcp_server  # noqa: E402
 from bo_mcp_server.storage import close_database, init_database  # noqa: E402
@@ -19,6 +20,7 @@ from bo_mcp_server.storage import close_database, init_database  # noqa: E402
 async def main_async(transport: str, host: str, port: int) -> None:
     """Async main function."""
     await init_database()
+    await ensure_mcp_startup_user()
     mcp = create_mcp_server()
 
     async with idempotency_gc_lifespan():
@@ -45,6 +47,7 @@ async def _verify_setup() -> None:
 
     try:
         await init_database()
+        await ensure_mcp_startup_user()
         status["database"] = "connected"
     except Exception as e:  # noqa: BLE001 - DB drivers raise varied exception types
         status["status"] = "error"

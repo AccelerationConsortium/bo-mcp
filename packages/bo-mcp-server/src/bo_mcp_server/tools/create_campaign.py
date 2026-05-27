@@ -6,7 +6,9 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bo_mcp_server.client import AuthenticationConfigurationError, resolve_mcp_user
 from bo_mcp_server.domain.intake_models import INTAKE_INPUT_JSON_SCHEMA
+from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.field_errors import shape_envelope
 from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.create_campaign import create_campaign_operation
@@ -73,8 +75,18 @@ def _check_intake_shape(intake_data: object) -> dict[str, Any] | None:
     )
 
 
-@mcp.tool(name="bo_create_campaign", annotations=NON_IDEMPOTENT_MUTATION)
-async def create_campaign(
+def _mcp_identity_error(exc: AuthenticationConfigurationError) -> dict[str, Any]:
+    """Return a structured error when MCP cannot resolve a current user."""
+    return attach_response_metadata(
+        make_error_response(
+            ErrorCode.INTERNAL_ERROR,
+            message=str(exc),
+            details={"transport": "mcp", "missing_identity": True},
+        )
+    )
+
+
+async def _create_campaign_for_owner(
     intake_data: IntakePayload,
     owner_id: str,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -82,39 +94,11 @@ async def create_campaign(
     dry_run: bool = False,
     trace_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create a new optimization campaign from validated intake data.
+    """Create a campaign for a concrete owner id.
 
-    Workflow: Call once at the start. Use bo_validate_intake first to dry-run
-    check your spec, and bo_list_capabilities to verify feature support.
-
-    Args:
-        intake_data: Campaign intake payload validated via CampaignIntakeInput.
-            ``intake_data.random_seed`` makes suggestions deterministic only
-            within a fixed torch version, device, and
-            ``torch.use_deterministic_algorithms`` setting; it is not a
-            cross-version reproducibility guarantee.
-        owner_id: UUID of the user creating the campaign.
-        verbosity: Response verbosity level (minimal, standard, detailed).
-        idempotency_key: Optional client-supplied key (recommended: UUIDv7
-            per logical operation). If supplied and the same key was used
-            in the last 24 hours with an identical payload, the prior
-            response is returned verbatim with ``idempotency_replay:
-            True``. Re-using a key with a different payload returns a
-            ``VALIDATION_FAILED`` error with
-            ``details.idempotency_conflict=True``.
-        dry_run: If True, run intake validation and backend capability
-            checks but do not persist the campaign. The response carries
-            ``dry_run: True`` and a ``preview`` block. Dry-runs bypass
-            the idempotency cache so the slot stays free for a real
-            create. For pure schema validation, prefer
-            ``bo_validate_intake`` (READ_ONLY annotation).
-        trace_id: Optional workflow trace id. Bound for the duration of
-            the call so audit events + response ``_metadata.trace_id``
-            echo it. Use a stable id (e.g. UUIDv7) across the full
-            multi-step workflow.
-
-    Returns:
-        Dictionary with success, campaign_id, spec_id, errors.
+    This helper intentionally remains importable for internal scripts/tests
+    that exercise the operation layer directly. The registered MCP tool below
+    resolves the owner internally and does not expose ``owner_id`` to agents.
     """
     # ``bind_trace_id`` wraps the entire wrapper body — including the
     # pre-operation shape check — so a malformed payload still emits an
@@ -161,3 +145,53 @@ async def create_campaign(
             request_payload=request_payload,
             executor=run,
         )
+
+
+async def create_campaign(
+    intake_data: IntakePayload,
+    owner_id: str,
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard",
+    idempotency_key: str | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """Compatibility helper for Python callers that already have an owner id."""
+    return await _create_campaign_for_owner(
+        intake_data=intake_data,
+        owner_id=owner_id,
+        verbosity=verbosity,
+        idempotency_key=idempotency_key,
+        dry_run=dry_run,
+        trace_id=trace_id,
+    )
+
+
+@mcp.tool(name="bo_create_campaign", annotations=NON_IDEMPOTENT_MUTATION)
+async def _create_campaign_tool(
+    intake_data: IntakePayload,
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard",
+    idempotency_key: str | None = None,
+    dry_run: bool = False,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a new optimization campaign from validated intake data.
+
+    Workflow: Call once at the start. Use bo_validate_intake first to dry-run
+    check your spec, and bo_list_capabilities to verify feature support.
+
+    The MCP transport resolves the campaign owner internally from the current
+    BO-MCP user identity. Agents must not provide database user ids.
+    """
+    try:
+        user = await resolve_mcp_user()
+    except AuthenticationConfigurationError as exc:
+        return _mcp_identity_error(exc)
+
+    return await _create_campaign_for_owner(
+        intake_data=intake_data,
+        owner_id=str(user.id),
+        verbosity=verbosity,
+        idempotency_key=idempotency_key,
+        dry_run=dry_run,
+        trace_id=trace_id,
+    )

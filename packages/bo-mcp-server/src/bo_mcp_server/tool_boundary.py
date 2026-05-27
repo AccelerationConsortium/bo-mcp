@@ -11,8 +11,8 @@ that lets them target the offending field.
 
 Widening every boundary argument to ``Any`` and re-validating inside
 each tool body would work but pollutes the function signatures and
-forces every scalar (``owner_id``, ``campaign_id``, ``submitted_by``,
-boolean flags) to be revalidated by hand. Instead, this module wraps
+forces every scalar (``campaign_id`` and boolean flags) to be
+revalidated by hand. Instead, this module wraps
 ``ToolManager.call_tool`` once per server and converts the
 ValidationError-caused ToolError into the same envelope the tool
 body would have produced if validation had been deferred.

@@ -51,6 +51,20 @@ class Settings(BaseSettings):
         "in SecretStr so credentials embedded in postgresql://user:pass@... "
         "URLs are not leaked by accidental repr(settings) calls.",
     )
+    api_env: Literal["development", "staging", "production"] = Field(
+        default="development",
+        alias="API_ENV",
+        description="Deployment environment; production refuses to start with DEV_AUTH=1.",
+    )
+    dev_auth: bool = Field(
+        default=False,
+        alias="DEV_AUTH",
+        description=(
+            "When true, startup may bootstrap the shared development user so "
+            "MCP tools can resolve a real owner without exposing user ids to agents. "
+            "Refused when API_ENV=production."
+        ),
+    )
     use_alembic: Literal["auto", "true", "false"] = Field(
         default="auto",
         alias="USE_ALEMBIC",
@@ -222,6 +236,16 @@ def get_database_url() -> str:
     credentials themselves) reaches in through this accessor.
     """
     return get_settings().database_url.get_secret_value()
+
+
+def get_api_env() -> str:
+    """Return the deployment environment label."""
+    return get_settings().api_env
+
+
+def get_dev_auth() -> bool:
+    """Return whether shared development authentication is enabled."""
+    return get_settings().dev_auth
 
 
 def get_use_alembic_mode() -> str:

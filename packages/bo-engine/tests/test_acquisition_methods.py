@@ -341,6 +341,53 @@ class TestLinearConstraintValidation:
                 inequality_constraints=bad,
             )
 
+    def test_moves_linear_constraints_to_optimization_tensor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Linear constraints must live beside the bounds passed to BoTorch."""
+        acqf, bounds = self._build_acqf()
+        captured_bounds: torch.Tensor | None = None
+        captured_constraints: list[tuple[torch.Tensor, torch.Tensor, float]] | None = None
+
+        def fake_optimize_acqf(**kwargs: object) -> tuple[torch.Tensor, torch.Tensor]:
+            nonlocal captured_bounds, captured_constraints
+            opt_bounds = kwargs["bounds"]
+            assert isinstance(opt_bounds, torch.Tensor)
+            opt_constraints = kwargs["inequality_constraints"]
+            assert isinstance(opt_constraints, list)
+            captured_bounds = opt_bounds
+            captured_constraints = opt_constraints
+            candidates = torch.zeros(2, 2, device=opt_bounds.device, dtype=opt_bounds.dtype)
+            values = torch.zeros(2, device=opt_bounds.device, dtype=opt_bounds.dtype)
+            return candidates, values
+
+        monkeypatch.setattr("bo_engine.acquisition.optimize_acqf", fake_optimize_acqf)
+        constraints: list[tuple[torch.Tensor, torch.Tensor, float]] = [
+            (
+                torch.tensor([0], dtype=torch.int32),
+                torch.tensor([1.0], dtype=torch.float32),
+                0.0,
+            )
+        ]
+
+        optimize_acquisition(
+            acqf=acqf,
+            bounds=bounds,
+            batch_size=2,
+            num_restarts=2,
+            raw_samples=8,
+            inequality_constraints=constraints,
+        )
+
+        assert captured_bounds is not None
+        assert captured_constraints is not None
+        indices, coefficients, rhs = captured_constraints[0]
+        assert indices.device == captured_bounds.device
+        assert indices.dtype == torch.long
+        assert coefficients.device == captured_bounds.device
+        assert coefficients.dtype == captured_bounds.dtype
+        assert rhs == 0.0
+
 
 class TestAcquisitionInWorkflow:
     """Test acquisition methods in full workflow."""

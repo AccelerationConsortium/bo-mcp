@@ -54,6 +54,7 @@ _INTAKE_BOUNDARY_DEFAULTS: dict[str, Any] = {
     "spec_id": None,
     "warnings": [],
 }
+_VALIDATION_ONLY_OWNER_ID = "00000000-0000-0000-0000-000000000000"
 
 
 def _check_intake_shape(intake_data: object) -> dict[str, Any] | None:
@@ -84,6 +85,29 @@ def _mcp_identity_error(exc: AuthenticationConfigurationError) -> dict[str, Any]
             details={"transport": "mcp", "missing_identity": True},
         )
     )
+
+
+async def _validate_intake_before_identity(
+    intake_data: IntakePayload,
+    verbosity: Literal["minimal", "standard", "detailed"],
+    trace_id: str | None,
+) -> dict[str, Any] | None:
+    """Return a validation envelope before requiring MCP identity, if invalid."""
+    with bind_trace_id(trace_id):
+        shape_error = _check_intake_shape(intake_data)
+        if shape_error is not None:
+            return attach_response_metadata(shape_error)
+
+        validation_result = await create_campaign_operation(
+            intake_data=intake_data,
+            owner_id=_VALIDATION_ONLY_OWNER_ID,
+            verbosity=verbosity,
+            dry_run=True,
+        )
+        if validation_result.get("success") is False:
+            return validation_result
+
+    return None
 
 
 async def _create_campaign_for_owner(
@@ -182,6 +206,14 @@ async def _create_campaign_tool(
     The MCP transport resolves the campaign owner internally from the current
     BO-MCP user identity. Agents must not provide database user ids.
     """
+    validation_error = await _validate_intake_before_identity(
+        intake_data=intake_data,
+        verbosity=verbosity,
+        trace_id=trace_id,
+    )
+    if validation_error is not None:
+        return validation_error
+
     try:
         user = await resolve_mcp_user()
     except AuthenticationConfigurationError as exc:

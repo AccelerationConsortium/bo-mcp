@@ -151,6 +151,18 @@ def _mcp_identity_error(exc: AuthenticationConfigurationError) -> dict[str, Any]
     )
 
 
+def _validate_results_before_identity(
+    results: ResultsPayload,
+    trace_id: str | None,
+) -> dict[str, Any] | None:
+    """Return a validation envelope before requiring MCP identity, if invalid."""
+    with bind_trace_id(trace_id):
+        validated_results = _validate_result_rows(results)
+        if isinstance(validated_results, dict):
+            return attach_response_metadata(validated_results)
+    return None
+
+
 async def _submit_results_for_user(
     campaign_id: str,
     results: ResultsPayload,
@@ -281,6 +293,13 @@ async def _submit_results_tool(
     The MCP transport resolves ``submitted_by`` internally from the current
     BO-MCP user identity. Agents must not provide database user ids.
     """
+    validation_error = _validate_results_before_identity(
+        results=results,
+        trace_id=trace_id,
+    )
+    if validation_error is not None:
+        return validation_error
+
     try:
         user = await resolve_mcp_user()
     except AuthenticationConfigurationError as exc:

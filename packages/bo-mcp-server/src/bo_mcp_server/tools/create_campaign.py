@@ -11,10 +11,14 @@ from bo_mcp_server.domain.intake_models import INTAKE_INPUT_JSON_SCHEMA
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.field_errors import shape_envelope
 from bo_mcp_server.idempotency import apply_idempotency
-from bo_mcp_server.operations.create_campaign import create_campaign_operation
+from bo_mcp_server.operations.create_campaign import (
+    _intake_validation_error_response,
+    create_campaign_operation,
+)
 from bo_mcp_server.operations.idempotency_wrapper import (
     canonical_create_campaign_payload,
 )
+from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
@@ -54,7 +58,6 @@ _INTAKE_BOUNDARY_DEFAULTS: dict[str, Any] = {
     "spec_id": None,
     "warnings": [],
 }
-_VALIDATION_ONLY_OWNER_ID = "00000000-0000-0000-0000-000000000000"
 
 
 def _check_intake_shape(intake_data: object) -> dict[str, Any] | None:
@@ -87,25 +90,28 @@ def _mcp_identity_error(exc: AuthenticationConfigurationError) -> dict[str, Any]
     )
 
 
-async def _validate_intake_before_identity(
+def _validate_intake_before_identity(
     intake_data: IntakePayload,
-    verbosity: Literal["minimal", "standard", "detailed"],
     trace_id: str | None,
 ) -> dict[str, Any] | None:
-    """Return a validation envelope before requiring MCP identity, if invalid."""
+    """Return an intake-validation envelope before requiring MCP identity, if invalid.
+
+    Runs only the cheap, backend-free intake validation (container shape +
+    schema) so a malformed payload yields an actionable ``field_errors``
+    envelope even when MCP identity is unconfigured — and without paying for
+    backend capability checks twice. Capability validation happens once, in the
+    real create after identity resolves. Reuses
+    :func:`_intake_validation_error_response` so the envelope is identical to
+    the one the operation layer emits for the same failure.
+    """
     with bind_trace_id(trace_id):
         shape_error = _check_intake_shape(intake_data)
         if shape_error is not None:
             return attach_response_metadata(shape_error)
 
-        validation_result = await create_campaign_operation(
-            intake_data=intake_data,
-            owner_id=_VALIDATION_ONLY_OWNER_ID,
-            verbosity=verbosity,
-            dry_run=True,
-        )
-        if validation_result.get("success") is False:
-            return validation_result
+        validation = validate_intake_operation(intake_data)
+        if not validation["valid"]:
+            return attach_response_metadata(_intake_validation_error_response(validation))
 
     return None
 
@@ -206,9 +212,8 @@ async def _create_campaign_tool(
     The MCP transport resolves the campaign owner internally from the current
     BO-MCP user identity. Agents must not provide database user ids.
     """
-    validation_error = await _validate_intake_before_identity(
+    validation_error = _validate_intake_before_identity(
         intake_data=intake_data,
-        verbosity=verbosity,
         trace_id=trace_id,
     )
     if validation_error is not None:

@@ -66,6 +66,12 @@ services:
       - SQL_ECHO=${SQL_ECHO:-false}
       - BO_BACKEND=${BO_BACKEND:-botorch}
       - BO_MCP_LOG_LEVEL=${BO_MCP_LOG_LEVEL:-INFO}
+      - API_ENV=${API_ENV:-development}
+      # DEV_AUTH bootstraps a shared dev user for the mutating MCP tools, which
+      # have no per-request auth path yet. Dev/eval only; refused at startup when
+      # API_ENV=production (assert_dev_auth_safe) so the source-checked dev
+      # credential can never ship to prod.
+      - DEV_AUTH=${DEV_AUTH:-1}
     healthcheck:
       # Use /health (non-streaming JSON) — /sse is a Server-Sent Events
       # stream that never closes, so plain curl would block until this

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from bo_mcp_server.client import (
     DEV_USER_EMAIL,
+    AuthenticationConfigurationError,
     ensure_mcp_startup_user,
     get_campaign_with_spec,
     list_campaign_results,
@@ -117,3 +120,107 @@ async def test_mcp_dev_auth_uploads_results_with_dev_user(monkeypatch) -> None:
     results = await list_campaign_results(campaign_id, dev_user.id)
     assert len(results) == 1
     assert results[0].submitted_by == dev_user.id
+
+
+@pytest.mark.asyncio
+async def test_create_campaign_without_dev_auth_returns_missing_identity(monkeypatch) -> None:
+    """Without DEV_AUTH the MCP create tool returns a structured missing-identity error.
+
+    This is the configuration the direct-MCP eval runs by default (no DEV_AUTH
+    set). It must surface a clean E199 envelope flagged ``missing_identity``
+    rather than crash or silently invent an owner — see ``resolve_mcp_user``.
+    """
+    monkeypatch.setenv("DEV_AUTH", "0")
+    monkeypatch.setenv("API_ENV", "development")
+
+    result = await _create_campaign_tool(_toy_intake(), verbosity="minimal")
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "E199"
+    assert result["error"]["details"]["missing_identity"] is True
+    assert result["error"]["details"]["transport"] == "mcp"
+
+
+@pytest.mark.asyncio
+async def test_submit_results_without_dev_auth_returns_missing_identity(monkeypatch) -> None:
+    """Without DEV_AUTH the MCP submit tool returns a structured missing-identity error."""
+    monkeypatch.setenv("DEV_AUTH", "0")
+    monkeypatch.setenv("API_ENV", "development")
+
+    result = await _submit_results_tool(
+        campaign_id=str(uuid4()),
+        results=[{"parameter_values": {"x": 0.0}, "objective_values": {"score": 1.0}}],
+        verbosity="minimal",
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "E199"
+    assert result["error"]["details"]["missing_identity"] is True
+
+
+@pytest.mark.asyncio
+async def test_upload_results_file_without_dev_auth_returns_missing_identity(monkeypatch) -> None:
+    """Without DEV_AUTH the MCP upload tool returns a structured missing-identity error."""
+    monkeypatch.setenv("DEV_AUTH", "0")
+    monkeypatch.setenv("API_ENV", "development")
+
+    result = await _upload_results_file_tool(
+        campaign_id=str(uuid4()),
+        file_content="param_x,obj_score\n0.0,1.0\n",
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "E199"
+    assert result["error"]["details"]["missing_identity"] is True
+
+
+@pytest.mark.asyncio
+async def test_upload_malformed_file_reports_validation_before_identity(monkeypatch) -> None:
+    """A malformed upload yields the payload-validation error, not the identity error.
+
+    The upload tool validates the file payload before resolving identity, so an
+    agent gets an actionable field error even when identity is unconfigured —
+    matching bo_create_campaign / bo_submit_results. Here DEV_AUTH is unset yet
+    the unsupported-format envelope (E005) wins over the missing-identity E199.
+    """
+    monkeypatch.setenv("DEV_AUTH", "0")
+    monkeypatch.setenv("API_ENV", "development")
+
+    result = await _upload_results_file_tool(
+        campaign_id=str(uuid4()),
+        file_content="",
+        file_format="xml",
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "E005"
+    assert result["error"].get("details", {}).get("missing_identity") is None
+
+
+@pytest.mark.asyncio
+async def test_dev_auth_refused_in_production(monkeypatch) -> None:
+    """DEV_AUTH=1 with API_ENV=production must refuse rather than bootstrap the shared user.
+
+    The shared dev user's API key is checked into source, so allowing the
+    bypass in production would publish a master credential. Startup calls
+    ``ensure_mcp_startup_user`` (see ``cli.main_async``), which must raise — and
+    thereby crash the server at boot — instead of seeding the user. Mirrors the
+    API package's ``test_create_app_refuses_dev_auth_in_production``.
+    """
+    monkeypatch.setenv("DEV_AUTH", "1")
+    monkeypatch.setenv("API_ENV", "production")
+
+    with pytest.raises(AuthenticationConfigurationError, match="DEV_AUTH=1 is not allowed"):
+        await ensure_mcp_startup_user()
+
+
+@pytest.mark.asyncio
+async def test_dev_auth_allowed_outside_production(monkeypatch) -> None:
+    """The same DEV_AUTH=1 bootstrap is permitted when API_ENV is not production."""
+    monkeypatch.setenv("DEV_AUTH", "1")
+    monkeypatch.setenv("API_ENV", "staging")
+
+    user = await ensure_mcp_startup_user()
+
+    assert user is not None
+    assert user.email == DEV_USER_EMAIL

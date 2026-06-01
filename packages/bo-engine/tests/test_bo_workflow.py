@@ -262,17 +262,37 @@ class TestMultiObjectiveWorkflow:
             assert hypervolumes[i + 1] >= hypervolumes[i] - 1e-6
 
     def test_optimization_invariants(self, tolerance_ci: dict[str, float]):
-        """Test invariants that always hold regardless of stochastic outcomes.
+        """Properties of a fully seeded (reproducible) optimization run.
 
-        These invariants are guaranteed properties of the optimization:
-        - Pareto front has at least 2 points after sufficient iterations
-        - Hypervolume is non-decreasing over iterations
-        - All suggestions are within bounds
+        The acquisition RNG is pinned (random / numpy / torch seeds plus an
+        explicit ``rng`` threaded into ``generate_next_batch``), so the run is
+        deterministic and the following all hold:
+        - All suggestions are within bounds (structural invariant)
+        - The Pareto front is a non-empty subset of the observations (structural)
+        - Hypervolume is non-decreasing over iterations (structural)
+        - The bi-objective trade-off resolves multiple (>= min_pareto_size)
+          Pareto points under the pinned seed; the cross-seed distribution of
+          this quantity is covered by
+          ``test_optimization_finds_good_tradeoffs_statistical`` (nightly).
 
-        Reference: BoTorch multi-objective optimization tutorial
-        https://botorch.org/tutorials/multi_objective_bo
+        Pinning ``rng`` is what makes this deterministic: otherwise
+        ``generate_next_batch`` draws its seed from ``random.randint`` (see
+        ``_resolve_acquisition_seed``), which is non-reproducible across runs.
+
+        References:
+            - BoTorch multi-objective tutorial: https://botorch.org/tutorials/multi_objective_bo
+            - BoTorch reproducibility: https://botorch.org/docs/reproducibility
         """
+        # Pin every RNG the acquisition path consults so the run is fully
+        # reproducible. generate_next_batch resolves its torch seed from this
+        # ``rng`` (see bo_engine.suggestions._resolve_acquisition_seed); without
+        # a supplied rng (or spec.random_seed) it falls through to
+        # ``random.randint``, which bo_engine documents as non-reproducible —
+        # that uncontrolled seed was the real source of this test's CI flakiness.
+        random.seed(42)
+        np.random.seed(42)  # noqa: NPY002
         torch.manual_seed(42)
+        rng = np.random.default_rng(42)
         spec = create_branin_currin_spec(batch_size=3)
         observations: list[ObservationData] = []
         ref_point = torch.tensor([1.5, 1.5])
@@ -282,7 +302,7 @@ class TestMultiObjectiveWorkflow:
         # Run optimization
         for iteration in range(5):
             suggestions, _ = generate_next_batch(
-                spec, observations, batch_size=3, iteration=iteration
+                spec, observations, batch_size=3, iteration=iteration, rng=rng
             )
 
             # Invariant: All suggestions within bounds
@@ -313,10 +333,13 @@ class TestMultiObjectiveWorkflow:
         )
         pareto_y, _ = compute_pareto_front(y)
 
-        # Invariant: Should have found multiple Pareto points
-        assert pareto_y.shape[0] >= tolerance_ci["min_pareto_size"], (
-            f"Expected at least {tolerance_ci['min_pareto_size']} Pareto points, "
-            f"got {pareto_y.shape[0]}"
+        # With the RNG pinned above the run is reproducible, so the bi-objective
+        # trade-off reliably resolves multiple Pareto points. Assert both the
+        # lower bound (>= min_pareto_size, the quality signal) and the upper
+        # bound (the front is a subset of the observations — a true invariant).
+        assert tolerance_ci["min_pareto_size"] <= pareto_y.shape[0] <= len(observations), (
+            f"Pareto front size {pareto_y.shape[0]} outside "
+            f"[{tolerance_ci['min_pareto_size']}, {len(observations)}]"
         )
 
         # Invariant: Hypervolume should be non-decreasing
@@ -332,12 +355,16 @@ class TestMultiObjectiveWorkflow:
         )
 
     @pytest.mark.nightly
-    def test_optimization_finds_good_tradeoffs_statistical(self):
+    def test_optimization_finds_good_tradeoffs_statistical(
+        self, tolerance_nightly: dict[str, float]
+    ):
         """Statistical test: Optimization finds good trade-offs over multiple runs.
 
-        This test runs multiple times with different seeds and checks that
-        the AVERAGE performance meets tighter tolerances. This catches
-        systematic regressions while allowing individual run variance.
+        This test runs multiple times with different seeds and checks that the
+        AVERAGE performance (Pareto-max objective values and Pareto-front size)
+        meets tighter tolerances. This catches systematic regressions while
+        allowing individual run variance — including a single numerically
+        degenerate run whose front collapses to one point.
 
         Marked as @nightly because it's slower and only needed for regression detection.
 
@@ -350,6 +377,7 @@ class TestMultiObjectiveWorkflow:
         """
         n_runs = 5
         pareto_maxes = []
+        pareto_sizes = []
 
         for run in range(n_runs):
             seed = 42 + run
@@ -377,6 +405,7 @@ class TestMultiObjectiveWorkflow:
             )
             pareto_y, _ = compute_pareto_front(y)
             pareto_maxes.append(pareto_y.max().item())
+            pareto_sizes.append(pareto_y.shape[0])
 
         # Deterministic mean ~3.998; allow 10% margin for cross-platform variance
         mean_pareto_max = np.mean(pareto_maxes)
@@ -387,6 +416,17 @@ class TestMultiObjectiveWorkflow:
         # Deterministic P90 ~5.826; allow 10% margin
         p90 = np.percentile(pareto_maxes, 90)
         assert p90 < 6.5, f"90th percentile Pareto max {p90:.2f} too high (expected < 6.5)"
+
+        # Across seeds the optimizer should typically resolve multiple trade-offs.
+        # Checked on the median so one numerically degenerate run (a non-p.d. GP /
+        # failed acquisition optimization) does not fail the suite — the per-seed
+        # CI invariants test only asserts a non-empty front.
+        min_pareto_size = tolerance_nightly["min_pareto_size"]
+        median_pareto_size = float(np.median(pareto_sizes))
+        assert median_pareto_size >= min_pareto_size, (
+            f"Median Pareto size {median_pareto_size} across {n_runs} seeds "
+            f"below expected {min_pareto_size}; sizes={pareto_sizes}"
+        )
 
 
 class TestSuggestionProvenance:

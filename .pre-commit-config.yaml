@@ -13,7 +13,7 @@ repos:
     hooks:
       - id: ty
         name: ty type checker
-        entry: uv run ty check
+        entry: uv run --all-packages --extra test ty check
         language: system
         types: [python]
         pass_filenames: false

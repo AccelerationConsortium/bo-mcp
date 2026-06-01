@@ -107,7 +107,7 @@ async def submit_campaign_results(
             objective_values=r.objective_values,
             suggestion_id=r.suggestion_id,
             measurement_uncertainty=r.measurement_uncertainty,
-            metadata=r.metadata,
+            metadata=r.metadata.model_dump(exclude_unset=True, mode="json"),
         )
         for r in request.results
     ]

@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any
 
+from bo_mcp_server.client import ResultMetadata
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_RESULTS
@@ -31,7 +32,7 @@ class ResultCreate(BaseModel):
     objective_values: dict[str, float]
     suggestion_id: str | None = None
     measurement_uncertainty: dict[str, float] | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: ResultMetadata = Field(default_factory=ResultMetadata)
 
 
 class ResultBatchCreate(BaseModel):

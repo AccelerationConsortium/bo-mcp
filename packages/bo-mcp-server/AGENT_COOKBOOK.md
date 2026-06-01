@@ -46,7 +46,7 @@ async def example(session: ClientSession):
     # Tool call (preferred for most operations)
     result = await session.call_tool(
         "bo_list_campaigns",
-        {"owner_id": "user-uuid", "status": "running", "limit": 10}
+        {"status": "running", "limit": 10}
     )
 
     # Resource read (for simple lookups)
@@ -68,8 +68,7 @@ async def example(session: ClientSession):
     "objectives": [
       {"name": "y", "direction": "minimize"}
     ]
-  },
-  "owner_id": "user-uuid-here"
+  }
 }
 // Response: {"success": true, "campaign_id": "abc-123-..."}
 ```
@@ -83,8 +82,7 @@ async def example(session: ClientSession):
 // Tool: bo_submit_results
 {
   "campaign_id": "abc-123-...",
-  "results": [{"parameter_values": {"x": 5.2}, "objective_values": {"y": 12.3}}],
-  "submitted_by": "user-uuid-here"
+  "results": [{"parameter_values": {"x": 5.2}, "objective_values": {"y": 12.3}}]
 }
 
 // Tool: bo_get_diagnostics (use verbosity=minimal for tight loops)
@@ -219,8 +217,7 @@ each action directly to a concrete follow-up tool call:
 // Use bo_upload_results_file with CSV format
 {
   "campaign_id": "...",
-  "file_content": "param_x,param_y,obj_z\n1.0,2.0,3.0\n...",
-  "submitted_by": "user-uuid"
+  "file_content": "param_x,param_y,obj_z\n1.0,2.0,3.0\n..."
 }
 ```
 
@@ -351,7 +348,6 @@ All results succeed or all fail:
 {
   "campaign_id": "...",
   "results": [...],
-  "submitted_by": "...",
   "atomic": true
 }
 ```
@@ -362,7 +358,6 @@ Process all results, get partial results:
 {
   "campaign_id": "...",
   "results": [...],
-  "submitted_by": "...",
   "atomic": false,
   "continue_on_error": true
 }
@@ -413,8 +408,7 @@ Optimize a chemical reaction for maximum yield and minimum cost:
       {"type": "sum_equals", "parameters": ["reagent_A", "reagent_B"], "value": 1.0}
     ],
     "batch_size": 3
-  },
-  "owner_id": "user-uuid"
+  }
 }
 // Expected: {"success": true, "campaign_id": "...", "errors": []}
 ```
@@ -459,7 +453,6 @@ for iteration in range(MAX_ITERATIONS):
         {
             "campaign_id": CAMPAIGN_ID,
             "results": results,
-            "submitted_by": USER_ID,
             "verbosity": "minimal"
         }
     )

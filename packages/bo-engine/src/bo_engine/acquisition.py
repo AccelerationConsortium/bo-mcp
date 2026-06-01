@@ -840,6 +840,23 @@ def _validate_linear_constraints(
         _validate_linear_constraint_entry(entry, n_dims, f"{kind}_constraints[{position}]")
 
 
+def _move_linear_constraints_to_bounds(
+    constraints: list[tuple[Tensor, Tensor, float]] | None,
+    bounds: Tensor,
+) -> list[tuple[Tensor, Tensor, float]] | None:
+    """Move BoTorch linear constraint tensors onto the optimization tensor device."""
+    if not constraints:
+        return constraints
+    return [
+        (
+            indices.to(device=bounds.device, dtype=torch.long),
+            coefficients.to(device=bounds.device, dtype=bounds.dtype),
+            float(rhs),
+        )
+        for indices, coefficients, rhs in constraints
+    ]
+
+
 def _resolve_restart_budget(
     spec: OptimizationSpec | None,
     bounds: Tensor,
@@ -922,6 +939,8 @@ def optimize_acquisition(
     n_dims = int(bounds.shape[-1])
     _validate_linear_constraints(inequality_constraints, n_dims, "inequality")
     _validate_linear_constraints(equality_constraints, n_dims, "equality")
+    inequality_constraints = _move_linear_constraints_to_bounds(inequality_constraints, bounds)
+    equality_constraints = _move_linear_constraints_to_bounds(equality_constraints, bounds)
 
     if X_pending is not None:
         X_pending = to_device(X_pending)

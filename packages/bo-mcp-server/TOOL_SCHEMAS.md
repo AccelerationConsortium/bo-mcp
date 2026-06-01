@@ -223,8 +223,7 @@ Creates a new optimization campaign from validated intake data.
 **Input Schema:**
 ```json
 {
-  "intake_data": "object (campaign configuration payload)",
-  "owner_id": "string (UUID)"
+  "intake_data": "object (campaign configuration payload)"
 }
 ```
 
@@ -513,7 +512,6 @@ Submits experimental results for a campaign.
       "metadata": "object (optional)"
     }
   ],
-  "submitted_by": "string (UUID)",
   "source": "gui | file_upload | api (default: api)",
   "force": "boolean (default: false) - Override duplicate detection"
 }
@@ -547,8 +545,7 @@ Uploads experimental results from a CSV file.
 {
   "campaign_id": "string (UUID)",
   "file_content": "string (CSV content)",
-  "file_format": "csv (default: csv)",
-  "submitted_by": "string (UUID, optional)"
+  "file_format": "csv (default: csv)"
 }
 ```
 

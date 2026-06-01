@@ -27,6 +27,7 @@ from bo_mcp_server.client.auth import (
     DEV_API_KEY,
     DEV_USER_EMAIL,
     DEV_USER_NAME,
+    AuthenticationConfigurationError,
     ClientError,
     InvalidIdentifierError,
     NotAuthorizedError,
@@ -34,6 +35,7 @@ from bo_mcp_server.client.auth import (
     authorize_campaign,
     authorize_suggestion,
     ensure_dev_user,
+    ensure_mcp_startup_user,
     ensure_owned_campaigns,
     get_campaign_spec_by_id,
     get_campaign_with_spec,
@@ -43,6 +45,7 @@ from bo_mcp_server.client.auth import (
     list_campaign_suggestions,
     list_owner_campaigns_with_specs,
     parse_uuid,
+    resolve_mcp_user,
 )
 from bo_mcp_server.client.lifecycle import (
     DatabasePingResult,
@@ -127,12 +130,13 @@ __all__ = [
     "DEV_USER_NAME",
     "ERROR_CODE_TO_HTTP_STATUS",
     "RESPONSE_SCHEMA_VERSION",
+    # Auth helpers / exceptions
+    "AuthenticationConfigurationError",
     # DTOs
     "Campaign",
     "CampaignIntakeInput",
     "CampaignSpec",
     "CampaignStatus",
-    # Auth helpers / exceptions
     "ClientError",
     "Constraint",
     # Errors / formatting
@@ -167,6 +171,7 @@ __all__ = [
     "create_campaign_operation",
     "discover_transfer_candidates_operation",
     "ensure_dev_user",
+    "ensure_mcp_startup_user",
     "ensure_owned_campaigns",
     "export_campaign_operation",
     "format_validate_intake_response",
@@ -198,6 +203,7 @@ __all__ = [
     "ping_database_detailed",
     "record_campaign_created",
     "record_diagnostics_cache",
+    "resolve_mcp_user",
     "run_idempotent_operation",
     "snapshot_db_pool",
     "submit_results_operation",

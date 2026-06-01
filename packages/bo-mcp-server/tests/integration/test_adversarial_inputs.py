@@ -394,7 +394,7 @@ class TestInvalidUUIDs:
         # Python None will fail differently than string, but should handle gracefully
         try:
             result = await submit_results(
-                campaign_id=None,  # type: ignore[arg-type]
+                campaign_id=None,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
                 results=_to_result_inputs(
                     [{"parameter_values": {"x": 0.5}, "objective_values": {"f": 1.0}}]
                 ),

@@ -54,7 +54,6 @@ class TestCreateCampaignBoundary:
                     "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
                     "objectives": [{"name": "y", "direction": "minimize"}],
                 },
-                "owner_id": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -85,7 +84,6 @@ class TestCreateCampaignBoundary:
                     "objectives": [{"name": "y", "direction": "minimize"}],
                     "not_a_real_field": True,
                 },
-                "owner_id": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -97,8 +95,11 @@ class TestCreateCampaignBoundary:
         )
 
     @pytest.mark.asyncio
-    async def test_valid_intake_round_trips_through_call_tool(self) -> None:
+    async def test_valid_intake_round_trips_through_call_tool(self, monkeypatch) -> None:
         """The dict-boundary path still creates campaigns for valid payloads."""
+        monkeypatch.setenv("DEV_AUTH", "1")
+        monkeypatch.setenv("API_ENV", "development")
+
         result = await _call(
             "bo_create_campaign",
             arguments={
@@ -107,7 +108,6 @@ class TestCreateCampaignBoundary:
                     "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
                     "objectives": [{"name": "y", "direction": "minimize"}],
                 },
-                "owner_id": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -139,7 +139,6 @@ class TestSubmitResultsBoundary:
                         "measurement_uncertainty": "not_a_dict",
                     }
                 ],
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -165,7 +164,6 @@ class TestSubmitResultsBoundary:
                         "not_a_real_key": 42,
                     }
                 ],
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -196,7 +194,6 @@ class TestSubmitResultsBoundary:
                         "measurement_uncertainty": "not_a_dict",
                     },
                 ],
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -226,7 +223,6 @@ class TestOuterShapeBoundary:
             "bo_create_campaign",
             arguments={
                 "intake_data": "not-an-object",
-                "owner_id": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -243,7 +239,6 @@ class TestOuterShapeBoundary:
             "bo_create_campaign",
             arguments={
                 "intake_data": [{"name": "wrong-shape"}],
-                "owner_id": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -257,7 +252,6 @@ class TestOuterShapeBoundary:
             arguments={
                 "campaign_id": str(uuid4()),
                 "results": "not-a-list",
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -277,7 +271,6 @@ class TestOuterShapeBoundary:
             arguments={
                 "campaign_id": str(uuid4()),
                 "results": {"parameter_values": {"x": 0.5}},
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -291,7 +284,6 @@ class TestOuterShapeBoundary:
             arguments={
                 "campaign_id": str(uuid4()),
                 "results": ["not-a-dict"],
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -312,7 +304,6 @@ class TestOuterShapeBoundary:
                     },
                     "still-not-a-dict",
                 ],
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
@@ -327,9 +318,9 @@ class TestScalarBoundary:
 
     Widening ``intake_data`` / ``results`` to ``Any`` covered outer
     container shape, but FastMCP still validates the remaining scalar
-    args (``owner_id``, ``campaign_id``, ``submitted_by``, boolean
-    flags) against the function signature and raises ``ToolError``
-    before the tool body runs. The boundary wrapper catches that
+    args (``campaign_id`` and boolean flags) against the function
+    signature and raises ``ToolError`` before the tool body runs. The
+    boundary wrapper catches that
     ToolError when its ``__cause__`` is a Pydantic ``ValidationError``
     and renders the same ``field_errors`` envelope. These tests pin
     that contract.
@@ -339,7 +330,7 @@ class TestScalarBoundary:
     async def test_missing_intake_data_returns_envelope(self) -> None:
         result = await _call(
             "bo_create_campaign",
-            arguments={"owner_id": str(uuid4())},
+            arguments={},
         )
         assert isinstance(result, dict)
         assert result["success"] is False
@@ -354,30 +345,12 @@ class TestScalarBoundary:
             "bo_submit_results",
             arguments={
                 "campaign_id": str(uuid4()),
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
         assert result["success"] is False
         assert "results" in result["field_errors"]
         assert result["result_ids"] == []
-
-    @pytest.mark.asyncio
-    async def test_non_string_owner_id_returns_envelope(self) -> None:
-        result = await _call(
-            "bo_create_campaign",
-            arguments={
-                "intake_data": {
-                    "name": "x",
-                    "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
-                    "objectives": [{"name": "y", "direction": "minimize"}],
-                },
-                "owner_id": 12345,
-            },
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is False
-        assert "owner_id" in result["field_errors"]
 
     @pytest.mark.asyncio
     async def test_non_string_campaign_id_returns_envelope(self) -> None:
@@ -391,31 +364,11 @@ class TestScalarBoundary:
                         "objective_values": {"y": 1.0},
                     }
                 ],
-                "submitted_by": str(uuid4()),
             },
         )
         assert isinstance(result, dict)
         assert result["success"] is False
         assert "campaign_id" in result["field_errors"]
-
-    @pytest.mark.asyncio
-    async def test_non_string_submitted_by_returns_envelope(self) -> None:
-        result = await _call(
-            "bo_submit_results",
-            arguments={
-                "campaign_id": str(uuid4()),
-                "results": [
-                    {
-                        "parameter_values": {"x": 0.5},
-                        "objective_values": {"y": 1.0},
-                    }
-                ],
-                "submitted_by": 12345,
-            },
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is False
-        assert "submitted_by" in result["field_errors"]
 
     @pytest.mark.asyncio
     async def test_invalid_bool_atomic_returns_envelope(self) -> None:
@@ -429,7 +382,6 @@ class TestScalarBoundary:
                         "objective_values": {"y": 1.0},
                     }
                 ],
-                "submitted_by": str(uuid4()),
                 "atomic": "not-a-bool",
             },
         )

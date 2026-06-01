@@ -1,7 +1,7 @@
 """Suggestion schemas."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +12,8 @@ from api.schemas.common import ResponseEnvelope
 # permissive because the MCP response formatter splices a ``_metadata``
 # envelope into every payload before it reaches the response model.
 _FORBID_EXTRA: ConfigDict = ConfigDict(extra="forbid")
+
+ManualSuggestionStatus = Literal["accepted", "rejected", "expired"]
 
 
 class SuggestionProvenance(BaseModel):
@@ -56,7 +58,15 @@ class SuggestionStatusUpdateRequest(BaseModel):
 
     model_config = _FORBID_EXTRA
 
-    status: str = Field(pattern="^(accepted|rejected|expired)$")
+    status: ManualSuggestionStatus = Field(
+        description=(
+            'Manual suggestion status transition. Use "accepted", "rejected", '
+            'or "expired" here. Do not set "completed" directly; a suggestion '
+            "becomes completed automatically when a result is submitted with "
+            "its suggestion_id."
+        ),
+        examples=["accepted", "rejected", "expired"],
+    )
 
 
 class SuggestionStatusUpdateResponse(ResponseEnvelope):

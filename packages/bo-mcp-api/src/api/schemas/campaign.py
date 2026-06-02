@@ -1,7 +1,7 @@
 """Campaign schemas."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +16,8 @@ from api.schemas.intake import IntakeData
 # ``_metadata`` envelope into every payload before it reaches the
 # response model.
 _FORBID_EXTRA: ConfigDict = ConfigDict(extra="forbid")
+
+LifecycleAction = Literal["pause", "resume", "terminate"]
 
 
 class CampaignCreate(BaseModel):
@@ -158,7 +160,13 @@ class CampaignLifecycleRequest(BaseModel):
 
     model_config = _FORBID_EXTRA
 
-    action: str = Field(pattern="^(pause|resume|terminate)$")
+    action: LifecycleAction = Field(
+        description=(
+            'Lifecycle action to apply. Use "terminate" to end or complete a '
+            'campaign; there is no separate "complete" action.'
+        ),
+        examples=["pause", "resume", "terminate"],
+    )
 
 
 class CampaignLifecycleResponse(ResponseEnvelope):

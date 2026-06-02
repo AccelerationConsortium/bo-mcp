@@ -62,3 +62,29 @@ def test_request_schemas_reject_unknown_fields(schema: type, payload: dict) -> N
         schema(**payload)
     types = {err["type"] for err in exc_info.value.errors()}
     assert "extra_forbidden" in types
+
+
+def test_lifecycle_action_schema_advertises_allowed_workflow() -> None:
+    """Lifecycle actions should be enum-like and explain campaign completion."""
+    action_schema = CampaignLifecycleRequest.model_json_schema()["properties"]["action"]
+
+    assert action_schema["enum"] == ["pause", "resume", "terminate"]
+    assert "terminate" in action_schema["description"]
+    assert "complete" in action_schema["description"]
+
+    with pytest.raises(ValidationError) as exc_info:
+        CampaignLifecycleRequest.model_validate({"action": "complete"})
+    assert exc_info.value.errors()[0]["type"] == "literal_error"
+
+
+def test_suggestion_status_schema_advertises_manual_transitions() -> None:
+    """Suggestion status updates should make completion-by-result explicit."""
+    status_schema = SuggestionStatusUpdateRequest.model_json_schema()["properties"]["status"]
+
+    assert status_schema["enum"] == ["accepted", "rejected", "expired"]
+    assert "completed" in status_schema["description"]
+    assert "result" in status_schema["description"]
+
+    with pytest.raises(ValidationError) as exc_info:
+        SuggestionStatusUpdateRequest.model_validate({"status": "completed"})
+    assert exc_info.value.errors()[0]["type"] == "literal_error"

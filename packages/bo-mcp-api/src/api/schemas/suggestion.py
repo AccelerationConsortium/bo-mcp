@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.schemas.common import ResponseEnvelope
+from api.schemas.common import ResponseEnvelope, VerbosityLevel
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
@@ -87,7 +87,7 @@ class SuggestionQueryRequest(BaseModel):
     status_filter: str | None = None
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
-    verbosity: str = "standard"
+    verbosity: VerbosityLevel = VerbosityLevel.STANDARD
 
 
 class SuggestionQueryResponse(ResponseEnvelope):

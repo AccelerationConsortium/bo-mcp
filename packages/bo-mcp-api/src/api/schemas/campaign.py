@@ -135,7 +135,7 @@ class CampaignQueryRequest(BaseModel):
             "Mutually exclusive with offset."
         ),
     )
-    verbosity: str = "standard"
+    verbosity: VerbosityLevel = VerbosityLevel.STANDARD
 
 
 class CampaignQueryResponse(ResponseEnvelope):

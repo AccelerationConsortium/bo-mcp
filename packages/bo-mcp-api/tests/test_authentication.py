@@ -72,6 +72,30 @@ class TestApiKeyChallenge:
         assert "Invalid API key" in response.json()["detail"]
 
 
+class TestApiKeyOpenApi:
+    """OpenAPI must advertise API-key auth as a security scheme."""
+
+    @pytest.mark.asyncio
+    async def test_openapi_documents_api_key_security_scheme(self, api_client) -> None:
+        response = await api_client.get("/openapi.json")
+
+        assert response.status_code == 200
+        schema = response.json()
+        assert schema["components"]["securitySchemes"]["ApiKeyAuth"] == {
+            "type": "apiKey",
+            "description": "BO-MCP API key. Send this header on all authenticated API requests.",
+            "in": "header",
+            "name": "X-API-Key",
+        }
+
+        list_campaigns = schema["paths"]["/api/v1/campaigns"]["get"]
+        assert {"ApiKeyAuth": []} in list_campaigns["security"]
+        assert all(
+            parameter["name"].lower() != "x-api-key"
+            for parameter in list_campaigns.get("parameters", [])
+        )
+
+
 class TestApiKeyAcceptance:
     """A valid API key must resolve the matching persisted user."""
 

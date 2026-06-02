@@ -3,21 +3,23 @@
 from typing import Annotated, Any
 
 from bo_mcp_server.client import (
+    VerbosityLevel,
     get_diagnostics_operation,
     http_status_for_error,
 )
 from fastapi import APIRouter, HTTPException, Query
 
 from api.deps import CurrentUser, get_authorized_campaign
+from api.schemas.errors import COMMON_HTTP_ERROR_RESPONSES
 
-router = APIRouter()
+router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 
 
 @router.get("/{campaign_id}")
 async def get_campaign_diagnostics(
     campaign_id: str,
     current_user: CurrentUser,
-    verbosity: Annotated[str, Query()] = "standard",
+    verbosity: Annotated[VerbosityLevel, Query()] = VerbosityLevel.STANDARD,
     use_cache: Annotated[bool, Query()] = True,
     sections: Annotated[list[str] | None, Query()] = None,
 ) -> dict[str, Any]:
@@ -26,7 +28,7 @@ async def get_campaign_diagnostics(
 
     result = await get_diagnostics_operation(
         campaign_id=campaign_id,
-        verbosity=verbosity,
+        verbosity=verbosity.value,
         use_cache=use_cache,
         sections=sections,
     )

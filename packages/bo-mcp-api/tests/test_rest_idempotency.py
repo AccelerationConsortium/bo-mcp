@@ -73,6 +73,26 @@ def _result_row(x: float, y: float, suggestion_id: str | None = None) -> dict[st
 
 
 @pytest.mark.asyncio
+async def test_openapi_documents_idempotency_key_contract(api_client) -> None:
+    """The schema must explain when clients should reuse ``Idempotency-Key``."""
+    response = await api_client.get("/openapi.json")
+
+    assert response.status_code == 200
+    schema = response.json()
+    create_campaign = schema["paths"]["/api/v1/campaigns"]["post"]
+    header = next(
+        parameter
+        for parameter in create_campaign["parameters"]
+        if parameter["name"] == "Idempotency-Key"
+    )
+
+    description = header["description"]
+    assert "reuse that same key only when retrying the exact same request" in description
+    assert "Do not reuse a key for a different payload" in description
+    assert "shared with the MCP tools" in description
+
+
+@pytest.mark.asyncio
 async def test_create_campaign_idempotency_key_replays_response(
     api_client, auth_headers, persisted_user
 ) -> None:

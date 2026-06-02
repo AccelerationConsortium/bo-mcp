@@ -5,8 +5,9 @@ from fastapi import APIRouter, Depends
 
 from api.deps import get_current_user
 from api.schemas.campaign import CapabilitiesResponse
+from api.schemas.errors import AUTH_ERROR_RESPONSES
 
-router = APIRouter()
+router = APIRouter(responses=AUTH_ERROR_RESPONSES)
 
 
 @router.get("", dependencies=[Depends(get_current_user)])

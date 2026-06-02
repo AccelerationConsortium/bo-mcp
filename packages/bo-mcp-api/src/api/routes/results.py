@@ -27,6 +27,13 @@ from api.limits import (
     MAX_UPLOAD_FILE_SIZE_BYTES,
     UPLOAD_READ_CHUNK_BYTES,
 )
+from api.schemas.common import API_RESPONSE_SCHEMA_VERSION
+from api.schemas.errors import (
+    COMMON_HTTP_ERROR_RESPONSES,
+    IDEMPOTENCY_ERROR_RESPONSES,
+    HttpErrorResponse,
+    operation_failure_response,
+)
 from api.schemas.result import (
     ResultBatchCreate,
     ResultQueryRequest,
@@ -38,7 +45,7 @@ from api.upload_parser import UploadParseError, parse_upload_rows
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 
 
 def _results_location(campaign_id: str) -> str:
@@ -77,6 +84,26 @@ async def _read_upload_bounded(file: UploadFile) -> bytes:
 @router.post(
     "/{campaign_id}",
     status_code=status.HTTP_201_CREATED,
+    responses={
+        200: operation_failure_response(
+            model=ResultSubmitResponse,
+            description=(
+                "Operation-level result submission rejection. The HTTP request was "
+                "processed, but no result rows were persisted; inspect success=false, "
+                "errors, and field_errors."
+            ),
+            example={
+                "schema_version": API_RESPONSE_SCHEMA_VERSION,
+                "success": False,
+                "result_ids": [],
+                "errors": ["Result row failed validation."],
+                "warnings": [],
+                "field_errors": {"results.0.objective_values": ["Missing objective y"]},
+                "idempotency_replay": False,
+            },
+        ),
+        **IDEMPOTENCY_ERROR_RESPONSES,
+    },
 )
 async def submit_campaign_results(
     campaign_id: str,
@@ -192,6 +219,28 @@ async def _resolve_upload_spec(campaign_id: str, user_id: UUID) -> CampaignSpec:
 @router.post(
     "/{campaign_id}/upload",
     status_code=status.HTTP_201_CREATED,
+    responses={
+        200: operation_failure_response(
+            model=ResultSubmitResponse,
+            description=(
+                "Operation-level upload rejection after parsing succeeded. Inspect "
+                "success=false, errors, and field_errors."
+            ),
+            example={
+                "schema_version": API_RESPONSE_SCHEMA_VERSION,
+                "success": False,
+                "result_ids": [],
+                "errors": ["Uploaded results failed validation."],
+                "warnings": [],
+                "field_errors": {"rows.2": ["Parameter value is out of bounds"]},
+                "idempotency_replay": False,
+            },
+        ),
+        413: {
+            "model": HttpErrorResponse,
+            "description": "Uploaded file or parsed result batch exceeds the configured limit.",
+        },
+    },
 )
 async def upload_results_file(
     campaign_id: str,

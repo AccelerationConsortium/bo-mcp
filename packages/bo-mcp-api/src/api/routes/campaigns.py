@@ -55,9 +55,15 @@ from api.schemas.campaign import (
     ValidateIntakeRequest,
     ValidateIntakeResponse,
 )
+from api.schemas.common import API_RESPONSE_SCHEMA_VERSION
+from api.schemas.errors import (
+    COMMON_HTTP_ERROR_RESPONSES,
+    IDEMPOTENCY_ERROR_RESPONSES,
+    operation_failure_response,
+)
 from api.schemas.intake import IntakeData
 
-router = APIRouter()
+router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 
 
 def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
@@ -122,6 +128,26 @@ def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
 @router.post(
     "",
     status_code=status.HTTP_201_CREATED,
+    responses={
+        200: operation_failure_response(
+            model=CampaignCreateResponse,
+            description=(
+                "Operation-level campaign creation rejection. The HTTP request was "
+                "processed, but the campaign was not persisted; inspect success=false "
+                "and errors."
+            ),
+            example={
+                "schema_version": API_RESPONSE_SCHEMA_VERSION,
+                "success": False,
+                "campaign_id": None,
+                "spec_id": None,
+                "warnings": [],
+                "errors": ["Campaign intake is incompatible with the active backend."],
+                "idempotency_replay": False,
+            },
+        ),
+        **IDEMPOTENCY_ERROR_RESPONSES,
+    },
 )
 async def create_new_campaign(
     request: CampaignCreate,

@@ -23,11 +23,28 @@ from bo_mcp_server.client import (
 from bo_mcp_server.client import (
     ensure_owned_campaigns as _ensure_owned_campaigns,
 )
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Security, status
+from fastapi.security import APIKeyHeader
+
+api_key_header = APIKeyHeader(
+    name="X-API-Key",
+    scheme_name="ApiKeyAuth",
+    description="BO-MCP API key. Send this header on all authenticated API requests.",
+    auto_error=False,
+)
+
+IDEMPOTENCY_KEY_DESCRIPTION = (
+    "Optional at-most-once mutation key. Generate one stable key for each logical "
+    "create/submit attempt and reuse that same key only when retrying the exact "
+    "same request after a timeout or transport failure. Do not reuse a key for a "
+    "different payload: BO-MCP returns a conflict/in-progress envelope. The cache "
+    "namespace is shared with the MCP tools, so REST and MCP retries can replay "
+    "the same prior operation when the canonical payload matches."
+)
 
 
 async def get_current_user(
-    x_api_key: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Security(api_key_header)] = None,
 ) -> User:
     """Resolve the caller from the ``X-API-Key`` header.
 
@@ -64,7 +81,7 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 async def get_optional_user(
-    x_api_key: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Security(api_key_header)] = None,
 ) -> User | None:
     """Get current user if API key provided and valid, None otherwise."""
     if x_api_key is None or not x_api_key.strip():
@@ -76,7 +93,13 @@ OptionalUser = Annotated[User | None, Depends(get_optional_user)]
 
 
 def get_idempotency_key(
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            description=IDEMPOTENCY_KEY_DESCRIPTION,
+        ),
+    ] = None,
 ) -> str | None:
     """Extract the ``Idempotency-Key`` header for at-most-once REST mutations.
 

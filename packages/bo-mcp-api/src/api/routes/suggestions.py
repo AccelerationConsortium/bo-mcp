@@ -20,6 +20,8 @@ from api.deps import (
     get_authorized_campaign,
     get_authorized_suggestion,
 )
+from api.schemas.common import API_RESPONSE_SCHEMA_VERSION
+from api.schemas.errors import COMMON_HTTP_ERROR_RESPONSES, operation_failure_response
 from api.schemas.suggestion import (
     SuggestionExplanationResponse,
     SuggestionQueryRequest,
@@ -33,12 +35,28 @@ from api.schemas.suggestion import (
     SuggestionProvenance as SuggestionProvenanceSchema,
 )
 
-router = APIRouter()
+router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 
 
 @router.post(
     "/{campaign_id}/generate",
     status_code=status.HTTP_201_CREATED,
+    responses={
+        200: operation_failure_response(
+            model=SuggestionsGenerateResponse,
+            description=(
+                "Operation-level suggestion generation rejection. No suggestions were "
+                "persisted; inspect success=false and errors."
+            ),
+            example={
+                "schema_version": API_RESPONSE_SCHEMA_VERSION,
+                "success": False,
+                "suggestions": [],
+                "iteration": None,
+                "errors": ["Stopping criteria have already been met."],
+            },
+        ),
+    },
 )
 async def generate_campaign_suggestions(
     campaign_id: str,

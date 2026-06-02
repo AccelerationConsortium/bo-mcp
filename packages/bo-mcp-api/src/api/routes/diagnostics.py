@@ -9,8 +9,9 @@ from bo_mcp_server.client import (
 from fastapi import APIRouter, HTTPException, Query
 
 from api.deps import CurrentUser, get_authorized_campaign
+from api.schemas.errors import COMMON_HTTP_ERROR_RESPONSES
 
-router = APIRouter()
+router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 
 
 @router.get("/{campaign_id}")

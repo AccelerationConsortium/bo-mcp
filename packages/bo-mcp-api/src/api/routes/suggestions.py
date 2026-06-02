@@ -140,7 +140,7 @@ async def query_campaign_suggestions(
         status_filter=request.status_filter,
         limit=request.limit,
         offset=request.offset,
-        verbosity=request.verbosity,
+        verbosity=request.verbosity.value,
     )
     return SuggestionQueryResponse(**result)
 

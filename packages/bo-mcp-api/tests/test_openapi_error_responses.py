@@ -5,6 +5,17 @@ from __future__ import annotations
 import pytest
 
 
+def _resolve_schema_ref(openapi_schema: dict, schema: dict) -> dict:
+    """Resolve a local OpenAPI component $ref used by parameter schemas."""
+    ref = schema.get("$ref")
+    if not ref:
+        return schema
+
+    prefix = "#/components/schemas/"
+    assert ref.startswith(prefix)
+    return openapi_schema["components"]["schemas"][ref.removeprefix(prefix)]
+
+
 @pytest.mark.asyncio
 async def test_authenticated_resource_routes_document_http_errors(api_client) -> None:
     response = await api_client.get("/openapi.json")
@@ -57,3 +68,18 @@ async def test_submit_results_and_generate_suggestions_document_success_false(ap
     generate = schema["paths"]["/api/v1/suggestions/{campaign_id}/generate"]["post"]["responses"]
     assert generate["200"]["content"]["application/json"]["example"]["success"] is False
     assert generate["200"]["content"]["application/json"]["example"]["suggestions"] == []
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_openapi_documents_verbosity_enum(api_client) -> None:
+    response = await api_client.get("/openapi.json")
+
+    assert response.status_code == 200
+    schema = response.json()
+    parameters = schema["paths"]["/api/v1/diagnostics/{campaign_id}"]["get"]["parameters"]
+    verbosity_param = next(param for param in parameters if param["name"] == "verbosity")
+    verbosity_schema = _resolve_schema_ref(schema, verbosity_param["schema"])
+
+    assert verbosity_schema["enum"] == ["minimal", "standard", "detailed"]
+    assert verbosity_param["schema"].get("default") == "standard"
+    assert "summary" not in verbosity_schema["enum"]

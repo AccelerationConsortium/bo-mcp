@@ -321,7 +321,7 @@ async def query_campaigns(
         status=request.status,
         limit=request.limit,
         offset=offset,
-        verbosity=request.verbosity,
+        verbosity=request.verbosity.value,
         cursor=request.cursor,
     )
     # The success-shaped ``CampaignQueryResponse`` cannot represent

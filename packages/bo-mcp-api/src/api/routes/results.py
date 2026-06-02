@@ -362,7 +362,7 @@ async def query_campaign_results(
         campaign_id=campaign_id,
         limit=request.limit,
         offset=request.offset,
-        verbosity=request.verbosity,
+        verbosity=request.verbosity.value,
     )
     return ResultQueryResponse(**result)
 

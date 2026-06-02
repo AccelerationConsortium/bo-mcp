@@ -9,7 +9,7 @@ https://fastapi.tiangolo.com/tutorial/body/.
 """
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from api.schemas.campaign import (
     BatchStatusRequest,
@@ -31,6 +31,17 @@ VALID_INTAKE = {
     "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
     "objectives": [{"name": "y", "direction": "minimize"}],
 }
+
+
+def _resolve_json_schema_ref(model_schema: dict, field_schema: dict) -> dict:
+    """Resolve a local Pydantic JSON-schema $ref used by enum fields."""
+    ref = field_schema.get("$ref")
+    if not ref:
+        return field_schema
+
+    prefix = "#/$defs/"
+    assert ref.startswith(prefix)
+    return model_schema["$defs"][ref.removeprefix(prefix)]
 
 
 @pytest.mark.parametrize(
@@ -56,7 +67,7 @@ VALID_INTAKE = {
         (SuggestionQueryRequest, {"limit": 5, "rogue": 1}),
     ],
 )
-def test_request_schemas_reject_unknown_fields(schema: type, payload: dict) -> None:
+def test_request_schemas_reject_unknown_fields(schema: type[BaseModel], payload: dict) -> None:
     """Unknown fields must surface as ``extra_forbidden`` validation errors."""
     with pytest.raises(ValidationError) as exc_info:
         schema(**payload)
@@ -88,3 +99,30 @@ def test_suggestion_status_schema_advertises_manual_transitions() -> None:
     with pytest.raises(ValidationError) as exc_info:
         SuggestionStatusUpdateRequest.model_validate({"status": "completed"})
     assert exc_info.value.errors()[0]["type"] == "literal_error"
+
+
+@pytest.mark.parametrize(
+    ("schema", "payload"),
+    [
+        (CampaignQueryRequest, {"verbosity": "summary"}),
+        (BatchStatusRequest, {"campaign_ids": ["x"], "verbosity": "summary"}),
+        (CompareCampaignsRequest, {"campaign_ids": ["x", "y"], "verbosity": "summary"}),
+        (TransferCandidatesRequest, {"verbosity": "summary"}),
+        (ResultQueryRequest, {"verbosity": "summary"}),
+        (SuggestionQueryRequest, {"verbosity": "summary"}),
+    ],
+)
+def test_verbosity_schema_advertises_shared_enum(schema: type[BaseModel], payload: dict) -> None:
+    """REST verbosity fields should match the operation-layer contract."""
+    model_schema = schema.model_json_schema()
+    verbosity_schema = _resolve_json_schema_ref(
+        model_schema, model_schema["properties"]["verbosity"]
+    )
+
+    assert verbosity_schema["enum"] == ["minimal", "standard", "detailed"]
+    assert model_schema["properties"]["verbosity"].get("default") in {"minimal", "standard"}
+    assert "summary" not in verbosity_schema["enum"]
+
+    with pytest.raises(ValidationError) as exc_info:
+        schema.model_validate(payload)
+    assert exc_info.value.errors()[0]["type"] == "enum"

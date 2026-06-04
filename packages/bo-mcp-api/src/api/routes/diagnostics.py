@@ -16,7 +16,7 @@ from api.schemas.errors import COMMON_HTTP_ERROR_RESPONSES
 router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 
 
-@router.get("/{campaign_id}")
+@router.get("/{campaign_id}", response_model_exclude_unset=True)
 async def get_campaign_diagnostics(
     campaign_id: str,
     current_user: CurrentUser,
@@ -28,8 +28,12 @@ async def get_campaign_diagnostics(
 
     The deep metric blocks vary by backend and verbosity, so
     :class:`DiagnosticsResponse` pins the stable top-level keys and lets
-    the rest pass through (``extra="allow"``) — the response body is the
-    same shape the MCP ``bo_get_diagnostics`` tool returns.
+    the rest pass through (``extra="allow"``). The route serializes with
+    ``response_model_exclude_unset=True`` so a declared key the operation
+    omitted is **not** re-introduced as a default — keeping the body
+    byte-equal to the MCP ``bo_get_diagnostics`` projection at every
+    verbosity (the ``minimal`` projection drops ``campaign_status`` /
+    ``n_pending_suggestions`` / ``warnings``, and so does this route).
     """
     await get_authorized_campaign(campaign_id, current_user)
 

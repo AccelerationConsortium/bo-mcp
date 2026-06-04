@@ -899,22 +899,31 @@ class TestMcpHttpParity:
         # Both should have health-related fields
         assert mcp_result.get("health_status") == http_result.get("health_status")
 
+    @pytest.mark.parametrize("verbosity", ["minimal", "standard", "detailed"])
     @pytest.mark.asyncio
-    async def test_diagnostics_standard_verbosity_preserves_passthrough(
-        self, api_client, auth_headers, persisted_user
+    async def test_diagnostics_body_matches_mcp_exactly(
+        self, api_client, auth_headers, persisted_user, verbosity
     ):
-        """Standard-verbosity diagnostics keep their passthrough blocks + envelope.
+        """REST diagnostics body is byte-equal to the MCP operation output at every verbosity.
 
-        The route now returns a typed ``DiagnosticsResponse`` (an
-        ``extra="allow"`` envelope inheriting ``ResponseEnvelope``)
-        instead of a raw ``dict``. This pins that the deep,
-        verbosity-dependent metric blocks and the ``_metadata`` envelope
-        survive FastAPI serialization unchanged — the HTTP body stays
-        equal to the MCP operation output — while the response now also
-        carries the ``schema_version`` envelope contract.
+        The route returns a typed ``DiagnosticsResponse`` (an
+        ``extra="allow"`` envelope inheriting ``ResponseEnvelope``) and
+        serializes it with ``response_model_exclude_unset=True``. This
+        pins two things at once:
+
+        * the deep, verbosity-dependent metric blocks and the
+          ``_metadata`` envelope survive FastAPI serialization, and
+        * the model does **not** inject declared defaults for keys the
+          MCP projection omits — at ``minimal`` verbosity the projection
+          drops ``campaign_status`` / ``n_pending_suggestions`` /
+          ``warnings``, so the REST body must drop them too.
+
+        Without ``exclude_unset`` the ``minimal`` case re-adds those three
+        keys and this test fails — exactly the REST/MCP parity gap the
+        review flagged.
         """
         owner_id = str(persisted_user.id)
-        campaign_id = await _create_campaign_for_owner(owner_id, "Diag Standard")
+        campaign_id = await _create_campaign_for_owner(owner_id, f"Diag {verbosity}")
         await generate_suggestions(campaign_id)
         await submit_results(
             campaign_id,
@@ -927,19 +936,18 @@ class TestMcpHttpParity:
         # Compute first so the full-sections payload is cached; the HTTP
         # route then serves the identical cached result (GP fitting is
         # otherwise not byte-stable run to run).
-        mcp_result = await get_diagnostics_operation(campaign_id=campaign_id, verbosity="standard")
+        mcp_result = await get_diagnostics_operation(campaign_id=campaign_id, verbosity=verbosity)
 
         http_response = await api_client.get(
-            f"/api/diagnostics/{campaign_id}?verbosity=standard",
+            f"/api/diagnostics/{campaign_id}?verbosity={verbosity}",
             headers=auth_headers,
         )
         assert http_response.status_code == 200
         http_result = http_response.json()
 
-        # Envelope contract: schema_version now present (route inherits ResponseEnvelope).
+        # Envelope contract: schema_version present (route inherits ResponseEnvelope).
         assert "schema_version" in http_result
         assert http_result["success"] is True
-        # Passthrough survived: the response metadata envelope flows through.
         assert "_metadata" in http_result
-        # The typed envelope neither drops nor reshapes the operation output.
+        # No dropped passthrough, no injected defaults — exact parity.
         assert http_result == mcp_result

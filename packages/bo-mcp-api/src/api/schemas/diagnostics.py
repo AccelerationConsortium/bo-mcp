@@ -18,10 +18,13 @@ class DiagnosticsResponse(ResponseEnvelope):
     payloads) and the response ``_metadata`` envelope flow through
     verbatim.
 
-    Like the sibling envelope responses (compare / transfer / batch
-    status), the declared fields carry defaults so the REST shape stays
-    stable across verbosity levels; the ``minimal`` projection simply
-    leaves the standard-only keys at their defaults.
+    The declared fields carry defaults only so the OpenAPI schema and
+    construction stay convenient; the route serializes with
+    ``response_model_exclude_unset=True`` so a verbosity projection that
+    omits a declared key (the ``minimal`` projection drops
+    ``campaign_status`` / ``n_pending_suggestions`` / ``warnings``) is
+    echoed exactly — the model never re-introduces it as a default, so
+    REST stays byte-equal to the MCP projection.
     """
 
     model_config = ConfigDict(extra="allow")

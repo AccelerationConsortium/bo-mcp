@@ -69,15 +69,15 @@ router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
     """Build a strict domain intake from the validated REST payload.
 
-    ``IntakeData`` already validates the shared field shape: parameters,
-    objectives, and constraints are parsed into the canonical domain
-    types, so they can be forwarded by reference. The advanced
-    cross-backend knobs (``turbo_config``, ``saasbo_config``,
-    ``fidelity_parameter``, …) stay typed as plain dict on REST so the
-    schema does not couple to backend-specific Pydantic models;
-    ``CampaignIntakeInput`` validates their inner shape here.
+    ``IntakeData`` already validates the full field shape — parameters,
+    objectives, constraints, and the advanced cross-backend knobs
+    (``turbo_config``, ``saasbo_config``, ``fidelity_parameter``, …) are
+    all parsed into the canonical domain types — so they can be forwarded
+    by reference.
 
-    Any validation error on the advanced knobs must surface as a 422
+    ``CampaignIntakeInput`` additionally enforces cross-field invariants
+    that ``IntakeData`` does not (unique parameter/objective names,
+    ``backend_options`` routing). Any such error must surface as a 422
     (unprocessable entity) — the same status FastAPI uses for stock body
     validation failures — instead of bubbling up as an unhandled
     ``ValidationError`` 500.
@@ -95,17 +95,17 @@ def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
             convergence_tolerance=intake.convergence_tolerance,
             initial_design_size=intake.initial_design_size,
             random_seed=intake.random_seed,
-            acquisition_optimization=intake.acquisition_optimization,  # ty: ignore[invalid-argument-type]
+            acquisition_optimization=intake.acquisition_optimization,
             backend=intake.backend,
             backend_options=intake.backend_options,
-            acquisition_method=intake.acquisition_method,  # ty: ignore[invalid-argument-type]
+            acquisition_method=intake.acquisition_method,
             use_input_warping=intake.use_input_warping,
             use_cost_aware=intake.use_cost_aware,
-            turbo_config=intake.turbo_config,  # ty: ignore[invalid-argument-type]
-            saasbo_config=intake.saasbo_config,  # ty: ignore[invalid-argument-type]
-            fidelity_parameter=intake.fidelity_parameter,  # ty: ignore[invalid-argument-type]
-            transfer_learning=intake.transfer_learning,  # ty: ignore[invalid-argument-type]
-            outcome_constraints=intake.outcome_constraints,  # ty: ignore[invalid-argument-type]
+            turbo_config=intake.turbo_config,
+            saasbo_config=intake.saasbo_config,
+            fidelity_parameter=intake.fidelity_parameter,
+            transfer_learning=intake.transfer_learning,
+            outcome_constraints=intake.outcome_constraints,
             acknowledge_degradations=tuple(intake.acknowledge_degradations),
         )
     except ValidationError as exc:
@@ -273,10 +273,13 @@ async def validate_campaign_intake(
 ) -> ValidateIntakeResponse:
     """Validate a campaign specification without creating a campaign (dry-run).
 
-    Builds the domain intake from the validated REST payload (without a
-    dump/validate round-trip; see :func:`_coerce_intake`) so any
-    validation error on the advanced cross-backend knobs surfaces as a
-    422 instead of a 500. ``validate_intake_operation`` accepts the typed
+    ``ValidateIntakeRequest`` (via :class:`IntakeData`) types every field —
+    including the advanced cross-backend knobs — so malformed values are
+    rejected by FastAPI at the request boundary with a 422.
+    :func:`_coerce_intake` then builds the domain intake without a
+    dump/validate round-trip, surfacing any remaining cross-field/domain
+    invariant error (unique names, ``backend_options`` routing) as a 422
+    rather than a 500; ``validate_intake_operation`` accepts the typed
     ``CampaignIntakeInput`` directly.
     """
     intake = _coerce_intake(request.intake)

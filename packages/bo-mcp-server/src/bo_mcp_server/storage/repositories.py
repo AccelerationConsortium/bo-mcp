@@ -23,6 +23,7 @@ from bo_mcp_server.domain import (
     Result,
     Suggestion,
     SuggestionProvenance,
+    SuggestionSnapshot,
     SuggestionStatus,
     User,
 )
@@ -1281,7 +1282,7 @@ class ResultRepository:
             ),
             "metadata_json": json.dumps(result.metadata),
             "suggestion_snapshot_json": (
-                json.dumps(result.suggestion_snapshot)
+                result.suggestion_snapshot.model_dump_json()
                 if result.suggestion_snapshot is not None
                 else None
             ),
@@ -1373,7 +1374,9 @@ class ResultRepository:
                 ),
                 metadata_json=json.dumps(r.metadata),
                 suggestion_snapshot_json=(
-                    json.dumps(r.suggestion_snapshot) if r.suggestion_snapshot is not None else None
+                    r.suggestion_snapshot.model_dump_json()
+                    if r.suggestion_snapshot is not None
+                    else None
                 ),
                 created_at=r.created_at,
             )
@@ -1444,6 +1447,11 @@ class ResultRepository:
         if model.measurement_uncertainty_json:
             measurement_uncertainty = json.loads(model.measurement_uncertainty_json)
 
+        snapshot_raw = model.get_suggestion_snapshot()
+        suggestion_snapshot = (
+            SuggestionSnapshot.model_validate(snapshot_raw) if snapshot_raw is not None else None
+        )
+
         return Result(
             id=UUID(model.id),
             campaign_id=UUID(model.campaign_id),
@@ -1454,7 +1462,7 @@ class ResultRepository:
             submitted_by=UUID(model.submitted_by),
             measurement_uncertainty=measurement_uncertainty,
             metadata=model.get_metadata(),
-            suggestion_snapshot=model.get_suggestion_snapshot(),
+            suggestion_snapshot=suggestion_snapshot,
             created_at=model.created_at,
         )
 

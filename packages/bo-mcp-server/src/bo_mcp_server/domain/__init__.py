@@ -19,7 +19,13 @@ from bo_mcp_server.domain.campaign_spec import (
 )
 from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.domain.intake_models import CampaignIntakeInput, ResultSubmissionInput
-from bo_mcp_server.domain.result import ExternalRef, Result, ResultMetadata, ResultSource
+from bo_mcp_server.domain.result import (
+    ExternalRef,
+    Result,
+    ResultMetadata,
+    ResultSource,
+    SuggestionSnapshot,
+)
 from bo_mcp_server.domain.suggestion import Suggestion, SuggestionProvenance, SuggestionStatus
 from bo_mcp_server.domain.user import User
 
@@ -50,6 +56,7 @@ __all__ = [
     "SaasboConfig",
     "Suggestion",
     "SuggestionProvenance",
+    "SuggestionSnapshot",
     "SuggestionStatus",
     "TransferLearningConfig",
     "TurboConfig",

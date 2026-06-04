@@ -12,6 +12,7 @@ from bo_mcp_server.errors import (
     DEFAULT_MESSAGES,
     ERROR_RECOVERY,
     ErrorCode,
+    ErrorEnvelope,
     StructuredError,
     make_error_response,
 )
@@ -65,7 +66,7 @@ class TestErrorCode:
 
 
 class TestStructuredError:
-    """Tests for StructuredError dataclass."""
+    """Tests for the StructuredError model."""
 
     def test_to_dict_minimal(self) -> None:
         """Verify to_dict returns correct structure without details."""
@@ -96,6 +97,72 @@ class TestStructuredError:
         assert "details" in result
         assert result["details"]["campaign_id"] == "abc-123"
         assert result["details"]["searched_at"] == "2025-01-01"
+
+
+class TestErrorEnvelope:
+    """Tests for the typed ErrorEnvelope model.
+
+    The envelope is the error-path analogue of the per-operation success
+    models in ``bo_mcp_server.response_formatter``: built once and dumped
+    to a plain dict at the boundary. These tests pin that the model dumps
+    to the exact historical wire shape so the downstream consumers
+    (idempotency replay, field-error splicing, ``http_status_for_error``)
+    keep operating on an unchanged dict.
+    """
+
+    def test_envelope_dumps_to_canonical_shape(self) -> None:
+        """The dumped envelope has the documented key order and a False success."""
+        dumped = ErrorEnvelope(
+            schema_version=1,
+            error=StructuredError(
+                code=ErrorCode.VALIDATION_FAILED,
+                message="bad",
+                recovery_action="fix",
+            ),
+            errors=["bad"],
+        ).model_dump()
+
+        assert list(dumped) == ["schema_version", "success", "error", "errors"]
+        assert dumped["success"] is False
+        assert dumped["error"]["code"] == "E005"
+        assert dumped["errors"] == ["bad"]
+
+    def test_serializer_omits_none_details_but_keeps_retry_after(self) -> None:
+        """The subtle ``@model_serializer`` contract, asserted at the model level.
+
+        ``details`` disappears when empty (not serialized as ``null``);
+        ``retry_after`` stays present as ``None``. A naive ``model_dump``
+        would instead emit ``details: null`` and break clients that test
+        ``"details" in error``.
+        """
+        dumped = StructuredError(
+            code=ErrorCode.CAMPAIGN_NOT_FOUND,
+            message="m",
+            recovery_action="r",
+        ).model_dump()
+
+        assert "details" not in dumped
+        assert dumped["retry_after"] is None
+
+    def test_extra_keys_survive_for_downstream_splicing(self) -> None:
+        """``extra="allow"`` keeps operation-spliced keys on re-validation.
+
+        Operations splice keys like ``field_errors`` onto the dumped
+        envelope (see ``field_errors._envelope_from_field_errors``); a
+        re-validation round-trip must not drop them.
+        """
+        spliced = ErrorEnvelope.model_validate(
+            {
+                "schema_version": 1,
+                "error": {"code": "E005", "message": "m", "recovery_action": "r"},
+                "errors": ["m"],
+                "field_errors": {"results[5].objective_values.yield": ["required"]},
+            }
+        )
+
+        dumped = spliced.model_dump()
+        assert dumped["field_errors"] == {"results[5].objective_values.yield": ["required"]}
+        assert dumped["error"]["code"] == "E005"
 
 
 class TestErrorRecoveryMapping:

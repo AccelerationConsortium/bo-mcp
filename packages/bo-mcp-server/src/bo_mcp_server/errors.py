@@ -19,9 +19,8 @@ Usage:
 """
 
 import json
-from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from bo_engine.backend_base import (
     BackendError,
@@ -30,6 +29,7 @@ from bo_engine.backend_base import (
     BackendInternalError,
     BackendTransientError,
 )
+from pydantic import BaseModel, ConfigDict, model_serializer
 
 from bo_mcp_server.constants import CONCURRENT_MODIFICATION_RETRY_AFTER_SECONDS
 
@@ -133,8 +133,7 @@ class ErrorCode(StrEnum):
     INTERNAL_ERROR = "E199"
 
 
-@dataclass
-class StructuredError:
+class StructuredError(BaseModel):
     """Structured error with recovery guidance.
 
     Attributes:
@@ -151,6 +150,8 @@ class StructuredError:
         details: Optional additional context about the error.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     code: ErrorCode
     message: str
     recovery_action: str
@@ -158,12 +159,14 @@ class StructuredError:
     retry_after: float | None = None
     details: dict[str, Any] | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON response.
+    @model_serializer
+    def _serialize(self) -> dict[str, Any]:
+        """Render the wire shape clients depend on.
 
-        Returns:
-            Dictionary with code, message, recovery_action, retryable,
-            retry_after, and optionally details.
+        ``retry_after`` is always present (``None`` for terminal
+        failures); ``details`` is omitted entirely when empty rather than
+        serialized as ``null`` — preserving the historical ``to_dict``
+        contract. ``code`` is emitted as its string value.
         """
         result: dict[str, Any] = {
             "code": self.code.value,
@@ -175,6 +178,37 @@ class StructuredError:
         if self.details:
             result["details"] = self.details
         return result
+
+    def to_dict(self) -> dict[str, Any]:
+        """Backward-compatible alias for :meth:`model_dump`."""
+        return self.model_dump()
+
+
+class ErrorEnvelope(BaseModel):
+    """The standard MCP / REST error response envelope.
+
+    Models the ``{schema_version, success, error, errors}`` shape that
+    :func:`make_error_response` produces — the error-path analogue of the
+    per-operation success models in
+    :mod:`bo_mcp_server.response_formatter`. It is built once at the
+    boundary and dumped to a plain ``dict`` so the downstream consumers
+    that mutate it in place, persist it as JSON, and duck-type it
+    (idempotency replay, :func:`http_status_for_error`, field-error
+    splicing) keep operating on a dict unchanged.
+
+    ``extra="allow"`` so operation-layer callers can splice
+    operation-specific keys (``field_errors``, ``result_ids``, …) onto
+    the envelope without them being rejected on any future
+    re-validation; ``error.details`` stays an open ``dict`` for the same
+    reason.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: int
+    success: Literal[False] = False
+    error: StructuredError
+    errors: list[str]
 
 
 # Error recovery action catalog
@@ -375,12 +409,16 @@ def make_error_response(
         RESPONSE_SCHEMA_VERSION,
     )
 
-    return {
-        "schema_version": RESPONSE_SCHEMA_VERSION,
-        "success": False,
-        "error": error.to_dict(),
-        "errors": [error_message],  # Backward compatibility
-    }
+    # Build through the typed envelope, then dump to a plain dict so the
+    # many downstream consumers (in-place metadata splicing, JSON cache
+    # persistence, idempotency replay, ``http_status_for_error``) keep
+    # working on a dict. ``model_dump`` reproduces the historical shape
+    # byte-for-byte: ``errors`` is the legacy single-message list.
+    return ErrorEnvelope(
+        schema_version=RESPONSE_SCHEMA_VERSION,
+        error=error,
+        errors=[error_message],
+    ).model_dump()
 
 
 # Maps error codes to HTTP status codes for use by the REST API layer.

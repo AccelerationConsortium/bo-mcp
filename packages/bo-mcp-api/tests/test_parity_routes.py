@@ -951,3 +951,150 @@ class TestMcpHttpParity:
         assert "_metadata" in http_result
         # No dropped passthrough, no injected defaults — exact parity.
         assert http_result == mcp_result
+
+    @pytest.mark.parametrize("verbosity", ["minimal", "standard", "detailed"])
+    @pytest.mark.asyncio
+    async def test_compare_body_matches_mcp_exactly(
+        self, api_client, auth_headers, persisted_user, verbosity
+    ):
+        """REST compare body is byte-equal to the MCP operation at every verbosity.
+
+        ``CompareCampaignsResponse`` now sets ``extra="allow"`` and the
+        route serializes with ``response_model_exclude_unset=True``. This
+        pins that the response neither drops ``_metadata`` nor injects the
+        other tier's declared defaults — without the fix the ``minimal``
+        case gains ``campaigns=[]`` / ``comparison=None`` and loses
+        ``_metadata``.
+        """
+        owner_id = str(persisted_user.id)
+        campaign_a = await _create_campaign_for_owner(owner_id, f"Cmp A {verbosity}")
+        campaign_b = await _create_campaign_for_owner(owner_id, f"Cmp B {verbosity}")
+        for campaign, y in ((campaign_a, 1.0), (campaign_b, 0.8)):
+            await generate_suggestions(campaign)
+            await submit_results(
+                campaign,
+                _to_result_inputs([{"parameter_values": {"x": 0.4}, "objective_values": {"y": y}}]),
+                owner_id,
+            )
+
+        from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operation
+
+        mcp_result = await compare_campaigns_operation(
+            campaign_ids=[campaign_a, campaign_b], verbosity=verbosity
+        )
+        http_response = await api_client.post(
+            "/api/campaigns/compare",
+            json={"campaign_ids": [campaign_a, campaign_b], "verbosity": verbosity},
+            headers=auth_headers,
+        )
+        assert http_response.status_code == 200
+        http_result = http_response.json()
+
+        assert "schema_version" in http_result
+        assert "_metadata" in http_result
+        assert http_result == mcp_result
+
+    @pytest.mark.parametrize("verbosity", ["minimal", "standard", "detailed"])
+    @pytest.mark.asyncio
+    async def test_transfer_body_matches_mcp_exactly(
+        self, api_client, auth_headers, persisted_user, verbosity
+    ):
+        """REST transfer body is byte-equal to the MCP operation at every verbosity.
+
+        ``TransferCandidatesResponse`` now sets ``extra="allow"`` and the
+        route serializes with ``response_model_exclude_unset=True``. This
+        pins that the minimal-tier keys (``n_candidates`` /
+        ``top_candidate_id`` / ``top_similarity`` / ``recommendation``)
+        and ``_metadata`` ride through instead of being dropped, and the
+        standard-tier defaults are not injected.
+        """
+        owner_id = str(persisted_user.id)
+        source = await create_campaign(
+            {
+                "name": f"Xfer Source {verbosity}",
+                "parameters": [
+                    {"name": "temperature", "type": "continuous", "bounds": [20.0, 100.0]}
+                ],
+                "objectives": [{"name": "yield", "direction": "maximize"}],
+            },
+            owner_id,
+        )
+        target = await create_campaign(
+            {
+                "name": f"Xfer Target {verbosity}",
+                "parameters": [
+                    {"name": "temperature", "type": "continuous", "bounds": [30.0, 90.0]}
+                ],
+                "objectives": [{"name": "yield", "direction": "maximize"}],
+            },
+            owner_id,
+        )
+        await generate_suggestions(source["campaign_id"])
+        await submit_results(
+            source["campaign_id"],
+            _to_result_inputs(
+                [
+                    {"parameter_values": {"temperature": 50.0}, "objective_values": {"yield": 0.8}},
+                    {"parameter_values": {"temperature": 70.0}, "objective_values": {"yield": 0.9}},
+                ]
+            ),
+            owner_id,
+        )
+
+        from bo_mcp_server.operations.transfer_candidates import (
+            discover_transfer_candidates_operation,
+        )
+
+        mcp_result = await discover_transfer_candidates_operation(
+            campaign_id=target["campaign_id"],
+            similarity_threshold=0.3,
+            max_candidates=5,
+            verbosity=verbosity,
+        )
+        http_response = await api_client.post(
+            f"/api/campaigns/{target['campaign_id']}/transfer-candidates",
+            json={"similarity_threshold": 0.3, "max_candidates": 5, "verbosity": verbosity},
+            headers=auth_headers,
+        )
+        assert http_response.status_code == 200
+        http_result = http_response.json()
+
+        assert "schema_version" in http_result
+        assert "_metadata" in http_result
+        assert http_result == mcp_result
+
+    @pytest.mark.parametrize("verbosity", ["minimal", "standard", "detailed"])
+    @pytest.mark.asyncio
+    async def test_batch_status_body_matches_mcp_exactly(
+        self, api_client, auth_headers, persisted_user, verbosity
+    ):
+        """REST batch-status body is byte-equal to the MCP operation at every verbosity.
+
+        ``batch_get_status_operation`` now carries ``with_response_metadata``
+        so both transports emit ``_metadata`` + ``schema_version`` (the
+        envelope contract ``ResponseEnvelope`` advertises for batch
+        status), and ``BatchStatusResponse`` sets ``extra="allow"`` so the
+        REST model forwards ``_metadata`` rather than dropping it. Before
+        this fix the REST body carried a ``schema_version`` the MCP tool
+        lacked, breaking exact parity.
+        """
+        owner_id = str(persisted_user.id)
+        campaign_a = await _create_campaign_for_owner(owner_id, f"Batch A {verbosity}")
+        campaign_b = await _create_campaign_for_owner(owner_id, f"Batch B {verbosity}")
+
+        from bo_mcp_server.operations.batch_status import batch_get_status_operation
+
+        mcp_result = await batch_get_status_operation(
+            campaign_ids=[campaign_a, campaign_b], verbosity=verbosity
+        )
+        http_response = await api_client.post(
+            "/api/campaigns/status/batch",
+            json={"campaign_ids": [campaign_a, campaign_b], "verbosity": verbosity},
+            headers=auth_headers,
+        )
+        assert http_response.status_code == 200
+        http_result = http_response.json()
+
+        assert "schema_version" in http_result
+        assert "_metadata" in http_result
+        assert http_result == mcp_result

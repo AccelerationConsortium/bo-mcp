@@ -344,12 +344,17 @@ async def query_campaigns(
     return CampaignQueryResponse(**result)
 
 
-@router.post("/status/batch")
+@router.post("/status/batch", response_model_exclude_unset=True)
 async def batch_campaign_status(
     request: BatchStatusRequest,
     current_user: CurrentUser,
 ) -> BatchStatusResponse:
-    """Get status for multiple campaigns."""
+    """Get status for multiple campaigns.
+
+    Serialized with ``response_model_exclude_unset=True`` so the body
+    stays byte-equal to the MCP ``bo_batch_get_status`` projection (see
+    :class:`BatchStatusResponse`).
+    """
     await ensure_owned_campaigns(request.campaign_ids, current_user)
 
     result = await batch_get_status_operation(
@@ -359,12 +364,17 @@ async def batch_campaign_status(
     return BatchStatusResponse(**result)
 
 
-@router.post("/compare")
+@router.post("/compare", response_model_exclude_unset=True)
 async def compare_campaign_group(
     request: CompareCampaignsRequest,
     current_user: CurrentUser,
 ) -> CompareCampaignsResponse:
-    """Compare multiple campaigns."""
+    """Compare multiple campaigns.
+
+    Serialized with ``response_model_exclude_unset=True`` so the body
+    stays byte-equal to the MCP ``bo_compare_campaigns`` projection at
+    every verbosity (see :class:`CompareCampaignsResponse`).
+    """
     await ensure_owned_campaigns(request.campaign_ids, current_user)
 
     result = await compare_campaigns_operation(
@@ -390,13 +400,19 @@ async def manage_campaign(
     return CampaignLifecycleResponse(**result)
 
 
-@router.post("/{campaign_id}/transfer-candidates")
+@router.post("/{campaign_id}/transfer-candidates", response_model_exclude_unset=True)
 async def discover_campaign_transfer_candidates(
     campaign_id: str,
     request: TransferCandidatesRequest,
     current_user: CurrentUser,
 ) -> TransferCandidatesResponse:
-    """Discover transfer-learning candidates for a campaign."""
+    """Discover transfer-learning candidates for a campaign.
+
+    Serialized with ``response_model_exclude_unset=True`` so the body
+    stays byte-equal to the MCP ``bo_discover_transfer_candidates``
+    projection at every verbosity (see
+    :class:`TransferCandidatesResponse`).
+    """
     await get_authorized_campaign(campaign_id, current_user)
 
     result = await discover_transfer_candidates_operation(

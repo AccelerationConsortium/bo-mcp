@@ -12,10 +12,18 @@ from api.schemas.intake import IntakeData
 
 # ``extra="forbid"`` is applied to every request schema in this module so
 # an unknown field — typically a typo or a not-yet-supported key — raises
-# 422 at the transport boundary instead of being silently dropped. Response
-# schemas remain permissive because the MCP response formatter splices a
-# ``_metadata`` envelope into every payload before it reaches the
-# response model.
+# 422 at the transport boundary instead of being silently dropped.
+#
+# Response schemas do not forbid extras (the MCP formatter splices a
+# ``_metadata`` envelope into every payload). But the Pydantic default
+# ``extra="ignore"`` still *drops* unknown keys, so a response whose
+# operation returns verbosity-/backend-dependent passthrough keys must
+# opt into ``extra="allow"`` (``CompareCampaignsResponse`` /
+# ``TransferCandidatesResponse`` / ``BatchStatusResponse`` here, plus
+# ``DiagnosticsResponse``) to forward them — and ``_metadata`` —
+# verbatim; its route pairs that with
+# ``response_model_exclude_unset=True`` so a verbosity tier that omits a
+# declared key is echoed exactly (REST stays byte-equal to MCP).
 _FORBID_EXTRA: ConfigDict = ConfigDict(extra="forbid")
 
 LifecycleAction = Literal["pause", "resume", "terminate"]
@@ -195,7 +203,19 @@ class BatchStatusRequest(BaseModel):
 
 
 class BatchStatusResponse(ResponseEnvelope):
-    """Batch status response."""
+    """Batch status response.
+
+    The top-level shape is verbosity-stable (verbosity only varies the
+    per-campaign values nested under ``campaigns``), so — unlike compare
+    / transfer — this model is not tier-mismatched. ``extra="allow"`` is
+    still required to forward the ``_metadata`` envelope the shared
+    operation attaches (via ``with_response_metadata``); the route pairs
+    it with ``response_model_exclude_unset=True`` so an error envelope —
+    which omits ``campaigns`` / ``failed_ids`` — is not padded with empty
+    defaults, keeping the body byte-equal to the MCP tool output.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     success: bool
     campaigns: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -219,7 +239,19 @@ class CompareCampaignsRequest(BaseModel):
 
 
 class CompareCampaignsResponse(ResponseEnvelope):
-    """Campaign comparison response."""
+    """Campaign comparison response.
+
+    The declared fields are the union of the minimal tier
+    (``n_campaigns`` / ``best_performer`` / ``recommendation``) and the
+    standard/detailed tier (``campaigns`` / ``comparison``), so one model
+    serves every verbosity. ``extra="allow"`` forwards the ``_metadata``
+    envelope the MCP formatter attaches; the route pairs it with
+    ``response_model_exclude_unset=True`` so the other tier's
+    declared-but-absent fields are not re-added as defaults — keeping the
+    body byte-equal to the MCP tool output.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     success: bool
     campaigns: list[dict[str, Any]] = Field(default_factory=list)
@@ -248,7 +280,19 @@ class TransferCandidatesRequest(BaseModel):
 
 
 class TransferCandidatesResponse(ResponseEnvelope):
-    """Transfer candidate discovery response."""
+    """Transfer candidate discovery response.
+
+    The declared fields cover the standard/detailed tier; the minimal
+    tier's keys (``n_candidates`` / ``top_candidate_id`` /
+    ``top_similarity`` / ``recommendation``) and the ``_metadata``
+    envelope ride through via ``extra="allow"`` instead of being
+    dropped. The route pairs this with
+    ``response_model_exclude_unset=True`` so the standard-tier fields the
+    minimal projection omits are not re-added as defaults — keeping the
+    body byte-equal to the MCP tool output.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     success: bool
     target_campaign: dict[str, Any] | None = None

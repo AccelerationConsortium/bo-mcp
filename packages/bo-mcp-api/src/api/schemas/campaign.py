@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
+from bo_mcp_server.client import ValidateIntakeSpecSummary
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_CAMPAIGN_IDS, MAX_COMPARE_CAMPAIGN_IDS
@@ -83,7 +84,7 @@ class ValidateIntakeResponse(ResponseEnvelope):
     valid: bool
     errors: list[str]
     warnings: list[str] = Field(default_factory=list)
-    spec_summary: dict[str, Any] | None = None
+    spec_summary: ValidateIntakeSpecSummary | None = None
 
 
 class CapabilitiesResponse(ResponseEnvelope):

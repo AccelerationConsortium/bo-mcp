@@ -125,6 +125,7 @@ from bo_mcp_server.operations.update_suggestion_status import (
 from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import (
     RESPONSE_SCHEMA_VERSION,
+    ValidateIntakeSpecSummary,
     VerbosityLevel,
     format_validate_intake_response,
 )
@@ -174,6 +175,7 @@ __all__ = [
     "TransferLearningConfig",
     "TurboConfig",
     "User",
+    "ValidateIntakeSpecSummary",
     "VerbosityLevel",
     "authorize_campaign",
     "authorize_suggestion",

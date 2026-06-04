@@ -114,6 +114,7 @@ from bo_engine_baybe.introspection import (
     _strategy_and_model,
 )
 from bo_engine_baybe.options import (
+    BayBEParameterOptions,
     extract_baybe_backend_options,
     extract_baybe_parameter_options,
 )
@@ -177,6 +178,19 @@ class BayBEBackend(BaseBackend):
     def conditional_features(self) -> dict[Feature, str]:
         """Features supported only under additional conditions, keyed by capability."""
         return dict(_CONDITIONAL_FEATURES)
+
+    def parameter_options_schema(self) -> dict[str, Any]:
+        """Return the JSON schema for ``parameter_options['baybe']``.
+
+        Surfaces the typed :class:`BayBEParameterOptions` shape — the
+        categorical ``encoding``, the ``role`` selector, ``active_values``
+        for ``role=task``, and ``substance_data`` / ``substance_encoding``
+        for ``role=substance`` — so MCP and REST clients discover the
+        molecular (substance) recipe from the schema instead of reading
+        source. The fragment carries Pydantic's local ``$defs`` (nested
+        enums); the schema-extension layer inlines it before splicing.
+        """
+        return BayBEParameterOptions.model_json_schema()
 
     # -- Spec features that BayBE does NOT support --------------------------
     _UNSUPPORTED_OPTIONS: ClassVar[list[tuple[str, str]]] = [

@@ -501,6 +501,18 @@ class BaseBackend(ABC):
         """
         return {}
 
+    def parameter_options_schema(self) -> dict[str, Any] | None:
+        """Default: no typed ``parameter_options`` fragment to advertise.
+
+        Backends with typed per-parameter options (BayBE's ``role`` /
+        ``substance_data`` / ``substance_encoding``) override this to
+        return a JSON-schema object for the value stored under
+        ``parameter_options[<name>]``. Returning ``None`` keeps backends
+        that take no parameter options (BoTorch) out of the spliced
+        schema entirely.
+        """
+        return None
+
     # -- Capability validation --------------------------------------------
 
     def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:

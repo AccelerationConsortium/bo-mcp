@@ -241,4 +241,44 @@ def _substance_role_reports(
                 reason=f"BayBE substance_data is missing SMILES for categories {missing}",
             )
         )
+        return reports
+    # SMILES parse-check runs last and ONLY when chemistry extras are
+    # installed: a malformed SMILES passes the dict[str, str] schema but
+    # crashes inside RDKit at SubstanceParameter construction, so we fail
+    # loud at intake instead. Ordering is load-bearing — the chem-missing
+    # path above (real or monkeypatched) must never reach the lazy RDKit
+    # import, so it stays behind this guard.
+    if _CHEMISTRY_AVAILABLE:
+        reports.extend(_invalid_smiles_reports(name, dict(opts.substance_data)))
     return reports
+
+
+def _invalid_smiles_reports(name: str, substance_data: dict[str, str]) -> list[CapabilityReport]:
+    """Report SMILES that RDKit cannot parse as ``UNSUPPORTED``.
+
+    Lazy-imports RDKit so the import only happens when chemistry extras are
+    present — the sole caller already gates on ``_CHEMISTRY_AVAILABLE``, so a
+    chem-missing run never reaches here and never attempts the import.
+    ``rdBase.BlockLogs`` suppresses RDKit's stderr parse-error spam; the
+    ``None`` return from :func:`Chem.MolFromSmiles` is the signal we act on.
+    """
+    from rdkit import Chem, rdBase
+
+    with rdBase.BlockLogs():
+        invalid = sorted(
+            category
+            for category, smiles in substance_data.items()
+            if Chem.MolFromSmiles(smiles) is None
+        )
+    if not invalid:
+        return []
+    return [
+        CapabilityReport(
+            key=f"parameter_options[{name}].baybe.substance_data",
+            status=CapabilityStatus.UNSUPPORTED,
+            reason=(
+                f"BayBE substance_data contains SMILES that RDKit cannot parse for "
+                f"categories {invalid}; fix the SMILES strings."
+            ),
+        )
+    ]

@@ -7,6 +7,7 @@ existing bo-engine modules without duplicating logic.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any, cast
 
 import torch
@@ -40,6 +41,11 @@ from bo_engine.diagnostics import (
 )
 from bo_engine.feature_importance import compute_feature_importance
 from bo_engine.initial_design import SearchSpaceExhaustedError
+from bo_engine.interop import (
+    BAYBE_BACKEND_NAME,
+    BAYBE_PARAMETER_ROLE_KEY,
+    BAYBE_SUBSTANCE_ROLE,
+)
 from bo_engine.method_selector import select_methods
 from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
@@ -90,6 +96,58 @@ def _turbo_state_to_dict(state: TurboState) -> dict[str, Any]:
     }
 
 
+def _is_baybe_substance_parameter(
+    parameter_options: dict[str, dict[str, Any]] | None,
+) -> bool:
+    """Return True when a parameter declares the BayBE ``role=substance`` marker.
+
+    Reads the documented cross-backend interop markers (see
+    :mod:`bo_engine.interop`) instead of importing ``bo_engine_baybe`` —
+    bo-engine must not depend on a backend package. Accepts any mapping
+    (plain ``dict`` from the server converter or a frozen view) so the
+    check is robust to how the spec was built.
+    """
+    if not parameter_options:
+        return False
+    baybe_opts = parameter_options.get(BAYBE_BACKEND_NAME)
+    if not isinstance(baybe_opts, Mapping):
+        return False
+    return baybe_opts.get(BAYBE_PARAMETER_ROLE_KEY) == BAYBE_SUBSTANCE_ROLE
+
+
+def _substance_parameter_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
+    """Flag every BayBE ``role=substance`` parameter as ``UNSUPPORTED`` on BoTorch.
+
+    A molecular ``SubstanceParameter`` (SMILES → descriptor encoding) needs
+    a chemistry kernel BoTorch does not have. Reporting it ``UNSUPPORTED``
+    keeps ``backend="auto"`` from silently mis-optimizing it as plain
+    categories. Ordinary categorical / ``role=task`` BayBE options carry no
+    such marker and are untouched here, so existing categorical and task
+    routing on BoTorch is unchanged.
+    """
+    reports: list[CapabilityReport] = []
+    for p in spec.parameters:
+        if not _is_baybe_substance_parameter(p.parameter_options):
+            continue
+        reports.append(
+            CapabilityReport(
+                key=(
+                    f"parameter_options[{p.name}].{BAYBE_BACKEND_NAME}.{BAYBE_PARAMETER_ROLE_KEY}"
+                ),
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"BayBE-native '{BAYBE_SUBSTANCE_ROLE}' parameters encode molecular "
+                    "SMILES as cheminformatics descriptors; BoTorch has no chemistry "
+                    "kernel and would treat the labels as opaque categories, silently "
+                    "dropping the chemistry. Use backend='baybe' (or 'auto'). This is a "
+                    "hard incompatibility and cannot be bypassed via "
+                    "acknowledge_degradations."
+                ),
+            )
+        )
+    return reports
+
+
 class BoTorchBackend(BaseBackend):
     """BoTorch-based Bayesian Optimization backend.
 
@@ -121,7 +179,22 @@ class BoTorchBackend(BaseBackend):
         return frozenset(f for f in Feature if f is not Feature.MULTI_FIDELITY)
 
     def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
-        """BoTorch supports every neutral feature and option in the spec."""
+        """BoTorch supports every neutral feature and option in the spec.
+
+        The single exception is a BayBE-native ``role=substance``
+        parameter (see :mod:`bo_engine.interop`). It encodes a molecular
+        SMILES → cheminformatics-descriptor representation that BoTorch
+        has no kernel for; routing it here would treat the SMILES labels
+        as opaque one-hot categories and silently drop the chemistry —
+        the worst class of BO bug (a wrong answer that looks fine). Such
+        a parameter is therefore reported ``UNSUPPORTED`` so
+        ``backend="auto"`` routes the spec to BayBE and a pinned
+        ``backend="botorch"`` is rejected loudly at intake. This veto is
+        deliberately *not* routed through ``acknowledge_degradations``:
+        that field downgrades silently-dropped *option* knobs (turbo,
+        saasbo, …), not a misrepresented molecular parameter, so it
+        cannot bypass the substance gate.
+        """
         feature_reports = [
             CapabilityReport(key=str(f), status=CapabilityStatus.SUPPORTED)
             for f in sorted(required_features(spec))
@@ -133,6 +206,7 @@ class BoTorchBackend(BaseBackend):
             for key in _SPEC_OPTION_KEYS
             if option_is_active(spec, key)
         ]
+        option_reports.extend(_substance_parameter_reports(spec))
         return BackendValidationResult(
             backend=self.name,
             feature_reports=tuple(feature_reports),

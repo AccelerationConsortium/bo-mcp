@@ -25,10 +25,8 @@ from bo_engine.types import (
     ParameterType,
 )
 
-from bo_engine_baybe.backend import (
-    _CHEMISTRY_AVAILABLE,
-    BayBEBackend,
-)
+from bo_engine_baybe import capabilities
+from bo_engine_baybe.backend import BayBEBackend
 
 
 class TestFinding1MixedKnownUnknownConstraintParams:
@@ -81,14 +79,20 @@ class TestFinding2SubstanceWithoutChemExtras:
     When chem extras are missing, the capability report flags the role as
     ``UNSUPPORTED`` so the spec is rejected at intake rather than
     crashing inside the BayBE constructor at suggestion time.
+
+    ``baybe[chem]`` is now a *default* dependency, so the chem-missing
+    branch can no longer be reached by a plain install. A ``skipif`` here
+    would therefore skip forever and silently lose all coverage of the
+    "chem missing → UNSUPPORTED at intake" path. Instead we monkeypatch
+    the source-of-truth module global to simulate a chem-missing
+    environment and assert the rejection still fires.
+    ``capabilities._substance_role_reports`` reads
+    ``_CHEMISTRY_AVAILABLE`` at call time, so patching the re-export on
+    ``backend`` would no-op — we patch ``capabilities`` itself.
     """
 
-    @pytest.mark.skipif(
-        _CHEMISTRY_AVAILABLE,
-        reason="baybe[chem] is installed; this regression check only applies when it isn't",
-    )
-    def test_substance_role_reports_unavailable(self) -> None:
-        spec = OptimizationSpec(
+    def _substance_spec(self) -> OptimizationSpec:
+        return OptimizationSpec(
             parameters=[
                 ParameterSpec(
                     name="solvent",
@@ -104,7 +108,15 @@ class TestFinding2SubstanceWithoutChemExtras:
             ],
             objectives=[ObjectiveSpec(name="y", minimize=True)],
         )
-        result = BayBEBackend().validate_capabilities(spec)
+
+    def test_substance_role_reports_unavailable_when_chem_missing(self, monkeypatch) -> None:
+        monkeypatch.setattr(capabilities, "_CHEMISTRY_AVAILABLE", False)
+        monkeypatch.setattr(
+            capabilities,
+            "_CHEMISTRY_UNAVAILABLE_REASON",
+            "simulated missing scikit-fingerprints",
+        )
+        result = BayBEBackend().validate_capabilities(self._substance_spec())
         assert not result.is_compatible
         bad = [
             r
@@ -112,6 +124,17 @@ class TestFinding2SubstanceWithoutChemExtras:
             if r.status == CapabilityStatus.UNSUPPORTED and "baybe[chem]" in (r.reason or "")
         ]
         assert bad
+
+    def test_substance_role_not_chem_rejected_when_chem_available(self) -> None:
+        # With chem installed (the default), the chem gate must NOT fire and
+        # a valid substance spec is accepted — the inverse of the rejection.
+        result = BayBEBackend().validate_capabilities(self._substance_spec())
+        assert result.is_compatible
+        assert not [
+            r
+            for r in result.option_reports
+            if r.status == CapabilityStatus.UNSUPPORTED and "baybe[chem]" in (r.reason or "")
+        ]
 
 
 class TestFinding3ExplicitBackendValidation:

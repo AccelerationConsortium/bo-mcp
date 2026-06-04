@@ -152,6 +152,38 @@ def test_auto_routes_baybe_hybrid_constraint_to_botorch(monkeypatch):
     assert resolved == "botorch"
 
 
+def test_auto_routes_substance_to_baybe(monkeypatch):
+    """A BayBE molecular ``role=substance`` parameter must route to BayBE.
+
+    BoTorch reports the substance parameter as ``UNSUPPORTED`` (it has no
+    chemistry kernel), so even with ``BO_BACKEND=botorch`` the selector
+    must pick BayBE rather than silently optimizing the SMILES labels as
+    plain one-hot categories. Mirrors a BayBE solvent-screening
+    ``SubstanceParameter`` spec (see
+    https://emdgroup.github.io/baybe/stable/examples/Basics/parameters.html).
+    """
+    monkeypatch.setenv("BO_BACKEND", "botorch")
+    spec_dict = {
+        "name": "Solvent",
+        "parameters": [
+            {
+                "name": "solvent",
+                "type": "categorical",
+                "categories": ["water", "ethanol"],
+                "parameter_options": {
+                    "baybe": {
+                        "role": "substance",
+                        "substance_data": {"water": "O", "ethanol": "CCO"},
+                    }
+                },
+            },
+        ],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "baybe"
+
+
 def test_auto_prefers_full_support_over_degraded(monkeypatch):
     """A backend that fully honors the spec wins over one that ignores knobs.
 

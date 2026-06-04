@@ -17,7 +17,12 @@ classifiers = [
 
 dependencies = [
     "bo-engine",
-    "baybe>=0.14",
+    # baybe[chem] pulls in RDKit + scikit-fingerprints (and mordredcommunity
+    # for the MORDRED encoding) so SubstanceParameter descriptor tables build
+    # out of the box. ``baybe[chem]>=0.14`` already implies ``baybe>=0.14``;
+    # listing the bare requirement too would be drift-prone, so this is the
+    # single canonical direct ``baybe`` requirement.
+    "baybe[chem]>=0.14",
     "pandas>=2.0",
     "pydantic>=2.0",
 ]

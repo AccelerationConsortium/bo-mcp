@@ -1,0 +1,36 @@
+{
+  "name": "Solvent screening (molecular / substance parameters)",
+  "description": "Maximize reaction yield over candidate solvents that BayBE encodes from SMILES into cheminformatics descriptors (a SubstanceParameter). Requires the BayBE backend and the 'baybe[chem]' optional dependency (shipped by default in bo-engine-baybe).",
+  "parameters": [
+    {
+      "name": "solvent",
+      "type": "categorical",
+      "description": "Candidate solvent. The category labels are the experimental values you submit/observe; the SMILES in parameter_options.baybe.substance_data are what BayBE turns into descriptors.",
+      "categories": ["water", "ethanol", "methanol", "acetone", "toluene"],
+      "parameter_options": {
+        "baybe": {
+          "role": "substance",
+          "substance_data": {
+            "water": "O",
+            "ethanol": "CCO",
+            "methanol": "CO",
+            "acetone": "CC(=O)C",
+            "toluene": "Cc1ccccc1"
+          },
+          "substance_encoding": "MORDRED"
+        }
+      }
+    },
+    {
+      "name": "temperature",
+      "type": "continuous",
+      "description": "Reaction temperature in degrees Celsius.",
+      "bounds": [20.0, 80.0]
+    }
+  ],
+  "objectives": [
+    {"name": "yield", "direction": "maximize"}
+  ],
+  "backend": "baybe",
+  "batch_size": 3
+}

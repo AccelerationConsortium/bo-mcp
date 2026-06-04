@@ -898,3 +898,48 @@ class TestMcpHttpParity:
         assert mcp_result["success"] == http_result["success"]
         # Both should have health-related fields
         assert mcp_result.get("health_status") == http_result.get("health_status")
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_standard_verbosity_preserves_passthrough(
+        self, api_client, auth_headers, persisted_user
+    ):
+        """Standard-verbosity diagnostics keep their passthrough blocks + envelope.
+
+        The route now returns a typed ``DiagnosticsResponse`` (an
+        ``extra="allow"`` envelope inheriting ``ResponseEnvelope``)
+        instead of a raw ``dict``. This pins that the deep,
+        verbosity-dependent metric blocks and the ``_metadata`` envelope
+        survive FastAPI serialization unchanged — the HTTP body stays
+        equal to the MCP operation output — while the response now also
+        carries the ``schema_version`` envelope contract.
+        """
+        owner_id = str(persisted_user.id)
+        campaign_id = await _create_campaign_for_owner(owner_id, "Diag Standard")
+        await generate_suggestions(campaign_id)
+        await submit_results(
+            campaign_id,
+            _to_result_inputs([{"parameter_values": {"x": 0.5}, "objective_values": {"y": 1.0}}]),
+            owner_id,
+        )
+
+        from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
+
+        # Compute first so the full-sections payload is cached; the HTTP
+        # route then serves the identical cached result (GP fitting is
+        # otherwise not byte-stable run to run).
+        mcp_result = await get_diagnostics_operation(campaign_id=campaign_id, verbosity="standard")
+
+        http_response = await api_client.get(
+            f"/api/diagnostics/{campaign_id}?verbosity=standard",
+            headers=auth_headers,
+        )
+        assert http_response.status_code == 200
+        http_result = http_response.json()
+
+        # Envelope contract: schema_version now present (route inherits ResponseEnvelope).
+        assert "schema_version" in http_result
+        assert http_result["success"] is True
+        # Passthrough survived: the response metadata envelope flows through.
+        assert "_metadata" in http_result
+        # The typed envelope neither drops nor reshapes the operation output.
+        assert http_result == mcp_result

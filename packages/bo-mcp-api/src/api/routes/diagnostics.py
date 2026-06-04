@@ -1,6 +1,6 @@
 """Diagnostics routes."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from bo_mcp_server.client import (
     VerbosityLevel,
@@ -10,6 +10,7 @@ from bo_mcp_server.client import (
 from fastapi import APIRouter, HTTPException, Query
 
 from api.deps import CurrentUser, get_authorized_campaign
+from api.schemas.diagnostics import DiagnosticsResponse
 from api.schemas.errors import COMMON_HTTP_ERROR_RESPONSES
 
 router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
@@ -22,8 +23,14 @@ async def get_campaign_diagnostics(
     verbosity: Annotated[VerbosityLevel, Query()] = VerbosityLevel.STANDARD,
     use_cache: Annotated[bool, Query()] = True,
     sections: Annotated[list[str] | None, Query()] = None,
-) -> dict[str, Any]:
-    """Get diagnostic information for a campaign."""
+) -> DiagnosticsResponse:
+    """Get diagnostic information for a campaign.
+
+    The deep metric blocks vary by backend and verbosity, so
+    :class:`DiagnosticsResponse` pins the stable top-level keys and lets
+    the rest pass through (``extra="allow"``) — the response body is the
+    same shape the MCP ``bo_get_diagnostics`` tool returns.
+    """
     await get_authorized_campaign(campaign_id, current_user)
 
     result = await get_diagnostics_operation(
@@ -40,4 +47,4 @@ async def get_campaign_diagnostics(
             detail=result.get("errors", ["Unknown error"])[0],
         )
 
-    return result
+    return DiagnosticsResponse(**result)

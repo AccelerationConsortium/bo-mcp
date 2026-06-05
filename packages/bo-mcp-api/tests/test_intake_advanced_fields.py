@@ -17,6 +17,8 @@ These tests pin the new behavior:
 
 from __future__ import annotations
 
+import json
+
 from bo_mcp_server.domain import CampaignIntakeInput, CampaignSpec
 
 from api.schemas.intake import IntakeData
@@ -83,6 +85,59 @@ def test_rest_intake_preserves_advanced_knobs() -> None:
     assert spec.saasbo_config is not None
     assert len(spec.outcome_constraints) == 1
     assert spec.outcome_constraints[0].objective_name == "y"
+
+
+def test_openapi_advertises_typed_advanced_configs() -> None:
+    """The advanced knobs are typed configs in OpenAPI, not opaque objects.
+
+    Parity with the MCP tool schema: a REST/OpenAPI client must be able to
+    discover the fields of ``turbo_config``/``saasbo_config``/etc. straight
+    from the spec (e.g. ``TurboConfig.initial_length``,
+    ``OutcomeConstraint.objective_name``) rather than seeing a bare
+    ``object``.
+    """
+    from api.main import create_app
+
+    schemas = create_app().openapi()["components"]["schemas"]
+    intake = schemas["IntakeData"]["properties"]
+
+    # field -> (referenced component schema, a representative property on it)
+    expected = {
+        "turbo_config": ("TurboConfig", "initial_length"),
+        "saasbo_config": ("SaasboConfig", "warmup_steps"),
+        "fidelity_parameter": ("FidelityParameter", "target"),
+        "transfer_learning": ("TransferLearningConfig", "prior_campaign_ids"),
+        "acquisition_optimization": ("AcquisitionOptimizationConfig", "num_restarts"),
+        "outcome_constraints": ("OutcomeConstraint", "objective_name"),
+    }
+
+    for field, (component, sample_prop) in expected.items():
+        # The field $refs its typed config (Optional -> anyOf[$ref, null];
+        # tuple -> items.$ref); checking the serialized node is enough and
+        # avoids brittle anyOf/items navigation.
+        field_blob = json.dumps(intake[field])
+        assert f"#/components/schemas/{component}" in field_blob, (
+            f"{field} should reference {component}, got {field_blob}"
+        )
+        assert sample_prop in schemas[component]["properties"], (
+            f"{component} should expose '{sample_prop}'"
+        )
+
+
+def test_openapi_advertises_acquisition_method_enum() -> None:
+    """``acquisition_method`` is the AcquisitionMethod enum in OpenAPI, not a bare string.
+
+    Parity with the MCP tool schema: a REST/OpenAPI client must discover the
+    valid acquisition methods from the spec rather than guessing and only
+    learning the value was wrong on a failed request.
+    """
+    from api.main import create_app
+
+    schemas = create_app().openapi()["components"]["schemas"]
+    acq_node = schemas["IntakeData"]["properties"]["acquisition_method"]
+    assert "#/components/schemas/AcquisitionMethod" in json.dumps(acq_node)
+    enum_values = set(schemas["AcquisitionMethod"]["enum"])
+    assert {"auto", "expected_improvement", "hypervolume_improvement"} <= enum_values
 
 
 def test_rest_intake_rejects_unknown_extras() -> None:

@@ -54,21 +54,29 @@ from bo_mcp_server.client.lifecycle import (
     ping_database_detailed,
 )
 from bo_mcp_server.domain import (
+    AcquisitionMethod,
+    AcquisitionOptimizationConfig,
     Campaign,
     CampaignIntakeInput,
     CampaignSpec,
     CampaignStatus,
     Constraint,
     ExternalRef,
+    FidelityParameter,
     InputParameter,
     Objective,
+    OutcomeConstraint,
     Result,
     ResultMetadata,
     ResultSource,
     ResultSubmissionInput,
+    SaasboConfig,
     Suggestion,
     SuggestionProvenance,
+    SuggestionSnapshot,
     SuggestionStatus,
+    TransferLearningConfig,
+    TurboConfig,
     User,
 )
 from bo_mcp_server.errors import (
@@ -118,6 +126,7 @@ from bo_mcp_server.operations.update_suggestion_status import (
 from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import (
     RESPONSE_SCHEMA_VERSION,
+    ValidateIntakeSpecSummary,
     VerbosityLevel,
     format_validate_intake_response,
 )
@@ -130,9 +139,11 @@ __all__ = [
     "DEV_USER_NAME",
     "ERROR_CODE_TO_HTTP_STATUS",
     "RESPONSE_SCHEMA_VERSION",
+    # DTOs
+    "AcquisitionMethod",
+    "AcquisitionOptimizationConfig",
     # Auth helpers / exceptions
     "AuthenticationConfigurationError",
-    # DTOs
     "Campaign",
     "CampaignIntakeInput",
     "CampaignSpec",
@@ -145,6 +156,7 @@ __all__ = [
     "DatabasePingResult",
     "ErrorCode",
     "ExternalRef",
+    "FidelityParameter",
     "InputParameter",
     "InvalidIdentifierError",
     "NotAuthorizedError",
@@ -152,14 +164,20 @@ __all__ = [
     "Objective",
     # Idempotency (transport-neutral)
     "OperationExecutor",
+    "OutcomeConstraint",
     "Result",
     "ResultMetadata",
     "ResultSource",
     "ResultSubmissionInput",
+    "SaasboConfig",
     "Suggestion",
     "SuggestionProvenance",
+    "SuggestionSnapshot",
     "SuggestionStatus",
+    "TransferLearningConfig",
+    "TurboConfig",
     "User",
+    "ValidateIntakeSpecSummary",
     "VerbosityLevel",
     "authorize_campaign",
     "authorize_suggestion",

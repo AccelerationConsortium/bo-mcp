@@ -2216,12 +2216,52 @@ class TestBatchGetStatus:
 
     @pytest.mark.asyncio
     async def test_batch_get_status_empty_list(self):
-        """Empty campaign list returns error."""
+        """Empty campaign list returns a metadata-stamped error envelope.
+
+        Empty input is rejected by ``_validate_batch_request`` via
+        ``make_error_response`` before any DB access. Because
+        ``batch_get_status_operation`` carries ``with_response_metadata``,
+        the error envelopes — not just the success path — must echo the
+        ``_metadata`` / ``schema_version`` contract every other tool
+        emits. REST cannot reach this branch (FastAPI rejects an empty
+        ``campaign_ids`` with a 422 before the operation runs), so it is
+        pinned here at the tool layer.
+        """
         from bo_mcp_server.tools.batch_operations import batch_get_status
 
         result = await batch_get_status([])
 
         assert result["success"] is False
+        assert "error" in result  # structured error from make_error_response
+        assert result["error"]["code"]
+        assert result["errors"]  # back-compat string list
+        assert "_metadata" in result
+        assert "schema_version" in result
+
+    @pytest.mark.asyncio
+    async def test_batch_get_status_operation_too_many_ids_stamps_metadata(self):
+        """The too-large validation error also carries the metadata envelope.
+
+        Second ``make_error_response`` branch in ``_validate_batch_request``
+        (``len > MAX_BATCH_SIZE``), likewise unreachable through REST
+        (FastAPI's ``max_length`` rejects the payload first). Asserted
+        directly on the shared operation; the length check fires before
+        any UUID parsing or DB access, so the ids need not be valid.
+        """
+        from bo_mcp_server.operations.batch_status import (
+            MAX_BATCH_SIZE,
+            batch_get_status_operation,
+        )
+
+        too_many = ["c"] * (MAX_BATCH_SIZE + 1)
+        result = await batch_get_status_operation(too_many, verbosity="minimal")
+
+        assert result["success"] is False
+        assert "error" in result
+        assert result["error"]["code"]
+        assert result["errors"]
+        assert "_metadata" in result
+        assert "schema_version" in result
 
 
 @pytest.mark.usefixtures("setup_database")

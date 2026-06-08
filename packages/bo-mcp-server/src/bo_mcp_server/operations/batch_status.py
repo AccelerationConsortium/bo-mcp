@@ -9,7 +9,7 @@ from bo_mcp_server.constants import HYPERVOLUME_STABILITY_THRESHOLD
 from bo_mcp_server.domain import Campaign, CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_verbosity
-from bo_mcp_server.response_formatter import VerbosityLevel
+from bo_mcp_server.response_formatter import VerbosityLevel, with_response_metadata
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -201,11 +201,20 @@ def _build_campaign_info(
     return _build_detailed_info(name, campaign, n_results, n_pending, spec)
 
 
+@with_response_metadata
 async def batch_get_status_operation(
     campaign_ids: list[str],
     verbosity: str = "minimal",
 ) -> dict[str, Any]:
-    """Get status for multiple campaigns in one call."""
+    """Get status for multiple campaigns in one call.
+
+    Decorated with ``with_response_metadata`` so every return path
+    carries the ``_metadata`` envelope and ``schema_version`` — the same
+    contract the other envelope-shaped operations emit, and the one the
+    REST ``ResponseEnvelope`` advertises for batch status. Reaches both
+    transports because the MCP tool and REST route call this operation
+    directly.
+    """
     logger.info(
         "Batch getting status for %d campaigns, verbosity=%s",
         len(campaign_ids),

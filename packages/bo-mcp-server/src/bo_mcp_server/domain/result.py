@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from bo_mcp_server.domain.suggestion import SuggestionProvenance
 from bo_mcp_server.domain.utils import utcnow
 
 
@@ -79,6 +80,37 @@ class ResultMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class SuggestionSnapshot(BaseModel):
+    """Denormalized snapshot of the originating suggestion on a :class:`Result`.
+
+    Replaces the previously-freeform ``dict[str, Any]`` so callers and
+    agents can introspect the captured BO context instead of guessing
+    its keys. Built by the submit-results pipeline from the live
+    :class:`~bo_mcp_server.domain.suggestion.Suggestion` and persisted
+    into ``results.suggestion_snapshot_json`` at submission time.
+
+    The result-to-suggestion FK is ``ON DELETE SET NULL``; this copy
+    keeps the parameter values and provenance reconstructable even after
+    the suggestion row is soft- or hard-deleted. ``None`` on the
+    :class:`Result` for free-floating rows (no ``suggestion_id``) and
+    for legacy rows persisted before the column was added.
+
+    ``suggestion_id`` and ``suggestion_created_at`` are kept as the
+    serialized ``str(UUID)`` / ISO-8601 forms the pipeline writes so the
+    persisted JSON round-trips byte-for-byte. ``parameter_values`` stays
+    an open ``dict[str, Any]`` because it is keyed by user-defined
+    parameter names; ``provenance`` reuses the canonical
+    :class:`SuggestionProvenance` model.
+    """
+
+    suggestion_id: str  # ``str(UUID)`` of the originating suggestion
+    parameter_values: dict[str, Any]  # Parameter name -> value, as suggested
+    provenance: SuggestionProvenance
+    suggestion_created_at: str  # ISO-8601 timestamp from the suggestion
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class Result(BaseModel):
     """Result entity representing an experimental observation.
 
@@ -105,7 +137,7 @@ class Result(BaseModel):
     submitted_by: UUID  # User who submitted
     measurement_uncertainty: dict[str, float] | None = None  # Per-objective noise estimate (std)
     metadata: dict[str, Any] = Field(default_factory=dict)  # Validated via ResultMetadata at intake
-    suggestion_snapshot: dict[str, Any] | None = None
+    suggestion_snapshot: SuggestionSnapshot | None = None
     created_at: datetime = Field(default_factory=utcnow)
 
     @property

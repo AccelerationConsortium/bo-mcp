@@ -1,15 +1,16 @@
 """Malformed advanced REST payloads must return HTTP 422.
 
-The REST ``IntakeData`` schema keeps advanced spec fields
+The REST ``IntakeData`` schema types the advanced spec fields
 (``turbo_config``, ``saasbo_config``, ``fidelity_parameter``,
-``transfer_learning``, ``outcome_constraints``) as untyped dicts so the
-REST schema stays decoupled from the bo-engine/bo-mcp-server domain
-models. Strict shape validation happens in the route when the payload
-is re-validated through ``CampaignIntakeInput``. Pre-fix, a malformed
-inner field (e.g. a non-numeric ``turbo_config.initial_length``) raised
-a raw Pydantic ``ValidationError`` from inside the route handler, which
-FastAPI surfaces as a 500. Clients now see a proper 422 with a
-FastAPI-style ``detail`` envelope identifying the offending field.
+``transfer_learning``, ``outcome_constraints``, ``acquisition_method``)
+with the canonical bo-mcp-server domain config models / enum, so a
+malformed inner field (e.g. a non-numeric ``turbo_config.initial_length``
+or an out-of-enum ``acquisition_method``) is rejected at the FastAPI
+request boundary with a proper 422 and a ``detail`` envelope identifying
+the offending field. ``_coerce_intake`` re-validates through
+``CampaignIntakeInput`` only for cross-field/domain invariants (unique
+names, ``backend_options`` routing), translating any such error to a 422
+as well — never a 500.
 """
 
 from __future__ import annotations
@@ -88,6 +89,27 @@ async def test_malformed_fidelity_parameter_returns_422(api_client, auth_headers
     }
     response = await api_client.post("/api/campaigns", json=payload, headers=auth_headers)
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_malformed_acquisition_method_returns_422(api_client, auth_headers):
+    """An ``acquisition_method`` outside the ``AcquisitionMethod`` enum → 422.
+
+    Now typed at the REST boundary; the offending field is named in the
+    error envelope so the client can correct it.
+    """
+    payload = {
+        "intake": {
+            "name": "Malformed acquisition_method",
+            "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+            "objectives": [{"name": "y", "direction": "minimize"}],
+            "acquisition_method": "not-a-real-method",
+        }
+    }
+    response = await api_client.post("/api/campaigns", json=payload, headers=auth_headers)
+    assert response.status_code == 422, response.text
+    paths = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert any("acquisition_method" in path for path in paths), paths
 
 
 @pytest.mark.asyncio

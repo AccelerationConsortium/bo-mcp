@@ -42,6 +42,7 @@ from bo_mcp_server.domain import (
     ResultSource,
     Suggestion,
     SuggestionProvenance,
+    SuggestionSnapshot,
     SuggestionStatus,
     User,
 )
@@ -225,12 +226,12 @@ async def test_result_snapshot_persists_suggestion_provenance(
     campaign = await _seed_campaign(session, owner)
     suggestion = await _seed_suggestion(session, campaign)
 
-    snapshot = {
-        "suggestion_id": str(suggestion.id),
-        "parameter_values": dict(suggestion.parameter_values),
-        "provenance": suggestion.provenance.model_dump(mode="json"),
-        "suggestion_created_at": suggestion.created_at.isoformat(),
-    }
+    snapshot = SuggestionSnapshot(
+        suggestion_id=str(suggestion.id),
+        parameter_values=dict(suggestion.parameter_values),
+        provenance=suggestion.provenance,
+        suggestion_created_at=suggestion.created_at.isoformat(),
+    )
     result = Result(
         campaign_id=campaign.id,
         suggestion_id=suggestion.id,
@@ -245,6 +246,8 @@ async def test_result_snapshot_persists_suggestion_provenance(
 
     reloaded = await ResultRepository(session).get(result.id)
     assert reloaded is not None
+    assert reloaded.suggestion_snapshot is not None
+    # Construct -> persist -> reload yields an equal domain object.
     assert reloaded.suggestion_snapshot == snapshot
 
 
@@ -266,12 +269,12 @@ async def test_snapshot_survives_suggestion_hard_delete(session: AsyncSession) -
     campaign = await _seed_campaign(session, owner)
     suggestion = await _seed_suggestion(session, campaign)
 
-    snapshot = {
-        "suggestion_id": str(suggestion.id),
-        "parameter_values": dict(suggestion.parameter_values),
-        "provenance": suggestion.provenance.model_dump(mode="json"),
-        "suggestion_created_at": suggestion.created_at.isoformat(),
-    }
+    snapshot = SuggestionSnapshot(
+        suggestion_id=str(suggestion.id),
+        parameter_values=dict(suggestion.parameter_values),
+        provenance=suggestion.provenance,
+        suggestion_created_at=suggestion.created_at.isoformat(),
+    )
     result = Result(
         campaign_id=campaign.id,
         suggestion_id=suggestion.id,
@@ -294,6 +297,8 @@ async def test_snapshot_survives_suggestion_hard_delete(session: AsyncSession) -
     reloaded = await ResultRepository(session).get(result.id)
     assert reloaded is not None
     assert reloaded.suggestion_id is None
+    assert reloaded.suggestion_snapshot is not None
+    # Construct -> persist -> reload yields an equal domain object.
     assert reloaded.suggestion_snapshot == snapshot
 
 

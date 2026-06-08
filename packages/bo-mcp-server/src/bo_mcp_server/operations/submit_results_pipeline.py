@@ -27,6 +27,7 @@ from bo_mcp_server.domain import (
     Result,
     ResultSource,
     ResultSubmissionInput,
+    SuggestionSnapshot,
     SuggestionStatus,
 )
 from bo_mcp_server.domain.campaign_spec import InputParameter
@@ -136,7 +137,7 @@ async def _resolve_suggestion_id(
     actionable_ids: set[str],
     *,
     dry_run: bool = False,
-) -> tuple[UUID | None, dict[str, Any] | None]:
+) -> tuple[UUID | None, SuggestionSnapshot | None]:
     """Resolve a ``suggestion_id`` and return the snapshot to persist with the result.
 
     The second tuple element is a JSON-safe snapshot of the originating
@@ -212,12 +213,12 @@ async def _resolve_suggestion_id(
     ):
         msg = "Suggestion"
         raise ConcurrentModificationError(msg, suggestion_id, -1)
-    snapshot = {
-        "suggestion_id": str(suggestion.id),
-        "parameter_values": dict(suggestion.parameter_values),
-        "provenance": suggestion.provenance.model_dump(mode="json"),
-        "suggestion_created_at": suggestion.created_at.isoformat(),
-    }
+    snapshot = SuggestionSnapshot(
+        suggestion_id=str(suggestion.id),
+        parameter_values=dict(suggestion.parameter_values),
+        provenance=suggestion.provenance,
+        suggestion_created_at=suggestion.created_at.isoformat(),
+    )
     return suggestion_id, snapshot
 
 

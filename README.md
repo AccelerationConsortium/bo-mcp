@@ -96,6 +96,17 @@ git clone https://github.com/willigott/bo-mcp && cd bo-mcp
 uv sync          # installs all workspace packages in editable mode
 ```
 
+For a full local development and test environment across all workspace packages:
+
+```bash
+uv sync --all-packages --all-groups --extra dev --extra test
+```
+
+Avoid using `--all-extras` for the default dev/test setup. It also enables
+feature extras such as `bo-engine[shap]` and `bo-engine-baybe[insights]`, which
+pull in the SHAP/Numba/llvmlite dependency stack and may be incompatible with
+the active Python version.
+
 ### Docker
 
 ```bash

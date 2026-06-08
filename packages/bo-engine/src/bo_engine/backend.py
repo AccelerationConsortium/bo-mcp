@@ -146,6 +146,27 @@ class BOBackend(Protocol):
         """
         ...
 
+    def parameter_options_schema(self) -> dict[str, Any] | None:
+        """Return a JSON-schema fragment for this backend's ``parameter_options`` block.
+
+        ``ParameterSpec.parameter_options`` is an opaque ``dict`` keyed by
+        backend name; the neutral schema cannot describe a backend's
+        per-parameter options without importing that backend. A backend
+        with typed per-parameter options returns a JSON-schema object
+        describing the value stored under
+        ``parameter_options[<this backend's name>]`` (e.g. BayBE's
+        ``role`` / ``substance_data`` / ``substance_encoding``). The
+        schema-extension layer keys each fragment under the backend name
+        and splices the union into the MCP tool schemas and the REST
+        OpenAPI so clients discover the shape without reading source.
+
+        The fragment MAY contain a local ``"$defs"`` section (Pydantic
+        emits nested enums that way); the consumer inlines it before
+        splicing. The default returns ``None`` — a backend with no typed
+        parameter options contributes nothing.
+        """
+        ...
+
     # ----- Validation -----
 
     def validate_spec(self, spec: OptimizationSpec) -> list[str]:

@@ -60,6 +60,46 @@ async def test_explicit_baybe_rejected_when_capabilities_incompatible(
     assert any("active_values" in r.get("key", "") for r in unsupported)
 
 
+def _valid_substance_intake() -> dict:
+    """Intake for a valid solvent-screening substance campaign."""
+    return {
+        "name": "Solvent screening",
+        "parameters": [
+            {
+                "name": "solvent",
+                "type": "categorical",
+                "categories": ["water", "ethanol", "methanol"],
+                "parameter_options": {
+                    "baybe": {
+                        "role": "substance",
+                        "substance_data": {"water": "O", "ethanol": "CCO", "methanol": "CO"},
+                    }
+                },
+            }
+        ],
+        "objectives": [{"name": "yield", "direction": "maximize"}],
+        "backend": "baybe",
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_baybe_accepts_valid_substance_spec(
+    setup_database: None,
+) -> None:
+    """The inverse of the chem-missing rejection: a valid substance spec is created.
+
+    Now that ``baybe[chem]`` is a default dependency, ``create_campaign_operation``
+    must accept a ``role=substance`` campaign with valid SMILES and persist it
+    (capability validation passes, no descriptor build happens until the first
+    suggestion). Mirrors a BayBE solvent-screening ``SubstanceParameter`` spec.
+    """
+    _ = setup_database
+    intake = CampaignIntakeInput.model_validate(_valid_substance_intake())
+    response = await create_campaign_operation(intake_data=intake, owner_id=OWNER_ID)
+    assert response["success"] is True, response.get("errors")
+    assert response.get("campaign_id") is not None
+
+
 def _baybe_degradable_knob_intake(*, acknowledge: bool = False) -> dict:
     """Intake with a BayBE-degradable BoTorch knob (``use_input_warping``)."""
     intake: dict = {

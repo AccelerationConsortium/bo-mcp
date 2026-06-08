@@ -44,6 +44,7 @@ from bo_engine.types import (
 )
 
 from bo_engine_baybe.options import (
+    DEFAULT_SUBSTANCE_ENCODING,
     BayBEParameterEncoding,
     BayBEParameterOptions,
     BayBEParameterRole,
@@ -126,12 +127,14 @@ def _build_categorical_parameter(
             )
             raise ValueError(msg)
         substance_encoding = (
-            opts.substance_encoding.value if opts.substance_encoding is not None else "MORDRED"
+            opts.substance_encoding
+            if opts.substance_encoding is not None
+            else DEFAULT_SUBSTANCE_ENCODING
         )
         return SubstanceParameter(
             name=p.name,
             data=dict(opts.substance_data),
-            encoding=substance_encoding,
+            encoding=substance_encoding.value,
         )
     encoding = (
         opts.encoding.value if opts.encoding is not None else BayBEParameterEncoding.OHE.value

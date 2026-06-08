@@ -18,13 +18,16 @@ BayBE backend for Bayesian Optimization. Implements the `BOBackend` protocol usi
 pip install bo-engine-baybe
 ```
 
+This pulls in `baybe[chem]` (RDKit + scikit-fingerprints) by default, so
+molecular / substance parameters (see below) work out of the box.
+
 With optional SHAP-based feature importance:
 
 ```bash
 pip install bo-engine-baybe[insights]
 ```
 
-Requires Python >= 3.13, BayBE >= 0.14, and `bo-engine`.
+Requires Python >= 3.13, `baybe[chem] >= 0.14`, and `bo-engine`.
 
 ## Quick Start
 
@@ -70,6 +73,63 @@ backend.supported_features
 ```
 
 Not supported (use BoTorch backend instead): multi-fidelity, TuRBO, SAASBO, cost-aware, input warping, outcome constraints.
+
+## Molecular / substance parameters (BayBE only)
+
+BayBE can treat a categorical parameter whose labels are molecules as a
+[`SubstanceParameter`](https://emdgroup.github.io/baybe/stable/examples/Basics/parameters.html):
+each label maps to a SMILES string, which BayBE turns into cheminformatics
+descriptors so the GP reasons over molecular structure instead of treating the
+labels as unordered categories.
+
+You opt in per parameter through the BayBE slot of `parameter_options` — there
+is **no** neutral `SUBSTANCE` parameter type, mirroring how `TaskParameter` is
+modeled. The base parameter stays `categorical`; the labels you declare in
+`categories` are the experimental values you submit and observe (e.g.
+`"ethanol"`), **not** the SMILES.
+
+```json
+{
+  "name": "solvent",
+  "type": "categorical",
+  "categories": ["water", "ethanol", "methanol", "acetone", "toluene"],
+  "parameter_options": {
+    "baybe": {
+      "role": "substance",
+      "substance_data": {
+        "water": "O",
+        "ethanol": "CCO",
+        "methanol": "CO",
+        "acetone": "CC(=O)C",
+        "toluene": "Cc1ccccc1"
+      },
+      "substance_encoding": "MORDRED"
+    }
+  }
+}
+```
+
+- **`role`**: set to `"substance"` (default `"categorical"`; `"task"` selects a
+  `TaskParameter`).
+- **`substance_data`**: a `{category_label: SMILES}` map that must cover every
+  declared category. Malformed SMILES are rejected at intake (a clear
+  capability error), not deep inside RDKit at suggestion time.
+- **`substance_encoding`**: one of `MORDRED` (default — BayBE's ~1800-descriptor
+  block), `ECFP` (a lighter Morgan-style fingerprint), `RDKIT2DDESCRIPTORS`, or
+  `RDKITFINGERPRINT`. Omit it to use the default.
+
+Caveats:
+
+- **BayBE-only.** This is a BayBE-native capability. `backend="auto"` routes a
+  substance spec to BayBE automatically; a pinned `backend="botorch"` is
+  rejected (BoTorch has no chemistry kernel and would silently treat the SMILES
+  labels as opaque one-hot categories). This veto cannot be bypassed via
+  `acknowledge_degradations`.
+- **`baybe[chem]` required.** RDKit + scikit-fingerprints ship as default
+  dependencies of this package, so substance parameters work out of the box.
+
+A complete, runnable intake payload lives at
+[`docs/examples/substance_solvent_screening.json`](../../docs/examples/substance_solvent_screening.json).
 
 ## Package Structure
 

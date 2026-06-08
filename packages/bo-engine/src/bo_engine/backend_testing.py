@@ -55,6 +55,28 @@ def assert_validate_capabilities(
     return result
 
 
+def assert_parameter_options_schema(backend: BOBackend) -> dict[str, Any] | None:
+    """``parameter_options_schema`` returns ``None`` or a JSON-safe object schema.
+
+    Every backend (protocol-only plugins included) must answer the hook.
+    A non-``None`` fragment must be a JSON-serializable ``dict`` describing
+    an object (so the schema-extension layer can splice it under the
+    backend name); ``None`` means "no typed parameter options".
+    """
+    fragment = backend.parameter_options_schema()
+    if fragment is None:
+        return None
+    assert isinstance(fragment, dict), (
+        f"parameter_options_schema must return dict|None, got {type(fragment)!r}"
+    )
+    assert fragment.get("type") == "object", (
+        "parameter_options_schema fragment must describe a JSON object "
+        f"(type='object'), got type={fragment.get('type')!r}"
+    )
+    assert_json_serializable(fragment, context="parameter_options_schema fragment")
+    return fragment
+
+
 def assert_initial_design_contract(
     backend: BOBackend,
     spec: OptimizationSpec,

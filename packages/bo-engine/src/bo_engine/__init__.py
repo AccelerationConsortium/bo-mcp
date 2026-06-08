@@ -166,6 +166,11 @@ from bo_engine.diagnostics import (
     determine_single_objective_health_status,
     extract_hyperparameters,
 )
+from bo_engine.interop import (
+    BAYBE_BACKEND_NAME,
+    BAYBE_PARAMETER_ROLE_KEY,
+    BAYBE_SUBSTANCE_ROLE,
+)
 from bo_engine.method_selector import (
     MethodSelection,
     select_methods,
@@ -429,6 +434,10 @@ from bo_engine.whatif import (
 )
 
 __all__ = [
+    # Cross-backend interop markers (capability routing)
+    "BAYBE_BACKEND_NAME",
+    "BAYBE_PARAMETER_ROLE_KEY",
+    "BAYBE_SUBSTANCE_ROLE",
     # Constants (configurable thresholds)
     "CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD",
     "CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD",

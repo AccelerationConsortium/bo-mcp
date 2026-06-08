@@ -5,7 +5,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from bo_mcp_server.domain.intake_models import INTAKE_INPUT_JSON_SCHEMA
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.field_errors import shape_envelope
 from bo_mcp_server.operations.validate_intake import validate_intake_operation
@@ -13,6 +12,7 @@ from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_validate_intake_response,
 )
+from bo_mcp_server.schema_extension import intake_schema_with_parameter_options
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
 
@@ -27,6 +27,7 @@ from bo_mcp_server.tools.annotations import READ_ONLY
 # ``field_errors`` envelope wins on every failure mode -- whether the
 # outer shape is wrong, a scalar arg is missing, or an inner sub-
 # field tripped a constraint.
+_INTAKE_SCHEMA = intake_schema_with_parameter_options()
 IntakePayload = Annotated[
     Any,
     Field(
@@ -38,9 +39,9 @@ IntakePayload = Annotated[
         ),
         json_schema_extra={
             "type": "object",
-            "properties": INTAKE_INPUT_JSON_SCHEMA.get("properties", {}),
-            "required": INTAKE_INPUT_JSON_SCHEMA.get("required", []),
-            "$defs": INTAKE_INPUT_JSON_SCHEMA.get("$defs", {}),
+            "properties": _INTAKE_SCHEMA.get("properties", {}),
+            "required": _INTAKE_SCHEMA.get("required", []),
+            "$defs": _INTAKE_SCHEMA.get("$defs", {}),
             "additionalProperties": False,
         },
     ),

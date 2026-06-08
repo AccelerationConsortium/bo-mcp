@@ -13,9 +13,11 @@ from bo_mcp_server.client import (
     ping_database_detailed,
 )
 from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan
+from bo_mcp_server.schema_extension import augment_parameter_options
 from bo_mcp_server.trace_context import bind_trace_id
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import RedirectResponse
 
 from api.body_size_middleware import BodySizeLimitMiddleware
@@ -239,7 +241,38 @@ def create_app() -> FastAPI:
         """Redirect root to API docs."""
         return RedirectResponse(url="/docs")
 
+    _install_parameter_options_openapi(app)
     return app
+
+
+def _install_parameter_options_openapi(app: FastAPI) -> None:
+    """Splice typed per-backend ``parameter_options`` into the OpenAPI doc.
+
+    The intake request body's ``parameters[].parameter_options`` is an
+    opaque per-backend ``dict`` in the domain model — the neutral schema
+    cannot describe a backend's options without importing that backend.
+    We post-process the generated OpenAPI so REST/OpenAPI clients discover
+    the same typed shape the MCP tool schemas advertise (e.g. BayBE's
+    ``role=substance`` recipe). Sourced from the backend-aware
+    :func:`bo_mcp_server.schema_extension.augment_parameter_options` so
+    ``bo-mcp-api`` never imports a backend package directly. The standard
+    FastAPI ``app.openapi`` override pattern caches on ``app.openapi_schema``.
+    """
+
+    def custom_openapi() -> dict[str, object]:
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        openapi_schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        augment_parameter_options(openapi_schema)
+        app.openapi_schema = openapi_schema
+        return app.openapi_schema
+
+    app.openapi = custom_openapi  # ty: ignore[invalid-assignment]
 
 
 def main() -> None:

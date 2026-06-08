@@ -67,7 +67,16 @@ class BayBESubstanceEncoding(StrEnum):
 
     MORDRED = "MORDRED"
     ECFP = "ECFP"
-    RDKIT = "RDKIT"
+    RDKIT2DDESCRIPTORS = "RDKIT2DDESCRIPTORS"
+    RDKITFINGERPRINT = "RDKITFINGERPRINT"
+
+
+# Encoding applied to a ``role=substance`` parameter when the caller leaves
+# ``substance_encoding`` unset. MORDRED matches BayBE's own
+# ``SubstanceParameter`` default (a ~1800-descriptor physicochemical block);
+# kept here as a named constant so :func:`spec_to_parameters` never hardcodes
+# the string and the documented default lives in exactly one place.
+DEFAULT_SUBSTANCE_ENCODING = BayBESubstanceEncoding.MORDRED
 
 
 class BayBEParameterOptions(BaseModel):

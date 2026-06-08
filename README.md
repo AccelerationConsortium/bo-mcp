@@ -186,6 +186,18 @@ implement. Methods accept and return plain Python types (no tensors, no DataFram
 3. **Entry-point discovery** -- third-party packages can register backends under
    the `bo_mcp.backends` entry-point group.
 
+### Molecular / substance parameters (BayBE)
+
+BayBE can encode a categorical parameter whose labels are molecules as a
+`SubstanceParameter` (SMILES -> cheminformatics descriptors). Declare it via the
+BayBE slot of `parameter_options` (`role: "substance"` + a `substance_data`
+SMILES map + an optional `substance_encoding`); `backend="auto"` routes such
+specs to BayBE automatically (a pinned `backend="botorch"` is rejected -- no
+chemistry kernel). See
+[bo-engine-baybe/README.md](packages/bo-engine-baybe/README.md#molecular--substance-parameters-baybe-only)
+and the runnable
+[example payload](docs/examples/substance_solvent_screening.json).
+
 ## Algorithm Selection
 
 The BoTorch backend automatically selects the optimal model and acquisition

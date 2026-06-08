@@ -7,6 +7,7 @@ uv pip install \
   --no-deps \
   --no-build-isolation \
   -e /workspace/packages/bo-engine \
+  -e /workspace/packages/bo-engine-baybe \
   -e /workspace/packages/bo-mcp-server \
   -e /workspace/packages/bo-mcp-api
 

@@ -49,6 +49,15 @@ def _smiles_reports(result) -> list:
     ]
 
 
+def _substance_data_reports(result) -> list:
+    return [
+        r
+        for r in result.option_reports
+        if r.status == CapabilityStatus.UNSUPPORTED
+        and r.key == "parameter_options[solvent].baybe.substance_data"
+    ]
+
+
 def test_valid_smiles_passes() -> None:
     # Water + ethanol are both valid SMILES; no parse rejection.
     result = BayBEBackend().validate_capabilities(_spec({"water": "O", "ethanol": "CCO"}))
@@ -64,6 +73,27 @@ def test_malformed_smiles_is_unsupported() -> None:
     bad = _smiles_reports(result)
     assert bad
     assert "ethanol" in bad[0].reason
+
+
+def test_substance_data_extra_category_is_unsupported() -> None:
+    result = BayBEBackend().validate_capabilities(
+        _spec({"water": "O", "ethanol": "CCO", "ghost": "CC"})
+    )
+    assert not result.is_compatible
+    bad = _substance_data_reports(result)
+    assert bad
+    assert "extra SMILES" in bad[0].reason
+    assert "ghost" in bad[0].reason
+
+
+def test_duplicate_substances_are_unsupported() -> None:
+    result = BayBEBackend().validate_capabilities(_spec({"water": "O", "ethanol": "[OH2]"}))
+    assert not result.is_compatible
+    bad = _substance_data_reports(result)
+    assert bad
+    assert "same substance" in bad[0].reason
+    assert "ethanol" in bad[0].reason
+    assert "water" in bad[0].reason
 
 
 def test_chem_missing_path_skips_rdkit_parse(monkeypatch) -> None:

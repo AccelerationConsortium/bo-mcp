@@ -31,3 +31,9 @@ def test_curated_encodings_exist_in_pinned_baybe() -> None:
             f"BayBESubstanceEncoding.{member.name}={member.value!r} is no longer a "
             f"member of baybe.parameters.enum.SubstanceEncoding; a BayBE bump renamed it."
         )
+
+
+def test_curated_encodings_use_current_baybe_names() -> None:
+    assert "RDKIT" not in {m.value for m in BayBESubstanceEncoding}
+    assert BayBESubstanceEncoding.RDKIT2DDESCRIPTORS.value == "RDKIT2DDESCRIPTORS"
+    assert BayBESubstanceEncoding.RDKITFINGERPRINT.value == "RDKITFINGERPRINT"

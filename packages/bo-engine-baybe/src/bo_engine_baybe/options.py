@@ -67,7 +67,8 @@ class BayBESubstanceEncoding(StrEnum):
 
     MORDRED = "MORDRED"
     ECFP = "ECFP"
-    RDKIT = "RDKIT"
+    RDKIT2DDESCRIPTORS = "RDKIT2DDESCRIPTORS"
+    RDKITFINGERPRINT = "RDKITFINGERPRINT"
 
 
 # Encoding applied to a ``role=substance`` parameter when the caller leaves

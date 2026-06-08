@@ -232,13 +232,20 @@ def _substance_role_reports(
             )
         )
         return reports
-    missing = sorted(categories - set(opts.substance_data.keys()))
-    if missing:
+    substance_labels = set(opts.substance_data)
+    missing = sorted(categories - substance_labels)
+    extra = sorted(substance_labels - categories)
+    if missing or extra:
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing SMILES for categories {missing}")
+        if extra:
+            parts.append(f"extra SMILES for undeclared categories {extra}")
         reports.append(
             CapabilityReport(
                 key=f"parameter_options[{name}].baybe.substance_data",
                 status=CapabilityStatus.UNSUPPORTED,
-                reason=f"BayBE substance_data is missing SMILES for categories {missing}",
+                reason="BayBE substance_data has category mismatch: " + "; ".join(parts),
             )
         )
         return reports
@@ -254,31 +261,56 @@ def _substance_role_reports(
 
 
 def _invalid_smiles_reports(name: str, substance_data: dict[str, str]) -> list[CapabilityReport]:
-    """Report SMILES that RDKit cannot parse as ``UNSUPPORTED``.
+    """Report invalid or duplicate SMILES as ``UNSUPPORTED``.
 
     Lazy-imports RDKit so the import only happens when chemistry extras are
-    present — the sole caller already gates on ``_CHEMISTRY_AVAILABLE``, so a
-    chem-missing run never reaches here and never attempts the import.
-    ``rdBase.BlockLogs`` suppresses RDKit's stderr parse-error spam; the
-    ``None`` return from :func:`Chem.MolFromSmiles` is the signal we act on.
+    present. The sole caller already gates on ``_CHEMISTRY_AVAILABLE``; a
+    chem-missing run never reaches here. ``rdBase.BlockLogs`` suppresses
+    parse-error spam while canonical SMILES let us catch duplicate molecules
+    before BayBE's ``SubstanceParameter`` constructor raises later.
     """
+    from collections import defaultdict
+
     from rdkit import Chem, rdBase
 
+    canonical_by_category: dict[str, str] = {}
+    invalid: list[str] = []
     with rdBase.BlockLogs():
-        invalid = sorted(
-            category
-            for category, smiles in substance_data.items()
-            if Chem.MolFromSmiles(smiles) is None
+        for category, smiles in substance_data.items():
+            molecule = Chem.MolFromSmiles(smiles)
+            if molecule is None:
+                invalid.append(category)
+                continue
+            canonical_by_category[category] = Chem.MolToSmiles(molecule, canonical=True)
+
+    reports: list[CapabilityReport] = []
+    if invalid:
+        reports.append(
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.substance_data",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"BayBE substance_data contains SMILES that RDKit cannot parse for "
+                    f"categories {sorted(invalid)}; fix the SMILES strings."
+                ),
+            )
         )
-    if not invalid:
-        return []
-    return [
-        CapabilityReport(
-            key=f"parameter_options[{name}].baybe.substance_data",
-            status=CapabilityStatus.UNSUPPORTED,
-            reason=(
-                f"BayBE substance_data contains SMILES that RDKit cannot parse for "
-                f"categories {invalid}; fix the SMILES strings."
-            ),
-        )
+
+    categories_by_smiles: dict[str, list[str]] = defaultdict(list)
+    for category, canonical in canonical_by_category.items():
+        categories_by_smiles[canonical].append(category)
+    duplicates = [
+        sorted(categories) for categories in categories_by_smiles.values() if len(categories) > 1
     ]
+    if duplicates:
+        reports.append(
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.substance_data",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "BayBE substance_data contains labels that resolve to the same "
+                    f"substance: {sorted(duplicates)}; keep one label per molecule."
+                ),
+            )
+        )
+    return reports

@@ -115,8 +115,8 @@ modeled. The base parameter stays `categorical`; the labels you declare in
   declared category. Malformed SMILES are rejected at intake (a clear
   capability error), not deep inside RDKit at suggestion time.
 - **`substance_encoding`**: one of `MORDRED` (default — BayBE's ~1800-descriptor
-  block), `ECFP` (a lighter Morgan-style fingerprint), or `RDKIT`. Omit it to
-  use the default.
+  block), `ECFP` (a lighter Morgan-style fingerprint), `RDKIT2DDESCRIPTORS`, or
+  `RDKITFINGERPRINT`. Omit it to use the default.
 
 Caveats:
 

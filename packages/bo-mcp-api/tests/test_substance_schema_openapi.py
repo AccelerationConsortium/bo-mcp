@@ -37,4 +37,5 @@ def test_openapi_input_parameter_advertises_substance_role() -> None:
         encoding_enum = next(
             branch["enum"] for branch in props["substance_encoding"]["anyOf"] if "enum" in branch
         )
-        assert {"MORDRED", "ECFP", "RDKIT"} <= set(encoding_enum)
+        assert {"MORDRED", "ECFP", "RDKIT2DDESCRIPTORS", "RDKITFINGERPRINT"} <= set(encoding_enum)
+    assert "RDKIT" not in set(encoding_enum)

@@ -50,7 +50,8 @@ async def test_intake_tool_schema_advertises_substance_role(tool_name: str) -> N
     encoding_enum = next(
         branch["enum"] for branch in props["substance_encoding"]["anyOf"] if "enum" in branch
     )
-    assert {"MORDRED", "ECFP", "RDKIT"} <= set(encoding_enum)
+    assert {"MORDRED", "ECFP", "RDKIT2DDESCRIPTORS", "RDKITFINGERPRINT"} <= set(encoding_enum)
+    assert "RDKIT" not in set(encoding_enum)
 
     # ``substance_data`` is the SMILES map (object of string values).
     substance_data = props["substance_data"]

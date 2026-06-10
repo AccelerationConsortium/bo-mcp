@@ -100,23 +100,30 @@ class TestSuggestionProvenanceSubtractsShift:
     """
 
     def test_provenance_helper_subtracts_shift_from_predicted_mean(self) -> None:
-        """Direct unit test: shifted-scale posterior mean minus shift = raw."""
+        """Direct unit test: un-negated shifted-scale posterior mean minus shift = raw.
+
+        For a minimize objective the GP is fit in maximization form (see
+        ``bo_engine.types``), so its posterior mean sits on the negated,
+        shifted scale ``-(y_raw + shift)``. The provenance helper must
+        un-negate first and then subtract the shift to recover ``y_raw``.
+        """
         from bo_engine.suggestions import _build_single_objective_provenance
 
-        means = torch.tensor([1.7, 2.4, 3.1, 0.8], dtype=torch.float64)
+        # Posterior means on the negated shifted scale: -(y_raw + shift).
+        means = torch.tensor([-1.7, -2.4, -3.1, -0.8], dtype=torch.float64)
         stds = torch.tensor([0.05, 0.08, 0.06, 0.07], dtype=torch.float64)
         acq_values = torch.tensor([0.5, 0.5, 0.5, 0.5], dtype=torch.float64)
         shift = 0.5
 
         # Without shift subtraction, ``predicted_objectives["y"]`` would
-        # equal ``means[i]`` (1.7); with the fix, it must equal
-        # ``means[i] - shift`` (1.2).
+        # equal ``-means[i]`` (1.7); with the fix, it must equal
+        # ``-means[i] - shift`` (1.2).
         for i in range(means.numel()):
             _, _, _, predicted, _ = _build_single_objective_provenance(
                 means, stds, acq_values, i, "y", minimize=True, auto_shift=shift
             )
             assert predicted is not None
-            expected = float(means[i].item()) - shift
+            expected = -float(means[i].item()) - shift
             assert predicted["y"] == pytest.approx(expected, rel=1e-9)
 
     def test_provenance_helper_unchanged_when_no_shift(self) -> None:

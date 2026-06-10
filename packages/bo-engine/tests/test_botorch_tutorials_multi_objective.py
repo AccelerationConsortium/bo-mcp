@@ -221,6 +221,72 @@ class TestBraninCurrinMultiObjective:
             f"(tutorial reference: {EXPECTED_QNEHVI_HYPERVOLUME})"
         )
 
+    @pytest.mark.slow
+    @pytest.mark.nightly
+    def test_qnehvi_hypervolume_beats_random_search(self) -> None:
+        """Model-guided MO suggestions must dominate random search on hypervolume.
+
+        Reference: the BoTorch multi-objective tutorial reports qNEHVI at
+        ~57.77 hypervolume vs ~0.64 for random (Sobol) sampling with the
+        same budget (https://botorch.org/docs/tutorials/multi_objective_bo/).
+        An anti-optimizing hypervolume-improvement loop performs *worse*
+        than random search, so a strict BO-above-random comparison with a
+        shared reference point separates a working pipeline from an
+        inverted one regardless of absolute hypervolume values.
+        """
+        torch.manual_seed(7)
+
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[
+                ObjectiveSpec(name="f1", minimize=True),
+                ObjectiveSpec(name="f2", minimize=True),
+            ],
+            batch_size=2,
+        )
+
+        observations: list[ObservationData] = []
+        for iteration in range(12):
+            suggestions, _ = generate_next_batch(spec, observations, iteration=iteration)
+            for sugg in suggestions:
+                x1 = sugg.parameter_values["x1"]
+                x2 = sugg.parameter_values["x2"]
+                y = branin_currin(torch.tensor([[x1, x2]], dtype=torch.float64))
+                observations.append(
+                    ObservationData(
+                        parameter_values={"x1": x1, "x2": x2},
+                        objective_values={"f1": y[0, 0].item(), "f2": y[0, 1].item()},
+                    )
+                )
+
+        bo_y = torch.tensor(
+            [[obs.objective_values["f1"], obs.objective_values["f2"]] for obs in observations],
+            dtype=torch.float64,
+        )
+
+        # Random-search baseline with the identical evaluation budget.
+        random_x = torch.rand(bo_y.shape[0], 2, dtype=torch.float64)
+        random_y = branin_currin(random_x)
+
+        # Shared reference point: component-wise worst over both runs plus a
+        # margin, so both hypervolumes are measured against the same box.
+        combined = torch.cat([bo_y, random_y], dim=0)
+        worst = combined.max(dim=0).values
+        ranges = worst - combined.min(dim=0).values
+        ref_point = worst + 0.1 * ranges
+
+        hv_bo = compute_hypervolume(bo_y, ref_point)
+        hv_random = compute_hypervolume(random_y, ref_point)
+
+        assert hv_bo > hv_random, (
+            f"Model-guided hypervolume ({hv_bo:.2f}) must strictly exceed "
+            f"random search ({hv_random:.2f}) with the same budget; an "
+            "inverted acquisition lands below random."
+        )
+
 
 @pytest.mark.tutorial
 class TestParetoFront:

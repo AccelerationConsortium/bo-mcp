@@ -393,6 +393,8 @@ def generate_saasbo_suggestions(
     config: SAASBOConfig | None = None,
     parameter_names: list[str] | None = None,
     acquisition_optimization: AcquisitionOptimizationConfig | None = None,
+    *,
+    minimize: bool = True,
 ) -> tuple[Tensor, Tensor, dict[str, Any]]:
     """Generate suggestions using SAASBO.
 
@@ -400,7 +402,8 @@ def generate_saasbo_suggestions(
 
     Args:
         train_x: Training inputs of shape (n_samples, n_dims)
-        train_y: Training outputs of shape (n_samples, 1)
+        train_y: Training outputs of shape (n_samples, 1), on the raw
+            user scale (no pre-negation)
         bounds: Parameter bounds of shape (2, n_dims)
         batch_size: Number of suggestions to generate
         config: SAASBO configuration
@@ -410,14 +413,23 @@ def generate_saasbo_suggestions(
             :class:`AcquisitionOptimizationConfig` apply -- important for
             SAASBO, which targets >20-dimensional spaces where the fixed
             ``num_restarts=20`` could trap the optimizer in shallow minima.
+        minimize: Direction of the raw objective. ``qLogExpectedImprovement``
+            always maximizes, so minimize objectives are negated into the
+            engine's maximization form before the model fit (see
+            :mod:`bo_engine.types`); lengthscale-based importance is
+            sign-invariant.
 
     Returns:
         Tuple of (candidates, acquisition_values, metadata)
     """
     train_x, train_y, bounds = ensure_device(train_x, train_y, bounds)
 
+    # Negate minimize objectives into maximization form at the data
+    # boundary -- BoTorch's qLog* acquisition family has no direction flag.
+    train_y_bo = -train_y if minimize else train_y
+
     # Create and fit model
-    model = create_and_fit_saasbo_model(train_x, train_y, config=config)
+    model = create_and_fit_saasbo_model(train_x, train_y_bo, config=config)
 
     # Compute parameter importance (full report includes raw lengthscale
     # and boolean active mask alongside the normalized score).
@@ -428,7 +440,7 @@ def generate_saasbo_suggestions(
     model.eval()
     acqf = qLogExpectedImprovement(
         model=model,
-        best_f=train_y.min().item(),  # Assumes minimization
+        best_f=train_y_bo.max().item(),
     )
 
     acq_config = acquisition_optimization or AcquisitionOptimizationConfig()
@@ -452,6 +464,7 @@ def generate_saasbo_suggestions(
     metadata = {
         "model_type": "SaasFullyBayesianSingleTaskGP (SAASBO)",
         "acquisition_function": "qLogExpectedImprovement",
+        "minimize": minimize,
         "parameter_importance": importance,
         "top_important_parameters": dict(top_params),
         "inference_method": "NUTS (fully Bayesian)",

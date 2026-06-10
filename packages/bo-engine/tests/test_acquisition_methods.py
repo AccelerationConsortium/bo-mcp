@@ -48,7 +48,7 @@ class TestSingleObjectiveAcquisitionMethods:
             model=model,
             train_x=train_x,
             train_y=train_y,
-            minimize=True,
+            maximize=True,
             use_noisy=True,  # qLogNEI
         )
 
@@ -68,9 +68,9 @@ class TestSingleObjectiveAcquisitionMethods:
             model=model,
             train_x=train_x,
             train_y=train_y,
-            minimize=True,
+            maximize=True,
             use_noisy=False,  # qLogEI
-            best_f=train_y.min().item(),
+            best_f=train_y.max().item(),
         )
 
         # Should be callable and produce valid outputs
@@ -89,15 +89,17 @@ class TestMultiObjectiveAcquisitionMethods:
         train_x, train_y, bounds = train_data
 
         model = create_and_fit_model(train_x, train_y, bounds)
-        minimize_mask = torch.tensor([True, True], dtype=torch.bool)
-        ref_point = get_reference_point(train_y, minimize_mask)
+        maximize_mask = torch.tensor([True, True], dtype=torch.bool)
+        # get_reference_point works in minimization form; negate around it to
+        # obtain a maximization-form reference point below all observations.
+        ref_point = -get_reference_point(-train_y, torch.tensor([True, True], dtype=torch.bool))
 
         acqf = create_multi_objective_acquisition(
             model=model,
             ref_point=ref_point,
             train_x=train_x,
             train_y=train_y,
-            minimize_mask=minimize_mask,
+            maximize_mask=maximize_mask,
             method=AcquisitionMethod.HYPERVOLUME_IMPROVEMENT,
         )
 
@@ -113,15 +115,17 @@ class TestMultiObjectiveAcquisitionMethods:
         train_x, train_y, bounds = train_data
 
         model = create_and_fit_model(train_x, train_y, bounds)
-        minimize_mask = torch.tensor([True, True], dtype=torch.bool)
-        ref_point = get_reference_point(train_y, minimize_mask)
+        maximize_mask = torch.tensor([True, True], dtype=torch.bool)
+        # get_reference_point works in minimization form; negate around it to
+        # obtain a maximization-form reference point below all observations.
+        ref_point = -get_reference_point(-train_y, torch.tensor([True, True], dtype=torch.bool))
 
         acqf = create_multi_objective_acquisition(
             model=model,
             ref_point=ref_point,
             train_x=train_x,
             train_y=train_y,
-            minimize_mask=minimize_mask,
+            maximize_mask=maximize_mask,
             method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
         )
 
@@ -148,7 +152,7 @@ class TestUnifiedAcquisitionCreation:
             train_x=train_x,
             train_y=train_y,
             n_objectives=1,
-            minimize=True,
+            maximize=True,
             method=AcquisitionMethod.AUTO,
         )
 
@@ -161,8 +165,10 @@ class TestUnifiedAcquisitionCreation:
         train_x, train_y, bounds = train_data
 
         model = create_and_fit_model(train_x, train_y, bounds)
-        minimize_mask = torch.tensor([True, True], dtype=torch.bool)
-        ref_point = get_reference_point(train_y, minimize_mask)
+        maximize_mask = torch.tensor([True, True], dtype=torch.bool)
+        # get_reference_point works in minimization form; negate around it to
+        # obtain a maximization-form reference point below all observations.
+        ref_point = -get_reference_point(-train_y, torch.tensor([True, True], dtype=torch.bool))
 
         acqf = create_acquisition(
             model=model,
@@ -170,7 +176,7 @@ class TestUnifiedAcquisitionCreation:
             train_x=train_x,
             train_y=train_y,
             n_objectives=2,
-            minimize_mask=minimize_mask,
+            maximize_mask=maximize_mask,
             method=AcquisitionMethod.AUTO,
         )
 
@@ -183,8 +189,10 @@ class TestUnifiedAcquisitionCreation:
         train_x, train_y, bounds = train_data
 
         model = create_and_fit_model(train_x, train_y, bounds)
-        minimize_mask = torch.tensor([True, True], dtype=torch.bool)
-        ref_point = get_reference_point(train_y, minimize_mask)
+        maximize_mask = torch.tensor([True, True], dtype=torch.bool)
+        # get_reference_point works in minimization form; negate around it to
+        # obtain a maximization-form reference point below all observations.
+        ref_point = -get_reference_point(-train_y, torch.tensor([True, True], dtype=torch.bool))
 
         # Explicit qLogNParEGO selection
         acqf = create_acquisition(
@@ -193,7 +201,7 @@ class TestUnifiedAcquisitionCreation:
             train_x=train_x,
             train_y=train_y,
             n_objectives=2,
-            minimize_mask=minimize_mask,
+            maximize_mask=maximize_mask,
             method=AcquisitionMethod.SCALARIZED_MULTI_OBJ,
         )
 
@@ -215,7 +223,7 @@ class TestAcquisitionOptimization:
             model=model,
             train_x=train_x,
             train_y=train_y,
-            minimize=True,
+            maximize=True,
         )
 
         candidates, _values = optimize_acquisition(
@@ -237,15 +245,17 @@ class TestAcquisitionOptimization:
         train_x, train_y, bounds = train_data
 
         model = create_and_fit_model(train_x, train_y, bounds)
-        minimize_mask = torch.tensor([True, True], dtype=torch.bool)
-        ref_point = get_reference_point(train_y, minimize_mask)
+        maximize_mask = torch.tensor([True, True], dtype=torch.bool)
+        # get_reference_point works in minimization form; negate around it to
+        # obtain a maximization-form reference point below all observations.
+        ref_point = -get_reference_point(-train_y, torch.tensor([True, True], dtype=torch.bool))
 
         acqf = create_multi_objective_acquisition(
             model=model,
             ref_point=ref_point,
             train_x=train_x,
             train_y=train_y,
-            minimize_mask=minimize_mask,
+            maximize_mask=maximize_mask,
         )
 
         candidates, _values = optimize_acquisition(
@@ -277,7 +287,7 @@ class TestLinearConstraintValidation:
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
         model = create_and_fit_single_task_model(train_x, train_y, bounds)
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
         return acqf, bounds
 
@@ -473,65 +483,65 @@ class TestAcquisitionInWorkflow:
 
 @pytest.mark.usefixtures("torch_rng")
 class TestSignConventionGuards:
-    """Verify that the minimization-form contract is enforced at construction.
+    """Verify that the maximization-form contract is enforced at construction.
 
     Every acquisition factory must surface a hard error when the caller
-    passes data that is not in the canonical minimization form, instead of
+    passes data that is not in the canonical maximization form, instead of
     silently pointing EI the wrong way.  The sign convention is documented
     in ``bo_engine.types``.
 
-    Regression context: see the ``create_single_objective_acquisition``
-    handling of ``best_f`` discussed in
+    Regression context: BoTorch's qLog* acquisition family has no direction
+    flag and always maximizes — see
     https://botorch.org/docs/tutorials/closed_loop_botorch_only/ and the
-    general multi-objective maximization convention that BoTorch uses
-    internally (``botorch.utils.multi_objective.hypervolume.Hypervolume``).
+    multi-objective maximization convention BoTorch uses internally
+    (``botorch.utils.multi_objective.hypervolume.Hypervolume``).
     """
 
-    def test_single_objective_rejects_non_minimization_form(self) -> None:
-        """Passing ``minimize=False`` to the single-objective factory must raise.
+    def test_single_objective_rejects_non_maximization_form(self) -> None:
+        """Passing ``maximize=False`` to the single-objective factory must raise.
 
-        The engine convention is that the caller negates maximization
-        objectives and always hands ``minimize=True`` to the factory.
+        The engine convention is that the caller negates minimization
+        objectives and always hands ``maximize=True`` to the factory.
         """
         train_x = torch.rand(5, 2, dtype=torch.double)
         train_y = torch.rand(5, 1, dtype=torch.double)
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
         model = create_and_fit_single_task_model(train_x, train_y, bounds)
 
-        with pytest.raises(ValueError, match="minimization form"):
+        with pytest.raises(ValueError, match="maximization form"):
             create_single_objective_acquisition(
                 model=model,
                 train_x=train_x,
                 train_y=train_y,
-                minimize=False,
+                maximize=False,
             )
 
-    def test_multi_objective_rejects_non_minimization_mask(
+    def test_multi_objective_rejects_non_maximization_mask(
         self, train_data: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ) -> None:
-        """Any False entry in ``minimize_mask`` must be rejected as a sign error."""
+        """Any False entry in ``maximize_mask`` must be rejected as a sign error."""
         train_x, train_y, bounds = train_data
         model = create_and_fit_model(train_x, train_y, bounds)
-        minimize_mask = torch.tensor([True, False], dtype=torch.bool)
-        ref_point = get_reference_point(train_y, torch.tensor([True, True], dtype=torch.bool))
+        maximize_mask = torch.tensor([True, False], dtype=torch.bool)
+        ref_point = -get_reference_point(-train_y, torch.tensor([True, True], dtype=torch.bool))
 
-        with pytest.raises(ValueError, match="minimization form"):
+        with pytest.raises(ValueError, match="maximization form"):
             create_multi_objective_acquisition(
                 model=model,
                 ref_point=ref_point,
                 train_x=train_x,
                 train_y=train_y,
-                minimize_mask=minimize_mask,
+                maximize_mask=maximize_mask,
             )
 
-    def test_create_acquisition_requires_minimize_for_single_objective(self) -> None:
-        """Dispatcher must require ``minimize`` when ``n_objectives == 1``."""
+    def test_create_acquisition_requires_maximize_for_single_objective(self) -> None:
+        """Dispatcher must require ``maximize`` when ``n_objectives == 1``."""
         train_x = torch.rand(5, 2, dtype=torch.double)
         train_y = torch.rand(5, 1, dtype=torch.double)
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
         model = create_and_fit_single_task_model(train_x, train_y, bounds)
 
-        with pytest.raises(ValueError, match="minimize"):
+        with pytest.raises(ValueError, match="maximize"):
             create_acquisition(
                 model=model,
                 ref_point=None,
@@ -540,15 +550,15 @@ class TestSignConventionGuards:
                 n_objectives=1,
             )
 
-    def test_create_acquisition_requires_minimize_mask_for_multi_objective(
+    def test_create_acquisition_requires_maximize_mask_for_multi_objective(
         self, train_data: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ) -> None:
-        """Dispatcher must require ``minimize_mask`` when ``n_objectives >= 2``."""
+        """Dispatcher must require ``maximize_mask`` when ``n_objectives >= 2``."""
         train_x, train_y, bounds = train_data
         model = create_and_fit_model(train_x, train_y, bounds)
-        ref_point = get_reference_point(train_y, torch.tensor([True, True], dtype=torch.bool))
+        ref_point = -get_reference_point(-train_y, torch.tensor([True, True], dtype=torch.bool))
 
-        with pytest.raises(ValueError, match="minimize_mask"):
+        with pytest.raises(ValueError, match="maximize_mask"):
             create_acquisition(
                 model=model,
                 ref_point=ref_point,

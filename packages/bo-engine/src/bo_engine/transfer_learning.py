@@ -20,6 +20,7 @@ from typing import Any
 import torch
 from botorch.acquisition import AcquisitionFunction
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement
+from botorch.acquisition.objective import GenericMCObjective
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize
@@ -602,7 +603,11 @@ def generate_rgpe_suggestions(
         )
         acq_name = "RGPEAcquisition (Ensemble EI)"
     else:
-        # Legacy: Use only target model for acquisition
+        # Legacy: Use only target model for acquisition. The target model is
+        # fit on raw minimization-form targets (this module's documented
+        # contract), but BoTorch's qLogNEI always maximizes — wire a
+        # negating objective so the acquisition minimizes the raw objective
+        # instead of chasing its maximum.
         target_model = rgpe.target_model
         target_model.eval()
         acqf = qLogNoisyExpectedImprovement(
@@ -610,6 +615,9 @@ def generate_rgpe_suggestions(
             X_baseline=target_x,
             prune_baseline=True,
             cache_root=False,
+            # ``GenericMCObjective`` calls ``objective(samples, X=X)`` — the
+            # parameter must be named ``X`` even though it is unused.
+            objective=GenericMCObjective(lambda samples, X=None: -samples[..., 0]),  # noqa: N803, ARG005
         )
         acq_name = "qLogNoisyExpectedImprovement (Target Only)"
 

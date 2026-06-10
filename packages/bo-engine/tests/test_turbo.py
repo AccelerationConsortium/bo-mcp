@@ -395,3 +395,109 @@ class TestTurboStateInvariants:
         updated = update_turbo_state(state, torch.tensor([5.0]), minimize=False)
         assert updated.restart_triggered is True
         assert updated.length < updated.length_min
+
+
+class TestTrustRegionNonUnitCube:
+    """Trust-region geometry on raw (non-unit-cube) parameter bounds.
+
+    The TuRBO trust region is defined in the normalized [0, 1] cube
+    (Eriksson et al., "Scalable Global Optimization via Local Bayesian
+    Optimization", NeurIPS 2019, §3.1: side length ``L`` of the hypercube
+    after rescaling the domain to the unit cube). The suggestion pipeline
+    therefore normalizes raw inputs before computing the region and maps
+    the result back to raw bounds. These cases pin that round-trip on a
+    domain that is *not* the unit cube — where interpreting raw
+    coordinates as normalized degenerates the region to a sliver at a
+    bound.
+    """
+
+    BOUNDS = ((-5.0, 10.0), (-5.0, 10.0))
+
+    def _fit_and_compute(
+        self, train_x: torch.Tensor, train_y_bo: torch.Tensor, length: float
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from bo_engine.models import create_and_fit_single_task_model
+        from bo_engine.suggestions_single_objective import _compute_turbo_bounds
+
+        bounds = torch.tensor(
+            [[b[0] for b in self.BOUNDS], [b[1] for b in self.BOUNDS]],
+            dtype=torch.float64,
+        )
+        model = create_and_fit_single_task_model(train_x, train_y_bo, bounds)
+        state = TurboState(dim=2, batch_size=2, length=length, best_value=0.0)
+        opt_bounds, _info = _compute_turbo_bounds(state, train_x, train_y_bo, model, bounds)
+        return opt_bounds, bounds
+
+    def test_trust_region_brackets_best_point(self) -> None:
+        """The raw-scale trust region must contain the incumbent best point."""
+        torch.manual_seed(3)
+        train_x = torch.rand(20, 2, dtype=torch.float64) * 15.0 - 5.0
+        best_point = torch.tensor([2.0, 2.5], dtype=torch.float64)
+        train_x[7] = best_point
+        # Maximization-form targets with a unique best at index 7.
+        train_y_bo = -((train_x - best_point).pow(2).sum(dim=-1, keepdim=True)) / 100.0
+
+        opt_bounds, bounds = self._fit_and_compute(train_x, train_y_bo, length=0.2)
+
+        assert (opt_bounds[0] <= best_point + 1e-9).all(), (
+            f"Trust region lower bound {opt_bounds[0].tolist()} does not "
+            f"bracket the best point {best_point.tolist()}"
+        )
+        assert (opt_bounds[1] >= best_point - 1e-9).all(), (
+            f"Trust region upper bound {opt_bounds[1].tolist()} does not "
+            f"bracket the best point {best_point.tolist()}"
+        )
+        # The region must be a genuine local restriction of the domain, not
+        # a degenerate sliver pinned at a bound and not the full domain.
+        widths = opt_bounds[1] - opt_bounds[0]
+        full_range = bounds[1] - bounds[0]
+        assert (widths > 0.01 * full_range).all(), f"Degenerate trust region: {widths.tolist()}"
+        assert (widths < full_range).all(), f"Trust region did not restrict: {widths.tolist()}"
+
+    def test_trust_region_width_matches_length_geometry(self) -> None:
+        """Normalized widths obey the lengthscale-weighted geometry of the paper.
+
+        Per Eriksson et al. (2019) §3.1 the per-dimension half-widths are
+        ``weights * length / 2`` with the weights normalized to geometric
+        mean 1, so (absent clamping) the *product* of normalized widths
+        equals ``length ** d``.
+        """
+        torch.manual_seed(3)
+        length = 0.2
+        train_x = torch.rand(20, 2, dtype=torch.float64) * 15.0 - 5.0
+        best_point = torch.tensor([2.0, 2.5], dtype=torch.float64)
+        train_x[7] = best_point
+        train_y_bo = -((train_x - best_point).pow(2).sum(dim=-1, keepdim=True)) / 100.0
+
+        opt_bounds, bounds = self._fit_and_compute(train_x, train_y_bo, length=length)
+
+        widths_norm = (opt_bounds[1] - opt_bounds[0]) / (bounds[1] - bounds[0])
+        expected_volume = length ** widths_norm.numel()
+        assert float(widths_norm.prod().item()) == pytest.approx(expected_volume, rel=0.05), (
+            f"Normalized widths {widths_norm.tolist()} are inconsistent with "
+            f"trust-region length {length} (geometric-mean-1 weights)."
+        )
+
+    def test_trust_region_centers_on_argmin_for_minimize_campaign(self) -> None:
+        """For a minimize campaign the region centers on the argmin's inputs.
+
+        The pipeline hands ``get_turbo_bounds`` maximization-form targets
+        (``-y`` for minimize), so the ``argmax`` centering used by the
+        helper must land on the raw objective's *minimum*.
+        """
+        torch.manual_seed(5)
+        train_x = torch.rand(20, 2, dtype=torch.float64) * 15.0 - 5.0
+        best_point = torch.tensor([2.0, 2.5], dtype=torch.float64)
+        train_x[11] = best_point
+        raw_y = (train_x - best_point).pow(2).sum(dim=-1, keepdim=True) / 100.0
+        assert int(raw_y.argmin().item()) == 11
+
+        # Boundary conversion exactly as in the suggestion pipeline.
+        train_y_bo = -raw_y
+
+        opt_bounds, _bounds = self._fit_and_compute(train_x, train_y_bo, length=0.2)
+        center = (opt_bounds[0] + opt_bounds[1]) / 2
+        assert torch.allclose(center, best_point, atol=1e-6), (
+            f"Trust region center {center.tolist()} is not the argmin's "
+            f"inputs {best_point.tolist()} — wrong incumbent selection."
+        )

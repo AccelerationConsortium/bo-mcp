@@ -7,9 +7,8 @@ Sign convention: ``update_turbo_state`` accepts **raw** objective values and
 takes an explicit ``minimize`` flag; it then converts to TuRBO's internal
 maximization convention (``best_value`` tracks the largest "better-is-higher"
 value).  Every helper that consumes model-space data (``train_y``,
-``best_value``) operates in that internal form.  See the canonical
-minimization-form convention in :mod:`bo_engine.types` and note that this
-module's internal form differs by a sign.
+``best_value``) operates in that internal form, which matches the engine's
+canonical maximization-form convention in :mod:`bo_engine.types`.
 
 Scale assumption: every default tolerance in this module is calibrated to
 **unit-standardized targets** — i.e. the BoTorch ``Standardize(m=1)`` outcome
@@ -403,12 +402,18 @@ def get_turbo_bounds(
 
     Args:
         state: Current TuRBO state
-        train_x: All training inputs (normalized to [0,1])
-        train_y: All training outputs (for maximization)
+        train_x: All training inputs, **normalized to the unit cube** —
+            callers with raw-scale inputs must map them through the
+            parameter bounds first (the trust-region ``length`` lives in
+            [0,1] space)
+        train_y: All training outputs in maximization form (higher =
+            better; the engine convention in :mod:`bo_engine.types`), so
+            ``argmax`` is the incumbent best
         model: Fitted GP model (for lengthscale extraction)
 
     Returns:
-        Tuple of (lower_bounds, upper_bounds) tensors of shape [dim]
+        Tuple of (lower_bounds, upper_bounds) tensors of shape
+        [n_encoded_dims], in normalized [0,1] coordinates
     """
     # Center on best observed point
     best_idx = int(train_y.argmax().item())
@@ -424,9 +429,10 @@ def get_turbo_bounds(
         # Direct RBF kernel case
         lengthscales = covar.lengthscale.squeeze().detach()
 
-    # Handle scalar lengthscale (isotropic kernel)
+    # Handle scalar lengthscale (isotropic kernel). Expand to the encoded
+    # input width (one-hot categoricals make it larger than state.dim).
     if lengthscales.dim() == 0:
-        lengthscales = lengthscales.unsqueeze(0).expand(state.dim)
+        lengthscales = lengthscales.unsqueeze(0).expand(train_x.shape[-1])
 
     # Normalize weights (geometric mean = 1)
     weights = lengthscales / lengthscales.mean()

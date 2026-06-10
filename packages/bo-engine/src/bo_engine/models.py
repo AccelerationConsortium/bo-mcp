@@ -45,6 +45,8 @@ from botorch.models.transforms.outcome import (
     OutcomeTransform,
     Standardize,
 )
+from botorch.posteriors import Posterior
+from botorch.posteriors.transformed import TransformedPosterior
 from gpytorch.constraints import GreaterThan
 from gpytorch.kernels import Kernel, RBFKernel, ScaleKernel
 from gpytorch.likelihoods import GaussianLikelihood
@@ -91,7 +93,73 @@ def _default_noise_prior() -> GammaPrior:
     return GammaPrior(NOISE_PRIOR_GAMMA_CONCENTRATION, NOISE_PRIOR_GAMMA_RATE)
 
 
-def _build_outcome_transform(log_transform: bool) -> OutcomeTransform:
+class Negate(OutcomeTransform):
+    """Sign-flip outcome transform (its own inverse).
+
+    Exists so the ``Log`` transform can be used under the engine's
+    maximization-form convention (see :mod:`bo_engine.types`): a minimize
+    objective arrives at the model factory pre-negated, but ``Log`` needs
+    the raw positive scale. Chaining ``Negate`` before ``Log`` un-negates
+    the targets for the log step and re-negates the untransformed
+    posterior, so the model's posterior stays on the (maximization-form)
+    scale of the data the caller passed in.
+
+    Although negation is mathematically linear, ``_is_linear`` stays at
+    the base-class ``False``: BoTorch's contract for ``_is_linear=True``
+    requires ``untransform_posterior`` to map a ``GPyTorchPosterior`` to a
+    ``GPyTorchPosterior``, and this transform (like ``Log``) returns a
+    ``TransformedPosterior``.
+    """
+
+    def subset_output(self, idcs: list[int]) -> OutcomeTransform:  # noqa: ARG002
+        """Subset the transform along the output dimension.
+
+        Negation applies uniformly to every output, so the subset is a
+        fresh ``Negate``. Implemented so BoTorch's ``subset_model``
+        utilities work on chains containing this transform.
+        """
+        new_tf = self.__class__()
+        if not self.training:
+            new_tf.eval()
+        return new_tf
+
+    def forward(
+        self,
+        Y: Tensor,  # noqa: N803
+        Yvar: Tensor | None = None,  # noqa: N803
+        X: Tensor | None = None,  # noqa: N803, ARG002
+    ) -> tuple[Tensor, Tensor | None]:
+        """Negate targets; observation noise is sign-invariant."""
+        return -Y, Yvar
+
+    def untransform(
+        self,
+        Y: Tensor,  # noqa: N803
+        Yvar: Tensor | None = None,  # noqa: N803
+        X: Tensor | None = None,  # noqa: N803, ARG002
+    ) -> tuple[Tensor, Tensor | None]:
+        """Negation is an involution, so untransform is forward."""
+        return -Y, Yvar
+
+    def untransform_posterior(
+        self,
+        posterior: Posterior,
+        X: Tensor | None = None,  # noqa: N803, ARG002
+    ) -> TransformedPosterior:
+        """Negate the posterior mean and samples; variance is unchanged."""
+        return TransformedPosterior(
+            posterior=posterior,
+            sample_transform=torch.neg,
+            mean_transform=lambda mean, var: -mean,  # noqa: ARG005
+            variance_transform=lambda mean, var: var,  # noqa: ARG005
+        )
+
+
+def _build_outcome_transform(
+    log_transform: bool,
+    *,
+    negate_before_log: bool = False,
+) -> OutcomeTransform:
     """Build the outcome transform stack for a single objective.
 
     By default the GP only standardizes targets (mean 0, unit variance).
@@ -100,18 +168,28 @@ def _build_outcome_transform(log_transform: bool) -> OutcomeTransform:
     makes the model behave reasonably on multi-decade objectives whose
     raw scale spans several orders of magnitude (e.g. reaction rates or
     contaminant concentrations). BoTorch un-applies both stages on the
-    posterior so callers still see results in the user's original scale.
+    posterior so callers still see results in the scale of the targets
+    they passed in.
+
+    ``negate_before_log`` supports targets supplied in negated
+    (maximization-form) shape: a :class:`Negate` stage is chained in front
+    of ``Log`` so the log step sees the raw positive scale while the
+    untransformed posterior stays on the negated scale of the input. It is
+    only meaningful together with ``log_transform=True``; ``Standardize``
+    alone is sign-agnostic.
 
     **Positivity is required.** :class:`Log` operates on the raw target
     values; passing a zero or negative target produces ``-inf`` / ``nan``
     and breaks the downstream ``Standardize`` mean estimate. Callers
-    therefore must guarantee strictly positive ``train_Y`` for the
+    therefore must guarantee strictly positive raw targets for the
     objective when ``log_transform=True``. The model factories
     (:func:`create_single_task_model`, :func:`create_model`) enforce
     this at construction time so the failure mode is a clear
     ``ValueError`` instead of a numerical NaN cascade.
     """
     if log_transform:
+        if negate_before_log:
+            return ChainedOutcomeTransform(negate=Negate(), log=Log(), standardize=Standardize(m=1))
         return ChainedOutcomeTransform(log=Log(), standardize=Standardize(m=1))
     return Standardize(m=1)
 
@@ -161,6 +239,61 @@ def _assert_positive_for_log_transform(train_y: Tensor, objective_index: int) ->
             "log_transform for this objective."
         )
         raise ValueError(msg)
+
+
+def _prepare_log_targets(
+    train_y: Tensor,
+    *,
+    auto_shift_for_log: bool,
+    negate_before_log: bool,
+) -> tuple[Tensor, float]:
+    """Auto-shift and positivity-check targets destined for a ``Log`` stage.
+
+    ``Log`` operates on the raw positive objective scale. When
+    ``negate_before_log`` is set the supplied ``train_y`` is the negation of
+    the raw objective (maximization-form convention), so the shift and the
+    positivity check are evaluated on ``-train_y`` and the shift moves the
+    negated targets in the opposite direction (a raw shift of ``+s`` is
+    ``-s`` in negated form).
+
+    Returns:
+        Tuple of (possibly shifted ``train_y``, applied raw-scale shift).
+    """
+    applied_shift = 0.0
+    if auto_shift_for_log:
+        raw_y = -train_y if negate_before_log else train_y
+        applied_shift = compute_log_auto_shift(raw_y)
+        if applied_shift > 0:
+            logger.warning(
+                "log_transform=True with non-positive observations on "
+                "objective[0]; applying auto_shift_for_log=%.6g so the Log "
+                "transform is well-defined. Posterior predictions are stored "
+                "on the shifted scale; subtract %.6g to recover raw values.",
+                applied_shift,
+                applied_shift,
+            )
+            train_y = train_y - applied_shift if negate_before_log else train_y + applied_shift
+
+    raw_y = -train_y if negate_before_log else train_y
+    _assert_positive_for_log_transform(raw_y, objective_index=0)
+    return train_y, applied_shift
+
+
+def _resolve_per_objective_flags(
+    flags: bool | list[bool],
+    n_objectives: int,
+    name: str,
+) -> list[bool]:
+    """Broadcast a scalar flag or validate a per-objective flag list."""
+    if isinstance(flags, bool):
+        return [flags] * n_objectives
+    if len(flags) != n_objectives:
+        msg = (
+            f"{name} list length must match the number of objectives; "
+            f"got {len(flags)} flag(s) for {n_objectives} objective(s)."
+        )
+        raise ValueError(msg)
+    return list(flags)
 
 
 def _build_likelihood(noise_prior: Prior | None) -> GaussianLikelihood:
@@ -352,6 +485,7 @@ def create_single_task_model(
     *,
     categorical_dim_indices: list[int] | None = None,
     auto_shift_for_log: bool = False,
+    target_negated: bool = False,
 ) -> SingleTaskGP:
     """Create a SingleTaskGP for single-objective optimization.
 
@@ -388,12 +522,19 @@ def create_single_task_model(
             ``None`` (default) preserves the historical pure-RBF behavior.
         auto_shift_for_log: Only meaningful when ``log_transform=True``.
             ``True`` instructs the factory to compute a one-shot additive
-            shift ``-min(train_y) + LOG_AUTO_SHIFT_EPSILON`` when any
-            training target is non-positive, apply it before fitting, and
-            stash the shift on the returned model as
+            shift ``-min(raw_y) + LOG_AUTO_SHIFT_EPSILON`` when any
+            training target is non-positive on the raw scale, apply it
+            before fitting, and stash the shift on the returned model as
             ``model._auto_shift_for_log`` so downstream callers can back
             it out of posterior predictions. ``False`` (default) preserves
             the legacy "raise on non-positive" behavior.
+        target_negated: ``True`` when ``train_y`` is the negation of the
+            raw objective (the engine's maximization-form convention for a
+            minimize objective; see :mod:`bo_engine.types`). Only consulted
+            when ``log_transform=True``: the ``Log`` stage needs the raw
+            positive scale, so the outcome chain gains a :class:`Negate`
+            stage and the positivity / auto-shift checks run on
+            ``-train_y``. ``Standardize`` alone is sign-agnostic.
 
     Returns:
         SingleTaskGP model (unfitted)
@@ -409,19 +550,15 @@ def create_single_task_model(
     if train_yvar is not None and train_yvar.dim() == 1:
         train_yvar = train_yvar.unsqueeze(-1)
 
+    negate_before_log = log_transform and target_negated
+
     applied_shift = 0.0
-    if log_transform and auto_shift_for_log:
-        applied_shift = compute_log_auto_shift(train_y)
-        if applied_shift > 0:
-            logger.warning(
-                "log_transform=True with non-positive observations on "
-                "objective[0]; applying auto_shift_for_log=%.6g so the Log "
-                "transform is well-defined. Posterior predictions are stored "
-                "on the shifted scale; subtract %.6g to recover raw values.",
-                applied_shift,
-                applied_shift,
-            )
-            train_y = train_y + applied_shift
+    if log_transform:
+        train_y, applied_shift = _prepare_log_targets(
+            train_y,
+            auto_shift_for_log=auto_shift_for_log,
+            negate_before_log=negate_before_log,
+        )
 
     input_transform = create_input_transform(
         n_dims=train_x.shape[-1],
@@ -429,14 +566,13 @@ def create_single_task_model(
         use_input_warping=use_input_warping,
     )
 
-    if log_transform:
-        _assert_positive_for_log_transform(train_y, objective_index=0)
-
     kwargs: dict = {
         "train_X": train_x,
         "train_Y": train_y,
         "input_transform": input_transform,
-        "outcome_transform": _build_outcome_transform(log_transform),
+        "outcome_transform": _build_outcome_transform(
+            log_transform, negate_before_log=negate_before_log
+        ),
     }
     if categorical_dim_indices:
         kwargs["covar_module"] = build_mixed_kernel(
@@ -470,6 +606,7 @@ def create_model(
     log_transform: bool | list[bool] = False,
     *,
     categorical_dim_indices: list[int] | None = None,
+    target_negated: bool | list[bool] = False,
 ) -> ModelListGP:
     """Create a ModelListGP for multi-objective optimization.
 
@@ -499,6 +636,12 @@ def create_model(
         categorical_dim_indices: Indices of categorical (one-hot) dimensions
             in ``train_x``. Used to route those columns through the
             ``CategoricalKernel`` instead of the default Matérn.
+        target_negated: ``True`` for columns whose targets are the negation
+            of the raw objective (maximization-form convention for minimize
+            objectives; see :mod:`bo_engine.types`). Accepts a single bool
+            or a per-objective list. Only consulted for objectives with
+            ``log_transform`` enabled, where the ``Log`` stage needs the
+            raw positive scale (see :class:`Negate`).
 
     Returns:
         ModelListGP with one GP per objective
@@ -511,16 +654,8 @@ def create_model(
     n_objectives = train_y.shape[-1]
     n_dims = train_x.shape[-1]
 
-    if isinstance(log_transform, bool):
-        log_flags = [log_transform] * n_objectives
-    else:
-        if len(log_transform) != n_objectives:
-            msg = (
-                "log_transform list length must match the number of objectives; "
-                f"got {len(log_transform)} flag(s) for {n_objectives} objective(s)."
-            )
-            raise ValueError(msg)
-        log_flags = list(log_transform)
+    log_flags = _resolve_per_objective_flags(log_transform, n_objectives, "log_transform")
+    negated_flags = _resolve_per_objective_flags(target_negated, n_objectives, "target_negated")
 
     models = []
     for i in range(n_objectives):
@@ -531,14 +666,18 @@ def create_model(
             use_input_warping=use_input_warping,
         )
 
+        negate_before_log = log_flags[i] and negated_flags[i]
         if log_flags[i]:
-            _assert_positive_for_log_transform(train_y[:, i : i + 1], objective_index=i)
+            raw_column = -train_y[:, i : i + 1] if negate_before_log else train_y[:, i : i + 1]
+            _assert_positive_for_log_transform(raw_column, objective_index=i)
 
         kwargs: dict = {
             "train_X": train_x,
             "train_Y": train_y[:, i : i + 1],
             "input_transform": input_transform,
-            "outcome_transform": _build_outcome_transform(log_flags[i]),
+            "outcome_transform": _build_outcome_transform(
+                log_flags[i], negate_before_log=negate_before_log
+            ),
         }
         if categorical_dim_indices:
             kwargs["covar_module"] = build_mixed_kernel(
@@ -635,6 +774,7 @@ def create_and_fit_single_task_model(
     *,
     categorical_dim_indices: list[int] | None = None,
     auto_shift_for_log: bool = False,
+    target_negated: bool = False,
 ) -> SingleTaskGP:
     """Create and fit a SingleTaskGP.
 
@@ -652,6 +792,7 @@ def create_and_fit_single_task_model(
         log_transform: Forwarded to :func:`create_single_task_model`.
         categorical_dim_indices: Forwarded to :func:`create_single_task_model`.
         auto_shift_for_log: Forwarded to :func:`create_single_task_model`.
+        target_negated: Forwarded to :func:`create_single_task_model`.
 
     Returns:
         Fitted SingleTaskGP
@@ -666,6 +807,7 @@ def create_and_fit_single_task_model(
         log_transform=log_transform,
         categorical_dim_indices=categorical_dim_indices,
         auto_shift_for_log=auto_shift_for_log,
+        target_negated=target_negated,
     )
     return fit_single_task_model(model)
 
@@ -680,6 +822,7 @@ def create_and_fit_model(
     log_transform: bool | list[bool] = False,
     *,
     categorical_dim_indices: list[int] | None = None,
+    target_negated: bool | list[bool] = False,
 ) -> ModelListGP:
     """Create and fit a ModelListGP.
 
@@ -697,6 +840,7 @@ def create_and_fit_model(
         log_transform: Per-objective ``Log → Standardize`` opt-in.
             Forwarded to :func:`create_model`.
         categorical_dim_indices: Forwarded to :func:`create_model`.
+        target_negated: Forwarded to :func:`create_model`.
 
     Returns:
         Fitted ModelListGP
@@ -710,6 +854,7 @@ def create_and_fit_model(
         noise_prior=noise_prior,
         log_transform=log_transform,
         categorical_dim_indices=categorical_dim_indices,
+        target_negated=target_negated,
     )
     return fit_model(model)
 

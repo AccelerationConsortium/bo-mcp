@@ -80,13 +80,14 @@ def _build_multi_objective_provenance(
     else:
         avg_std = None
 
-    # Per-objective predictions; un-negate maximization objectives.
+    # Per-objective predictions; un-negate the maximization-form negation
+    # applied to minimize objectives before the GP fit.
     predicted_objectives: dict[str, float] = {}
     predicted_std_dict: dict[str, float] = {}
     for j, obj in enumerate(spec.objectives):
         if means.dim() > 1 and index < means.shape[0] and j < means.shape[1]:
             pred = means[index, j].item()
-            predicted_objectives[obj.name] = pred if obj.minimize else -pred
+            predicted_objectives[obj.name] = -pred if obj.minimize else pred
         if stds.dim() > 1 and index < stds.shape[0] and j < stds.shape[1]:
             predicted_std_dict[obj.name] = stds[index, j].item()
 
@@ -207,11 +208,11 @@ def _generate_multi_objective_batch(
     # Get minimize mask for objectives
     minimize_mask = torch.tensor([obj.minimize for obj in spec.objectives], dtype=torch.bool)
 
-    # ``log_transform`` is incompatible with a maximize objective on this
-    # path: BoTorch's ``Log`` outcome transform fires *after* we negate the
-    # column to enforce minimization, so a positive raw target becomes
-    # negative and ``log`` is undefined. Surface this at the boundary
-    # rather than letting BoTorch fail deep inside model fit.
+    # ``log_transform`` is part of the public spec contract only for
+    # minimize objectives. The maximization-form negation of a minimize
+    # column is handled by the ``Negate`` outcome-transform stage (see
+    # ``bo_engine.models``); the maximize combination stays rejected at
+    # the boundary so the supported surface is unchanged.
     log_flags = [obj.log_transform for obj in spec.objectives]
     for idx, (flag, mini) in enumerate(zip(log_flags, minimize_mask.tolist(), strict=True)):
         if flag and not mini:
@@ -236,13 +237,16 @@ def _generate_multi_objective_batch(
         )
         raise ValueError(msg)
 
-    # Negate maximization objectives (BoTorch assumes minimization). Variance
-    # is sign-invariant, so ``train_yvar`` flows through unchanged.
+    # Negate minimization objectives (BoTorch's acquisition stack assumes
+    # maximization; see bo_engine.types). Variance is sign-invariant, so
+    # ``train_yvar`` flows through unchanged.
     train_y_bo = train_y.clone()
-    train_y_bo[:, ~minimize_mask] = -train_y_bo[:, ~minimize_mask]
+    train_y_bo[:, minimize_mask] = -train_y_bo[:, minimize_mask]
 
     # Create and fit model -- pass per-objective measurement variance when
-    # every observation supplied it for every objective.
+    # every observation supplied it for every objective. ``target_negated``
+    # tells the factory which columns arrive negated so a ``Log`` outcome
+    # stage can undo (and redo on the posterior) the negation.
     cat_dim_indices = get_categorical_dim_indices(spec) if spec.use_categorical_kernel else None
     model = create_and_fit_model(
         train_x,
@@ -253,6 +257,7 @@ def _generate_multi_objective_batch(
         log_transform=log_flags,
         categorical_dim_indices=cat_dim_indices,
         noise_prior=noise_prior,
+        target_negated=minimize_mask.tolist(),
     )
 
     # Post-fit standardization audit (per-objective). Inspects the
@@ -274,9 +279,17 @@ def _generate_multi_objective_batch(
         outcome_constraints = _build_outcome_constraint_models(spec, observations, train_x, bounds)
 
     # Get reference point (using STATIC strategy for backward compatibility;
-    # DYNAMIC can be enabled via ReferencePointConfig when exposed in OptimizationSpec)
+    # DYNAMIC can be enabled via ReferencePointConfig when exposed in
+    # OptimizationSpec). The reference-point helpers operate in minimization
+    # form (worst = max), so hand them the negated view of the
+    # maximization-form data and negate the result back: in max form the
+    # reference point must sit *below* every observed point.
     ref_point_config = ReferencePointConfig(strategy=ReferencePointStrategy.STATIC)
-    ref_point, _info = get_reference_point_dynamic(train_y_bo, minimize_mask, ref_point_config)
+    all_minimize = torch.ones(spec.n_objectives, dtype=torch.bool)
+    ref_point_min_form, _info = get_reference_point_dynamic(
+        -train_y_bo, all_minimize, ref_point_config
+    )
+    ref_point = -ref_point_min_form
 
     # Determine acquisition method
     method = spec.acquisition_method
@@ -292,17 +305,17 @@ def _generate_multi_objective_batch(
             spec
         )
 
-    # Create acquisition function.  ``train_y_bo`` has maximization
-    # columns pre-negated so every objective is in minimization form
+    # Create acquisition function.  ``train_y_bo`` has minimization
+    # columns pre-negated so every objective is in maximization form
     # (see bo_engine.types); the factory therefore receives an
-    # all-True ``minimize_mask``.
+    # all-True ``maximize_mask``.
     acqf = create_acquisition(
         model=model,
         ref_point=ref_point,
         train_x=train_x,
         train_y=train_y_bo,
         n_objectives=spec.n_objectives,
-        minimize_mask=torch.ones(spec.n_objectives, dtype=torch.bool),
+        maximize_mask=torch.ones(spec.n_objectives, dtype=torch.bool),
         method=method,
         constraints=None,
         outcome_constraint_models=outcome_constraints,

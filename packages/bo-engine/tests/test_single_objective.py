@@ -183,7 +183,7 @@ class TestSingleObjectiveAcquisition:
             model=model,
             train_x=train_x,
             train_y=train_y,
-            minimize=True,
+            maximize=True,
             use_noisy=True,
         )
 

@@ -102,12 +102,12 @@ class TestBraninOptimization:
 
         Reference: BoTorch optimization tutorial shows convergence within 20-30 evals.
 
-        This test uses a deterministic seed (rng=38) that reliably converges to
-        within 2% of the global minimum. The seed was found by searching for
-        seeds that produce good convergence across platforms.
+        This is the fast, seed-pinned variant for the PR gate; the
+        seed-independent convergence claim is pinned by the multi-seed
+        nightly test ``test_branin_median_convergence_across_seeds`` below
+        (per TESTING.md, statistical assertions run on the nightly gate).
         """
         # Use deterministic RNG for reproducible results
-        # Seed 38 consistently converges to ~0.404 (within 2% of optimum 0.398)
         rng = np.random.default_rng(38)
         bounds = branin_bounds()
 
@@ -160,6 +160,73 @@ class TestBraninOptimization:
         assert best_y < 0.5, (
             f"Branin optimization did not converge: best_y={best_y:.4f}, "
             f"expected < 0.5 (global minimum is {BRANIN_GLOBAL_MINIMUM})"
+        )
+
+    @pytest.mark.slow
+    @pytest.mark.nightly
+    def test_branin_median_convergence_across_seeds(self) -> None:
+        """Median best_y over independent seeds must approach the global minimum.
+
+        Working BO on Branin converges for almost any seed (the BoTorch
+        optimization tutorial reports convergence within 20-30 evaluations:
+        https://botorch.org/docs/tutorials/closed_loop_botorch_only/),
+        whereas an anti-optimizing loop behaves like worse-than-random
+        search and only passes a single-seed bound with a lucky seed. Per
+        TESTING.md, the seed-independent claim is asserted on the median
+        across seeds on the nightly gate.
+        """
+        bounds = branin_bounds()
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="x1",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(bounds[0, 0].item(), bounds[1, 0].item()),
+                ),
+                ParameterSpec(
+                    name="x2",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(bounds[0, 1].item(), bounds[1, 1].item()),
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            batch_size=1,
+            initial_design_size=5,
+        )
+
+        best_per_seed: list[float] = []
+        for seed in (0, 1, 2, 3, 4):
+            rng = np.random.default_rng(seed)
+            observations: list[ObservationData] = []
+            for iteration in range(15):
+                suggestions, _ = generate_next_batch(
+                    spec, observations, iteration=iteration, rng=rng
+                )
+                for sugg in suggestions:
+                    x1 = sugg.parameter_values["x1"]
+                    x2 = sugg.parameter_values["x2"]
+                    x = torch.tensor([[x1, x2]], dtype=torch.float64)
+                    observations.append(
+                        ObservationData(
+                            parameter_values={"x1": x1, "x2": x2},
+                            objective_values={"y": branin(x).item()},
+                        )
+                    )
+            best_y, _ = compute_best_value(
+                [obs.objective_values["y"] for obs in observations],
+                minimize=True,
+            )
+            best_per_seed.append(best_y)
+
+        median_best = float(np.median(best_per_seed))
+        # Branin spans ~0.4 to ~308; random search with 15 evaluations has a
+        # median best around 5-10. Requiring < 2.0 separates working BO
+        # (typically < 0.5) from random/anti-optimizing behavior while
+        # leaving stochastic headroom.
+        assert median_best < 2.0, (
+            f"Median best_y across seeds is {median_best:.4f} "
+            f"(per-seed: {[round(b, 4) for b in best_per_seed]}); working BO "
+            f"converges toward {BRANIN_GLOBAL_MINIMUM}."
         )
 
     @pytest.mark.slow
@@ -334,17 +401,19 @@ class TestAcquisitionComparison:
         # Generate initial Sobol design
         sobol = SobolEngine(dimension=2, scramble=True, seed=42)
         train_x = sobol.draw(6).to(torch.float64)
-        train_y = branin_normalized(train_x).unsqueeze(-1)
+        # Branin is a minimization problem — negate into the engine's
+        # maximization form (see bo_engine.types) before fitting.
+        train_y_bo = -branin_normalized(train_x).unsqueeze(-1)
 
         # Fit model
-        model = create_and_fit_single_task_model(train_x, train_y, norm_bounds)
+        model = create_and_fit_single_task_model(train_x, train_y_bo, norm_bounds)
 
         # Create Noisy EI
         acqf_noisy = create_single_objective_acquisition(
             model=model,
             train_x=train_x,
-            train_y=train_y,
-            minimize=True,
+            train_y=train_y_bo,
+            maximize=True,
             use_noisy=True,
         )
 

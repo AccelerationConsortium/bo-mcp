@@ -109,3 +109,53 @@ class TestNumericalSafety:
         history = [0.0, 0.1, 0.2, 0.3, 0.4]
         # The branch ``is_zero(initial)`` must fire here.
         assert compute_single_objective_improvement_rate(history, window=10) == pytest.approx(0.0)
+
+
+class TestOutlierDiagnosticsUserScale:
+    """Outlier reports must surface values on the user's raw scale.
+
+    The LOO-based outlier detector (BoTorch batch-mode CV pattern:
+    https://botorch.org/docs/tutorials/batch_mode_cross_validation/) feeds
+    a user-facing report, so ``actual_value`` / ``predicted_value`` must
+    equal the observed values as submitted — for maximize objectives just
+    as for minimize ones. Standardized residuals are sign-invariant, so
+    the detector consumes raw targets with no direction negation.
+    """
+
+    def test_maximize_objective_outlier_reports_raw_values(self) -> None:
+        from bo_engine.backend_base import ObservationData
+        from bo_engine.botorch_backend import BoTorchBackend
+        from bo_engine.types import (
+            ObjectiveSpec,
+            OptimizationSpec,
+            ParameterSpec,
+            ParameterType,
+        )
+
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="yield", minimize=False)],
+        )
+        # Smooth linear trend with one grossly corrupted observation.
+        corrupted_value = -50.0
+        observations = [
+            ObservationData(parameter_values={"x": x}, objective_values={"yield": 10.0 * x})
+            for x in (0.0, 0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9, 1.0)
+        ]
+        observations.append(
+            ObservationData(
+                parameter_values={"x": 0.5}, objective_values={"yield": corrupted_value}
+            )
+        )
+
+        result = BoTorchBackend()._compute_outlier_diagnostics(spec, observations)
+
+        outliers = result["outliers"]
+        assert outliers is not None
+        assert outliers["count"] >= 1, "The corrupted observation must be flagged as an outlier"
+        flagged = {o["actual_value"] for o in outliers["outlier_results"]}
+        assert corrupted_value in flagged, (
+            f"Outlier report must carry the raw observed value "
+            f"{corrupted_value} for a maximize objective; got {flagged} "
+            "(a sign flip here means the report is on the internal scale)."
+        )

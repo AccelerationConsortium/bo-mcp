@@ -10,12 +10,23 @@ References:
     - Closed-loop Tutorial: https://botorch.org/docs/tutorials/closed_loop_botorch_only/
 """
 
+from collections.abc import Callable
+
+import numpy as np
 import pytest
 import torch
 from torch.quasirandom import SobolEngine
 
 from bo_engine import (
+    ConstraintSpec,
+    ConstraintType,
+    ObjectiveSpec,
+    ObservationData,
+    OptimizationSpec,
+    ParameterSpec,
+    ParameterType,
     apply_sum_constraint,
+    generate_next_batch,
 )
 from bo_engine.benchmarks import c2_dtlz2, hartmann6
 from bo_engine.outcome_constraints import (
@@ -351,3 +362,96 @@ class TestFeasibilityWeighting:
 
         # P(x <= 1) for N(1, 0.5) should be ~0.5
         assert 0.4 < prob.item() < 0.6
+
+
+@pytest.mark.tutorial
+class TestNativeLinearConstraintFeasibility:
+    """Model-guided suggestions must satisfy native linear input constraints.
+
+    BoTorch's ``optimize_acqf`` enforces each inequality tuple as
+    ``sum_i X[indices[i]] * coefficients[i] >= rhs`` — see
+    https://botorch.readthedocs.io/en/stable/optim.html#botorch.optim.optimize.optimize_acqf.
+    These end-to-end cases run the suggestion pipeline with a sum cap /
+    floor whose unconstrained optimum lies *outside* the feasible region,
+    so a flipped encoding would actively push suggestions out of bounds.
+    """
+
+    @staticmethod
+    def _run_constrained_bo(
+        constraint: ConstraintSpec,
+        objective: Callable[[float, float], float],
+        seed: int,
+    ) -> list[tuple[float, float]]:
+        """Run a short BO loop and return the model-guided ``(x1, x2)`` points.
+
+        Initial-design points are excluded: the native linear-constraint
+        tuples act on the acquisition optimizer, while the space-filling
+        design uses a separate best-effort projection whose bound clipping
+        can leave small residual violations.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            constraints=[constraint],
+            batch_size=1,
+            initial_design_size=5,
+        )
+        torch.manual_seed(seed)
+        rng = np.random.default_rng(seed)
+        observations: list[ObservationData] = []
+        model_guided: list[tuple[float, float]] = []
+        for iteration in range(9):
+            suggestions, _ = generate_next_batch(spec, observations, iteration=iteration, rng=rng)
+            for suggestion in suggestions:
+                x1 = suggestion.parameter_values["x1"]
+                x2 = suggestion.parameter_values["x2"]
+                if suggestion.generation_method in ("bo", "turbo"):
+                    model_guided.append((x1, x2))
+                observations.append(
+                    ObservationData(
+                        parameter_values={"x1": x1, "x2": x2},
+                        objective_values={"y": objective(x1, x2)},
+                    )
+                )
+        assert model_guided, "BO loop never reached the model-guided phase"
+        return model_guided
+
+    @pytest.mark.smoke
+    def test_sum_less_than_suggestions_feasible(self) -> None:
+        """Every model-guided point satisfies ``x1 + x2 <= 0.8``.
+
+        The objective minimum at (0.7, 0.7) violates the cap, so the
+        optimizer is pulled toward the constraint boundary — exactly where
+        an inverted encoding (a cap enforced as a floor) diverges.
+        """
+        constraint = ConstraintSpec(
+            type=ConstraintType.SUM_LESS_THAN, parameters=["x1", "x2"], value=0.8
+        )
+        points = self._run_constrained_bo(
+            constraint,
+            lambda x1, x2: (x1 - 0.7) ** 2 + (x2 - 0.7) ** 2,
+            seed=7,
+        )
+        for x1, x2 in points:
+            assert x1 + x2 <= 0.8 + 1e-4, f"Suggestion violates sum cap: {x1 + x2:.4f} > 0.8"
+
+    @pytest.mark.smoke
+    def test_sum_greater_than_suggestions_feasible(self) -> None:
+        """Every model-guided point satisfies ``x1 + x2 >= 1.2``.
+
+        Mirror case: the objective minimum at (0.3, 0.3) violates the
+        floor, so suggestions must be held at or above it.
+        """
+        constraint = ConstraintSpec(
+            type=ConstraintType.SUM_GREATER_THAN, parameters=["x1", "x2"], value=1.2
+        )
+        points = self._run_constrained_bo(
+            constraint,
+            lambda x1, x2: (x1 - 0.3) ** 2 + (x2 - 0.3) ** 2,
+            seed=11,
+        )
+        for x1, x2 in points:
+            assert x1 + x2 >= 1.2 - 1e-4, f"Suggestion violates sum floor: {x1 + x2:.4f} < 1.2"

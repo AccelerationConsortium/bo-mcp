@@ -431,3 +431,56 @@ class TestRGPEEdgeCases:
 
         rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
         assert rgpe is not None
+
+
+class TestLegacyPathDirection:
+    """The target-only (legacy) acquisition must minimize, not maximize.
+
+    ``generate_rgpe_suggestions`` documents a minimization contract
+    (``best_f = target_y.min()``). The ensemble path enforces it via the
+    hand-rolled EI's ``maximize=False``; the legacy path uses BoTorch's
+    ``qLogNoisyExpectedImprovement``, which always maximizes (it has no
+    direction flag — see ``botorch.acquisition.logei``), so it needs a
+    negating MC objective to honor the same contract.
+    """
+
+    def test_legacy_path_suggests_near_minimum(self) -> None:
+        """On a 1-D bowl the legacy path proposes points in the minimum's basin.
+
+        The bowl ``y = (x - 0.3)²`` is densely observed, so a correctly
+        oriented EI exploits near ``x = 0.3`` while a sign-flipped one
+        chases the observed maximum at ``x = 1.0``.
+        """
+        torch.manual_seed(0)
+        bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double)
+        optimum = 0.3
+
+        target_x = torch.linspace(0, 1, 12, dtype=torch.double).unsqueeze(-1)
+        target_y = (target_x - optimum) ** 2
+
+        # Informative prior: the same bowl, lightly perturbed.
+        prior_x = torch.linspace(0, 1, 15, dtype=torch.double).unsqueeze(-1)
+        prior_y = (prior_x - optimum) ** 2 + 0.01
+        prior_tasks = [PriorTaskData(name="same_bowl", train_x=prior_x, train_y=prior_y)]
+
+        candidates, _acq_values, metadata = generate_rgpe_suggestions(
+            target_x,
+            target_y,
+            prior_tasks,
+            bounds,
+            batch_size=1,
+            use_ensemble_acquisition=False,
+        )
+
+        assert "Target Only" in metadata["acquisition_function"]
+        suggested_x = float(candidates[0, 0].item())
+        observed_argmax = 1.0  # x of the worst (largest) observed value
+        assert abs(suggested_x - optimum) < abs(suggested_x - observed_argmax), (
+            f"Legacy RGPE suggestion x={suggested_x:.3f} is closer to the "
+            f"observed maximum than to the minimum {optimum} — the "
+            "acquisition is maximizing under a minimization contract."
+        )
+        assert abs(suggested_x - optimum) <= 0.3, (
+            f"Legacy RGPE suggestion x={suggested_x:.3f} is outside the "
+            f"minimum's basin around {optimum}."
+        )

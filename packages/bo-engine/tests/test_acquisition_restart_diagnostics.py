@@ -127,7 +127,7 @@ class TestOptimizeAcquisitionExposesDiagnostics:
             model=model,
             train_x=train_x,
             train_y=train_y,
-            minimize=True,
+            maximize=True,
         )
 
         caplog.set_level(logging.DEBUG, logger="bo_engine.acquisition")
@@ -166,7 +166,7 @@ class TestOptimizeAcquisitionExposesDiagnostics:
             model=model,
             train_x=train_x,
             train_y=train_y,
-            minimize=True,
+            maximize=True,
         )
 
         caplog.set_level(logging.DEBUG, logger="bo_engine.acquisition")

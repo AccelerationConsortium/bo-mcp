@@ -126,7 +126,7 @@ class TestOptimizeDiscrete:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _acq_values = optimize_acquisition(
@@ -151,7 +151,7 @@ class TestOptimizeDiscrete:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _ = optimize_acquisition(
@@ -182,7 +182,7 @@ class TestOptimizeDiscrete:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _ = optimize_acquisition(
@@ -205,7 +205,7 @@ class TestOptimizeDiscrete:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _ = optimize_acquisition(
@@ -246,7 +246,7 @@ class TestOptimizeMixed:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _ = optimize_acquisition(
@@ -272,7 +272,7 @@ class TestOptimizeMixed:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _ = optimize_acquisition(
@@ -301,7 +301,7 @@ class TestOptimizeMixed:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _ = optimize_acquisition(
@@ -374,7 +374,7 @@ class TestOptimizeMixedThreshold:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         with pytest.raises(NotImplementedError, match="not yet supported"):
@@ -406,7 +406,7 @@ class TestContinuousFallback:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _ = optimize_acquisition(
@@ -441,7 +441,7 @@ class TestContinuousFallback:
         from bo_engine.acquisition import create_single_objective_acquisition
 
         acqf = create_single_objective_acquisition(
-            model=model, train_x=train_x, train_y=train_y, minimize=True
+            model=model, train_x=train_x, train_y=train_y, maximize=True
         )
 
         candidates, _ = optimize_acquisition(

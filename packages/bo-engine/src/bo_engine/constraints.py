@@ -167,8 +167,15 @@ def build_botorch_linear_constraints(
     """Convert ConstraintSpecs to BoTorch's native linear constraint format.
 
     BoTorch's optimize_acqf accepts:
-    - inequality_constraints: list of (indices, coefficients, rhs) where Ax <= b
-    - equality_constraints: list of (indices, coefficients, rhs) where Ax = b
+    - inequality_constraints: list of (indices, coefficients, rhs) enforcing
+      ``sum_i X[indices[i]] * coefficients[i] >= rhs``
+    - equality_constraints: list of (indices, coefficients, rhs) enforcing
+      ``sum_i X[indices[i]] * coefficients[i] = rhs``
+
+    Note the inequality direction: BoTorch's documented convention is
+    **>= rhs** (see ``botorch.optim.optimize.optimize_acqf``), so every
+    upper-bound constraint (``<=``) is encoded with negated coefficients
+    and a negated right-hand side.
 
     Constraints involving categorical (one-hot) parameters cannot be expressed
     as simple linear constraints and are returned separately for post-hoc projection.
@@ -205,14 +212,15 @@ def build_botorch_linear_constraints(
         idx_tensor = torch.tensor(indices, dtype=torch.long)
 
         if constraint.type == ConstraintType.SUM_LESS_THAN:
-            # sum(x[indices]) <= value  →  Ax <= b with A=1, b=value
-            coeffs = torch.ones(len(indices), dtype=torch.double)
-            inequality_constraints.append((idx_tensor, coeffs, constraint.value))
-
-        elif constraint.type == ConstraintType.SUM_GREATER_THAN:
-            # sum(x[indices]) >= value  →  -sum(x[indices]) <= -value
+            # sum(x[indices]) <= value  →  -sum(x[indices]) >= -value
+            # (BoTorch inequality tuples enforce ``coeffs @ x >= rhs``)
             coeffs = -torch.ones(len(indices), dtype=torch.double)
             inequality_constraints.append((idx_tensor, coeffs, -constraint.value))
+
+        elif constraint.type == ConstraintType.SUM_GREATER_THAN:
+            # sum(x[indices]) >= value  →  already in ``coeffs @ x >= rhs`` form
+            coeffs = torch.ones(len(indices), dtype=torch.double)
+            inequality_constraints.append((idx_tensor, coeffs, constraint.value))
 
         elif constraint.type == ConstraintType.SUM_EQUALS:
             # Equality: sum of selected params must equal the target value
@@ -234,9 +242,9 @@ def build_botorch_linear_constraints(
                     "CampaignSpec / IntakeData."
                 )
                 raise ValueError(msg)
-            # coefficients @ x[indices] <= value
-            coeffs = torch.tensor(constraint.coefficients, dtype=torch.double)
-            inequality_constraints.append((idx_tensor, coeffs, constraint.value))
+            # coefficients @ x[indices] <= value  →  -coefficients @ x >= -value
+            coeffs = -torch.tensor(constraint.coefficients, dtype=torch.double)
+            inequality_constraints.append((idx_tensor, coeffs, -constraint.value))
 
         else:
             projection_constraints.append(constraint)

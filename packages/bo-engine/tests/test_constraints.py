@@ -14,10 +14,12 @@ These tests verify:
 
 import pytest
 import torch
+from torch import Tensor
 
 from bo_engine.constraints import (
     _get_parameter_indices,
     apply_sum_constraint,
+    build_botorch_linear_constraints,
     create_constraint_callable,
     create_constraints_list,
 )
@@ -572,3 +574,108 @@ class TestConstraintWithBoTorchIntegration:
 
         assert result_2d.shape == (5,)
         assert result_3d.shape == (3, 5)
+
+
+class TestBotorchLinearConstraintEncoding:
+    """Tuple encodings must follow BoTorch's ``>= rhs`` inequality convention.
+
+    BoTorch's ``optimize_acqf`` enforces each inequality tuple as
+    ``sum_i X[indices[i]] * coefficients[i] >= rhs`` — see
+    https://botorch.readthedocs.io/en/stable/optim.html#botorch.optim.optimize.optimize_acqf
+    ("inequality constraints ... in the form sum_i (X[indices[i]] *
+    coefficients[i]) >= rhs"). These tests evaluate each encoded tuple at
+    known feasible / infeasible points under that convention and assert
+    agreement with the user-declared constraint.
+    """
+
+    @pytest.fixture
+    def simple_spec(self) -> OptimizationSpec:
+        """Spec with 3 continuous parameters used by every encoding case."""
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0, 1)),
+                ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0, 1)),
+                ParameterSpec(name="x3", type=ParameterType.CONTINUOUS, bounds=(0, 1)),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+
+    @staticmethod
+    def _botorch_satisfied(entry: tuple[Tensor, Tensor, float], x: Tensor) -> bool:
+        """Evaluate one BoTorch inequality tuple under the ``>= rhs`` convention."""
+        indices, coefficients, rhs = entry
+        value = float((x[indices] * coefficients).sum().item())
+        return value >= rhs - 1e-12
+
+    def _encode_single(
+        self, constraint: ConstraintSpec, spec_template: OptimizationSpec
+    ) -> tuple[Tensor, Tensor, float]:
+        spec = OptimizationSpec(
+            parameters=spec_template.parameters,
+            objectives=spec_template.objectives,
+            constraints=[constraint],
+        )
+        inequality, equality, projection = build_botorch_linear_constraints(spec)
+        assert equality == []
+        assert projection == []
+        assert len(inequality) == 1
+        return inequality[0]
+
+    def test_sum_less_than_encoding(self, simple_spec: OptimizationSpec) -> None:
+        """``x1 + x2 <= 0.8`` must be feasible below the cap, infeasible above."""
+        constraint = ConstraintSpec(
+            type=ConstraintType.SUM_LESS_THAN, parameters=["x1", "x2"], value=0.8
+        )
+        entry = self._encode_single(constraint, simple_spec)
+
+        feasible = torch.tensor([0.3, 0.4, 0.9], dtype=torch.double)  # sum 0.7 <= 0.8
+        infeasible = torch.tensor([0.5, 0.5, 0.0], dtype=torch.double)  # sum 1.0 > 0.8
+        assert self._botorch_satisfied(entry, feasible)
+        assert not self._botorch_satisfied(entry, infeasible)
+
+    def test_sum_greater_than_encoding(self, simple_spec: OptimizationSpec) -> None:
+        """``x1 + x2 >= 0.3`` must be feasible above the floor, infeasible below."""
+        constraint = ConstraintSpec(
+            type=ConstraintType.SUM_GREATER_THAN, parameters=["x1", "x2"], value=0.3
+        )
+        entry = self._encode_single(constraint, simple_spec)
+
+        feasible = torch.tensor([0.2, 0.3, 0.0], dtype=torch.double)  # sum 0.5 >= 0.3
+        infeasible = torch.tensor([0.1, 0.1, 0.9], dtype=torch.double)  # sum 0.2 < 0.3
+        assert self._botorch_satisfied(entry, feasible)
+        assert not self._botorch_satisfied(entry, infeasible)
+
+    def test_linear_encoding(self, simple_spec: OptimizationSpec) -> None:
+        """``2·x1 + 3·x2 <= 1.0`` (a ``<=`` intent) must keep its direction."""
+        constraint = ConstraintSpec(
+            type=ConstraintType.LINEAR,
+            parameters=["x1", "x2"],
+            value=1.0,
+            coefficients=[2.0, 3.0],
+        )
+        entry = self._encode_single(constraint, simple_spec)
+
+        feasible = torch.tensor([0.1, 0.2, 0.5], dtype=torch.double)  # 0.8 <= 1.0
+        infeasible = torch.tensor([0.3, 0.3, 0.5], dtype=torch.double)  # 1.5 > 1.0
+        assert self._botorch_satisfied(entry, feasible)
+        assert not self._botorch_satisfied(entry, infeasible)
+
+    def test_sum_equals_encoding(self, simple_spec: OptimizationSpec) -> None:
+        """Equality constraints are direction-free: ``coeffs @ x == value``."""
+        constraint = ConstraintSpec(
+            type=ConstraintType.SUM_EQUALS, parameters=["x1", "x2", "x3"], value=1.0
+        )
+        spec = OptimizationSpec(
+            parameters=simple_spec.parameters,
+            objectives=simple_spec.objectives,
+            constraints=[constraint],
+        )
+        inequality, equality, projection = build_botorch_linear_constraints(spec)
+        assert inequality == []
+        assert projection == []
+        assert len(equality) == 1
+
+        indices, coefficients, rhs = equality[0]
+        x = torch.tensor([0.3, 0.3, 0.4], dtype=torch.double)
+        value = float((x[indices] * coefficients).sum().item())
+        assert value == pytest.approx(rhs)

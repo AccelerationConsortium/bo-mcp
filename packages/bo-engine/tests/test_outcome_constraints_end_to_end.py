@@ -226,36 +226,51 @@ class TestConstraintActuallyAffectsSuggestion:
 
     Under the historical "callable ignores its model" bug the constrained
     and unconstrained batches were byte-identical; under the follow-up
-    "inverted sign" bug the constrained batch was different but landed
-    in the *infeasible* region. The combined fix is correct only if the
-    constrained batch lands inside the declared feasible region.
+    "inverted sign" bug the constraint weighting actively penalized the
+    feasible region. Either failure mode lets the batch exploit the
+    deep-infeasible bowl bottom around ``x = 5`` (where the unconstrained
+    batch demonstrably concentrates, distances 0.3–0.6 from the bottom).
 
-    Note: we deliberately do NOT assert that constrained ≠ unconstrained.
-    The unconstrained run with a small number of observations explores
-    corners (high acquisition uncertainty), and those corners happen to
-    coincide with the feasible region for ``f >= 4`` — so the two
-    batches can legitimately overlap. The feasibility check below is
-    the load-bearing regression signal; the callable sign-convention
-    unit test above pins the underlying wiring.
+    The constrained optimum of this synthetic sits exactly *on* the
+    feasibility boundary (``f = 4`` at ``|x - 5| = 2``), so a correctly
+    weighted acquisition concentrates the batch at the boundary —
+    BoTorch's smoothed (sigmoid) feasibility indicator legitimately
+    places individual batch members a little inside either side of it
+    (see ``compute_smoothed_feasibility_indicator``,
+    https://botorch.readthedocs.io/en/stable/utils.html). The
+    load-bearing regression signal is therefore distance from the
+    bowl bottom, not strict feasibility of every member; the callable
+    sign-convention unit test above pins the underlying wiring.
     """
 
-    def test_constrained_batch_lands_in_declared_feasible_region(self) -> None:
-        """Constrained suggestions must respect ``f(x) >= 4`` → ``|x - 5| >= 2``.
+    # The feasibility boundary sits at |x - 5| = 2. The unconstrained
+    # batch exploits the bowl bottom at distances 0.3-0.6, so these
+    # thresholds separate the two regimes with a wide margin while
+    # tolerating the smoothed indicator's boundary overshoot.
+    MIN_DISTANCE_FROM_BOWL_BOTTOM = 1.25
+    MIN_MEAN_DISTANCE_FROM_BOWL_BOTTOM = 1.6
 
-        Allow a small relaxation around the boundary because BoTorch's
-        soft (sigmoid-smoothed) feasibility weighting can place a point
-        just inside the infeasible side when the acquisition value
-        compensates. The bug the reviewer caught was much worse: the
-        entire batch landed deep in the infeasible bowl. We require a
-        majority of the batch to be within the feasible region with at
-        most 0.25 slack on each side.
+    def test_constrained_batch_concentrates_at_feasibility_boundary(self) -> None:
+        """Constrained suggestions must stay out of the deep-infeasible bowl.
+
+        ``f(x) >= 4`` excludes ``|x - 5| < 2``; the constrained optimum is
+        the boundary itself. Every batch member must keep a clear distance
+        from the unconstrained optimum ``x = 5`` and the batch as a whole
+        must sit at the boundary — an ignored or sign-inverted constraint
+        reproduces the unconstrained bowl-bottom batch and fails both
+        assertions by a wide margin.
         """
         constrained_xs = _run(with_constraint=True)
-        feasible_count = sum(1 for x in constrained_xs if abs(x - 5.0) >= 2.0 - 0.25)
-        assert feasible_count >= 3, (
-            "Most of the constrained batch must respect the declared "
-            f"feasible region |x - 5| >= 2; got xs={constrained_xs} with "
-            f"{feasible_count}/4 inside the relaxed boundary. Under the "
-            "historical sign-inverted callable the entire batch landed in "
-            "the infeasible bowl."
+        distances = [abs(x - 5.0) for x in constrained_xs]
+        assert min(distances) >= self.MIN_DISTANCE_FROM_BOWL_BOTTOM, (
+            "A constrained batch member exploits the deep-infeasible bowl "
+            f"bottom: xs={constrained_xs}, distances={distances}. Under an "
+            "ignored or sign-inverted constraint the batch lands at "
+            "distances 0.3-0.6 like the unconstrained run."
+        )
+        mean_distance = sum(distances) / len(distances)
+        assert mean_distance >= self.MIN_MEAN_DISTANCE_FROM_BOWL_BOTTOM, (
+            "The constrained batch must concentrate at the feasibility "
+            f"boundary |x - 5| = 2; got xs={constrained_xs} with mean "
+            f"distance {mean_distance:.2f} from the bowl bottom."
         )

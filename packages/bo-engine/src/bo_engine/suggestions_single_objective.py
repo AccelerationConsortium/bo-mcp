@@ -70,7 +70,8 @@ def _initialize_turbo_state(
 
     Args:
         spec: Optimization specification
-        train_y_bo: Training outputs (BoTorch convention - minimization)
+        train_y_bo: Training outputs in maximization form (higher = better;
+            see :mod:`bo_engine.types`), matching TuRBO's internal convention
         batch_size: Number of suggestions per batch
         turbo_state: Existing TuRBO state if any
 
@@ -80,19 +81,19 @@ def _initialize_turbo_state(
     use_turbo = spec.use_turbo or (turbo_state is not None) or should_use_turbo(spec.n_parameters)
     if use_turbo and turbo_state is None:
         assert_unit_scale_targets(train_y_bo)
-        best_y = train_y_bo.min().item()
+        best_y = train_y_bo.max().item()
         config = spec.turbo_config
         if config is None:
             turbo_state = create_turbo_state(
                 dim=spec.n_parameters,
                 batch_size=batch_size,
-                initial_best_value=-best_y,
+                initial_best_value=best_y,
             )
         else:
             turbo_state = create_turbo_state(
                 dim=spec.n_parameters,
                 batch_size=batch_size,
-                initial_best_value=-best_y,
+                initial_best_value=best_y,
                 initial_length=config.initial_length,
                 length_min=config.length_min,
                 length_max=config.length_max,
@@ -111,10 +112,16 @@ def _compute_turbo_bounds(
 ) -> tuple[Tensor, str]:
     """Compute trust region bounds for TuRBO.
 
+    :func:`bo_engine.turbo.get_turbo_bounds` operates in the normalized
+    [0, 1] cube (trust-region lengths are defined there), so the raw-scale
+    ``train_x`` is normalized before centering and the resulting trust
+    region is mapped back to raw parameter bounds for the optimizer.
+
     Args:
         turbo_state: Current TuRBO state
-        train_x: Training inputs
-        train_y_bo: Training outputs (BoTorch convention)
+        train_x: Training inputs on the raw parameter scale
+        train_y_bo: Training outputs in maximization form (higher = better),
+            so the trust region centers on the best observed point
         model: Fitted single-objective GP model
         bounds: Original parameter bounds
 
@@ -124,7 +131,8 @@ def _compute_turbo_bounds(
     if turbo_state is None or turbo_state.restart_triggered:
         return bounds.clone(), ""
 
-    tr_lb, tr_ub = get_turbo_bounds(turbo_state, train_x, train_y_bo, model)
+    train_x_norm = (train_x - bounds[0]) / (bounds[1] - bounds[0])
+    tr_lb, tr_ub = get_turbo_bounds(turbo_state, train_x_norm, train_y_bo, model)
     opt_bounds = torch.stack(
         [
             bounds[0] + tr_lb * (bounds[1] - bounds[0]),
@@ -177,10 +185,11 @@ def _build_single_objective_provenance(
     std_val = _extract_scalar_prediction(stds, index)
     acq_val = _extract_scalar_prediction(acq_values, index)
 
-    # For minimization, means are negated (BoTorch convention) — un-negate for storage.
+    # Minimize objectives are negated into maximization form before the GP
+    # fit (see bo_engine.types) — un-negate the posterior mean for storage.
     pred_mean = _extract_scalar_prediction(means, index)
-    if pred_mean is not None and not minimize:
-        pred_mean = -pred_mean  # undo BoTorch negation
+    if pred_mean is not None and minimize:
+        pred_mean = -pred_mean  # undo the maximization-form negation
     if pred_mean is not None and auto_shift:
         # Subtract the shift so callers see predictions on the raw scale.
         pred_mean = pred_mean - auto_shift
@@ -314,12 +323,11 @@ def _generate_single_objective_batch(
     minimize = spec.objectives[0].minimize
     log_transform = spec.objectives[0].log_transform
     if log_transform and not minimize:
-        # BoTorch's ``Log`` outcome transform requires strictly positive
-        # targets and is applied inside the GP after we negate ``train_y``
-        # to enforce minimization. For a maximize objective negation flips
-        # the sign of every positive observation to negative, which makes
-        # the log step ill-defined. Surface this at the boundary instead of
-        # letting BoTorch raise a less actionable error during fit.
+        # ``log_transform`` is part of the public spec contract only for
+        # minimize objectives. The engine's maximization-form convention
+        # handles the minimize case via the ``Negate`` outcome-transform
+        # stage (see ``bo_engine.models``); the maximize combination stays
+        # rejected at the boundary so the supported surface is unchanged.
         msg = (
             "ObjectiveSpec.log_transform=True is only supported for "
             "minimize=True objectives. For a maximize objective with a "
@@ -328,15 +336,18 @@ def _generate_single_objective_batch(
         )
         raise ValueError(msg)
 
-    # Negate if maximizing (BoTorch assumes minimization). Variance is
-    # sign-invariant -- ``Var(-Y) == Var(Y)`` -- so ``train_yvar`` flows
-    # through unchanged.
-    train_y_bo = -train_y if not minimize else train_y.clone()
+    # Negate if minimizing (BoTorch's acquisition stack assumes
+    # maximization; see bo_engine.types for the canonical convention).
+    # Variance is sign-invariant -- ``Var(-Y) == Var(Y)`` -- so
+    # ``train_yvar`` flows through unchanged.
+    train_y_bo = -train_y if minimize else train_y.clone()
 
     # Create and fit model. When every observation has measurement
     # uncertainty for this objective, route through the
     # ``FixedNoiseGaussianLikelihood`` path so the GP trusts the user's
-    # known noise instead of re-estimating it from MLL.
+    # known noise instead of re-estimating it from MLL. ``target_negated``
+    # tells the factory that a minimize objective arrives negated, which
+    # the ``Log`` outcome stage must undo (and redo on the posterior).
     cat_dim_indices = get_categorical_dim_indices(spec) if spec.use_categorical_kernel else None
     model = create_and_fit_single_task_model(
         train_x,
@@ -348,6 +359,7 @@ def _generate_single_objective_batch(
         categorical_dim_indices=cat_dim_indices,
         auto_shift_for_log=spec.auto_shift_for_log,
         noise_prior=noise_prior,
+        target_negated=minimize,
     )
 
     # Post-fit standardization audit: read-only inspection of each
@@ -394,16 +406,16 @@ def _generate_single_objective_batch(
         )
 
     # Create acquisition function.  ``train_y_bo`` is already in the
-    # canonical minimization form (see bo_engine.types) because we
-    # negated above when ``not minimize``; the factory therefore always
-    # receives ``minimize=True``.
+    # canonical maximization form (see bo_engine.types) because we
+    # negated above when ``minimize``; the factory therefore always
+    # receives ``maximize=True``.
     acqf = create_acquisition(
         model=model,
         ref_point=None,
         train_x=train_x,
         train_y=train_y_bo,
         n_objectives=1,
-        minimize=True,
+        maximize=True,
         method=method,
         constraints=None,
         outcome_constraint_models=outcome_constraints,

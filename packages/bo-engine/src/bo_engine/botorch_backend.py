@@ -645,15 +645,15 @@ class BoTorchBackend(BaseBackend):
             return {"outliers": None}
 
         try:
-            train_x, train_y, _, obj_names = self._prepare_training_data(spec, observations)
-            minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
-            train_y_bo = train_y.clone()
-            train_y_bo[:, ~minimize_mask] = -train_y_bo[:, ~minimize_mask]
+            # ``detect_outliers`` reports actual/predicted values back to the
+            # user, so it consumes raw user-scale targets (standardized
+            # residuals are sign-invariant).
+            train_x, train_y_raw, _, obj_names = self._prepare_training_data(spec, observations)
             bounds = get_bounds_tensor(spec)
 
             outliers = detect_outliers(
                 train_x=train_x,
-                train_y=train_y_bo,
+                train_y=train_y_raw,
                 bounds=bounds,
                 objective_names=obj_names,
             )
@@ -729,7 +729,15 @@ class BoTorchBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> tuple[torch.Tensor, torch.Tensor, list[str], list[str]]:
-        """Build train_x and train_y tensors from observations."""
+        """Build train_x and train_y tensors from observations.
+
+        ``train_y`` is returned on the **raw user scale** (no direction
+        negation). Every consumer in the diagnostics layer is
+        direction-agnostic — LOO RMSE/MAE/R², rank correlation and feature
+        importance are invariant under a joint sign flip of targets and
+        predictions — and the outlier report must surface actual/predicted
+        values on the user's scale.
+        """
         param_names = [p.name for p in spec.parameters]
         obj_names = [o.name for o in spec.objectives]
 
@@ -741,9 +749,6 @@ class BoTorchBackend(BaseBackend):
             for obs in observations
         ]
         train_y = torch.stack(y_list)
-
-        minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
-        train_y[:, ~minimize_mask] = -train_y[:, ~minimize_mask]
 
         return train_x, train_y, param_names, obj_names
 

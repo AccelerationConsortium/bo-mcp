@@ -298,3 +298,67 @@ class TestTurboStateSerialization:
         assert restored.best_value == original.best_value
         assert restored.failure_counter == original.failure_counter
         assert restored.success_counter == original.success_counter
+
+
+class TestTurboNonUnitCubeDomain:
+    """TuRBO suggestions on a raw (non-unit-cube) domain stay near the incumbent.
+
+    The trust-region length lives in the normalized [0, 1] cube (Eriksson
+    et al., NeurIPS 2019, §3.1), so on a domain like ``[-5, 10]^d`` the
+    pipeline must normalize before centering. Interpreting raw coordinates
+    as normalized clamps the center into ``[0, 1]`` and degenerates the
+    region to a sliver at a domain corner — suggestions then land far from
+    the best observed point.
+    """
+
+    def test_suggestions_stay_inside_local_region_around_incumbent(
+        self, rng: np.random.Generator
+    ) -> None:
+        n_params = 25
+        low, high = -5.0, 10.0
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name=f"x{i}",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(low, high),
+                )
+                for i in range(n_params)
+            ],
+            objectives=[ObjectiveSpec(name="f", minimize=True)],
+            batch_size=2,
+            # Tiny trust region so locality around the incumbent is a sharp,
+            # assertable property.
+            turbo_config=TurboConfig(initial_length=0.05),
+        )
+
+        torch.manual_seed(0)
+        observations = []
+        for _ in range(30):
+            params = {p.name: torch.rand(1).item() * (high - low) + low for p in spec.parameters}
+            observations.append(
+                ObservationData(
+                    parameter_values=params,
+                    objective_values={"f": sphere_function(params)},
+                )
+            )
+
+        best_obs = min(observations, key=lambda o: o.objective_values["f"])
+
+        suggestions, turbo_state = generate_next_batch(spec, observations, iteration=1, rng=rng)
+
+        assert turbo_state is not None
+        # initial_length=0.05 gives normalized half-widths of
+        # ``0.025 * weight_i`` (geometric-mean-1 weights), i.e. ~0.4 raw
+        # units per unit weight on a range of 15. A factor-8 headroom for
+        # anisotropic lengthscales still cleanly excludes the degenerate
+        # corner sliver, which sits several units from the incumbent.
+        max_distance = 3.0
+        for suggestion in suggestions:
+            for name, value in suggestion.parameter_values.items():
+                best_value = best_obs.parameter_values[name]
+                assert abs(value - best_value) <= max_distance, (
+                    f"TuRBO suggestion strayed from the incumbent on {name}: "
+                    f"{value:.3f} vs best {best_value:.3f} — the trust region "
+                    "is not centered on the best observed point."
+                )

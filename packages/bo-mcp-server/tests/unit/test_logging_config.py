@@ -228,6 +228,25 @@ class TestConfigureLoggingJsonOutput:
         with pytest.raises(json.JSONDecodeError):
             json.loads(captured.err.strip().splitlines()[-1])
 
+    def test_env_log_level_is_read_at_call_time(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``BO_MCP_LOG_LEVEL`` set after import must still take effect.
+
+        Entry points load ``.env`` at startup, after this module has been
+        imported — an import-time read would freeze the level at whatever
+        the interpreter environment happened to contain.
+        """
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+        monkeypatch.setenv("BO_MCP_LOG_LEVEL", "DEBUG")
+        configure_logging()
+        assert logging.getLogger("bo_mcp_server").getEffectiveLevel() == logging.DEBUG
+
+        # An explicit ``level`` argument still wins over the environment.
+        configure_logging(level="WARNING")
+        assert logging.getLogger("bo_mcp_server").getEffectiveLevel() == logging.WARNING
+
     def test_idempotent_configure_does_not_double_emit(
         self,
         monkeypatch: pytest.MonkeyPatch,

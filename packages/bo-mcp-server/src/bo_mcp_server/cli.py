@@ -11,6 +11,16 @@ from bo_mcp_server import __version__
 
 dotenv.load_dotenv()
 
+from bo_mcp_server.logging_config import configure_logging  # noqa: E402
+
+# Logging must be configured before the imports below run their side
+# effects: backend discovery logs an INFO breadcrumb at import time,
+# which would otherwise bypass BO_MCP_LOG_LEVEL / LOG_FORMAT and the
+# PII/correlation filters. ``dotenv.load_dotenv()`` above has already
+# populated the environment. Handlers write to stderr, so the stdio
+# JSON-RPC channel on stdout stays clean.
+configure_logging()
+
 from bo_mcp_server.client import ensure_mcp_startup_user  # noqa: E402
 from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan  # noqa: E402
 from bo_mcp_server.server import create_mcp_server  # noqa: E402
@@ -64,6 +74,14 @@ async def _verify_setup() -> None:
 
 def main() -> None:
     """Main entry point."""
+    # Re-run the bootstrap (idempotent: handlers are replaced, not
+    # appended). The module-level call above covers import-time records;
+    # this one evicts any handler a third-party import installed on the
+    # root logger afterwards, and re-reads BO_MCP_LOG_LEVEL in case the
+    # embedding process loaded the environment after importing this
+    # module.
+    configure_logging()
+
     parser = argparse.ArgumentParser(description="BO-MCP Server")
     parser.add_argument(
         "--transport",

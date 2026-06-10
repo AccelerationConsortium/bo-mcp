@@ -95,7 +95,19 @@ def _restore_or_build_campaign(
         try:
             return Campaign.from_json(backend_state["campaign_json"])
         except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
-            logger.debug("Failed to restore Campaign from state: %s, rebuilding fresh", e)
+            # WARNING, not DEBUG: a failed restore drops the campaign's
+            # entire measurement history and the identity reconciliation
+            # must repopulate it from storage. Operators need a
+            # dashboard-filterable signal when this happens (e.g. a BayBE
+            # upgrade changing the serialization schema).
+            logger.warning(
+                "Failed to restore BayBE campaign from stored state; rebuilding fresh: %s",
+                e,
+                extra={
+                    "outcome": "campaign_restore_failed",
+                    "error_class": type(e).__name__,
+                },
+            )
     return _build_campaign(spec)
 
 
@@ -177,6 +189,14 @@ def _reconcile_measurements(
     * Stored identities that no longer appear in storage trigger a
       rebuild — the user deleted or rewrote rows, so the BayBE campaign
       must not keep training on data the server no longer owns.
+    * A restored campaign whose measurement count disagrees with the
+      stored identity index also triggers a rebuild. The typical cause
+      is a failed ``Campaign.from_json`` restore that fell back to an
+      empty campaign while the index still lists every prior
+      observation — consuming the index against the empty campaign
+      would add nothing, persist the empty campaign together with the
+      full index, and silently degrade the campaign to random sampling
+      on every subsequent call.
     * Storage emptying out (``observations=[]``) is also a rebuild
       trigger: the restored campaign has measurements the source of
       truth no longer has.
@@ -206,6 +226,21 @@ def _reconcile_measurements(
                 "schema_version_target": _STATE_SCHEMA_VERSION_IDENTITY,
                 "n_observations": len(observations),
             },
+        )
+        return _rebuild_from_observations(spec, observations), incoming_ids
+
+    # The identity index is only trustworthy when the restored campaign
+    # actually carries the measurements the index records. A disagreement
+    # means the restore fell back to a fresh campaign (or the payload was
+    # tampered with) — consuming the index here would skip every incoming
+    # observation and leave the campaign permanently empty.
+    restored_count = _campaign_measurement_count(campaign)
+    if has_identity_field and restored_count != len(stored_ids):
+        logger.warning(
+            "Restored BayBE campaign carries %s measurement(s) but the stored "
+            "identity index records %d; rebuilding from current observations.",
+            "an unreadable number of" if restored_count is None else restored_count,
+            len(stored_ids),
         )
         return _rebuild_from_observations(spec, observations), incoming_ids
 
@@ -244,12 +279,21 @@ def _has_stored_identity_field(backend_state: dict[str, Any] | None) -> bool:
     return "observation_identity" in backend_state
 
 
+def _campaign_measurement_count(campaign: Campaign) -> int | None:
+    """Measurement count of a restored campaign, or ``None`` when unreadable.
+
+    ``None`` deliberately compares unequal to every valid index length so
+    an unreadable campaign is treated as desynchronized rather than intact.
+    """
+    try:
+        return len(campaign.measurements)
+    except (AttributeError, TypeError):
+        return None
+
+
 def _campaign_has_measurements(campaign: Campaign) -> bool:
     """Defensive check for whether the restored campaign carries any data."""
-    try:
-        return len(campaign.measurements) > 0
-    except (AttributeError, TypeError):
-        return False
+    return bool(_campaign_measurement_count(campaign))
 
 
 def _rebuild_from_observations(

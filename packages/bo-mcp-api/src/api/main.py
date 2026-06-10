@@ -6,31 +6,40 @@ import uuid as _uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from bo_mcp_server.client import (
+from bo_mcp_server.logging_config import configure_logging
+
+# Logging must be configured before the imports below run their side
+# effects: the ``bo_mcp_server.client`` chain reaches backend discovery,
+# which logs an INFO breadcrumb at import time — that record would
+# otherwise bypass BO_MCP_LOG_LEVEL / LOG_FORMAT and the
+# PII/correlation filters.
+configure_logging()
+
+from bo_mcp_server.client import (  # noqa: E402
     CorruptedJsonColumnError,
     ensure_dev_user,
     init_database,
     ping_database_detailed,
 )
-from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan
-from bo_mcp_server.schema_extension import augment_parameter_options
-from bo_mcp_server.trace_context import bind_trace_id
-from fastapi import APIRouter, FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.utils import get_openapi
-from fastapi.responses import RedirectResponse
+from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan  # noqa: E402
+from bo_mcp_server.schema_extension import augment_parameter_options  # noqa: E402
+from bo_mcp_server.trace_context import bind_trace_id  # noqa: E402
+from fastapi import APIRouter, FastAPI, Request, Response  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.openapi.utils import get_openapi  # noqa: E402
+from fastapi.responses import RedirectResponse  # noqa: E402
 
-from api.body_size_middleware import BodySizeLimitMiddleware
-from api.error_handlers import (
+from api.body_size_middleware import BodySizeLimitMiddleware  # noqa: E402
+from api.error_handlers import (  # noqa: E402
     handle_corrupted_json_column,
     handle_unhandled_exception,
     install_exception_handlers,
 )
-from api.limits import MAX_JSON_REQUEST_BODY_BYTES
-from api.metrics import install_metrics
-from api.request_context import install_request_id_log_filter, request_id_var
-from api.routes import campaigns, capabilities, diagnostics, results, suggestions
-from api.settings import WILDCARD_ORIGIN, ApiSettings, get_api_settings
+from api.limits import MAX_JSON_REQUEST_BODY_BYTES  # noqa: E402
+from api.metrics import install_metrics  # noqa: E402
+from api.request_context import install_request_id_log_filter, request_id_var  # noqa: E402
+from api.routes import campaigns, capabilities, diagnostics, results, suggestions  # noqa: E402
+from api.settings import WILDCARD_ORIGIN, ApiSettings, get_api_settings  # noqa: E402
 
 # Suffixes the body-size middleware exempts because they apply their
 # own per-route streaming reader. Listed as suffixes so both the
@@ -40,6 +49,14 @@ _UPLOAD_PATH_SUFFIXES: tuple[str, ...] = ("/upload",)
 
 logger = logging.getLogger(__name__)
 _api_start_time = time.time()
+
+# Re-run the bootstrap (idempotent: handlers are replaced, not
+# appended). The call above the imports covers import-time records; this
+# one evicts any handler a third-party import installed on the root
+# logger afterwards. The request-id hook is a global LogRecordFactory,
+# independent of handlers, so its ordering relative to the bootstrap
+# does not matter; both must run before the first request is served.
+configure_logging()
 install_request_id_log_filter()
 
 

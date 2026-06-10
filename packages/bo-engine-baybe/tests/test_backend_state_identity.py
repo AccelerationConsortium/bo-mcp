@@ -10,6 +10,9 @@ detected as new.
 
 from __future__ import annotations
 
+import logging
+
+import pytest
 from baybe import Campaign
 from bo_engine.types import (
     ObjectiveSpec,
@@ -122,6 +125,61 @@ class TestIdentityReconciliation:
             backend_state=batch1.backend_state,
         )
         assert _measurement_count(batch2.backend_state) == 2
+
+
+class TestRestoreFailureRecovery:
+    def test_corrupt_campaign_json_rebuilds_from_observations(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed Campaign restore must not silently drop measurements.
+
+        When ``campaign_json`` no longer deserializes (e.g. a BayBE
+        upgrade changed the serialization schema) the restore falls back
+        to an empty campaign, but the stored identity index still lists
+        every prior observation. Reconciliation must detect the
+        disagreement and rebuild from the observations in storage —
+        otherwise the index would swallow every incoming row, the empty
+        campaign would be persisted with the full index, and the
+        campaign would degrade to random sampling permanently.
+        """
+        backend = BayBEBackend()
+        spec = _spec()
+        obs = [
+            ObservationData(parameter_values={"x1": 0.2, "x2": 0.8}, objective_values={"y": 1.0}),
+            ObservationData(parameter_values={"x1": 0.5, "x2": 0.4}, objective_values={"y": 0.6}),
+            ObservationData(parameter_values={"x1": 0.9, "x2": 0.1}, objective_values={"y": 0.2}),
+        ]
+        batch1 = backend.generate_suggestions(spec, obs, batch_size=1, iteration=1)
+        assert batch1.backend_state is not None
+        assert _measurement_count(batch1.backend_state) == 3
+
+        corrupted_state = {
+            **batch1.backend_state,
+            "payload": {
+                **batch1.backend_state["payload"],
+                "campaign_json": "not a serialized baybe campaign",
+            },
+        }
+        with caplog.at_level(logging.WARNING, logger="bo_engine_baybe.state"):
+            batch2 = backend.generate_suggestions(
+                spec,
+                obs,
+                batch_size=1,
+                iteration=2,
+                backend_state=corrupted_state,
+            )
+
+        # Every observation is recovered into the rebuilt campaign and
+        # persisted together with a matching identity index.
+        assert _measurement_count(batch2.backend_state) == 3
+        assert _stored_identity_count(batch2.backend_state) == 3
+        # With measurements past the recommender switch threshold the
+        # campaign is back in the model-based phase, not random sampling.
+        assert batch2.method_info["is_nonpredictive"] is False
+        # The degradation is operator-visible, not a DEBUG whisper.
+        warning_messages = [r.getMessage() for r in caplog.records]
+        assert any("Failed to restore BayBE campaign" in m for m in warning_messages)
+        assert any("rebuilding from current observations" in m for m in warning_messages)
 
 
 class TestLegacyStateFallback:

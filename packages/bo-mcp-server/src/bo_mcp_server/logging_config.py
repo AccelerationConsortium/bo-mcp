@@ -35,8 +35,14 @@ _JSON_FIELDS: Final[str] = (
     "%(trace_id)s %(request_id)s %(campaign_id)s %(user_id)s"
 )
 
-# Default log level from environment, defaulting to INFO
-DEFAULT_LOG_LEVEL: Final[str] = os.environ.get("BO_MCP_LOG_LEVEL", "INFO")
+# Environment variable that selects the log level. Read at
+# :func:`configure_logging` call time — not at import time — so entry
+# points that load ``.env`` before configuring logging pick up the
+# operator's setting.
+_LOG_LEVEL_ENV: Final[str] = "BO_MCP_LOG_LEVEL"
+
+# Fallback log level when the environment variable is unset.
+DEFAULT_LOG_LEVEL: Final[str] = "INFO"
 
 # Default format for plain-text log messages (dev mode).
 DEFAULT_LOG_FORMAT: Final[str] = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -247,7 +253,8 @@ def configure_logging(
         format_string: Plain-text log message format. Ignored when the
             JSON formatter is selected via ``LOG_FORMAT=json``.
     """
-    log_level_name = (level or DEFAULT_LOG_LEVEL).upper()
+    env_level = os.environ.get(_LOG_LEVEL_ENV, DEFAULT_LOG_LEVEL)
+    log_level_name = (level or env_level).upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
     log_format = format_string or DEFAULT_LOG_FORMAT
 

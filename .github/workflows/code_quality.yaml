@@ -78,7 +78,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.13']
-        package: ['bo-engine', 'bo-mcp-server']
+        package: ['bo-engine', 'bo-mcp-server', 'bo-mcp-api', 'bo-engine-baybe']
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python ${{ matrix.python-version }}
@@ -142,7 +142,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: ['bo-engine', 'bo-mcp-server']
+        package: ['bo-engine', 'bo-mcp-server', 'bo-engine-baybe']
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python 3.13
@@ -172,7 +172,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: ['bo-engine', 'bo-mcp-server']
+        package: ['bo-engine', 'bo-mcp-server', 'bo-engine-baybe']
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python 3.13

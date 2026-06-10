@@ -107,9 +107,13 @@ def compute_prediction_intervals(
 ) -> list[dict[str, list[PredictionInterval]]]:
     """Compute prediction intervals for given points.
 
-    Uses the GP posterior to compute prediction intervals at specified
-    confidence levels. For each point and objective, returns intervals
-    at multiple confidence levels (e.g., 50%, 90%, 95%).
+    Uses the GP posterior predictive to compute prediction intervals at
+    specified confidence levels. For each point and objective, returns
+    intervals at multiple confidence levels (e.g., 50%, 90%, 95%).
+
+    Intervals include observation noise: they answer "what range of
+    *measured* outcomes should I expect if I run this experiment?", not
+    the narrower range of the latent (noise-free) function value.
 
     Args:
         model: Fitted GP model (SingleTaskGP or ModelListGP).
@@ -130,7 +134,8 @@ def compute_prediction_intervals(
         ...         print(f"{name} {int(pi.confidence_level*100)}%: {ci}")
 
     References:
-        - R&W GPML, Section 2.2 (Prediction with Noise-free Observations)
+        - R&W GPML, Section 2.2, Eq. 2.24 (predictive distribution for a
+          noisy test observation)
     """
     device = get_device()
     dtype = get_dtype()
@@ -157,12 +162,14 @@ def compute_prediction_intervals(
         point_intervals: dict[str, list[PredictionInterval]] = {}
 
         for obj_idx, obj_name in enumerate(objective_names):
-            # Get posterior for this objective
+            # Posterior predictive for this objective (observation noise included)
             with torch.no_grad():
                 if isinstance(model, ModelListGP):
-                    posterior = model.models[obj_idx].posterior(xi)  # ty: ignore[call-non-callable]
+                    posterior = model.models[obj_idx].posterior(  # ty: ignore[call-non-callable]
+                        xi, observation_noise=True
+                    )
                 else:
-                    posterior = model.posterior(xi)
+                    posterior = model.posterior(xi, observation_noise=True)
 
                 mean = posterior.mean.item()
                 std = posterior.variance.sqrt().item()

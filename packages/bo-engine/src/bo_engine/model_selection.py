@@ -26,11 +26,11 @@ References:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import torch
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize, Warp
@@ -39,7 +39,12 @@ from gpytorch.kernels import MaternKernel, RBFKernel, ScaleKernel
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
 
-from bo_engine.cross_validation import CVConfig, CVMetrics, compute_loo_cv_optimized
+from bo_engine.cross_validation import (
+    CVConfig,
+    CVMetrics,
+    ModelFactory,
+    compute_loo_cv_optimized,
+)
 from bo_engine.device import ensure_device
 
 logger = logging.getLogger(__name__)
@@ -89,8 +94,15 @@ class ModelComparisonResult:
         candidate: The model candidate configuration
         model: Fitted model (if kept)
         cv_metrics: Cross-validation metrics
-        log_marginal_likelihood: Log marginal likelihood of the fitted model
-        bic: Bayesian Information Criterion
+        log_marginal_likelihood: Total log marginal likelihood of the fitted
+            model, evaluated against the model's own (transformed) training
+            targets. Includes gpytorch's hyperparameter-prior terms, i.e. the
+            objective maximized during fitting, summed over observations.
+        bic: Bayesian Information Criterion, ``-2·LML + k·ln(n)``. ``k``
+            counts raw trainable hyperparameters (kernel, likelihood and
+            transform parameters), not effective model complexity — for GP
+            marginal likelihoods BIC is a rough heuristic, not a calibrated
+            criterion.
         rank: Rank among compared models (1 = best)
     """
 
@@ -221,18 +233,21 @@ def compare_models(
             model = _build_model(train_x, train_y, bounds, candidate)
 
             # Compute log marginal likelihood
-            mll = ExactMarginalLogLikelihood(model.likelihood, model)
-            model.train()
-            output = model(train_x)
-            log_mll = mll(output, train_y.squeeze()).item()  # ty: ignore[unresolved-attribute]
-            model.eval()
+            log_mll = _compute_log_marginal_likelihood(model, n_samples)
 
             # Compute BIC
             n_params = _count_model_parameters(model)
-            bic = -2 * log_mll + n_params * torch.log(torch.tensor(n_samples)).item()
+            bic = -2 * log_mll + n_params * math.log(n_samples)
 
-            # Compute CV metrics
-            cv_metrics = compute_loo_cv_optimized(train_x, train_y, bounds, config.cv_config)
+            # Compute CV metrics for this candidate's own model configuration
+            cv_metrics = compute_loo_cv_optimized(
+                train_x,
+                train_y,
+                bounds,
+                config.cv_config,
+                model_factory=_make_candidate_factory(bounds, candidate),
+                model_factory_key=_candidate_cache_key(candidate),
+            )
 
             result = ModelComparisonResult(
                 candidate=candidate,
@@ -338,6 +353,42 @@ def _build_model(
     return model
 
 
+def _make_candidate_factory(bounds: Tensor, candidate: ModelCandidate) -> ModelFactory:
+    """Bind a candidate configuration into a CV model factory.
+
+    The returned callable rebuilds and refits the candidate's model on each
+    fold's training subset, so cross-validation scores the candidate itself.
+    """
+
+    def build_and_fit(train_x: Tensor, train_y: Tensor) -> SingleTaskGP:
+        return _build_model(train_x, train_y, bounds, candidate)
+
+    return build_and_fit
+
+
+def _candidate_cache_key(candidate: ModelCandidate) -> str:
+    """Stable cache identifier for a candidate's model configuration."""
+    return f"{candidate.kernel.value}|warp={candidate.use_warping}|{candidate.configuration.value}"
+
+
+def _compute_log_marginal_likelihood(model: SingleTaskGP, n_samples: int) -> float:
+    """Total log marginal likelihood of a fitted model on its own targets.
+
+    The model's ``train_targets`` live in the outcome-transformed
+    (standardized) space, so the marginal likelihood must be evaluated
+    against them — not against the raw targets. gpytorch's
+    ``ExactMarginalLogLikelihood`` returns a per-observation average, which
+    is scaled back to a total here so that downstream criteria such as BIC
+    operate on the actual log likelihood.
+    """
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    model.train()
+    output = model(*model.train_inputs)
+    mean_log_mll = mll(output, model.train_targets).item()  # ty: ignore[unresolved-attribute]
+    model.eval()
+    return mean_log_mll * n_samples
+
+
 def _build_kernel(
     kernel_type: KernelType,
     n_dims: int,
@@ -365,6 +416,11 @@ def _build_kernel(
 
 def _count_model_parameters(model: SingleTaskGP) -> int:
     """Count the number of trainable parameters in a model.
+
+    Counts every ``requires_grad`` tensor element — kernel, likelihood and
+    learnable transform hyperparameters alike. This is the raw
+    hyperparameter count used in the BIC penalty, not a measure of
+    effective model complexity.
 
     Args:
         model: GP model

@@ -14,8 +14,9 @@ References:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import cast
 
 import torch
 from botorch.models import ModelListGP, SingleTaskGP
@@ -26,11 +27,12 @@ from bo_engine.constants import (
     POSTERIOR_CHECK_KURTOSIS_THRESHOLD,
     POSTERIOR_CHECK_NORMALITY_ALPHA,
     POSTERIOR_CHECK_SKEWNESS_THRESHOLD,
+    SAFE_DIVISION_EPSILON,
 )
+from bo_engine.cross_validation import compute_exact_loo_moments, matches_model_training_data
 from bo_engine.device import get_device, get_dtype
 
-if TYPE_CHECKING:
-    pass
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -57,7 +59,8 @@ class ResidualAnalysis:
     """Comprehensive analysis of model residuals.
 
     Attributes:
-        standardized_residuals: Tensor of standardized residuals.
+        standardized_residuals: Tensor of leave-one-out standardized
+            residuals (see :func:`compute_standardized_residuals`).
         mean: Mean of standardized residuals (should be ~0).
         std: Standard deviation (should be ~1 for well-specified model).
         skewness: Skewness (should be ~0 for normal).
@@ -119,13 +122,24 @@ def compute_standardized_residuals(
     train_y: Tensor,
     objective_index: int = 0,
 ) -> Tensor:
-    """Compute standardized residuals for model diagnostics.
+    """Compute leave-one-out standardized residuals for model diagnostics.
 
-    Standardized residuals are (actual - predicted) / predicted_std.
-    For a well-specified GP, these should be approximately N(0, 1).
+    Residuals are (y_i - μ_{-i}) / σ_{-i}, where μ_{-i} and σ²_{-i} are the
+    exact LOO predictive moments at fixed hyperparameters (GPML §5.4.2,
+    Eqs. 5.10-5.12), evaluated in the model's transformed target space —
+    the space in which the GP's Gaussian assumption holds. Because σ²_{-i}
+    includes observation noise, these residuals are approximately N(0, 1)
+    for a well-specified model; in-sample latent residuals carry no such
+    guarantee (they collapse toward 0/0 as the posterior mean interpolates).
+
+    When the LOO downdate is unavailable (a batched fully Bayesian model,
+    or the passed data is not — by value — the model's own training data),
+    falls back to in-sample residuals at the passed points, standardized by
+    the predictive (observation-noise-inclusive) std.
 
     Args:
-        model: Fitted GP model.
+        model: Fitted GP model. The LOO path applies when the passed data
+            matches the model's training data.
         train_x: Training input data (n x d tensor).
         train_y: Training output data (n tensor or n x 1 tensor).
         objective_index: Which objective (for ModelListGP).
@@ -135,6 +149,7 @@ def compute_standardized_residuals(
 
     References:
         - Gelman BDA Ch. 6: Standardized residuals for model checking
+        - Rasmussen & Williams "GPML" §5.4.2: LOO predictive moments
     """
     device = get_device()
     dtype = get_dtype()
@@ -145,20 +160,31 @@ def compute_standardized_residuals(
     if train_y.dim() > 1:
         train_y = train_y.squeeze(-1)
 
-    # Get predictions
-    with torch.no_grad():
-        if isinstance(model, ModelListGP):
-            posterior = model.models[objective_index].posterior(train_x)  # ty: ignore[call-non-callable]
-        else:
-            posterior = model.posterior(train_x)
+    if isinstance(model, ModelListGP):
+        sub_model = cast("SingleTaskGP", model.models[objective_index])
+    else:
+        sub_model = model
 
+    if matches_model_training_data(sub_model, train_x, train_y):
+        try:
+            loo_mean, loo_var = compute_exact_loo_moments(sub_model)
+            loo_std = loo_var.sqrt().clamp(min=SAFE_DIVISION_EPSILON)
+            return (sub_model.train_targets - loo_mean) / loo_std
+        except (RuntimeError, ValueError) as e:
+            logger.debug(
+                "Exact LOO downdate failed, falling back to in-sample predictive residuals: %s: %s",
+                type(e).__name__,
+                e,
+            )
+
+    # Fallback: in-sample residuals with the predictive (noisy) std
+    with torch.no_grad():
+        posterior = sub_model.posterior(train_x, observation_noise=True)
         mean = posterior.mean.squeeze(-1)
         std = posterior.variance.sqrt().squeeze(-1)
 
-    # Avoid division by zero
-    std = torch.clamp(std, min=1e-8)
+    std = torch.clamp(std, min=SAFE_DIVISION_EPSILON)
 
-    # Compute standardized residuals
     return (train_y - mean) / std
 
 

@@ -289,10 +289,11 @@ def _detect_outliers_single_objective(
             mll = ExactMarginalLogLikelihood(model.likelihood, model)
             fit_gpytorch_mll(mll)
 
-            # Predict on test fold
+            # Predict the held-out observation; the comparison target is a
+            # noisy measurement, so include observation noise in the std
             model.eval()
             with torch.no_grad():
-                posterior = model.posterior(test_fold)
+                posterior = model.posterior(test_fold, observation_noise=True)
                 pred_mean = posterior.mean.squeeze().item()
                 pred_std = posterior.variance.sqrt().squeeze().item()
 
@@ -373,7 +374,7 @@ def compute_loo_standardized_errors(
 
             model.eval()
             with torch.no_grad():
-                posterior = model.posterior(test_fold)
+                posterior = model.posterior(test_fold, observation_noise=True)
                 pred_mean = posterior.mean.squeeze().item()
                 pred_std = posterior.variance.sqrt().squeeze().item()
 

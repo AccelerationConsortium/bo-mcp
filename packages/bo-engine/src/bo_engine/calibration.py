@@ -108,6 +108,10 @@ def compute_calibration_score(
     values at the expected rates. Well-calibrated models have observed
     coverage matching expected coverage across all confidence levels.
 
+    The compared values are noisy observations, so the intervals are built
+    from the posterior predictive (latent function plus observation noise);
+    latent-only intervals would systematically under-cover noisy data.
+
     Args:
         model: Fitted GP model.
         train_x: Training input data (n x d tensor).
@@ -143,12 +147,14 @@ def compute_calibration_score(
 
     n_points = train_x.shape[0]
 
-    # Get posterior predictions
+    # Posterior predictive for observations: latent f plus observation noise
     with torch.no_grad():
         if isinstance(model, ModelListGP):
-            posterior = model.models[objective_index].posterior(train_x)  # ty: ignore[call-non-callable]
+            posterior = model.models[objective_index].posterior(  # ty: ignore[call-non-callable]
+                train_x, observation_noise=True
+            )
         else:
-            posterior = model.posterior(train_x)
+            posterior = model.posterior(train_x, observation_noise=True)
 
         mean = posterior.mean.squeeze(-1)
         std = posterior.variance.sqrt().squeeze(-1)
@@ -292,7 +298,9 @@ def compute_loo_calibration(
     """Compute calibration using leave-one-out cross-validation.
 
     Uses LOO-CV to get out-of-sample predictions, which provides a
-    more honest assessment of calibration on truly unseen data.
+    more honest assessment of calibration on truly unseen data. Held-out
+    points are noisy observations, so coverage is evaluated with the
+    posterior predictive (observation noise included).
 
     Args:
         train_x: Training input data (n x d tensor).
@@ -343,9 +351,9 @@ def compute_loo_calibration(
             use_input_warping=use_input_warping,
         )
 
-        # Predict held-out point
+        # Predict held-out observation (predictive, not latent, interval)
         with torch.no_grad():
-            posterior = model.posterior(train_x[i : i + 1])
+            posterior = model.posterior(train_x[i : i + 1], observation_noise=True)
             loo_means[i] = posterior.mean.item()
             loo_stds[i] = posterior.variance.sqrt().item()
 

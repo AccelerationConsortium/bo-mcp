@@ -9,6 +9,10 @@ aggregate RMSE / MAE / R² and per-fold errors are the model-quality
 signals consumed by :func:`bo_engine.diagnostics.assess_model_health`
 and the diagnostics tool surface.
 
+Held-out targets are noisy measurements, so standardized errors and
+coverage are computed against the posterior predictive (latent function
+plus observation noise) rather than the latent-only posterior.
+
 Reference: Rasmussen & Williams, *Gaussian Processes for Machine
 Learning* (2006), §5.4.2 ("Leave-one-out cross-validation").
 """
@@ -103,7 +107,7 @@ def compute_loo_cv_metrics(
 
             model.eval()
             with torch.no_grad():
-                posterior = model.posterior(test_fold)
+                posterior = model.posterior(test_fold, observation_noise=True)
                 pred_mean = posterior.mean
                 pred_var = posterior.variance
 
@@ -195,6 +199,7 @@ def compute_loo_cv_for_model(
                 model_cls=SingleTaskGP,
                 mll_cls=ExactMarginalLogLikelihood,
                 cv_folds=cv_folds,
+                observation_noise=True,
             )
             pred_mean = cv_results.posterior.mean.squeeze()
             pred_var = cv_results.posterior.variance.squeeze()
@@ -249,6 +254,7 @@ def compute_loo_cv_for_model(
                 model_cls=SingleTaskGP,
                 mll_cls=ExactMarginalLogLikelihood,
                 cv_folds=cv_folds,
+                observation_noise=True,
             )
             pred_mean = cv_results.posterior.mean.squeeze()
             pred_var = cv_results.posterior.variance.squeeze()

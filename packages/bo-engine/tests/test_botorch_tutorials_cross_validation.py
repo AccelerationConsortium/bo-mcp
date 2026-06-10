@@ -182,7 +182,13 @@ class TestOptimizedCrossValidation:
 
     @pytest.mark.smoke
     def test_optimized_cv_matches_standard(self) -> None:
-        """Optimized LOO-CV should give similar results to naive implementation."""
+        """Optimized LOO-CV should give similar results to naive implementation.
+
+        The optimized path is exercised through the tensor form, which is
+        the call that cross-validates fresh default fits like
+        ``compute_loo_cv_for_model`` does; the model form validates the
+        passed fitted model instead and is covered by its own tests.
+        """
         torch.manual_seed(42)
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
 
@@ -199,7 +205,7 @@ class TestOptimizedCrossValidation:
 
         # Optimized CV
         config = CVConfig(method="batch_loo")
-        metrics_opt = compute_loo_cv_optimized(model, train_x, train_y, config)
+        metrics_opt = compute_loo_cv_optimized(train_x, train_y, bounds, config)
 
         # Results should be similar (within 20% tolerance)
         assert abs(metrics_opt.rmse - metrics_std.rmse) / (metrics_std.rmse + 1e-6) < 0.3, (

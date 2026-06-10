@@ -3,19 +3,32 @@
 Leverages knowledge from prior optimization campaigns to improve
 optimization on a new but related task.
 
+Ensemble weights follow the paper's ranking loss: each model is scored by
+how often its posterior samples misrank pairs of target observations, the
+target model is scored out-of-sample via exact leave-one-out moments, and
+a model's weight is the fraction of samples in which it achieves the
+lowest loss (ties split equally). Because the loss counts pair orderings
+only, weights are invariant to affine rescaling of any task's outputs —
+a prior on a different y-scale but with the same landscape ranks highly,
+which is exactly the property MSE-style weighting lacks.
+
 v2.0: Initial implementation based on Feurer, Letham, Bakshy (ICML 2018)
 v2.3: Added GPU auto-detection and acceleration
 v2.6: Added RGPEAcquisition class that properly uses ensemble predictions (Section 2.2)
 
 References:
-    - Feurer et al. "Scalable Meta-Learning for Bayesian Optimization"
-      ICML AutoML Workshop 2018 (https://arxiv.org/abs/1802.02219)
+    - Feurer, Letham, Bakshy "Scalable Meta-Learning for Bayesian
+      Optimization" ICML AutoML Workshop 2018; extended as "Practical
+      Transfer Learning for Bayesian Optimization"
+      (https://arxiv.org/abs/1802.02219)
+    - BoTorch RGPE tutorial:
+      https://botorch.org/docs/tutorials/meta_learning_with_rgpe/
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import torch
 from botorch.acquisition import AcquisitionFunction
@@ -32,7 +45,15 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
 from torch.distributions import Normal
 
-from bo_engine.constants import NUMERICAL_EPSILON, SAFE_DIVISION_EPSILON
+from bo_engine.constants import (
+    NUMERICAL_EPSILON,
+    RGPE_DILUTION_BASE_QUANTILE,
+    RGPE_DILUTION_TARGET_QUANTILE,
+    RGPE_MIN_TARGET_OBSERVATIONS,
+    RGPE_NUM_SAMPLES,
+    RGPE_PENDING_PENALTY_LENGTHSCALE,
+)
+from bo_engine.cross_validation import compute_exact_loo_moments
 from bo_engine.device import ensure_device
 from bo_engine.types import AcquisitionOptimizationConfig
 
@@ -61,9 +82,35 @@ class PriorTaskData:
 class RGPEConfig:
     """Configuration for RGPE transfer learning."""
 
-    num_samples: int = 512  # Samples for ranking
+    num_samples: int = RGPE_NUM_SAMPLES  # Posterior samples for ranking-loss estimation
     use_input_warping: bool = False  # Whether to use input warping
-    temperature: float = 0.5  # Softmax temperature for weight distribution
+
+
+def _ranking_loss(pred_left: Tensor, pred_right: Tensor, observed: Tensor) -> Tensor:
+    """Count ordered pairs whose predicted ordering disagrees with the observed one.
+
+    Implements the pair-counting statistic of Feurer et al. (Eq. 1):
+    ``Σ_j Σ_k 1[(left_j < right_k) ⊕ (y_j < y_k)]`` per posterior sample,
+    with strict ``<`` on both sides. The diagonal contributes nothing for
+    the base-model variant (``left is right``); the count depends only on
+    orderings, never on magnitudes, so it is invariant to any strictly
+    increasing transform of either side.
+
+    Args:
+        pred_left: ``(S, n)`` predictions indexed by the first pair member.
+        pred_right: ``(S, n)`` predictions indexed by the second pair
+            member — the same tensor as ``pred_left`` for base models
+            (model-vs-model orderings, Eq. 1) or the broadcast observed
+            targets for the LOO target variant (prediction-vs-observation
+            orderings, Eq. 4 of the extended paper).
+        observed: ``(n,)`` observed target values.
+
+    Returns:
+        ``(S,)`` integer tensor of discordant ordered-pair counts.
+    """
+    pred_less = pred_left.unsqueeze(-1) < pred_right.unsqueeze(-2)  # (S, n, n)
+    observed_less = (observed.unsqueeze(-1) < observed.unsqueeze(-2)).unsqueeze(0)
+    return (pred_less ^ observed_less).sum(dim=(-2, -1))
 
 
 class RGPE(torch.nn.Module):
@@ -78,7 +125,7 @@ class RGPE(torch.nn.Module):
         base_models: list[SingleTaskGP],
         target_model: SingleTaskGP,
         weights: Tensor | None = None,
-        temperature: float = 0.5,
+        num_samples: int = RGPE_NUM_SAMPLES,
     ) -> None:
         """Initialize RGPE.
 
@@ -86,13 +133,14 @@ class RGPE(torch.nn.Module):
             base_models: List of fitted GP models from prior tasks
             target_model: GP model for the current target task
             weights: Optional pre-computed weights (will be computed if None)
-            temperature: Softmax temperature for weight distribution (0.5 default)
+            num_samples: Posterior samples drawn per model when estimating
+                the ranking-loss distribution in :meth:`compute_weights`
         """
         super().__init__()
         self.base_models = torch.nn.ModuleList(base_models)
         self.target_model = target_model
         self._weights = weights
-        self.temperature = temperature
+        self.num_samples = num_samples
 
     @property
     def num_models(self) -> int:
@@ -112,72 +160,126 @@ class RGPE(torch.nn.Module):
         target_x: Tensor,
         target_y: Tensor,
     ) -> Tensor:
-        """Compute rank-based weights for the ensemble.
+        """Compute ranking-loss weights per Feurer et al. (2018).
 
-        Uses leave-one-out cross-validation on the target data to
-        estimate the quality of each model. The weight computation
-        measures how well each model predicts held-out target data.
+        Each model's quality is the distribution of its ranking loss —
+        the number of target-observation pairs whose ordering the model's
+        posterior samples get wrong:
 
-        The approach follows the original RGPE paper (Feurer et al., 2018):
-        1. Compute ranking loss for each model on target data
-        2. Convert rankings to weights using softmax with temperature
+        1. For every base model, draw ``num_samples`` joint posterior
+           samples at ``target_x`` and count discordant pairs against
+           ``target_y`` (paper Eq. 1).
+        2. For the target model, draw the samples from its exact
+           leave-one-out posterior (GPML Eqs. 5.10-5.12 via
+           :func:`bo_engine.cross_validation.compute_exact_loo_moments` —
+           hyperparameters fixed, no refit, exactly the paper's LOO
+           construction) so it is scored out-of-sample like the priors.
+        3. Weight dilution prevention (paper v1 percentile rule): a base
+           model whose median loss is >= the target model's 95th
+           percentile loss is discarded before weighting.
+        4. ``w_i`` is the fraction of samples in which model ``i``
+           achieves the minimal loss, with ties split equally among the
+           tied models (extended paper, Eq. 5).
 
-        For the target model, we apply a small penalty since it was trained
-        on the target data, while prior models make true out-of-sample predictions.
+        Because the loss counts pair orderings only, the weights are
+        invariant to affine rescaling of any task's outputs — a prior
+        task observed on a different y-scale but with the same landscape
+        still ranks highly.
+
+        With fewer than ``RGPE_MIN_TARGET_OBSERVATIONS`` target points the
+        LOO models are too small to rank anything and all models receive
+        uniform weight, as prescribed by the paper.
 
         Args:
-            target_x: Target task inputs
-            target_y: Target task outputs
+            target_x: Target task inputs — must be the data the target
+                model was trained on (``create_rgpe_model`` guarantees
+                this), since the LOO downdate scores the model's own
+                training points.
+            target_y: Target task outputs in the same row order.
 
         Returns:
-            Tensor of weights with shape (num_models,)
+            Tensor of weights with shape (num_models,), summing to 1.
         """
         n_target = target_x.shape[0]
-        all_models = [*list(self.base_models), self.target_model]
-        n_models = len(all_models)
+        n_models = self.num_models
 
-        # Compute mean squared error for each model on target data
-        # Use normalized MSE to avoid scale issues
-        mses = torch.zeros(n_models, dtype=torch.double)
-        target_var = target_y.var().item() + SAFE_DIVISION_EPSILON  # For normalization
+        if n_target < RGPE_MIN_TARGET_OBSERVATIONS:
+            weights = torch.full((n_models,), 1.0 / n_models, dtype=torch.double)
+            self._weights = weights
+            return weights
 
-        for model_idx, model in enumerate(all_models):
-            model.eval()
+        observed = target_y.reshape(-1).to(torch.double)
 
-            with torch.no_grad():
-                posterior = model.posterior(target_x)
-                pred_mean = posterior.mean.squeeze()
-                target_y_flat = target_y.squeeze()
+        # ModuleList iteration is typed as bare Module; the list is
+        # populated exclusively with fitted SingleTaskGPs in __init__.
+        losses = [
+            self._base_model_ranking_losses(cast("SingleTaskGP", model), target_x, observed)
+            for model in self.base_models
+        ]
+        losses.append(self._target_model_ranking_losses())
 
-                # Mean squared error normalized by target variance
-                mse = ((pred_mean - target_y_flat) ** 2).mean().item()
-                normalized_mse = mse / target_var
+        loss_tensor = torch.stack(losses).to(torch.double)  # (n_models, S)
+        loss_tensor = self._apply_weight_dilution(loss_tensor)
 
-                mses[model_idx] = normalized_mse
-
-        # For the target model, apply LOO correction since it was trained on this data
-        # This penalizes the target model to account for in-sample bias
-        # Use approximate LOO factor: MSE_loo ≈ MSE / (1 - leverage)^2
-        # For GP, average leverage ≈ 2 * n_dims / n_target
-        n_dims = target_x.shape[-1]
-        avg_leverage = min(0.5, 2.0 * n_dims / n_target)  # Cap at 0.5
-        loo_factor = 1.0 / ((1.0 - avg_leverage) ** 2 + SAFE_DIVISION_EPSILON)
-        mses[-1] = mses[-1] * loo_factor
-
-        # Convert MSEs to ranking scores (lower MSE = better = higher score)
-        # Use inverse with regularization for stability
-        scores = 1.0 / (mses + 0.1)  # Add 0.1 to avoid division by zero
-
-        # Normalize scores to range [0, 1] before softmax
-        scores = scores / scores.max()
-
-        # Apply softmax with temperature to get weights
-        # Higher temperature = smoother (more uniform) weights
-        log_scores = torch.log(scores.clamp(min=NUMERICAL_EPSILON))
-        weights = torch.softmax(log_scores / self.temperature, dim=0)
+        # w_i = mean_s [ 1(i in argmin losses_s) / |argmin losses_s| ]
+        min_per_sample = loss_tensor.min(dim=0).values
+        is_best = loss_tensor == min_per_sample.unsqueeze(0)
+        weights = (is_best.to(torch.double) / is_best.sum(dim=0, keepdim=True)).mean(dim=1)
 
         self._weights = weights
         return weights
+
+    def _base_model_ranking_losses(
+        self,
+        model: SingleTaskGP,
+        target_x: Tensor,
+        observed: Tensor,
+    ) -> Tensor:
+        """Ranking-loss samples of one base model on the target data (Eq. 1)."""
+        model.eval()
+        with torch.no_grad():
+            posterior = model.posterior(target_x)
+            samples = posterior.rsample(torch.Size([self.num_samples]))
+        pred = samples.reshape(self.num_samples, -1).to(torch.double)
+        return _ranking_loss(pred, pred, observed)
+
+    def _target_model_ranking_losses(self) -> Tensor:
+        """Ranking-loss samples of the target model via exact LOO (Eq. 4).
+
+        The LOO moments live in the model's transformed target space; the
+        observed side therefore uses ``train_targets`` from the same
+        space. The transform is affine and strictly increasing, so the
+        pair orderings — the only thing the loss consumes — are identical
+        to raw-space orderings.
+        """
+        loo_mean, loo_var = compute_exact_loo_moments(self.target_model)
+        observed = self.target_model.train_targets.reshape(-1).to(torch.double)
+        noise = torch.randn(
+            self.num_samples, loo_mean.shape[0], dtype=loo_mean.dtype, device=loo_mean.device
+        )
+        loo_samples = (loo_mean.unsqueeze(0) + loo_var.clamp(min=0).sqrt().unsqueeze(0) * noise).to(
+            torch.double
+        )
+        # Out-of-sample prediction at point k is compared against the
+        # observed value at every other point l (extended paper, Eq. 4).
+        return _ranking_loss(loo_samples, observed.expand_as(loo_samples), observed)
+
+    def _apply_weight_dilution(self, loss_tensor: Tensor) -> Tensor:
+        """Discard base models per the paper's v1 percentile dilution rule.
+
+        A base model is removed from the argmin competition (weight 0)
+        when the ``RGPE_DILUTION_BASE_QUANTILE`` of its loss samples is
+        >= the ``RGPE_DILUTION_TARGET_QUANTILE`` of the target model's —
+        without this, many weak priors would each win a few samples and
+        collectively dilute the target model's weight.
+        """
+        target_threshold = torch.quantile(loss_tensor[-1], RGPE_DILUTION_TARGET_QUANTILE)
+        diluted = loss_tensor.clone()
+        for i in range(loss_tensor.shape[0] - 1):
+            base_quantile = torch.quantile(loss_tensor[i], RGPE_DILUTION_BASE_QUANTILE)
+            if base_quantile >= target_threshold:
+                diluted[i] = torch.inf
+        return diluted
 
     def posterior(self, x: Tensor) -> GPyTorchPosterior:
         """Compute weighted posterior prediction.
@@ -330,6 +432,7 @@ def create_rgpe_model(
     rgpe = RGPE(
         base_models=base_models,
         target_model=target_model,
+        num_samples=config.num_samples,
     )
 
     # Compute weights
@@ -364,6 +467,48 @@ def get_rgpe_weights_explanation(
     return result
 
 
+def _pending_penalty_factor(
+    candidates: Tensor,
+    x_pending: Tensor | None,
+    bounds: Tensor | None,
+    lengthscale: float = RGPE_PENDING_PENALTY_LENGTHSCALE,
+) -> Tensor | None:
+    """Multiplicative local-penalization factor in [0, 1) per candidate point.
+
+    Gaussian-kernel penalizer centered on the pending points (Gonzalez et
+    al. 2016, "Batch Bayesian Optimization via Local Penalization"): a
+    candidate coincident with a pending point gets a factor near 0, one
+    far from every pending point gets a factor near 1. ``optimize_acqf``
+    with ``sequential=True`` feeds already-selected batch members back
+    through ``set_X_pending``, so an acquisition that folds this factor
+    in stops re-proposing the same maximizer for every batch slot.
+
+    Distances are measured in the normalized [0, 1] input cube when
+    ``bounds`` is provided so the lengthscale is unit-free.
+
+    Args:
+        candidates: Candidate points of shape (..., q, d).
+        x_pending: Pending points of shape (p, d), or None.
+        bounds: Optional (2, d) bounds for input normalization.
+        lengthscale: Penalization kernel lengthscale in normalized space.
+
+    Returns:
+        Factor tensor of shape (..., q), or None when nothing is pending.
+    """
+    if x_pending is None or x_pending.numel() == 0:
+        return None
+
+    pending = x_pending
+    if bounds is not None:
+        ranges = (bounds[1] - bounds[0]).clamp(min=NUMERICAL_EPSILON)
+        candidates = (candidates - bounds[0]) / ranges
+        pending = (x_pending - bounds[0]) / ranges
+
+    distances = torch.cdist(candidates, pending.to(candidates))  # (..., q, p)
+    min_distances = distances.min(dim=-1).values  # (..., q)
+    return 1.0 - torch.exp(-(min_distances**2) / (2 * lengthscale**2))
+
+
 class RGPEAcquisition(AcquisitionFunction):
     """Acquisition function using RGPE ensemble predictions.
 
@@ -377,6 +522,10 @@ class RGPEAcquisition(AcquisitionFunction):
     2. Transfer of knowledge from prior tasks into candidate selection
     3. More robust predictions when target data is scarce
 
+    Pending points set via ``X_pending`` (e.g. by ``optimize_acqf``'s
+    sequential batch loop) locally penalize the EI surface so batch
+    members spread out instead of collapsing onto one maximizer.
+
     Reference:
         Feurer et al. "Scalable Meta-Learning for Bayesian Optimization"
         ICML AutoML Workshop 2018
@@ -385,11 +534,13 @@ class RGPEAcquisition(AcquisitionFunction):
         rgpe_ensemble: Fitted RGPE model with computed weights
         best_f: Best observed value on the target task
         maximize: If True, maximize; else minimize (default)
+        bounds: Optional (2, d) parameter bounds used to normalize
+            pending-point distances for the local penalizer
 
     Example:
         >>> rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
         >>> best_f = target_y.min().item()  # For minimization
-        >>> acqf = RGPEAcquisition(rgpe, best_f)
+        >>> acqf = RGPEAcquisition(rgpe, best_f, bounds=bounds)
         >>> candidates, acq_values = optimize_acqf(acqf, bounds, q=1)
     """
 
@@ -398,6 +549,7 @@ class RGPEAcquisition(AcquisitionFunction):
         rgpe_ensemble: RGPE,
         best_f: float,
         maximize: bool = False,
+        bounds: Tensor | None = None,
     ) -> None:
         """Initialize RGPE acquisition function.
 
@@ -405,12 +557,14 @@ class RGPEAcquisition(AcquisitionFunction):
             rgpe_ensemble: Fitted RGPE model
             best_f: Best observed value (for EI computation)
             maximize: If True, maximize the objective
+            bounds: Optional (2, d) bounds for pending-point normalization
         """
         # Initialize with target model as the base model for BoTorch compatibility
         super().__init__(model=rgpe_ensemble.target_model)
         self.rgpe_ensemble = rgpe_ensemble
         self.best_f = best_f
         self.maximize = maximize
+        self.bounds = bounds
         self._X_pending: Tensor | None = None
 
     @property
@@ -464,6 +618,13 @@ class RGPEAcquisition(AcquisitionFunction):
         # Closed-form Expected Improvement
         ei = std * (z * cdf + pdf)
 
+        # Condition on pending batch members: EI is non-negative, so the
+        # multiplicative local penalizer is sign-safe here (contrast the
+        # log-space variant below, which adds the log factor instead).
+        penalty = _pending_penalty_factor(X, self._X_pending, self.bounds)
+        if penalty is not None:
+            ei = ei * penalty
+
         # Average over q dimension for joint acquisition
         ei = ei.mean(dim=-1) if ei.dim() > 1 and ei.shape[-1] > 1 else ei.squeeze(-1)
 
@@ -476,11 +637,16 @@ class RGPELogEI(AcquisitionFunction):
 
     Uses log-space computation for numerical stability, similar to
     qLogNoisyExpectedImprovement but with RGPE ensemble predictions.
+    Pending points set via ``X_pending`` penalize the surface additively
+    in log space (``log EI + log(1 - k(x, pending))``), which keeps the
+    penalty sign-safe for the negative values log-EI takes.
 
     Args:
         rgpe_ensemble: Fitted RGPE model with computed weights
         best_f: Best observed value on the target task
         maximize: If True, maximize; else minimize
+        bounds: Optional (2, d) parameter bounds used to normalize
+            pending-point distances for the local penalizer
     """
 
     def __init__(
@@ -488,12 +654,14 @@ class RGPELogEI(AcquisitionFunction):
         rgpe_ensemble: RGPE,
         best_f: float,
         maximize: bool = False,
+        bounds: Tensor | None = None,
     ) -> None:
         """Initialize RGPE Log-EI acquisition function."""
         super().__init__(model=rgpe_ensemble.target_model)
         self.rgpe_ensemble = rgpe_ensemble
         self.best_f = best_f
         self.maximize = maximize
+        self.bounds = bounds
         self._X_pending: Tensor | None = None
 
     @property
@@ -531,6 +699,13 @@ class RGPELogEI(AcquisitionFunction):
         # Use log-sum-exp for stability
         log_std = torch.log(std)
         log_ei = log_std + torch.log(z * torch.exp(log_cdf) + torch.exp(log_pdf) + 1e-10)
+
+        # Condition on pending batch members. log-EI can be negative, so
+        # the multiplicative penalizer is applied additively in log space
+        # (log of a factor in [0, 1) is <= 0 — always a penalty).
+        penalty = _pending_penalty_factor(X, self._X_pending, self.bounds)
+        if penalty is not None:
+            log_ei = log_ei + torch.log(penalty.clamp(min=NUMERICAL_EPSILON))
 
         # Average over q dimension
         if log_ei.dim() > 1 and log_ei.shape[-1] > 1:
@@ -595,11 +770,14 @@ def generate_rgpe_suggestions(
     best_f = target_y.min().item()
 
     if use_ensemble_acquisition:
-        # NEW: Use ensemble predictions for acquisition (Section 2.2 fix)
+        # NEW: Use ensemble predictions for acquisition (Section 2.2 fix).
+        # bounds enable the pending-point penalizer so the sequential batch
+        # loop below produces spread-out candidates instead of duplicates.
         acqf = RGPEAcquisition(
             rgpe_ensemble=rgpe,
             best_f=best_f,
             maximize=False,
+            bounds=bounds,
         )
         acq_name = "RGPEAcquisition (Ensemble EI)"
     else:

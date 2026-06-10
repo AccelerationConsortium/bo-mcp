@@ -337,7 +337,9 @@ def _decode_param_value(
     """Decode a single parameter value from its tensor representation.
 
     For continuous parameters, extracts a float.
-    For discrete parameters, extracts and rounds to the nearest integer.
+    For discrete parameters with an explicit ``values`` grid, snaps to the
+    nearest allowed value; bounds-only discrete parameters round to the
+    nearest integer.
     For categorical parameters, decodes one-hot via ``argmax``.
 
     Args:
@@ -352,7 +354,17 @@ def _decode_param_value(
         return float(tensor[idx].item()), idx + 1
 
     if param.type == ParameterType.DISCRETE:
-        return round(tensor[idx].item()), idx + 1
+        raw = tensor[idx].item()
+        if param.values:
+            # The optimizer relaxes discrete dimensions to a continuous box
+            # spanning min/max of the grid (see ``_get_param_bounds``), so
+            # the result can land between allowed values. Integer rounding
+            # would leave a fractional grid entirely (e.g. every point of
+            # ``values=[0.1, 0.2, 0.5]`` rounds to 0) — snap to the nearest
+            # declared value instead. ``min`` resolves equidistant ties to
+            # the earlier entry, deterministically.
+            return min(param.values, key=lambda v: abs(v - raw)), idx + 1
+        return round(raw), idx + 1
 
     # ParameterType.CATEGORICAL — pick the argmax over the one-hot block.
     # Softmax is monotone, so ``softmax(x).argmax() == x.argmax()``; the

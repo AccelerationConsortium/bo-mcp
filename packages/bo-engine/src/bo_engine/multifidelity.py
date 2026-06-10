@@ -180,10 +180,14 @@ def create_mfkg_acquisition(
     """Create qMFKG acquisition function.
 
     qMFKG (multi-fidelity Knowledge Gradient) optimizes the ratio
-    of information gain to cost.
+    of information gain to cost. Both qMFKG and the ``PosteriorMean``
+    current-value computation maximize, so the model must be fit on
+    maximization-form targets (negate minimize objectives before the
+    fit — :func:`generate_multifidelity_suggestions` does this).
 
     Args:
-        model: Fitted multi-fidelity GP model
+        model: Fitted multi-fidelity GP model fit on maximization-form
+            targets
         bounds: Parameter bounds of shape (2, n_dims)
         fidelity_dim: Index of the fidelity dimension
         target_fidelity: Target fidelity value
@@ -282,6 +286,8 @@ def generate_multifidelity_suggestions(
     bounds: Tensor,
     fidelity_config: MultiFidelityConfig,
     batch_size: int = 1,
+    *,
+    minimize: bool = True,
 ) -> tuple[Tensor, Tensor, dict[str, Any]]:
     """Generate suggestions using multi-fidelity BO.
 
@@ -289,10 +295,18 @@ def generate_multifidelity_suggestions(
 
     Args:
         train_x: Training inputs of shape (n_samples, n_dims)
-        train_y: Training outputs of shape (n_samples, 1)
+        train_y: Training outputs of shape (n_samples, 1), on the raw
+            user scale (no pre-negation)
         bounds: Parameter bounds of shape (2, n_dims)
         fidelity_config: Multi-fidelity configuration
         batch_size: Number of suggestions to generate
+        minimize: Direction of the raw objective.
+            ``qMultiFidelityKnowledgeGradient`` and the ``PosteriorMean``
+            current-value computation both maximize and expose no
+            direction flag, so minimize objectives are negated into the
+            engine's maximization form at the data boundary (see
+            :mod:`bo_engine.types`); the KG machinery stays
+            maximization-internal.
 
     Returns:
         Tuple of (candidates, acquisition_values, metadata)
@@ -305,8 +319,12 @@ def generate_multifidelity_suggestions(
     fidelity_spec = fidelity_config.fidelity_spec
     fidelity_dim = fidelity_spec.fidelity_dim
 
+    # Negate minimize objectives into maximization form at the data
+    # boundary -- BoTorch's KG stack has no direction flag.
+    train_y_bo = -train_y if minimize else train_y
+
     # Create and fit model
-    model = create_and_fit_multifidelity_model(train_x, train_y, fidelity_dim)
+    model = create_and_fit_multifidelity_model(train_x, train_y_bo, fidelity_dim)
 
     # Create cost model
     cost_model = create_cost_model(fidelity_spec)
@@ -335,6 +353,7 @@ def generate_multifidelity_suggestions(
     metadata = {
         "model_type": "SingleTaskMultiFidelityGP",
         "acquisition_function": "qMultiFidelityKnowledgeGradient",
+        "minimize": minimize,
         "fidelity_dim": fidelity_dim,
         "target_fidelity": fidelity_spec.target_fidelity,
         "num_fantasies": fidelity_config.num_fantasies,

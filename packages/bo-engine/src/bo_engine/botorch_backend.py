@@ -57,7 +57,7 @@ from bo_engine.suggestions import (
 )
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.turbo import TurboState, should_use_turbo
-from bo_engine.types import ObservationData, OptimizationSpec
+from bo_engine.types import AcquisitionMethod, ObservationData, OptimizationSpec
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,49 @@ def _substance_parameter_reports(spec: OptimizationSpec) -> list[CapabilityRepor
     return reports
 
 
+# Features whose campaign routing is not wired end to end: the standalone
+# modules exist, but ``generate_next_batch`` raises the matching typed
+# error instead of dispatching. Reported ``UNSUPPORTED`` (hard veto) by
+# ``validate_capabilities`` so intake rejects at create time rather than
+# failing at suggestion time — mirroring the static ``supported_features``
+# exclusions so the two surfaces cannot drift apart.
+_UNROUTED_FEATURES: dict[Feature, str] = {
+    Feature.MULTI_FIDELITY: (
+        "Multi-fidelity (qMFKG / SingleTaskMultiFidelityGP) is not routed "
+        "through the BoTorch suggestion pipeline: generate_next_batch "
+        "rejects fidelity_parameter / MULTI_FIDELITY_KG with a typed "
+        "MultiFidelityNotSupportedError. Remove the fidelity settings, or "
+        "drive the standalone bo_engine.multifidelity helpers directly."
+    ),
+    Feature.TRANSFER_LEARNING: (
+        "RGPE transfer learning is not routed through the BoTorch "
+        "suggestion pipeline: generate_next_batch rejects "
+        "spec.transfer_learning with a typed "
+        "TransferLearningNotSupportedError instead of silently running a "
+        "plain GP without the requested prior-campaign transfer. Remove "
+        "transfer_learning, use BayBE's native TaskParameter mechanism, or "
+        "drive the standalone bo_engine.transfer_learning helpers directly."
+    ),
+}
+
+# Option-key view of the same un-routed paths. Spec options and inferred
+# features are reported separately, so each un-routed path must be vetoed
+# on BOTH surfaces — otherwise a spec with e.g. ``transfer_learning``
+# reports the feature UNSUPPORTED while the option claims SUPPORTED, and
+# clients inspecting option reports get contradictory signals.
+_UNROUTED_OPTION_REASONS: dict[str, str] = {
+    "saasbo_config": (
+        "SAASBO is not routed through the BoTorch suggestion pipeline: "
+        "generate_next_batch rejects saasbo_config with a typed "
+        "SAASBONotSupportedError instead of silently fitting a dense-ARD "
+        "GP under a sparse-prior advertisement. Remove saasbo_config, or "
+        "drive the standalone bo_engine.saasbo helpers directly."
+    ),
+    "fidelity_parameter": _UNROUTED_FEATURES[Feature.MULTI_FIDELITY],
+    "transfer_learning": _UNROUTED_FEATURES[Feature.TRANSFER_LEARNING],
+}
+
+
 class BoTorchBackend(BaseBackend):
     """BoTorch-based Bayesian Optimization backend.
 
@@ -166,46 +209,88 @@ class BoTorchBackend(BaseBackend):
     def supported_features(self) -> frozenset[Feature]:
         """Features this backend supports **unconditionally**.
 
-        ``Feature.MULTI_FIDELITY`` is deliberately excluded — the
-        ``bo_engine.multifidelity`` module provides standalone
-        ``SingleTaskMultiFidelityGP`` helpers, but the active
-        ``generate_next_batch`` pipeline does not dispatch
-        ``AcquisitionMethod.MULTI_FIDELITY_KG`` to ``qMFKG`` and does not
-        construct a multi-fidelity GP when ``spec.fidelity_parameter`` is
-        set. Until the suggestion pipeline routes multi-fidelity end to
-        end, advertising the capability would silently downgrade callers
-        to single-fidelity behaviour.
+        ``Feature.MULTI_FIDELITY`` and ``Feature.TRANSFER_LEARNING`` are
+        deliberately excluded — ``bo_engine.multifidelity`` and
+        ``bo_engine.transfer_learning`` provide standalone helpers
+        (qMFKG, RGPE), but the active ``generate_next_batch`` pipeline
+        dispatches neither: it raises the typed
+        ``MultiFidelityNotSupportedError`` / ``TransferLearningNotSupportedError``
+        instead of silently downgrading to single-fidelity / no-transfer
+        behaviour. Until the suggestion pipeline routes them end to end,
+        advertising the capabilities would lie to callers.
         """
-        return frozenset(f for f in Feature if f is not Feature.MULTI_FIDELITY)
+        # Note: ``frozenset - dict.keys()`` falls back to dict_keys'
+        # __rsub__ and returns a MUTABLE set — build explicitly instead
+        # to honor the protocol's frozenset contract.
+        return frozenset(f for f in Feature if f not in _UNROUTED_FEATURES)
 
     def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
-        """BoTorch supports every neutral feature and option in the spec.
+        """BoTorch supports every neutral feature and most options in the spec.
 
-        The single exception is a BayBE-native ``role=substance``
-        parameter (see :mod:`bo_engine.interop`). It encodes a molecular
-        SMILES → cheminformatics-descriptor representation that BoTorch
-        has no kernel for; routing it here would treat the SMILES labels
-        as opaque one-hot categories and silently drop the chemistry —
-        the worst class of BO bug (a wrong answer that looks fine). Such
-        a parameter is therefore reported ``UNSUPPORTED`` so
-        ``backend="auto"`` routes the spec to BayBE and a pinned
-        ``backend="botorch"`` is rejected loudly at intake. This veto is
-        deliberately *not* routed through ``acknowledge_degradations``:
-        that field downgrades silently-dropped *option* knobs (turbo,
-        saasbo, …), not a misrepresented molecular parameter, so it
-        cannot bypass the substance gate.
+        The exceptions are reported ``UNSUPPORTED`` so ``backend="auto"``
+        treats them as a hard veto and a pinned ``backend="botorch"`` is
+        rejected loudly at intake:
+
+        * A BayBE-native ``role=substance`` parameter (see
+          :mod:`bo_engine.interop`). It encodes a molecular SMILES →
+          cheminformatics-descriptor representation that BoTorch has no
+          kernel for; routing it here would treat the SMILES labels as
+          opaque one-hot categories and silently drop the chemistry —
+          the worst class of BO bug (a wrong answer that looks fine).
+          This veto is deliberately *not* routed through
+          ``acknowledge_degradations``: that field downgrades
+          silently-dropped *option* knobs, not a misrepresented
+          molecular parameter, so it cannot bypass the substance gate.
+        * Un-routed pipeline paths, mirroring the static
+          ``supported_features`` exclusions (``_UNROUTED_FEATURES``):
+          multi-fidelity (``fidelity_parameter`` /
+          ``MULTI_FIDELITY_KG``), RGPE ``transfer_learning``, and
+          ``saasbo_config``. ``generate_next_batch`` rejects each with a
+          typed error, so advertising them ``SUPPORTED`` would accept the
+          campaign at intake only to fail at suggestion time. The
+          standalone ``bo_engine.multifidelity`` /
+          ``bo_engine.transfer_learning`` / ``bo_engine.saasbo`` helpers
+          remain available for direct workflows.
         """
-        feature_reports = [
-            CapabilityReport(key=str(f), status=CapabilityStatus.SUPPORTED)
-            for f in sorted(required_features(spec))
-        ]
+        feature_reports = []
+        for feature in sorted(required_features(spec)):
+            if feature in _UNROUTED_FEATURES:
+                feature_reports.append(
+                    CapabilityReport(
+                        key=str(feature),
+                        status=CapabilityStatus.UNSUPPORTED,
+                        reason=_UNROUTED_FEATURES[feature],
+                    )
+                )
+            else:
+                feature_reports.append(
+                    CapabilityReport(key=str(feature), status=CapabilityStatus.SUPPORTED)
+                )
+
         from bo_engine.backend_base import _SPEC_OPTION_KEYS
 
         option_reports = [
             CapabilityReport(key=key, status=CapabilityStatus.SUPPORTED)
             for key in _SPEC_OPTION_KEYS
-            if option_is_active(spec, key)
+            if option_is_active(spec, key) and key not in _UNROUTED_OPTION_REASONS
         ]
+        option_reports.extend(
+            CapabilityReport(key=key, status=CapabilityStatus.UNSUPPORTED, reason=reason)
+            for key, reason in _UNROUTED_OPTION_REASONS.items()
+            if option_is_active(spec, key)
+        )
+        # ``required_features`` infers MULTI_FIDELITY from
+        # ``fidelity_parameter`` only — a spec selecting the qMFKG
+        # acquisition without a fidelity parameter slips past the feature
+        # report, yet generate_next_batch rejects it identically.
+        if spec.acquisition_method == AcquisitionMethod.MULTI_FIDELITY_KG:
+            option_reports.append(
+                CapabilityReport(
+                    key="acquisition_method",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=_UNROUTED_FEATURES[Feature.MULTI_FIDELITY],
+                )
+            )
         option_reports.extend(_substance_parameter_reports(spec))
         return BackendValidationResult(
             backend=self.name,

@@ -19,7 +19,8 @@ References:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import random
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import torch
@@ -28,17 +29,37 @@ from botorch.models import ModelListGP, SingleTaskGP
 from torch import Tensor
 
 from bo_engine.constants import (
+    MAX_RANDOM_SEED,
     NUMERICAL_EPSILON,
     THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE,
     THOMPSON_NUM_CANDIDATES,
     THOMPSON_NUM_POSTERIOR_SAMPLES,
 )
 from bo_engine.device import get_device, get_dtype
+from bo_engine.reproducibility import derive_seed
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_call_seed(config_seed: int | None) -> int:
+    """Resolve the torch seed installed inside a ``fork_rng`` block.
+
+    ``fork_rng`` restores the global torch RNG state on exit, so any
+    randomness consumed inside the block (Sobol scrambling, posterior
+    ``rsample``) is replayed identically by the next call unless each
+    call installs its own seed. A configured seed is used verbatim
+    (reproducible by contract); otherwise fresh entropy is drawn from
+    the stdlib RNG, whose state lives outside the fork and therefore
+    advances between calls.
+    """
+    if config_seed is not None:
+        return config_seed
+    # Deliberately non-reproducible — no seed was supplied (same contract
+    # as bo_engine.suggestions._resolve_acquisition_seed).
+    return random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
 
 
 @dataclass
@@ -141,10 +162,12 @@ def generate_thompson_samples(
     # call — BoTorch's MaxPosteriorSampling / manual posterior draws
     # read from the process-wide torch state, so without isolation two
     # concurrent calls (e.g. under asyncio.to_thread) would race on the
-    # seed and clobber each other's reproducibility.
+    # seed and clobber each other's reproducibility. Because fork_rng
+    # also RESTORES the state on exit, every call must install its own
+    # seed — otherwise consecutive unseeded calls replay the identical
+    # draw (see _resolve_call_seed).
     with torch.random.fork_rng(devices=[]):
-        if config.seed is not None:
-            torch.manual_seed(config.seed)
+        torch.manual_seed(_resolve_call_seed(config.seed))
 
         if config.use_max_posterior_sampling:
             # Use BoTorch's efficient MaxPosteriorSampling
@@ -245,10 +268,10 @@ def generate_thompson_samples_multi_objective(
         config = ThompsonConfig()
 
     # Isolate the global torch RNG for the same reason as the
-    # single-objective variant above — see its fork_rng comment.
+    # single-objective variant above — see its fork_rng comment; the
+    # per-call seed likewise keeps consecutive unseeded calls distinct.
     with torch.random.fork_rng(devices=[]):
-        if config.seed is not None:
-            torch.manual_seed(config.seed)
+        torch.manual_seed(_resolve_call_seed(config.seed))
 
         n_objectives = len(model.models)
 
@@ -355,47 +378,17 @@ def generate_diverse_thompson_batch(
     selected_samples: list[ThompsonSample] = []
     selected_tensors: list[Tensor] = []
 
-    for _ in range(n_samples):
-        # Try to find a diverse point
-        best_sample = None
-        best_min_dist = -1.0
-
-        for _ in range(max_attempts):
-            # Generate a single Thompson sample
-            batch = generate_thompson_samples(
-                model=model,
-                bounds=bounds,
-                n_samples=1,
-                config=config,
-                minimize=minimize,
-            )
-
-            candidate = batch.parameters_tensor
-
-            # Check distance to existing selections
-            if not selected_tensors:
-                best_sample = batch.samples[0]
-                best_min_dist = float("inf")
-                break
-
-            # Compute minimum distance to existing points
-            stacked = torch.stack(selected_tensors)
-            ranges = bounds[1] - bounds[0]
-            ranges = torch.clamp(ranges, min=1e-8)
-            normalized_candidate = (candidate - bounds[0]) / ranges
-            normalized_existing = (stacked - bounds[0]) / ranges
-
-            distances = torch.cdist(normalized_candidate, normalized_existing).squeeze()
-            min_dist = distances.min().item()
-
-            if min_dist >= min_distance:
-                best_sample = batch.samples[0]
-                best_min_dist = min_dist
-                break
-            if min_dist > best_min_dist:
-                best_sample = batch.samples[0]
-                best_min_dist = min_dist
-
+    for slot in range(n_samples):
+        best_sample = _find_diverse_sample(
+            model=model,
+            bounds=bounds,
+            config=config,
+            minimize=minimize,
+            slot=slot,
+            max_attempts=max_attempts,
+            min_distance=min_distance,
+            selected_tensors=selected_tensors,
+        )
         if best_sample is not None:
             selected_samples.append(best_sample)
             selected_tensors.append(best_sample.parameters.unsqueeze(0))
@@ -419,6 +412,69 @@ def generate_diverse_thompson_batch(
         diversity_score=diversity_score,
         method_info=f"Diverse Thompson Sampling (min_distance={min_distance:.3f})",
     )
+
+
+def _find_diverse_sample(
+    model: SingleTaskGP,
+    bounds: Tensor,
+    config: ThompsonConfig,
+    minimize: bool,
+    slot: int,
+    max_attempts: int,
+    min_distance: float,
+    selected_tensors: list[Tensor],
+) -> ThompsonSample | None:
+    """Draw Thompson samples until one is diverse from prior selections.
+
+    Returns the first sample whose normalized distance to every
+    already-selected point is at least ``min_distance``, falling back to
+    the most distant attempt when the threshold cannot be met within
+    ``max_attempts``.
+    """
+    best_sample: ThompsonSample | None = None
+    best_min_dist = -1.0
+
+    for attempt in range(max_attempts):
+        # Each (slot, attempt) needs an independent posterior draw —
+        # repeated calls with the SAME seed return the identical point,
+        # which would make this retry loop a no-op. A configured seed
+        # stays reproducible by deriving a per-attempt seed from it;
+        # an unseeded config keeps drawing fresh entropy per call.
+        attempt_config = config
+        if config.seed is not None:
+            attempt_config = replace(
+                config,
+                seed=derive_seed(config.seed, f"thompson:slot_{slot}:attempt_{attempt}"),
+            )
+
+        batch = generate_thompson_samples(
+            model=model,
+            bounds=bounds,
+            n_samples=1,
+            config=attempt_config,
+            minimize=minimize,
+        )
+
+        if not selected_tensors:
+            return batch.samples[0]
+
+        # Minimum normalized distance to the already-selected points
+        candidate = batch.parameters_tensor
+        stacked = torch.stack(selected_tensors)
+        ranges = torch.clamp(bounds[1] - bounds[0], min=1e-8)
+        normalized_candidate = (candidate - bounds[0]) / ranges
+        normalized_existing = (stacked - bounds[0]) / ranges
+
+        distances = torch.cdist(normalized_candidate, normalized_existing).squeeze()
+        min_dist = distances.min().item()
+
+        if min_dist >= min_distance:
+            return batch.samples[0]
+        if min_dist > best_min_dist:
+            best_sample = batch.samples[0]
+            best_min_dist = min_dist
+
+    return best_sample
 
 
 def _thompson_via_max_posterior_sampling(

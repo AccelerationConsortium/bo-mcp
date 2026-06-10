@@ -120,13 +120,14 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
             fixed_cost=spec.fidelity_parameter.fixed_cost,
         )
 
-    # Convert transfer learning config
+    # Convert transfer learning config. The domain model's deprecated
+    # ``temperature`` field is intentionally not forwarded — the engine's
+    # ranking-loss RGPE weights have no temperature parameter.
     transfer_learning = None
     if spec.transfer_learning is not None:
         transfer_learning = TransferLearningSpec(
             prior_campaign_ids=list(spec.transfer_learning.prior_campaign_ids),
             num_ranking_samples=spec.transfer_learning.num_ranking_samples,
-            temperature=spec.transfer_learning.temperature,
         )
 
     # Acquisition-optimizer budget overrides (optional). Carrying these

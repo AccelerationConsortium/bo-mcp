@@ -228,6 +228,101 @@ class TestOptimizeDiscrete:
 
 
 # =============================================================================
+# TestDiscreteValueGridSnapping
+# =============================================================================
+
+
+class TestDiscreteValueGridSnapping:
+    """Decoded discrete parameters must land on the declared value grid.
+
+    ``ParameterSpec.values`` documents explicit (possibly fractional)
+    grids; the optimizer relaxes the dimension to a continuous box, so
+    the decode step is responsible for snapping back. Plain integer
+    rounding violates the search space for fractional grids (every point
+    of ``[0.1, 0.2, 0.5]`` rounds to 0) and for integer grids with gaps
+    (5.2 rounds to 5 ∉ ``[2, 4, 8]``) — lab software then receives
+    unexecutable settings.
+
+    Reference:
+        BoTorch discrete/mixed optimization docs recommend snapping or
+        enumerating explicit choice sets rather than rounding:
+        https://botorch.readthedocs.io/en/latest/optim.html
+    """
+
+    @staticmethod
+    def _grid_spec() -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="frac", type=ParameterType.DISCRETE, values=[0.1, 0.2, 0.5]),
+                ParameterSpec(name="pow2", type=ParameterType.DISCRETE, values=[2, 4, 8]),
+                ParameterSpec(name="count", type=ParameterType.DISCRETE, bounds=(1, 10)),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+
+    def test_fractional_grid_snaps_to_nearest_value(self) -> None:
+        from bo_engine.transforms import decode_categorical
+
+        spec = self._grid_spec()
+        tensor = torch.tensor([0.34, 5.2, 6.7], dtype=torch.float64)
+        values = decode_categorical(tensor, spec)
+        assert values["frac"] == pytest.approx(0.2)  # |0.34-0.2| < |0.34-0.5|
+        assert values["pow2"] == 4  # nearest grid point, NOT round(5.2) == 5
+        assert values["count"] == 7  # bounds-only discrete keeps integer rounding
+
+    def test_grid_extremes_snap_inside_grid(self) -> None:
+        from bo_engine.transforms import decode_categorical
+
+        spec = self._grid_spec()
+        tensor = torch.tensor([0.05, 9.9, 1.4], dtype=torch.float64)
+        values = decode_categorical(tensor, spec)
+        assert values["frac"] == pytest.approx(0.1)
+        assert values["pow2"] == 8
+        assert values["count"] == 1
+
+    @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4])
+    def test_every_suggested_value_is_on_the_grid(self, seed: int) -> None:
+        """Property check: initial design AND model-guided suggestions ∈ grid."""
+        import numpy as np
+
+        from bo_engine.suggestions import generate_next_batch
+        from bo_engine.types import ObservationData
+
+        spec = self._grid_spec()
+        allowed = {"frac": {0.1, 0.2, 0.5}, "pow2": {2, 4, 8}}
+
+        # Initial-design phase (no observations)
+        suggestions, _ = generate_next_batch(
+            spec, [], batch_size=3, rng=np.random.default_rng(seed)
+        )
+        # Model-guided phase (enough observations for a GP)
+        torch.manual_seed(seed)
+        observations = []
+        rng = np.random.default_rng(seed)
+        for _ in range(8):
+            frac = float(rng.choice([0.1, 0.2, 0.5]))
+            pow2 = int(rng.choice([2, 4, 8]))
+            count = int(rng.integers(1, 11))
+            observations.append(
+                ObservationData(
+                    parameter_values={"frac": frac, "pow2": pow2, "count": count},
+                    objective_values={"y": frac * pow2 + 0.1 * count},
+                )
+            )
+        guided, _ = generate_next_batch(
+            spec, observations, batch_size=2, rng=np.random.default_rng(seed)
+        )
+
+        for suggestion in [*suggestions, *guided]:
+            values = suggestion.parameter_values
+            for name, grid in allowed.items():
+                assert any(values[name] == pytest.approx(g) for g in grid), (
+                    f"seed={seed}: suggested {name}={values[name]} is not in "
+                    f"the declared grid {sorted(grid)}"
+                )
+
+
+# =============================================================================
 # TestOptimizeMixed
 # =============================================================================
 

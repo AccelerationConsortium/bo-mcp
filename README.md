@@ -176,7 +176,7 @@ implement. Methods accept and return plain Python types (no tensors, no DataFram
 
 | Backend | Package | Strengths |
 |---------|---------|-----------|
-| **BoTorchBackend** (default) | `bo-engine` | Full BoTorch/GPyTorch stack: multi-objective, TuRBO, SAASBO, transfer learning, multi-fidelity |
+| **BoTorchBackend** (default) | `bo-engine` | Full BoTorch/GPyTorch stack: multi-objective, TuRBO, constraints, cost-aware. SAASBO, multi-fidelity and RGPE transfer learning ship as standalone modules (`bo_engine.saasbo`, `bo_engine.multifidelity`, `bo_engine.transfer_learning`) and are not yet routed through campaign suggestions — specs carrying `saasbo_config` / `fidelity_parameter` / `transfer_learning` are rejected with typed errors |
 | **BayBEBackend** | `bo-engine-baybe` | BayBE integration with its own search-space and surrogate model abstractions |
 
 ### Selecting a backend
@@ -207,12 +207,20 @@ function based on your problem characteristics:
 |----------------------|-------|-------------|----------|
 | 1 objective, <=20 params | SingleTaskGP | qLogNEI | L-BFGS-B |
 | 1 objective, >20 params | SingleTaskGP | qLogNEI | TuRBO |
-| 1 objective, >=50 params | SaasFullyBayesianGP | qLogEI | SAASBO |
 | 2+ objectives | ModelListGP | qLogNEHVI | L-BFGS-B |
-| With fidelity param | MFGP | qMFKG | Cost-aware |
-| With prior campaigns | RGPE | qLogNEI | Transfer |
 | Categorical params | MixedSingleTaskGP | qLogNEI | Mixed |
 | <2*n_params observations | Any | Sobol | Initial design |
+
+SAASBO (`SaasFullyBayesianGP`, for 50+ parameters), multi-fidelity
+(`qMFKG`) and RGPE transfer learning are implemented as standalone modules
+but not dispatched by the campaign pipeline: a spec setting
+`saasbo_config`, `fidelity_parameter` or `transfer_learning` fails fast
+with a typed error instead of silently downgrading. Drive
+`bo_engine.saasbo.generate_saasbo_suggestions` /
+`bo_engine.multifidelity.generate_multifidelity_suggestions` /
+`bo_engine.transfer_learning.generate_rgpe_suggestions` directly for those
+workflows (campaign-level transfer is supported via BayBE's native
+`TaskParameter` mechanism).
 
 No configuration required -- the system inspects parameters, objectives, and
 observation count, then chooses accordingly.

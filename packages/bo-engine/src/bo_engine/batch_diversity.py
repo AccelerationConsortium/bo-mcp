@@ -208,7 +208,15 @@ def apply_local_penalization(
     """Apply local penalization to acquisition values for diversity.
 
     Reduces acquisition values near already-selected points to encourage
-    diverse batch generation.
+    diverse batch generation. The multiplicative penalizer of Gonzalez et
+    al. assumes strictly positive acquisition values; the log-EI family
+    used elsewhere in the engine can be negative, where a plain
+    multiplication by ``(1 - penalization)`` would make values near
+    selected points *less negative* — i.e. more attractive. The factor is
+    therefore applied to the value's height above the batch minimum,
+    which is sign-safe: a fully penalized candidate drops to the least
+    attractive observed level regardless of sign, and the behavior is
+    unchanged for the non-negative case with a zero floor.
 
     Args:
         acq_values: Acquisition function values of shape (n_candidates,)
@@ -241,8 +249,9 @@ def apply_local_penalization(
     min_distances = distances.min(dim=1).values
     penalization = torch.exp(-(min_distances**2) / (2 * lengthscale**2))
 
-    # Apply penalization (multiply by (1 - penalization))
-    return acq_values * (1 - penalization)
+    # Penalize the height above the batch minimum (sign-safe; see above)
+    floor = acq_values.min()
+    return floor + (acq_values - floor) * (1 - penalization)
 
 
 def _is_diverse_from_selected(

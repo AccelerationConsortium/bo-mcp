@@ -206,11 +206,15 @@ class TransferLearningSpec:
 
     Allows leveraging data from prior optimization campaigns to
     accelerate optimization on a new but related task.
+
+    The former ``temperature`` field is gone: RGPE weights are the
+    paper's ranking-loss argmin counts (see
+    :mod:`bo_engine.transfer_learning`), which involve no softmax and
+    therefore no temperature to tune.
     """
 
     prior_campaign_ids: list[str]  # IDs of prior campaigns to transfer from
     num_ranking_samples: int = 512  # Samples for rank computation
-    temperature: float = 0.5  # RGPE softmax temperature for weight distribution
 
 
 @dataclass(frozen=True)

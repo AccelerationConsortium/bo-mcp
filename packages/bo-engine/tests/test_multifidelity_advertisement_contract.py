@@ -13,6 +13,10 @@ This module tests:
 * Requesting ``MULTI_FIDELITY_KG`` raises the typed
   :class:`MultiFidelityNotSupportedError` at the suggestion boundary.
 * Setting ``spec.fidelity_parameter`` raises the same error.
+* ``validate_capabilities`` mirrors the static exclusion: a
+  multi-fidelity spec must be ``is_compatible=False`` so intake and
+  ``backend="auto"`` reject at create time instead of failing later at
+  suggestion time.
 * The standalone ``bo_engine.multifidelity`` helpers remain importable so
   callers with a direct multi-fidelity workflow are not blocked.
 
@@ -28,6 +32,7 @@ from __future__ import annotations
 import pytest
 
 from bo_engine.backend import Feature
+from bo_engine.backend_base import CapabilityStatus
 from bo_engine.botorch_backend import BoTorchBackend
 from bo_engine.suggestions import (
     MultiFidelityNotSupportedError,
@@ -48,13 +53,62 @@ class TestSupportedFeaturesDropsMultiFidelity:
 
     def test_botorch_backend_omits_multi_fidelity(self) -> None:
         backend = BoTorchBackend()
+        # Protocol contract: the property is an immutable frozenset
+        # (set subtraction with dict views silently yields a plain set).
+        assert isinstance(backend.supported_features, frozenset)
         assert Feature.MULTI_FIDELITY not in backend.supported_features
-        # All other Feature members should remain (defensive sanity check that
-        # we didn't accidentally drop more than the one entry).
+        # All other Feature members should remain (defensive sanity check
+        # that we didn't accidentally drop more than the un-routed
+        # entries; TRANSFER_LEARNING is excluded for the same reason —
+        # see test_transfer_learning_advertisement_contract.py).
         for feature in Feature:
-            if feature is Feature.MULTI_FIDELITY:
+            if feature in (Feature.MULTI_FIDELITY, Feature.TRANSFER_LEARNING):
                 continue
             assert feature in backend.supported_features
+
+
+class TestCapabilityReportVetoesMultiFidelity:
+    """The spec-aware report must mirror the static exclusion.
+
+    Intake (``create_campaign``) and ``backend="auto"`` routing consult
+    only ``validate_capabilities().is_compatible`` — without the veto a
+    multi-fidelity campaign is accepted at create time and then fails at
+    suggestion time with ``MultiFidelityNotSupportedError``.
+    """
+
+    def test_fidelity_parameter_reported_unsupported(self) -> None:
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            fidelity_parameter=FidelityParameterSpec(
+                name="fidelity", bounds=(0.1, 1.0), target=1.0
+            ),
+        )
+        result = BoTorchBackend().validate_capabilities(spec)
+        assert not result.is_compatible
+        unsupported_keys = [r.key for r in result.unsupported]
+        # Both report surfaces must agree: the inferred feature AND the
+        # concrete spec option are vetoed — a SUPPORTED option report
+        # next to an UNSUPPORTED feature report is a contradictory signal.
+        assert str(Feature.MULTI_FIDELITY) in unsupported_keys
+        assert "fidelity_parameter" in unsupported_keys
+        supported_keys = {
+            r.key for r in result.option_reports if r.status == CapabilityStatus.SUPPORTED
+        }
+        assert "fidelity_parameter" not in supported_keys
+        assert all(r.reason for r in result.unsupported)
+
+    def test_mfkg_acquisition_method_reported_unsupported(self) -> None:
+        # required_features() infers MULTI_FIDELITY from fidelity_parameter
+        # only, so the acquisition-method route needs its own veto.
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            acquisition_method=AcquisitionMethod.MULTI_FIDELITY_KG,
+        )
+        result = BoTorchBackend().validate_capabilities(spec)
+        assert not result.is_compatible
+        assert "acquisition_method" in [r.key for r in result.unsupported]
 
 
 class TestSuggestionRouteRejectsMultiFidelity:

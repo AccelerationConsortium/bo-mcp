@@ -434,6 +434,66 @@ class TestMultiFidelityBehavior:
             assert pred_low.variance.item() >= 0
 
 
+class TestMultiFidelityDirectionHandling:
+    """The MFKG entry point must honor the objective direction.
+
+    ``qMultiFidelityKnowledgeGradient`` and the ``PosteriorMean``
+    current-value computation always maximize (BoTorch exposes no
+    direction flag on either — see
+    https://botorch.readthedocs.io/en/latest/acquisition.html), so the
+    engine's minimization convention requires negating the targets at
+    the data boundary before the model fit. These tests pin the
+    negation mechanism for both directions.
+    """
+
+    @staticmethod
+    def _setup() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, MultiFidelityConfig]:
+        torch.manual_seed(42)
+        train_x = torch.rand(15, 3, dtype=torch.double)
+        train_y = torch.rand(15, 1, dtype=torch.double)
+        bounds = torch.tensor([[0.0, 0.0, 0.1], [1.0, 1.0, 1.0]], dtype=torch.double)
+        config = MultiFidelityConfig(
+            fidelity_spec=FidelitySpec(fidelity_dim=2, target_fidelity=1.0),
+            num_fantasies=4,
+            num_restarts=2,
+            raw_samples=32,
+        )
+        return train_x, train_y, bounds, config
+
+    def _captured_fit_targets(
+        self, monkeypatch: pytest.MonkeyPatch, *, minimize: bool
+    ) -> tuple[torch.Tensor, torch.Tensor, dict]:
+        import bo_engine.multifidelity as mf
+
+        train_x, train_y, bounds, config = self._setup()
+        captured: dict[str, torch.Tensor] = {}
+        original = mf.create_and_fit_multifidelity_model
+
+        def capture(x: torch.Tensor, y: torch.Tensor, fidelity_dim: int):  # type: ignore[no-untyped-def]
+            captured["y"] = y.clone()
+            return original(x, y, fidelity_dim)
+
+        monkeypatch.setattr(mf, "create_and_fit_multifidelity_model", capture)
+        _, _, metadata = mf.generate_multifidelity_suggestions(
+            train_x, train_y, bounds, config, batch_size=1, minimize=minimize
+        )
+        return train_y, captured["y"], metadata
+
+    def test_minimize_fits_on_negated_targets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        train_y, fitted_y, metadata = self._captured_fit_targets(monkeypatch, minimize=True)
+        assert torch.allclose(fitted_y, -train_y), (
+            "minimize=True must negate the targets into maximization form "
+            "before the model fit — the maximizing KG machinery otherwise "
+            "steers the high-fidelity budget toward the WORST region."
+        )
+        assert metadata["minimize"] is True
+
+    def test_maximize_fits_on_raw_targets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        train_y, fitted_y, metadata = self._captured_fit_targets(monkeypatch, minimize=False)
+        assert torch.allclose(fitted_y, train_y)
+        assert metadata["minimize"] is False
+
+
 @pytest.mark.usefixtures("torch_rng")
 class TestMultiFidelityEdgeCases:
     """Test edge cases and error handling."""

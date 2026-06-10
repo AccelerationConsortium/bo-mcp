@@ -373,13 +373,26 @@ class TransferLearningConfig(BaseModel):
     Allows leveraging data from prior optimization campaigns. The
     ``prior_campaign_ids`` field is a tuple so a frozen config instance
     is deeply immutable.
+
+    ``temperature`` is deprecated and has no effect: RGPE ensemble
+    weights are computed from the paper's ranking loss (argmin counts
+    over posterior samples), which involves no softmax. The field is
+    kept only so previously stored specs and older clients keep
+    validating; it is not forwarded to the engine.
     """
 
     model_config = ConfigDict(frozen=True)
 
     prior_campaign_ids: tuple[str, ...] = Field(..., min_length=1)
     num_ranking_samples: int = Field(default=512, ge=1)
-    temperature: float = Field(default=0.5, gt=0.0)
+    temperature: float = Field(
+        default=0.5,
+        gt=0.0,
+        description=(
+            "Deprecated, ignored: ranking-loss RGPE weights have no "
+            "softmax temperature. Kept for stored-spec compatibility."
+        ),
+    )
 
 
 class TurboConfig(BaseModel):

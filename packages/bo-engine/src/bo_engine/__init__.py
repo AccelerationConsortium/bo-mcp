@@ -3,17 +3,21 @@
 This package provides a standalone BO engine that can be used independently
 or integrated with higher-level packages like bo-mcp-server.
 
-Supports:
+Supports (routed through ``generate_next_batch``):
 - Single-objective optimization (noisy EI, EI) [v1.0.1]
 - Multi-objective optimization (hypervolume improvement, scalarized)
 - Input warping for non-stationary objectives [v1.1]
 - LOO cross-validation for model quality assessment [v1.1]
 - TuRBO for high-dimensional optimization [v1.2]
 - Cost-aware optimization (EIpu) [v1.3]
-- Multi-fidelity optimization (qMFKG) [v2.0]
-- Transfer learning (RGPE) [v2.0]
-- SAASBO for very high-dimensional optimization [v2.0]
 - GPU auto-detection and acceleration [v2.3]
+
+Standalone modules (NOT routed through ``generate_next_batch`` — a spec
+requesting them is rejected with a typed error; drive the module entry
+points directly):
+- Multi-fidelity optimization (qMFKG, ``bo_engine.multifidelity``) [v2.0]
+- Transfer learning (RGPE, ``bo_engine.transfer_learning``) [v2.0]
+- SAASBO for very high-dimensional optimization (``bo_engine.saasbo``) [v2.0]
 
 Usage:
     pip install bo-engine

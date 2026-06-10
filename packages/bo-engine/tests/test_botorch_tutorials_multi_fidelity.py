@@ -258,6 +258,78 @@ class TestMultiFidelitySuggestions:
         assert (candidates <= 1).all()
 
     @pytest.mark.slow
+    def test_mfkg_makes_progress_toward_minimum(self) -> None:
+        """MFKG iterations with minimize=True improve the target-fidelity recommendation.
+
+        Mirrors the tutorial's final-recommendation step: after collecting
+        data with qMFKG, the recommended point is the maximizer of the
+        posterior mean at the target fidelity. Augmented Hartmann is a
+        minimization benchmark, so the engine negates internally
+        (``minimize=True``); the recommendation's posterior mean (back on
+        the raw minimization scale) must not be worse than the best value
+        already observed — an anti-optimizing loop recommends near the
+        observed MAXIMUM instead.
+
+        Reference:
+            https://botorch.org/docs/tutorials/multi_fidelity_bo/ —
+            "make a final recommendation" section (PosteriorMean at
+            target fidelity).
+        """
+        from botorch.acquisition import PosteriorMean
+        from botorch.acquisition.fixed_feature import FixedFeatureAcquisitionFunction
+        from botorch.optim import optimize_acqf
+
+        torch.manual_seed(42)
+
+        sobol = SobolEngine(dimension=6, scramble=True, seed=42)
+        x_params = sobol.draw(16).to(torch.float64)
+        fidelities = 0.5 + 0.5 * torch.rand(16, 1, dtype=torch.float64)
+        train_x = torch.cat([x_params, fidelities], dim=-1)
+        train_y = augmented_hartmann(train_x).unsqueeze(-1)
+        initial_best = train_y.min().item()
+
+        bounds = augmented_hartmann_bounds()
+        config = MultiFidelityConfig(
+            fidelity_spec=FidelitySpec(fidelity_dim=6, target_fidelity=1.0, fixed_cost=5.0),
+            num_fantasies=16,
+            num_restarts=4,
+            raw_samples=64,
+        )
+
+        for _ in range(2):
+            candidates, _, _ = generate_multifidelity_suggestions(
+                train_x, train_y, bounds, config, batch_size=2, minimize=True
+            )
+            new_y = augmented_hartmann(candidates).unsqueeze(-1)
+            train_x = torch.cat([train_x, candidates], dim=0)
+            train_y = torch.cat([train_y, new_y], dim=0)
+
+        # Final recommendation at target fidelity (max-form model, so the
+        # optimizer value is the negated posterior mean of the raw scale).
+        model = create_and_fit_multifidelity_model(train_x, -train_y, fidelity_dim=6)
+        recommendation_acqf = FixedFeatureAcquisitionFunction(
+            acq_function=PosteriorMean(model), d=7, columns=[6], values=[1.0]
+        )
+        _, max_form_value = optimize_acqf(
+            acq_function=recommendation_acqf,
+            bounds=bounds[:, :6],
+            q=1,
+            num_restarts=4,
+            raw_samples=128,
+        )
+        recommended_mean = -max_form_value.item()  # back on the raw (min) scale
+
+        # Statistical tolerance per TESTING.md: the recommendation should
+        # at least match the best observed point's level; an inverted loop
+        # lands near the observed maximum, far above this bound.
+        observed_spread = (train_y.max() - train_y.min()).item()
+        assert recommended_mean <= initial_best + 0.25 * observed_spread, (
+            f"Recommended target-fidelity posterior mean {recommended_mean:.3f} "
+            f"is far above the initial best {initial_best:.3f} — the MFKG "
+            "pipeline is not minimizing."
+        )
+
+    @pytest.mark.slow
     def test_mfkg_exploits_cheap_evaluations(self) -> None:
         """qMFKG should sometimes evaluate low-fidelity points.
 

@@ -5,17 +5,28 @@ solutions are to parameter perturbations. In real experiments, exact parameter
 values often cannot be hit, so understanding which parameters are sensitive
 helps experimentalists prioritize precision.
 
+The analysis is **local and gradient-based** (DGSM-style derivative
+measures evaluated at specific points), not a global variance-decomposition
+(Sobol indices). Sensitivities are normalized on both sides: gradients are
+multiplied by the parameter range (input side) and divided by the spread of
+the observed objective (output side), so the dimensionless result — and the
+categorical high/medium/low labels derived from it — is invariant to the
+measurement units of both x and y.
+
 Section 3.1 - Missing Trust-Building Features
 
 References:
+    - Kucherenko, S. et al. "Monte Carlo evaluation of derivative-based
+      global sensitivity measures" (2009) — DGSM
     - Saltelli, A. et al. "Global Sensitivity Analysis: The Primer" (2008)
-    - Sobol, I.M. "Sensitivity Estimates for Nonlinear Mathematical Models" (1993)
     - BoTorch GP Models: https://botorch.org/docs/models/
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from typing import cast
 
 import torch
 from botorch.models import ModelListGP, SingleTaskGP
@@ -24,6 +35,7 @@ from torch import Tensor
 from bo_engine.constants import (
     SENSITIVITY_HIGH_THRESHOLD,
     SENSITIVITY_MEDIUM_THRESHOLD,
+    SENSITIVITY_OUTPUT_SCALE_MIN,
 )
 from bo_engine.device import get_device, get_dtype
 
@@ -34,10 +46,14 @@ class ParameterSensitivity:
 
     Attributes:
         name: Parameter name.
-        sensitivity: Normalized sensitivity value (higher = more sensitive).
-        gradient: Raw gradient of objective w.r.t. parameter.
+        sensitivity: Dimensionless normalized sensitivity — objective
+            change in units of its observed spread per full-range
+            parameter change (higher = more sensitive).
+        gradient: Raw gradient of objective w.r.t. parameter (objective
+            units per parameter unit).
         sensitivity_level: Categorical level ("high", "medium", "low").
-        effect_size: Expected change in objective for 1% perturbation.
+        effect_size: Expected change in objective (raw objective units)
+            for a 1% perturbation of the parameter range.
     """
 
     name: str
@@ -141,13 +157,17 @@ def compute_sensitivity(
         objective_index=objective_index,
     )
 
-    # Build per-parameter sensitivity info
+    # Build per-parameter sensitivity info. ``reshape(-1)`` (not
+    # ``squeeze()``) keeps the parameter dimension alive for d == 1,
+    # where an unconstrained squeeze collapses (1, 1) to a 0-d tensor
+    # and the per-parameter indexing below raises IndexError.
     param_sensitivities: list[ParameterSensitivity] = []
-    normalized_sens = local_result.normalized_sensitivities.squeeze()
+    normalized_sens = local_result.normalized_sensitivities.reshape(-1)
+    gradients_flat = local_result.gradients.reshape(-1)
 
     for i, name in enumerate(parameter_names):
         sens_value = normalized_sens[i].item()
-        grad_value = local_result.gradients.squeeze()[i].item()
+        grad_value = gradients_flat[i].item()
 
         # Determine sensitivity level
         abs_sens = abs(sens_value)
@@ -252,7 +272,7 @@ def compute_pareto_sensitivity(
 
         param_sens_list: list[ParameterSensitivity] = []
         for j, name in enumerate(parameter_names):
-            sens_value = max_sensitivities.squeeze()[j].item()
+            sens_value = max_sensitivities.reshape(-1)[j].item()
             if sens_value >= SENSITIVITY_HIGH_THRESHOLD:
                 level = "high"
             elif sens_value >= SENSITIVITY_MEDIUM_THRESHOLD:
@@ -353,7 +373,7 @@ def compute_sensitivity_heatmap_data(
                 objective_index=objective_index,
             )
 
-            sens = local_result.normalized_sensitivities.squeeze()
+            sens = local_result.normalized_sensitivities.reshape(-1)
             sensitivity_x[xi, yi] = sens[i].abs()
             sensitivity_y[xi, yi] = sens[j].abs()
 
@@ -412,7 +432,7 @@ def rank_parameters_by_sensitivity(
             bounds=bounds,
             objective_index=objective_index,
         )
-        total_sensitivities += local_result.normalized_sensitivities.squeeze().abs()
+        total_sensitivities += local_result.normalized_sensitivities.reshape(-1).abs()
 
     avg_sensitivities = total_sensitivities / n_points
 
@@ -425,6 +445,38 @@ def rank_parameters_by_sensitivity(
     return ranking
 
 
+def _resolve_output_scale(
+    model: SingleTaskGP | ModelListGP,
+    objective_index: int = 0,
+) -> float:
+    """Spread of the model's training targets in raw (user-scale) y-units.
+
+    The posterior-mean gradient carries the objective's measurement units,
+    so a unitless sensitivity needs an output-side scale alongside the
+    input-side range normalization. The stored ``train_targets`` live in
+    the model's transformed target space; they are mapped back through the
+    fitted outcome transform so the scale matches the raw-unit gradient.
+    """
+    sub_model = model.models[objective_index] if isinstance(model, ModelListGP) else model
+    targets = cast("Tensor", sub_model.train_targets)
+    if targets.dim() == 1:
+        targets = targets.unsqueeze(-1)
+
+    outcome_transform = getattr(sub_model, "outcome_transform", None)
+    if outcome_transform is not None:
+        with torch.no_grad():
+            targets, _ = outcome_transform.untransform(targets)
+
+    # Population std (correction=0): the default Bessel-corrected
+    # estimator is undefined (nan) for a single observation, and
+    # ``max(nan, floor)`` stays nan. The isfinite guard additionally
+    # covers pathological (nan/inf) targets so the floor always applies.
+    spread = targets.std(correction=0).item()
+    if not math.isfinite(spread):
+        spread = 0.0
+    return max(spread, SENSITIVITY_OUTPUT_SCALE_MIN)
+
+
 def _compute_local_sensitivity(
     model: SingleTaskGP | ModelListGP,
     x: Tensor,
@@ -432,6 +484,12 @@ def _compute_local_sensitivity(
     objective_index: int = 0,
 ) -> LocalSensitivityResult:
     """Compute local sensitivity at a single point using gradients.
+
+    The normalized sensitivity is ``∂μ/∂x · range(x) / std(y)`` — the
+    change in the objective, measured in units of its observed spread,
+    per full-range change of the parameter. Both normalizations make the
+    value dimensionless so the fixed high/medium/low thresholds in
+    :mod:`bo_engine.constants` classify the function, not its units.
 
     Args:
         model: Fitted GP model.
@@ -460,11 +518,13 @@ def _compute_local_sensitivity(
         raise RuntimeError(msg)
     gradients = grad.detach()
 
-    # Normalize by parameter ranges
+    # Normalize by parameter ranges (input side) and the observed
+    # objective spread (output side) so the result is dimensionless.
     param_ranges = bounds[1] - bounds[0]
     # Avoid division by zero
     param_ranges = torch.clamp(param_ranges, min=1e-8)
-    normalized_sensitivities = gradients * param_ranges
+    output_scale = _resolve_output_scale(model, objective_index)
+    normalized_sensitivities = gradients * param_ranges / output_scale
 
     return LocalSensitivityResult(
         x=x.detach(),

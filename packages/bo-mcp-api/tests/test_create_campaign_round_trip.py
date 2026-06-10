@@ -35,7 +35,6 @@ def _intake_payload() -> dict:
         "use_input_warping": True,
         "use_cost_aware": True,
         "turbo_config": {"initial_length": 0.5},
-        "saasbo_config": {"warmup_steps": 8, "num_samples": 8, "thinning": 2},
         "outcome_constraints": [{"objective_name": "y", "threshold": 0.5, "greater_than": True}],
         "max_observations": 12,
         "random_seed": 42,
@@ -74,12 +73,38 @@ async def test_rest_create_campaign_persists_advanced_fields(api_client, auth_he
     assert spec.use_cost_aware is True
     assert spec.turbo_config is not None
     assert spec.turbo_config.initial_length == pytest.approx(0.5)
-    assert spec.saasbo_config is not None
-    assert spec.saasbo_config.warmup_steps == 8
     assert len(spec.outcome_constraints) == 1
     assert spec.outcome_constraints[0].objective_name == "y"
     assert spec.max_observations == 12
     assert spec.random_seed == 42
+
+
+@pytest.mark.asyncio
+async def test_rest_create_campaign_rejects_saasbo_on_botorch(api_client, auth_headers):
+    """A pinned ``backend="botorch"`` must reject ``saasbo_config`` at intake.
+
+    The BoTorch suggestion pipeline does not route SAASBO
+    (``generate_next_batch`` raises a typed ``SAASBONotSupportedError``),
+    so the backend reports the option ``UNSUPPORTED`` and campaign
+    creation fails fast instead of silently fitting a dense-ARD GP under
+    a sparse-prior advertisement. Operation-level rejections keep the
+    route's historical ``200 OK`` + ``success=false`` envelope contract
+    (see ``create_new_campaign``).
+    """
+    payload = _intake_payload()
+    payload["saasbo_config"] = {"warmup_steps": 8, "num_samples": 8, "thinning": 2}
+
+    response = await api_client.post(
+        "/api/campaigns",
+        json={"intake": payload},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is False, body
+    assert body["campaign_id"] is None
+    assert any("saasbo" in error.lower() for error in body["errors"]), body["errors"]
 
 
 def _baybe_acknowledged_intake() -> dict:

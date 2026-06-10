@@ -109,6 +109,8 @@ __all__ = [
     # Public surface
     "MultiFidelityNotSupportedError",
     "OutcomeConstraintConfigurationError",
+    "SAASBONotSupportedError",
+    "TransferLearningNotSupportedError",
     # Re-exported private helpers — test suite imports these by name.
     "_apply_constraints_to_samples",
     "_build_multi_objective_explanation",
@@ -150,6 +152,34 @@ class MultiFidelityNotSupportedError(ValueError):
     advertisement honest — silent downgrade to single-fidelity would let
     callers think they were getting cost-amortized exploration when they
     were not.
+    """
+
+
+class SAASBONotSupportedError(ValueError):
+    """Raised when a spec requests SAASBO dispatch.
+
+    The ``bo_engine.saasbo`` module exposes standalone helpers
+    (``create_and_fit_saasbo_model``, ``generate_saasbo_suggestions``),
+    but the active suggestion pipeline does not consume
+    ``spec.saasbo_config`` — a spec carrying it would silently run a
+    plain dense-ARD ``SingleTaskGP`` instead of the sparsity-inducing
+    SAAS priors the caller asked for. Raising here keeps the
+    advertisement honest, mirroring the multi-fidelity precedent above.
+    """
+
+
+class TransferLearningNotSupportedError(ValueError):
+    """Raised when a spec requests RGPE transfer-learning dispatch.
+
+    The ``bo_engine.transfer_learning`` module exposes standalone RGPE
+    helpers (``create_rgpe_model``, ``generate_rgpe_suggestions``), but
+    the active suggestion pipeline does not consume
+    ``spec.transfer_learning`` — a spec carrying it would silently run
+    an ordinary GP with no prior-campaign transfer at all. Raising here
+    keeps the advertisement honest, following the same rule as the
+    multi-fidelity and SAASBO rejections above. (BayBE's native
+    ``TaskParameter`` mechanism remains the supported campaign-level
+    transfer path.)
     """
 
 
@@ -285,6 +315,35 @@ def generate_next_batch(
             "for direct multi-fidelity workflows."
         )
         raise MultiFidelityNotSupportedError(msg)
+
+    # SAASBO routing is not implemented end-to-end either: the pipeline
+    # never consumes spec.saasbo_config, so accepting it would silently
+    # fit a dense-ARD SingleTaskGP while the caller believes they get
+    # sparsity-inducing SAAS priors. Same honesty rule as multi-fidelity.
+    if spec.saasbo_config is not None:
+        msg = (
+            "SAASBO dispatch (SaasFullyBayesianSingleTaskGP / NUTS) is not "
+            "wired into generate_next_batch. Remove spec.saasbo_config to "
+            "proceed with a standard GP; the standalone helpers in "
+            "bo_engine.saasbo (generate_saasbo_suggestions) remain "
+            "available for direct SAASBO workflows."
+        )
+        raise SAASBONotSupportedError(msg)
+
+    # RGPE transfer learning is likewise not wired: prior-campaign data is
+    # never loaded into PriorTaskData and no dispatch to
+    # generate_rgpe_suggestions exists, so accepting the option would run
+    # a plain GP while the caller believes prior knowledge is transferred.
+    if spec.transfer_learning is not None:
+        msg = (
+            "RGPE transfer-learning dispatch is not wired into "
+            "generate_next_batch. Remove spec.transfer_learning to proceed "
+            "without prior-campaign transfer, use BayBE's native "
+            "TaskParameter mechanism, or drive the standalone helpers in "
+            "bo_engine.transfer_learning (generate_rgpe_suggestions) "
+            "directly."
+        )
+        raise TransferLearningNotSupportedError(msg)
 
     random_seed = _resolve_acquisition_seed(spec, iteration, rng)
 

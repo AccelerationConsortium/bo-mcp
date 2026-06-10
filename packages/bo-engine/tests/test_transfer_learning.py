@@ -433,6 +433,183 @@ class TestRGPEEdgeCases:
         assert rgpe is not None
 
 
+class TestRankingLossWeights:
+    """Weights follow the paper's ranking loss, not prediction error.
+
+    Feurer et al. (https://arxiv.org/abs/1802.02219) define the weight of
+    model i as the fraction of posterior samples in which it has the
+    lowest pair-misranking count on the target data. Because the loss
+    counts orderings only, a prior task whose objective is an affine
+    rescaling of the target (different units / offset, same landscape)
+    must rank highly — exactly the transfer scenario MSE-style weighting
+    fails on, since its posterior un-standardizes to the prior's own
+    y-scale. The BoTorch RGPE tutorial implements the same estimator:
+    https://botorch.org/docs/tutorials/meta_learning_with_rgpe/
+    """
+
+    @staticmethod
+    def _target_fn(x: torch.Tensor) -> torch.Tensor:
+        return (x[:, 0:1] - 0.3) ** 2 + (x[:, 1:2] - 0.7) ** 2
+
+    def test_affine_rescaled_prior_ranks_highest(self) -> None:
+        """y_prior = 100 + 50*y_target must beat an unrelated prior."""
+        torch.manual_seed(42)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+
+        rescaled_x = torch.rand(15, 2, dtype=torch.double)
+        rescaled_y = 100.0 + 50.0 * self._target_fn(rescaled_x)
+
+        unrelated_x = torch.rand(15, 2, dtype=torch.double)
+        unrelated_y = torch.rand(15, 1, dtype=torch.double) * 100.0
+
+        prior_tasks = [
+            PriorTaskData(name="rescaled_same", train_x=rescaled_x, train_y=rescaled_y),
+            PriorTaskData(name="unrelated", train_x=unrelated_x, train_y=unrelated_y),
+        ]
+
+        target_x = torch.rand(10, 2, dtype=torch.double)
+        target_y = self._target_fn(target_x)
+
+        rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
+        weights = rgpe.weights  # [rescaled_same, unrelated, target]
+
+        assert weights[0] > weights[1], (
+            f"The affine-rescaled same-landscape prior got weight "
+            f"{weights[0]:.3f} <= unrelated prior {weights[1]:.3f} — the "
+            "weighting is scale-sensitive instead of rank-based."
+        )
+        assert weights[0] == max(weights), (
+            "With dense matching prior data, the rescaled prior should "
+            f"carry the largest weight; got {weights.tolist()}"
+        )
+
+    def test_weights_form_simplex(self) -> None:
+        torch.manual_seed(42)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+        prior_tasks = [
+            PriorTaskData(
+                name=f"prior_{i}",
+                train_x=torch.rand(10, 2, dtype=torch.double),
+                train_y=torch.rand(10, 1, dtype=torch.double),
+            )
+            for i in range(3)
+        ]
+        target_x = torch.rand(8, 2, dtype=torch.double)
+        target_y = self._target_fn(target_x)
+
+        rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
+        assert (rgpe.weights >= 0).all()
+        assert rgpe.weights.sum().item() == pytest.approx(1.0, abs=1e-9)
+
+    def test_weight_dilution_discards_random_prior(self) -> None:
+        """A pure-noise prior must be discarded by the percentile rule.
+
+        Feurer et al. (v1) discard base model i when the median of its
+        loss samples exceeds the 95th percentile of the target model's —
+        without it, many weak priors would each win a few samples and
+        dilute the target.
+        """
+        torch.manual_seed(42)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+
+        noise_x = torch.rand(15, 2, dtype=torch.double)
+        noise_y = torch.rand(15, 1, dtype=torch.double) * 100.0
+        prior_tasks = [PriorTaskData(name="noise", train_x=noise_x, train_y=noise_y)]
+
+        # Densely observed smooth target → the target model ranks well,
+        # so the noise prior's loss median clears the dilution threshold.
+        target_x = torch.rand(20, 2, dtype=torch.double)
+        target_y = self._target_fn(target_x)
+
+        rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
+        assert rgpe.weights[0].item() == pytest.approx(0.0, abs=1e-12), (
+            f"Pure-noise prior kept weight {rgpe.weights[0]:.4f} — the "
+            "dilution filter did not fire."
+        )
+
+    def test_uniform_weights_below_minimum_observations(self) -> None:
+        """< 3 target observations → uniform weights (paper prescription)."""
+        torch.manual_seed(42)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+        prior_tasks = [
+            PriorTaskData(
+                name="prior",
+                train_x=torch.rand(10, 2, dtype=torch.double),
+                train_y=torch.rand(10, 1, dtype=torch.double),
+            ),
+        ]
+        target_x = torch.rand(2, 2, dtype=torch.double)
+        target_y = self._target_fn(target_x)
+
+        rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
+        assert torch.allclose(rgpe.weights, torch.full((2,), 0.5, dtype=torch.double))
+
+
+class TestBatchDiversityViaPendingPoints:
+    """Sequential batch generation must not collapse onto one maximizer.
+
+    ``optimize_acqf(sequential=True)`` informs the acquisition of
+    already-selected candidates via ``set_X_pending``; an acquisition
+    that ignores the property solves the identical problem for every
+    slot and returns near-duplicate batches. The RGPE acquisitions fold
+    pending points in via local penalization (Gonzalez et al. 2016,
+    https://arxiv.org/abs/1505.08052).
+    """
+
+    def test_batch_candidates_are_spread_out(self) -> None:
+        torch.manual_seed(0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+
+        def f(x: torch.Tensor) -> torch.Tensor:
+            return (x[:, 0:1] - 0.3) ** 2 + (x[:, 1:2] - 0.7) ** 2
+
+        prior_x = torch.rand(15, 2, dtype=torch.double)
+        prior_tasks = [PriorTaskData(name="same", train_x=prior_x, train_y=f(prior_x))]
+        target_x = torch.rand(10, 2, dtype=torch.double)
+        target_y = f(target_x)
+
+        candidates, _, _ = generate_rgpe_suggestions(
+            target_x, target_y, prior_tasks, bounds, batch_size=3
+        )
+
+        distances = torch.cdist(candidates, candidates)
+        distances.fill_diagonal_(float("inf"))
+        min_pairwise = distances.min().item()
+        assert min_pairwise > 0.05, (
+            f"Batch of 3 collapsed to near-duplicates (min pairwise "
+            f"distance {min_pairwise:.4f}) — X_pending is being ignored."
+        )
+
+    def test_pending_points_lower_nearby_acquisition(self) -> None:
+        """Setting X_pending must reduce the EI exactly at the pending point."""
+        from bo_engine.transfer_learning import RGPEAcquisition, create_rgpe_model
+
+        torch.manual_seed(0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+
+        def f(x: torch.Tensor) -> torch.Tensor:
+            return (x[:, 0:1] - 0.3) ** 2 + (x[:, 1:2] - 0.7) ** 2
+
+        prior_x = torch.rand(15, 2, dtype=torch.double)
+        prior_tasks = [PriorTaskData(name="same", train_x=prior_x, train_y=f(prior_x))]
+        target_x = torch.rand(10, 2, dtype=torch.double)
+        target_y = f(target_x)
+
+        rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
+        acqf = RGPEAcquisition(rgpe, best_f=target_y.min().item(), bounds=bounds)
+
+        probe = torch.tensor([[[0.25, 0.65]]], dtype=torch.double)
+        with torch.no_grad():
+            free_value = acqf(probe)
+            acqf.X_pending = probe.squeeze(0)
+            pinned_value = acqf(probe)
+
+        assert pinned_value.item() < free_value.item(), (
+            "EI at a pending point did not drop — forward() ignores X_pending."
+        )
+        assert pinned_value.item() == pytest.approx(0.0, abs=1e-6)
+
+
 class TestLegacyPathDirection:
     """The target-only (legacy) acquisition must minimize, not maximize.
 

@@ -1,5 +1,6 @@
 """Create campaign operation - protocol-neutral business logic."""
 
+import asyncio
 import logging
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -7,7 +8,7 @@ from uuid import UUID, uuid4
 from bo_engine.backend_base import BackendValidationResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bo_mcp_server.backend import get_backend, resolve_backend_name
+from bo_mcp_server.backend import get_backend_async, resolve_backend_name
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
@@ -184,9 +185,11 @@ async def create_campaign_operation(
     # Reconstruct CampaignSpec from validated data
     spec_data = validation["spec"]
 
-    # Resolve "auto" backend to a concrete backend name
+    # Resolve "auto" backend to a concrete backend name. Offloaded to a
+    # worker thread because resolving "auto" loads every candidate
+    # backend (torch / baybe imports) on the first call.
     raw_backend = spec_data.get("backend", "auto")
-    spec_data["backend"] = resolve_backend_name(raw_backend, spec_data)
+    spec_data["backend"] = await asyncio.to_thread(resolve_backend_name, raw_backend, spec_data)
 
     spec = _build_spec_from_dict(spec_data)
     warnings: list[str] = validation.get("warnings", [])
@@ -197,7 +200,7 @@ async def create_campaign_operation(
     # path also has to fail-fast on UNSUPPORTED reports so misshaped BayBE
     # ``parameter_options`` / ``backend_options`` cannot reach the suggestion
     # path.
-    backend = get_backend(spec.backend)
+    backend = await get_backend_async(spec.backend)
     opt_spec = campaign_spec_to_optimization_spec(spec)
     capabilities = backend.validate_capabilities(opt_spec)
     if not capabilities.is_compatible:

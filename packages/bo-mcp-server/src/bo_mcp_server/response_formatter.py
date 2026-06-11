@@ -77,6 +77,11 @@ class ResponseMetadata(BaseModel):
 def get_response_metadata(protocol: str = "mcp") -> ResponseMetadata:
     """Build metadata for a formatted response.
 
+    Stays synchronous deliberately: it only resolves the *default*
+    backend, which the server warms at startup
+    (:func:`bo_mcp_server.backend.warm_default_backend`), so the lookup
+    here is a cache hit and safe to run on the event loop.
+
     Args:
         protocol: The transport protocol ("mcp" or "rest").
 

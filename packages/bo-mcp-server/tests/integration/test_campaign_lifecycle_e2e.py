@@ -576,19 +576,12 @@ class TestLongRunningLifecycle:
         3. Model-based suggestions are generated after initial design
 
         Note: Marked as slow due to multi-iteration optimization.
-        Uses fixed seed for reproducibility (BO is stochastic).
+        Uses campaign-level random_seed for reproducibility (BO is stochastic).
         """
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
-
-        # Seed all RNG sources for reproducibility. generate_next_batch()
-        # uses random.randint() to derive a torch seed internally, and
-        # SobolEngine(scramble=True) uses torch's RNG for scrambling.
-        # Seed 0 verified across full suite + isolation runs.
-        random.seed(0)
-        torch.manual_seed(0)
 
         owner_id = str(uuid4())
 
@@ -600,6 +593,9 @@ class TestLongRunningLifecycle:
             ],
             "objectives": [{"name": "f", "direction": "minimize"}],
             "batch_size": 2,
+            # Campaign-level seed is the engine's reproducibility contract for
+            # Sobol initial design and per-iteration acquisition optimization.
+            "random_seed": 0,
         }
 
         create_result = await create_campaign(intake_data, owner_id)
@@ -642,7 +638,7 @@ class TestLongRunningLifecycle:
             assert best_values[i + 1] <= best_values[i] + 1e-6
 
         # Final best value should be reasonably good (< 1.0 for Ackley-like)
-        assert best_values[-1] < 2.0
+        assert best_values[-1] < 1.0
 
 
 @pytest.mark.usefixtures("setup_database")

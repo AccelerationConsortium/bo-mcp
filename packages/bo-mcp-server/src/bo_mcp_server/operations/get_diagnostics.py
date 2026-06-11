@@ -18,7 +18,7 @@ from uuid import UUID
 from bo_engine.backend import DiagnosticSection
 from bo_engine.progress import ProgressCallback
 
-from bo_mcp_server.backend import get_backend
+from bo_mcp_server.backend import get_backend_async
 from bo_mcp_server.cache import diagnostics_cache
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import Campaign, CampaignSpec, Result, Suggestion, SuggestionStatus
@@ -144,7 +144,7 @@ async def _compute_sections(
     # worker thread so GP fitting / LOO-CV do not block the event loop.
     backend_sections = _map_backend_sections(requested)
     if backend_sections:
-        backend = get_backend(spec.backend)
+        backend = await get_backend_async(spec.backend)
         observations = results_to_observations(results)
         diagnostics.update(
             await asyncio.to_thread(

@@ -35,15 +35,21 @@ The repository ships a `.mcp.json` that auto-configures the MCP server.
 cd bo-mcp-ui && claude
 ```
 
-Claude Code will detect the server and expose all 20 BO tools automatically.
+Claude Code will detect the server and expose all of its BO tools automatically.
 
 ### Path 2: Standalone MCP server
 
 ```bash
 pip install ./packages/bo-mcp-server   # or: uv pip install ./packages/bo-mcp-server
 bo-mcp-server                          # stdio transport (default)
-bo-mcp-server --transport sse --port 8001  # network transport
+bo-mcp-server --transport sse --port 8001  # network transport (binds 127.0.0.1)
 ```
+
+The SSE transport binds loopback by default; pass `--host 0.0.0.0` explicitly to
+expose it on the network. Note that SSE itself is currently **unauthenticated**
+and not tenant-isolated (tracked as a known gap) — a non-loopback bind exposes
+every tool to anyone who can reach the port, so keep it loopback or front it
+with an authenticating proxy.
 
 Add to any MCP client config (Claude Desktop, custom agent, etc.):
 
@@ -306,7 +312,8 @@ is an absolute path.
 
 **SSE transport blocked** -- Check firewall rules for the port (default 8001).
 Add extra hostnames via `MCP_ALLOWED_HOSTS` if connecting from containers or
-proxies.
+proxies. Remember the server binds `127.0.0.1` unless started with an explicit
+`--host`.
 
 **GPU / MPS issues** -- BoTorch requires float64; Apple MPS does not support it.
 MPS is not auto-enabled. Force it with `BO_ENGINE_DEVICE=mps` if you accept

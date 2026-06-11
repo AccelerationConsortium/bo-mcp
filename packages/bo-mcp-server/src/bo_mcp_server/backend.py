@@ -16,9 +16,20 @@ cached in :data:`_discovered_entry_points` so :func:`get_backend` and
 asserts at least one backend is installed — a missing entry-point
 registration would otherwise surface as a confusing "backend not found"
 error deep inside the first suggestion call.
+
+Backend *loading* (``EntryPoint.load()``) is expensive: the BoTorch
+backend imports torch and the BayBE backend imports baybe at module
+level, each taking seconds on a cold interpreter. Async callers must
+therefore use :func:`get_backend_async`, which offloads a cache miss to
+a worker thread via ``asyncio.to_thread`` so the event loop keeps
+serving concurrent sessions during the import. The synchronous
+:func:`get_backend` remains correct for cached hits and for sync
+contexts (startup, worker threads).
 """
 
+import asyncio
 import logging
+import threading
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
@@ -33,6 +44,13 @@ from bo_mcp_server.settings import get_default_backend_name
 logger = logging.getLogger(__name__)
 
 _backends: dict[str, BOBackend] = {}
+
+# Serializes cache-miss loads so two concurrent ``asyncio.to_thread``
+# callers cannot both run the multi-second ``EntryPoint.load()`` for the
+# same backend and double-initialize it. A threading (not asyncio) lock
+# because loads run on worker threads and tests run each case on a
+# fresh event loop.
+_backend_load_lock = threading.Lock()
 
 DEFAULT_BACKEND = "botorch"
 _ENTRY_POINT_GROUP = "bo_mcp.backends"
@@ -333,12 +351,52 @@ def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
 def get_backend(name: str | None = None) -> BOBackend:
     """Return a BO backend by name (lazily initialized and cached).
 
+    A cache miss runs the full entry-point load (importing torch /
+    baybe — seconds of work), so async callers must go through
+    :func:`get_backend_async` instead; calling this directly from a
+    coroutine freezes the event loop for the import duration.
+
     Args:
         name: Backend name. If None, uses the ``BO_BACKEND`` env var
               (default ``"botorch"``).
     """
     resolved = name or get_default_backend_name()
-    if resolved not in _backends:
-        _backends[resolved] = _load_backend(resolved)
-        logger.info("Backend initialized: %s", _backends[resolved].name)
-    return _backends[resolved]
+    backend = _backends.get(resolved)
+    if backend is not None:
+        return backend
+    with _backend_load_lock:
+        backend = _backends.get(resolved)
+        if backend is None:
+            backend = _load_backend(resolved)
+            _backends[resolved] = backend
+            logger.info("Backend initialized: %s", backend.name)
+    return backend
+
+
+async def get_backend_async(name: str | None = None) -> BOBackend:
+    """Async variant of :func:`get_backend` that never blocks the event loop.
+
+    Cached hits return immediately on the calling task; a cache miss is
+    offloaded to a worker thread so the multi-second backend import
+    cannot stall concurrent sessions (progress notifications, health
+    probes) on the shared event loop.
+    """
+    resolved = name or get_default_backend_name()
+    backend = _backends.get(resolved)
+    if backend is not None:
+        return backend
+    return await asyncio.to_thread(get_backend, resolved)
+
+
+async def warm_default_backend() -> BOBackend:
+    """Load the default backend on a worker thread before serving traffic.
+
+    Called at server startup so the first tool call finds the backend
+    already cached instead of paying the torch import inside an async
+    handler. Startup fails loudly here when the configured default
+    backend cannot load — a misconfigured ``BO_BACKEND`` should surface
+    at boot, not deep inside the first suggestion call.
+    """
+    backend = await get_backend_async()
+    logger.info("Warmed default backend at startup: %s", backend.name)
+    return backend

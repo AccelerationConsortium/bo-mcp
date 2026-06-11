@@ -4,6 +4,7 @@ Returns the active backend's name, supported features, and server version
 so agents and API consumers know what functionality is available.
 """
 
+import asyncio
 from typing import Any
 
 from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
@@ -25,4 +26,7 @@ async def list_capabilities() -> dict[str, Any]:
             - supported_features: List of feature names this backend supports
             - server_version: Server version string
     """
-    return list_capabilities_operation()
+    # Offloaded to a worker thread: the operation resolves the default
+    # backend, and a cache miss would otherwise block the event loop on
+    # the backend module import.
+    return await asyncio.to_thread(list_capabilities_operation)

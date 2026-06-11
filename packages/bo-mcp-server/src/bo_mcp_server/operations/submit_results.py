@@ -28,7 +28,7 @@ from uuid import UUID
 from bo_engine.backend import BOBackend
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bo_mcp_server.backend import get_backend
+from bo_mcp_server.backend import get_backend_async
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
@@ -503,7 +503,7 @@ async def submit_results_operation(
             if isinstance(fetched, dict):
                 return fetched
             campaign, spec = fetched
-            backend = get_backend(spec.backend)
+            backend = await get_backend_async(spec.backend)
 
             existing_results = await result_repo.list_by_campaign(campaign_uuid)
             existing_params = [r.parameter_values for r in existing_results]

@@ -4,6 +4,7 @@ This tool allows agents to verify MCP server connectivity and status
 before starting optimization operations.
 """
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -69,7 +70,10 @@ async def health_check() -> dict[str, Any]:
     create_mcp_server()
     tools_count = len(mcp._tool_manager.list_tools())
 
-    backends = get_backend_capabilities()
+    # Offloaded to a worker thread: this loads every discovered backend,
+    # and a cache miss (e.g. baybe not yet requested by any campaign)
+    # would otherwise block the event loop on the module import.
+    backends = await asyncio.to_thread(get_backend_capabilities)
 
     healthy = db_status == "connected" and any(info.get("loaded") for info in backends.values())
 

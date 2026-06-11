@@ -34,7 +34,7 @@ from bo_engine.types import ObservationData, OptimizationSpec
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bo_mcp_server.backend import get_backend
+from bo_mcp_server.backend import get_backend_async
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
@@ -377,7 +377,7 @@ async def _run_three_phase_generation(
     if not isinstance(phase1, _GenerationSnapshot):
         return phase1
 
-    backend = get_backend(phase1.spec.backend)
+    backend = await get_backend_async(phase1.spec.backend)
     compute = await _compute_generation_batch(
         snapshot=phase1,
         backend=backend,

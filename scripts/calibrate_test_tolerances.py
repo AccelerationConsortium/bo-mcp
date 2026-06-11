@@ -91,7 +91,10 @@ class ToleranceReport:
 # =============================================================================
 
 
-def create_branin_currin_spec(batch_size: int = DEFAULT_BATCH_SIZE) -> OptimizationSpec:
+def create_branin_currin_spec(
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    seed: int | None = None,
+) -> OptimizationSpec:
     """Create spec for Branin-Currin bi-objective optimization."""
     return OptimizationSpec(
         parameters=[
@@ -103,6 +106,7 @@ def create_branin_currin_spec(batch_size: int = DEFAULT_BATCH_SIZE) -> Optimizat
             ObjectiveSpec(name="currin", minimize=True),
         ],
         batch_size=batch_size,
+        random_seed=seed,
     )
 
 
@@ -128,8 +132,9 @@ def run_single_calibration(
 ) -> CalibrationResult:
     """Run a single BO optimization and collect metrics."""
     torch.manual_seed(seed)
+    rng = np.random.default_rng(seed)
 
-    spec = create_branin_currin_spec(batch_size=batch_size)
+    spec = create_branin_currin_spec(batch_size=batch_size, seed=seed)
     observations: list[ObservationData] = []
     ref_point = torch.tensor([1.5, 1.5])
 
@@ -137,7 +142,7 @@ def run_single_calibration(
 
     for iteration in range(bo_iterations):
         suggestions, _ = generate_next_batch(
-            spec, observations, batch_size=batch_size, iteration=iteration
+            spec, observations, batch_size=batch_size, iteration=iteration, rng=rng
         )
         new_obs = evaluate_branin_currin(suggestions)
         observations.extend(new_obs)
@@ -280,7 +285,6 @@ def print_report(reports: dict[str, ToleranceReport]) -> None:
     pareto_report = reports["pareto_max"]
     ci_tol = pareto_report.recommended_ci_tolerance
     nightly_tol = pareto_report.recommended_nightly_tolerance
-    print("# Current: assert pareto_y.max() < 5.0")
     print(f"# Recommended CI:      assert pareto_y.max() < {ci_tol:.1f}")
     print(f"# Recommended Nightly: assert pareto_y.max() < {nightly_tol:.1f}")
     print()

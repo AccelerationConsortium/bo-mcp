@@ -65,8 +65,8 @@ FULL_ITERATIONS = 20
 # Run `uv run python scripts/calibrate_test_tolerances.py` to recalibrate
 
 # Pareto max tolerance for Branin-Currin after 5 BO iterations
-PARETO_MAX_TOLERANCE_CI = 8.0  # 99th percentile + 10% margin (CI must always pass)
-PARETO_MAX_TOLERANCE_NIGHTLY = 6.0  # 95th percentile (statistical tests)
+PARETO_MAX_TOLERANCE_CI = 3.1  # 99th percentile + 10% margin (CI must always pass)
+PARETO_MAX_TOLERANCE_NIGHTLY = 1.5  # 95th percentile (statistical tests)
 
 # Minimum Pareto front size (invariant - should always hold)
 MIN_PARETO_SIZE = 2

@@ -15,7 +15,7 @@ from bo_engine.diagnostics import (
     compute_single_objective_improvement_rate,
 )
 
-from bo_mcp_server.backend import get_backend
+from bo_mcp_server.backend import get_backend_async
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result
 from bo_mcp_server.errors import ErrorCode, make_error_response
@@ -91,7 +91,7 @@ async def _compute_campaign_metrics(
         )
         return metrics
 
-    backend = get_backend(spec.backend)
+    backend = await get_backend_async(spec.backend)
     opt_spec = campaign_spec_to_optimization_spec(spec)
     observations = results_to_observations(results)
     hypervolume = await asyncio.to_thread(backend.compute_hypervolume, opt_spec, observations)

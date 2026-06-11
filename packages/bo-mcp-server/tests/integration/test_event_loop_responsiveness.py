@@ -32,6 +32,8 @@ from uuid import uuid4
 import pytest
 from bo_engine.botorch_backend import BoTorchBackend
 
+from bo_mcp_server import backend as backend_module
+
 # Chosen so the test stays hermetic under CI load: long enough that any
 # scheduling slack in ``asyncio.sleep`` is negligible against it, short enough
 # that the whole test runs in well under a second.
@@ -155,4 +157,108 @@ class TestEventLoopResponsiveness:
             f"Three concurrent generate_suggestions calls took {elapsed:.3f}s "
             f"(limit {overlap_limit:.3f}s). Either the backend call is still "
             "serialized on the event loop or the thread pool is exhausted."
+        )
+
+
+def _patch_slow_backend_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty the backend cache and make every entry-point load slow.
+
+    Simulates the first-use scenario on a fresh server process: the
+    backend class import (torch / baybe at module level) takes seconds.
+    The stub substitutes ``time.sleep`` for the import and returns a real
+    ``BoTorchBackend`` regardless of the requested name, so downstream
+    capability validation still behaves. Replacing the ``_backends`` dict
+    via monkeypatch restores the session's warm cache afterwards.
+    """
+
+    def slow_load_backend(name: str) -> BoTorchBackend:
+        del name
+        time.sleep(_WORK_SECONDS)
+        return BoTorchBackend()
+
+    monkeypatch.setattr(backend_module, "_backends", {})
+    monkeypatch.setattr(backend_module, "_load_backend", slow_load_backend)
+
+
+# Probe sleep used by the continuous max-gap sampler below.
+_PROBE_SLEEP_SECONDS = 0.01
+
+
+async def _max_probe_gap_until_done(task: "asyncio.Task[object]") -> float:
+    """Worst extra latency of a short sleep probe while ``task`` runs.
+
+    The backend load blocks almost immediately after the task's first
+    turn, so a single probe after a fixed dispatch delay can miss the
+    blocking window entirely (the delay itself absorbs the freeze and
+    the probe then measures an idle loop). Sampling continuously for the
+    task's full lifetime makes the measurement insensitive to where in
+    the task the synchronous block occurs. Returns the largest observed
+    overshoot beyond the probe's own sleep duration.
+    """
+    max_gap = 0.0
+    while not task.done():
+        start = time.monotonic()
+        await asyncio.sleep(_PROBE_SLEEP_SECONDS)
+        gap = time.monotonic() - start - _PROBE_SLEEP_SECONDS
+        max_gap = max(max_gap, gap)
+    return max_gap
+
+
+@pytest.mark.usefixtures("setup_database")
+class TestBackendLoadOffload:
+    """A cold backend load must not block the asyncio event loop.
+
+    Entry-point loading was historically synchronous inside async
+    handlers: the first campaign-create or health check on a fresh
+    process froze every concurrent session for the full torch import.
+    These tests pin the ``asyncio.to_thread`` offload of the load itself
+    (the tests above cover offloading of the *computation* that follows).
+    """
+
+    @pytest.mark.asyncio
+    async def test_probe_runs_while_create_campaign_loads_backends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Campaign creation resolves and loads backends off the loop.
+
+        ``backend="auto"`` resolution loads every installed candidate
+        backend, so a fresh process pays several sequential slow loads
+        here — the worst first-call case.
+        """
+        _patch_slow_backend_load(monkeypatch)
+
+        create_task = asyncio.create_task(_create_campaign())
+        max_gap = await _max_probe_gap_until_done(create_task)
+        campaign_id = await create_task
+
+        assert campaign_id
+        assert max_gap < _RESPONSIVENESS_LIMIT, (
+            "Event loop was blocked during backend loading in create_campaign — "
+            f"the entry-point load did not offload to a worker thread (worst probe "
+            f"gap {max_gap:.3f}s, limit was {_RESPONSIVENESS_LIMIT:.3f}s)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_probe_runs_while_health_check_loads_backends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The health check loads *all* discovered backends in a loop.
+
+        On a fresh process this is the single heaviest cold path, and it
+        is exactly the endpoint orchestrators poll concurrently with
+        live traffic.
+        """
+        from bo_mcp_server.tools.health_check import health_check
+
+        _patch_slow_backend_load(monkeypatch)
+
+        health_task = asyncio.create_task(health_check())
+        max_gap = await _max_probe_gap_until_done(health_task)
+        result = await health_task
+
+        assert result["healthy"] is True
+        assert max_gap < _RESPONSIVENESS_LIMIT, (
+            "Event loop was blocked during backend loading in health_check — "
+            f"get_backend_capabilities did not offload to a worker thread (worst "
+            f"probe gap {max_gap:.3f}s, limit was {_RESPONSIVENESS_LIMIT:.3f}s)."
         )

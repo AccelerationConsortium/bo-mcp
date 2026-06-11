@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import random
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -25,6 +26,19 @@ from torch import Tensor
 
 from bo_engine.constants import MAX_RANDOM_SEED
 from bo_engine.device import get_device
+
+# Serializes every engine section that seeds or snapshots/restores the
+# process-global RNG state (Torch ``fork_rng``/``manual_seed`` in the
+# BoTorch suggestion and Thompson-sampling paths; ``temporary_seed`` in
+# the BayBE backend's recommendation scope). These mechanisms each save
+# and restore global state, which is only correct when sections cannot
+# interleave: the server offloads generation to worker threads via
+# ``asyncio.to_thread``, and an overlapping ``fork_rng`` block restores
+# a stale snapshot into another backend's seeded window, silently
+# rolling its stream back. A re-entrant lock so a path that nests two
+# guarded sections on one thread (e.g. Thompson sampling inside the
+# suggestion pipeline) cannot deadlock.
+GLOBAL_RNG_LOCK = threading.RLock()
 
 
 @dataclass

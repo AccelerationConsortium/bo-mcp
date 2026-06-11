@@ -48,6 +48,293 @@ class TestProtocolCompliance:
         assert Feature.INPUT_WARPING not in features
 
 
+class TestRandomSeedReproducibility:
+    """``spec.random_seed`` makes BayBE campaigns reproducible.
+
+    The neutral spec documents that a set ``random_seed`` makes
+    suggestion generation reproducible across calls
+    (:class:`bo_engine.types.OptimizationSpec`). BayBE exposes
+    ``baybe.utils.random.set_random_seed`` for exactly this purpose:
+    https://emdgroup.github.io/baybe/stable/userguide/utils.html
+    The tests use a discrete-only spec so the random-warmup phase is
+    exercised without a GP fit (fast path).
+    """
+
+    @staticmethod
+    def _seeded_spec(seed: int | None) -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="x",
+                    type=ParameterType.DISCRETE,
+                    values=[float(i) for i in range(30)],
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            random_seed=seed,
+        )
+
+    def test_same_seed_reproduces_suggestions(self) -> None:
+        backend = BayBEBackend()
+        spec = self._seeded_spec(seed=42)
+        first = backend.generate_suggestions(spec=spec, observations=[], batch_size=3, iteration=1)
+        second = backend.generate_suggestions(spec=spec, observations=[], batch_size=3, iteration=1)
+        params_first = [s["parameter_values"] for s in first.suggestions]
+        params_second = [s["parameter_values"] for s in second.suggestions]
+        assert params_first == params_second
+
+    def test_same_seed_reproduces_initial_design(self) -> None:
+        backend = BayBEBackend()
+        spec = self._seeded_spec(seed=7)
+        first = backend.generate_initial_design(spec, n_points=4)
+        second = backend.generate_initial_design(spec, n_points=4)
+        assert first == second
+
+    def test_seed_stamped_into_provenance(self) -> None:
+        """Provenance records the derived seed so runs can be replayed/audited."""
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=self._seeded_spec(seed=42), observations=[], batch_size=2, iteration=1
+        )
+        seeds = {s["provenance"]["random_seed"] for s in batch.suggestions}
+        assert len(seeds) == 1
+        assert next(iter(seeds)) is not None
+
+    def test_unseeded_provenance_records_none(self) -> None:
+        """No seed → the documented non-reproducible path, recorded honestly."""
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=self._seeded_spec(seed=None), observations=[], batch_size=1, iteration=1
+        )
+        assert batch.suggestions[0]["provenance"]["random_seed"] is None
+
+    def test_seeded_calls_do_not_perturb_global_rng(self) -> None:
+        """Seeded BayBE calls must not leak into process-wide RNG state.
+
+        ``baybe.utils.random.temporary_seed`` snapshots and restores the
+        Python/NumPy/Torch RNG states, mirroring the
+        ``torch.random.fork_rng`` isolation used by the BoTorch backend
+        (``bo_engine.suggestions``). Without it, one seeded campaign
+        would silently re-seed every co-resident unseeded campaign,
+        diagnostic, or test in the same worker process.
+        """
+        import random
+
+        import numpy as np
+        import torch
+
+        # The legacy global RNG APIs are load-bearing here: temporary_seed
+        # snapshots/restores exactly these process-wide streams, so the
+        # test must sample them (not a local Generator) to detect leaks.
+        def _reseed_globals() -> None:
+            random.seed(123)
+            np.random.seed(123)  # noqa: NPY002
+            torch.manual_seed(123)
+
+        def _sample_globals() -> tuple[float, float, float]:
+            return (
+                random.random(),  # noqa: S311
+                float(np.random.rand()),  # noqa: NPY002
+                float(torch.rand(1)),
+            )
+
+        _reseed_globals()
+        baseline = _sample_globals()
+
+        _reseed_globals()
+        backend = BayBEBackend()
+        spec = self._seeded_spec(seed=42)
+        backend.generate_suggestions(spec=spec, observations=[], batch_size=2, iteration=1)
+        backend.generate_initial_design(spec, n_points=2)
+        after_calls = _sample_globals()
+
+        assert after_calls == baseline
+
+    def test_concurrent_seeded_calls_stay_reproducible(self) -> None:
+        """Overlapping seeded calls must not clobber each other's RNG streams.
+
+        The server offloads suggestion generation to worker threads via
+        ``asyncio.to_thread``, so two seeded BayBE campaigns can overlap
+        in one process. ``temporary_seed`` snapshots/restores the
+        process-global RNG state, which is only safe when seeded scopes
+        are serialized (``GLOBAL_RNG_LOCK``). Each thread's result must
+        match its sequential baseline, and the ambient RNG state must be
+        restored once both finish.
+        """
+        import random
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        import numpy as np
+        import torch
+
+        backend = BayBEBackend()
+        specs = {seed: self._seeded_spec(seed=seed) for seed in (11, 97)}
+
+        def _params(seed: int) -> list[dict[str, float]]:
+            batch = backend.generate_suggestions(
+                spec=specs[seed], observations=[], batch_size=3, iteration=1
+            )
+            return [s["parameter_values"] for s in batch.suggestions]
+
+        baselines = {seed: _params(seed) for seed in specs}
+
+        # Sample the ambient streams that temporary_seed must restore.
+        # Legacy global APIs are load-bearing here (see the isolation test).
+        random.seed(123)
+        np.random.seed(123)  # noqa: NPY002
+        torch.manual_seed(123)
+        ambient_baseline = (
+            random.random(),  # noqa: S311
+            float(np.random.rand()),  # noqa: NPY002
+            float(torch.rand(1)),
+        )
+
+        random.seed(123)
+        np.random.seed(123)  # noqa: NPY002
+        torch.manual_seed(123)
+        barrier = threading.Barrier(len(specs))
+
+        def _run(seed: int) -> list[dict[str, float]]:
+            barrier.wait()
+            return _params(seed)
+
+        with ThreadPoolExecutor(max_workers=len(specs)) as pool:
+            futures = {seed: pool.submit(_run, seed) for seed in specs}
+            results = {seed: f.result() for seed, f in futures.items()}
+
+        assert results == baselines
+        ambient_after = (
+            random.random(),  # noqa: S311
+            float(np.random.rand()),  # noqa: NPY002
+            float(torch.rand(1)),
+        )
+        assert ambient_after == ambient_baseline
+
+    def test_concurrent_unseeded_call_does_not_perturb_seeded_call(self) -> None:
+        """An overlapping unseeded BayBE call must not consume a seeded stream.
+
+        Unseeded BayBE generation draws from the same process-global RNGs
+        a seeded ``temporary_seed`` window temporarily owns, so both
+        paths must hold ``GLOBAL_RNG_LOCK`` — serializing only seeded
+        scopes would leave a seeded campaign's reproducibility at the
+        mercy of co-resident unseeded traffic. The barrier forces the
+        overlap the lock must resolve; several rounds widen the race
+        window.
+        """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        backend = BayBEBackend()
+        seeded_spec = self._seeded_spec(seed=11)
+        unseeded_spec = self._seeded_spec(seed=None)
+
+        def _seeded_params() -> list[dict[str, float]]:
+            batch = backend.generate_suggestions(
+                spec=seeded_spec, observations=[], batch_size=3, iteration=1
+            )
+            return [s["parameter_values"] for s in batch.suggestions]
+
+        baseline = _seeded_params()
+
+        def _run_seeded(barrier: threading.Barrier) -> list[dict[str, float]]:
+            barrier.wait()
+            return _seeded_params()
+
+        def _run_unseeded(barrier: threading.Barrier) -> None:
+            barrier.wait()
+            backend.generate_suggestions(
+                spec=unseeded_spec, observations=[], batch_size=3, iteration=1
+            )
+
+        for _ in range(5):
+            barrier = threading.Barrier(2)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                seeded_future = pool.submit(_run_seeded, barrier)
+                unseeded_future = pool.submit(_run_unseeded, barrier)
+                unseeded_future.result()
+                assert seeded_future.result() == baseline
+
+    def test_concurrent_botorch_call_does_not_perturb_seeded_call(self) -> None:
+        """A concurrent BoTorch generation must not perturb a seeded BayBE call.
+
+        Both backends snapshot/restore the process-global Torch RNG —
+        BoTorch via ``torch.random.fork_rng`` in its suggestion pipeline,
+        BayBE via ``temporary_seed`` — and an overlapping ``fork_rng``
+        exit restores a stale snapshot into the seeded window, rolling
+        the BayBE stream back. Both paths therefore hold the shared
+        ``bo_engine.reproducibility.GLOBAL_RNG_LOCK``; this pins the
+        cross-backend serialization with a real BoTorch suggestion call
+        (GP fit + acquisition) overlapping a seeded BayBE call.
+        """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        from bo_engine.botorch_backend import BoTorchBackend
+
+        baybe_backend = BayBEBackend()
+        seeded_spec = self._seeded_spec(seed=11)
+
+        botorch_backend = BoTorchBackend()
+        botorch_spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            random_seed=7,
+        )
+        botorch_observations = [
+            ObservationData(parameter_values={"x": v}, objective_values={"y": (v - 0.3) ** 2})
+            for v in (0.1, 0.5, 0.9)
+        ]
+
+        def _seeded_baybe_params() -> list[dict[str, float]]:
+            batch = baybe_backend.generate_suggestions(
+                spec=seeded_spec, observations=[], batch_size=3, iteration=1
+            )
+            return [s["parameter_values"] for s in batch.suggestions]
+
+        baseline = _seeded_baybe_params()
+
+        def _run_baybe(barrier: threading.Barrier) -> list[dict[str, float]]:
+            barrier.wait()
+            return _seeded_baybe_params()
+
+        def _run_botorch(barrier: threading.Barrier) -> None:
+            barrier.wait()
+            botorch_backend.generate_suggestions(
+                spec=botorch_spec,
+                observations=botorch_observations,
+                batch_size=1,
+                iteration=1,
+            )
+
+        for _ in range(2):
+            barrier = threading.Barrier(2)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                baybe_future = pool.submit(_run_baybe, barrier)
+                botorch_future = pool.submit(_run_botorch, barrier)
+                botorch_future.result()
+                assert baybe_future.result() == baseline
+
+    def test_different_iterations_derive_different_seeds(self) -> None:
+        """Per-iteration derivation: replays are identical, iterations are not.
+
+        Mirrors the BoTorch backend's ``derive_seed(master, context)``
+        scheme so the same master seed cannot reuse one RNG stream across
+        iterations (which would bias the random warmup toward repeats).
+        """
+        backend = BayBEBackend()
+        spec = self._seeded_spec(seed=42)
+        iter_one = backend.generate_suggestions(
+            spec=spec, observations=[], batch_size=1, iteration=1
+        )
+        iter_two = backend.generate_suggestions(
+            spec=spec, observations=[], batch_size=1, iteration=2
+        )
+        seed_one = iter_one.suggestions[0]["provenance"]["random_seed"]
+        seed_two = iter_two.suggestions[0]["provenance"]["random_seed"]
+        assert seed_one != seed_two
+
+
 class TestGenerateInitialDesign:
     def test_returns_correct_count(self, simple_spec: OptimizationSpec) -> None:
         backend = BayBEBackend()

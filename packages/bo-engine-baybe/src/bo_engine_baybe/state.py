@@ -27,12 +27,20 @@ from bo_engine.types import ObservationData, OptimizationSpec
 
 from bo_engine_baybe.converters import (
     observations_to_dataframe,
+    spec_to_acquisition_function,
     spec_to_objective,
     spec_to_searchspace,
 )
 from bo_engine_baybe.options import extract_baybe_backend_options
 
 logger = logging.getLogger(__name__)
+
+
+# Random → BO switch point used when neither the BayBE-native
+# ``backend_options['baybe'].recommender.switch_after`` nor the neutral
+# ``spec.initial_design_size`` is set: BayBE moves to the GP-based
+# recommender after the first measurement.
+_DEFAULT_SWITCH_AFTER = 1
 
 
 # Backend-state schema versions. v1 = bare {campaign_json}; v2 adds the
@@ -59,20 +67,44 @@ except ImportError:
     pass  # Older BayBE versions may not expose this
 
 
+def _resolve_switch_after(spec: OptimizationSpec) -> int:
+    """Resolve the random → GP switch point for the TwoPhaseMetaRecommender.
+
+    Precedence: the explicit BayBE-native
+    ``backend_options['baybe'].recommender.switch_after`` wins over the
+    neutral ``spec.initial_design_size``, which in turn wins over the
+    legacy default of switching after the first measurement. Bridging the
+    neutral knob keeps ``backend="auto"`` comparisons like-for-like — a
+    requested warmup of N random points means N on both backends.
+    """
+    options = extract_baybe_backend_options(spec.backend_options)
+    if options.recommender:
+        return options.recommender.switch_after
+    if spec.initial_design_size:
+        return spec.initial_design_size
+    return _DEFAULT_SWITCH_AFTER
+
+
 def _build_campaign(spec: OptimizationSpec) -> Campaign:
-    """Create a fresh BayBE Campaign from an OptimizationSpec."""
+    """Create a fresh BayBE Campaign from an OptimizationSpec.
+
+    The BO-phase recommender honors ``spec.acquisition_method`` via
+    :func:`spec_to_acquisition_function`; ``None`` (AUTO or a method BayBE
+    cannot express) keeps BayBE's own default acquisition function.
+    """
     searchspace = spec_to_searchspace(spec)
     is_purely_discrete = searchspace.type == SearchSpaceType.DISCRETE
     options = extract_baybe_backend_options(spec.backend_options)
 
-    switch_after = options.recommender.switch_after if options.recommender else 1
     kwargs: dict[str, object] = {
         "searchspace": searchspace,
         "objective": spec_to_objective(spec),
         "recommender": TwoPhaseMetaRecommender(
             initial_recommender=RandomRecommender(),
-            recommender=BotorchRecommender(),
-            switch_after=switch_after,
+            recommender=BotorchRecommender(
+                acquisition_function=spec_to_acquisition_function(spec),
+            ),
+            switch_after=_resolve_switch_after(spec),
         ),
     }
 

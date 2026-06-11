@@ -102,8 +102,11 @@ class BayBERecommenderConfig(BaseModel):
     """Recommender configuration overrides.
 
     The backend currently honors ``switch_after`` to delay the random →
-    BO recommender switch (default keeps BayBE's own switch). Future
-    growth happens here so the typed surface stays stable.
+    BO recommender switch. Providing this config takes precedence over
+    the neutral ``OptimizationSpec.initial_design_size`` knob (explicit
+    BayBE option wins); without either, BayBE switches after the first
+    measurement. Future growth happens here so the typed surface stays
+    stable.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

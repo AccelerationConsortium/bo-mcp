@@ -22,7 +22,10 @@ The tests assert:
 
 from __future__ import annotations
 
+from typing import Any
+
 from bo_engine.types import (
+    AcquisitionMethod,
     ObjectiveSpec,
     ObservationData,
     OptimizationSpec,
@@ -33,14 +36,25 @@ from bo_engine.types import (
 from bo_engine_baybe.backend import BayBEBackend
 
 
-def _spec() -> OptimizationSpec:
+def _spec(**spec_kwargs: Any) -> OptimizationSpec:
     return OptimizationSpec(
         parameters=[
             ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
             ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
         ],
         objectives=[ObjectiveSpec(name="y", minimize=True)],
+        **spec_kwargs,
     )
+
+
+def _observations(n: int) -> list[ObservationData]:
+    return [
+        ObservationData(
+            parameter_values={"x1": (i + 1) / (n + 1), "x2": 1.0 - (i + 1) / (n + 1)},
+            objective_values={"y": float(n - i)},
+        )
+        for i in range(n)
+    ]
 
 
 class TestLiveMethodMetadata:
@@ -95,6 +109,98 @@ class TestLiveMethodMetadata:
         )
         assert batch.method_info.get("baybe_version")
         assert batch.method_info.get("bo_engine_baybe_version")
+
+
+class TestInitialDesignSizeBridging:
+    """``spec.initial_design_size`` drives the random → GP switch point.
+
+    The common warmup guidance for GP-based BO is an initial design of
+    at least ~2·d space-filling points before model fitting (see e.g.
+    the BoTorch closed-loop tutorial, which warm-starts with a Sobol
+    design: https://botorch.org/docs/tutorials/closed_loop_botorch_only/).
+    BayBE expresses the switch via ``TwoPhaseMetaRecommender.switch_after``:
+    https://emdgroup.github.io/baybe/stable/userguide/recommenders.html
+    """
+
+    def test_below_design_size_stays_nonpredictive(self) -> None:
+        """2 observations with a 4-point design → still random warmup."""
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=_spec(initial_design_size=4),
+            observations=_observations(2),
+            batch_size=1,
+            iteration=1,
+        )
+        assert batch.method_info["is_nonpredictive"] is True
+
+    def test_at_design_size_switches_to_gp(self) -> None:
+        """4 observations with a 4-point design → GP-based recommender."""
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=_spec(initial_design_size=4),
+            observations=_observations(4),
+            batch_size=1,
+            iteration=2,
+        )
+        assert batch.method_info["is_nonpredictive"] is False
+
+    def test_default_without_knobs_switches_after_one(self) -> None:
+        """Legacy default preserved: no knobs → GP after the first measurement."""
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=_spec(),
+            observations=_observations(1),
+            batch_size=1,
+            iteration=1,
+        )
+        assert batch.method_info["is_nonpredictive"] is False
+
+    def test_explicit_baybe_recommender_option_wins(self) -> None:
+        """Documented precedence: the BayBE-native switch_after beats the neutral knob."""
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=_spec(
+                initial_design_size=8,
+                backend_options={"baybe": {"recommender": {"switch_after": 2}}},
+            ),
+            observations=_observations(2),
+            batch_size=1,
+            iteration=1,
+        )
+        assert batch.method_info["is_nonpredictive"] is False
+
+
+class TestAcquisitionMethodHonored:
+    """``spec.acquisition_method`` reaches BayBE's BotorchRecommender.
+
+    BayBE accepts acquisition-function overrides via
+    ``BotorchRecommender(acquisition_function=...)``:
+    https://emdgroup.github.io/baybe/stable/userguide/acquisition.html
+    The label assertions use the live (non-inferred) metadata path so the
+    test fails if the override stops reaching the active recommender.
+    """
+
+    def test_expected_improvement_reaches_recommender(self) -> None:
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=_spec(acquisition_method=AcquisitionMethod.EXPECTED_IMPROVEMENT),
+            observations=_observations(3),
+            batch_size=1,
+            iteration=1,
+        )
+        assert batch.method_info["acquisition_function"] == "qLogExpectedImprovement"
+        assert batch.method_info["acquisition_function_inferred"] is False
+
+    def test_noisy_ei_reaches_recommender(self) -> None:
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=_spec(acquisition_method=AcquisitionMethod.NOISY_EI),
+            observations=_observations(3),
+            batch_size=1,
+            iteration=1,
+        )
+        assert batch.method_info["acquisition_function"] == "qLogNoisyExpectedImprovement"
+        assert batch.method_info["acquisition_function_inferred"] is False
 
 
 class TestFallbackSelectMethods:

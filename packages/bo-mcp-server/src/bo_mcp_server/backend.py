@@ -219,9 +219,15 @@ class _CompatibilityTier:
     BayBE for ``use_input_warping=True`` even though BoTorch could
     actually honor it.
 
+    ``DEGRADED`` reports carry the same auto-selection signal with
+    softer semantics: the backend honors the option, but with weaker
+    guarantees than a sibling backend would (e.g. BayBE applying
+    ``log_transform`` at the acquisition level only).
+
     The selector therefore ranks candidates: ``FULL`` (compatible AND
-    no IGNORED reports) wins over ``DEGRADED`` (compatible WITH IGNORED
-    reports). ``INCOMPATIBLE`` is filtered out entirely.
+    no IGNORED/DEGRADED reports) wins over ``DEGRADED`` (compatible WITH
+    IGNORED or DEGRADED reports). ``INCOMPATIBLE`` is filtered out
+    entirely.
     """
 
     FULL = "full"
@@ -236,7 +242,9 @@ def _backend_compatibility_tier(backend: BOBackend, spec_dict: dict[str, Any]) -
     based on per-option detail (e.g. BayBE rejecting hybrid constraints
     even though ``Feature.CONSTRAINTS`` is in its broad set), and so the
     auto-selector can spot ``IGNORED`` reports — which mean "I'll silently
-    drop part of the spec" rather than "I fully support this".
+    drop part of the spec" rather than "I fully support this" — and
+    ``DEGRADED`` reports, which mean "I honor this with weaker semantics
+    than a sibling backend would".
 
     Falls back to the historical ``required_features <= supported_features``
     check (always FULL when satisfied) when the spec dict cannot be
@@ -251,11 +259,11 @@ def _backend_compatibility_tier(backend: BOBackend, spec_dict: dict[str, Any]) -
         if result is not None:
             if not result.is_compatible:
                 return _CompatibilityTier.INCOMPATIBLE
-            has_ignored = any(
-                r.status.value == "ignored"
+            has_degradation = any(
+                r.status.value in ("ignored", "degraded")
                 for r in (*result.feature_reports, *result.option_reports)
             )
-            return _CompatibilityTier.DEGRADED if has_ignored else _CompatibilityTier.FULL
+            return _CompatibilityTier.DEGRADED if has_degradation else _CompatibilityTier.FULL
 
     required = _detect_required_features(spec_dict)
     if required <= backend.supported_features:
@@ -339,7 +347,8 @@ def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
     if degraded:
         chosen = degraded[0]
         logger.info(
-            "Auto-selected backend '%s' (degraded; some options will be ignored)",
+            "Auto-selected backend '%s' (degraded; some options will be "
+            "ignored or honored with weaker semantics)",
             chosen,
         )
         return chosen

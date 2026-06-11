@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from baybe.constraints import (
     ContinuousLinearConstraint,
@@ -35,8 +36,10 @@ from bo_engine.spec_ir import (
     classify_constraint_target as _classify_constraint_target,
 )
 from bo_engine.types import (
+    AcquisitionMethod,
     ConstraintSpec,
     ConstraintType,
+    ObjectiveSpec,
     ObservationData,
     OptimizationSpec,
     ParameterSpec,
@@ -66,6 +69,53 @@ _DISCRETE_OPERATOR_MAP: dict[ConstraintType, str] = {
     ConstraintType.SUM_LESS_THAN: "<=",
     ConstraintType.SUM_GREATER_THAN: ">=",
 }
+
+# Acquisition methods that have no equivalent in BayBE's BotorchRecommender.
+# The capability layer (BayBEBackend._option_reports) turns these into
+# UNSUPPORTED/acknowledgeable reports; spec_to_acquisition_function falls
+# back to BayBE's default so an acknowledged run still produces suggestions.
+BAYBE_UNSUPPORTED_ACQUISITION: frozenset[AcquisitionMethod] = frozenset(
+    {
+        AcquisitionMethod.COST_WEIGHTED_EI,
+        AcquisitionMethod.MULTI_FIDELITY_KG,
+    }
+)
+
+# Maps the neutral AcquisitionMethod to the BayBE acquisition-function names
+# accepted by ``BotorchRecommender(acquisition_function=...)``. The dispatch
+# mirrors ``bo_engine.acquisition.create_acquisition``: the objective count
+# decides the acquisition family, and the requested method is consulted
+# within that family (a multi-objective-only method on a single-objective
+# spec resolves to the noisy-EI default, exactly like the BoTorch backend).
+_SINGLE_OBJECTIVE_ACQF_MAP: dict[AcquisitionMethod, str] = {
+    AcquisitionMethod.EXPECTED_IMPROVEMENT: "qLogEI",
+    AcquisitionMethod.NOISY_EI: "qLogNEI",
+    AcquisitionMethod.HYPERVOLUME_IMPROVEMENT: "qLogNEI",
+    AcquisitionMethod.SCALARIZED_MULTI_OBJ: "qLogNEI",
+}
+_MULTI_OBJECTIVE_ACQF_MAP: dict[AcquisitionMethod, str] = {
+    AcquisitionMethod.EXPECTED_IMPROVEMENT: "qLogNEHVI",
+    AcquisitionMethod.NOISY_EI: "qLogNEHVI",
+    AcquisitionMethod.HYPERVOLUME_IMPROVEMENT: "qLogNEHVI",
+    AcquisitionMethod.SCALARIZED_MULTI_OBJ: "qLogNParEGO",
+}
+
+
+def spec_to_acquisition_function(spec: OptimizationSpec) -> str | None:
+    """Resolve ``spec.acquisition_method`` to a BayBE acquisition-function name.
+
+    Returns ``None`` when BayBE should pick its own default: the user chose
+    ``AUTO`` (no explicit preference) or a method BayBE cannot express
+    (``BAYBE_UNSUPPORTED_ACQUISITION`` — surfaced separately through the
+    capability reports). Explicit, mappable choices resolve through the
+    objective-count-aware tables above so the user's selection is honored
+    instead of silently overridden by ``BotorchRecommender()``'s default.
+    """
+    method = spec.acquisition_method
+    if method == AcquisitionMethod.AUTO or method in BAYBE_UNSUPPORTED_ACQUISITION:
+        return None
+    table = _SINGLE_OBJECTIVE_ACQF_MAP if spec.n_objectives == 1 else _MULTI_OBJECTIVE_ACQF_MAP
+    return table[method]
 
 
 def _build_baybe_parameter(
@@ -183,6 +233,43 @@ def spec_to_searchspace(spec: OptimizationSpec) -> SearchSpace:
     return SearchSpace.from_product(parameters=parameters, constraints=constraints)
 
 
+def log_transform_maximize_reason(objective_name: str) -> str:
+    """Reason why ``log_transform=True`` + ``minimize=False`` is rejected.
+
+    Shared between the runtime rejection in :func:`_build_baybe_target`
+    and the backend's capability reporting so intake-time validation and
+    suggestion-time construction can never drift apart on this contract.
+    """
+    return (
+        f"log_transform=True requires minimize=True for objective "
+        f"'{objective_name}'; the maximize combination is outside the "
+        "supported contract. Disable log_transform or restate the "
+        "objective in minimization form."
+    )
+
+
+def _build_baybe_target(o: ObjectiveSpec) -> NumericalTarget:
+    """Build one BayBE target, honoring the per-objective ``log_transform`` flag.
+
+    ``log_transform=True`` chains BayBE's logarithmic target transformation
+    onto the target so acquisition improvements are measured on the log
+    scale of multi-decade objectives. The neutral contract restricts the
+    flag to ``minimize=True`` objectives (see
+    :class:`bo_engine.types.ObjectiveSpec`); the maximize combination is
+    rejected here with the same failure mode as the BoTorch model factory.
+    Note that BayBE applies target transformations as part of the
+    acquisition objective, not as a surrogate outcome transform — the GP
+    itself still fits the raw target scale, which the backend surfaces as
+    a ``DEGRADED`` capability report.
+    """
+    target = NumericalTarget(name=o.name, minimize=o.minimize)
+    if not o.log_transform:
+        return target
+    if not o.minimize:
+        raise ValueError(log_transform_maximize_reason(o.name))
+    return target.log()
+
+
 def spec_to_objective(
     spec: OptimizationSpec,
 ) -> SingleTargetObjective | ParetoObjective:
@@ -191,7 +278,7 @@ def spec_to_objective(
     Single-objective specs produce SingleTargetObjective.
     Multi-objective specs produce ParetoObjective (uses qLogNEHVI internally).
     """
-    targets = [NumericalTarget(name=o.name, minimize=o.minimize) for o in spec.objectives]
+    targets = [_build_baybe_target(o) for o in spec.objectives]
 
     if len(targets) == 1:
         return SingleTargetObjective(target=targets[0])
@@ -396,6 +483,41 @@ def _build_discrete_constraint(
     return DiscreteProductConstraint(parameters=list(c.parameters), condition=threshold)
 
 
+def _assert_log_transform_targets_valid(
+    df: pd.DataFrame,
+    spec: OptimizationSpec,
+) -> None:
+    """Raise ``ValueError`` when a ``log_transform`` objective has invalid targets.
+
+    The logarithmic target transformation operates on the raw observation
+    values, so non-finite or non-positive targets would surface as an
+    opaque NaN cascade inside the BayBE/BoTorch fit. Enforcing positivity
+    at the conversion boundary mirrors the BoTorch model factory's
+    construction-time check so both backends fail with the same clear
+    envelope.
+    """
+    for obj in spec.objectives:
+        if not obj.log_transform:
+            continue
+        values = pd.to_numeric(df[obj.name], errors="coerce").to_numpy(dtype=float)
+        if not np.isfinite(values).all():
+            msg = (
+                f"log_transform=True requires finite targets; objective "
+                f"'{obj.name}' has NaN or inf values. Drop or impute those "
+                "rows before fitting."
+            )
+            raise ValueError(msg)
+        if not (values > 0).all():
+            min_value = float(values.min())
+            msg = (
+                f"log_transform=True requires strictly positive targets for "
+                f"objective '{obj.name}'; got min={min_value}. Either drop "
+                "non-positive observations, pre-shift the target, or disable "
+                "log_transform for this objective."
+            )
+            raise ValueError(msg)
+
+
 def observations_to_dataframe(
     observations: list[ObservationData],
     spec: OptimizationSpec,
@@ -403,6 +525,9 @@ def observations_to_dataframe(
     """Convert ObservationData list to a pandas DataFrame for BayBE.
 
     The DataFrame has columns for all parameters and all objectives.
+    Targets of ``log_transform`` objectives are validated for finiteness
+    and strict positivity at this boundary (see
+    :func:`_assert_log_transform_targets_valid`).
     """
     param_names = [p.name for p in spec.parameters]
     obj_names = [o.name for o in spec.objectives]
@@ -416,7 +541,10 @@ def observations_to_dataframe(
             row[name] = obs.objective_values.get(name)
         rows.append(row)
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        _assert_log_transform_targets_valid(df, spec)
+    return df
 
 
 def pending_points_to_dataframe(

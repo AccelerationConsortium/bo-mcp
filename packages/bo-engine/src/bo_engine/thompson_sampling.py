@@ -39,7 +39,7 @@ from bo_engine.constants import (
     THOMPSON_NUM_POSTERIOR_SAMPLES,
 )
 from bo_engine.device import get_device, get_dtype
-from bo_engine.reproducibility import derive_seed
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
 
 if TYPE_CHECKING:
     pass
@@ -168,8 +168,11 @@ def generate_thompson_samples(
     # seed and clobber each other's reproducibility. Because fork_rng
     # also RESTORES the state on exit, every call must install its own
     # seed — otherwise consecutive unseeded calls replay the identical
-    # draw (see _resolve_call_seed).
-    with torch.random.fork_rng(devices=[]):
+    # draw (see _resolve_call_seed). GLOBAL_RNG_LOCK serializes the
+    # section against every other global-RNG snapshot/restore consumer
+    # (suggestion pipeline, BayBE seeded scopes) so an overlapping
+    # restore cannot roll a concurrent seeded stream back.
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=[]):
         torch.manual_seed(_resolve_call_seed(config.seed))
 
         if config.use_max_posterior_sampling:
@@ -320,9 +323,10 @@ def generate_thompson_samples_multi_objective(
         config = ThompsonConfig()
 
     # Isolate the global torch RNG for the same reason as the
-    # single-objective variant above — see its fork_rng comment; the
-    # per-call seed likewise keeps consecutive unseeded calls distinct.
-    with torch.random.fork_rng(devices=[]):
+    # single-objective variant above — see its fork_rng comment (incl.
+    # the GLOBAL_RNG_LOCK serialization rationale); the per-call seed
+    # likewise keeps consecutive unseeded calls distinct.
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=[]):
         torch.manual_seed(_resolve_call_seed(config.seed))
 
         n_objectives = len(model.models)

@@ -58,7 +58,7 @@ from bo_engine.initial_design import (
     _guard_categorical_space_exhaustion,
     generate_initial_design,
 )
-from bo_engine.reproducibility import derive_seed
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
 from bo_engine.suggestions_common import (
     _extract_scalar_prediction,
     _get_confidence_level,
@@ -350,7 +350,12 @@ def generate_next_batch(
     # fork_rng isolates the torch global RNG mutation below so concurrent
     # callers (e.g. under asyncio.to_thread) cannot race on the seed —
     # prior state is saved on entry and restored on every return path.
-    with torch.random.fork_rng(devices=[]):
+    # GLOBAL_RNG_LOCK serializes this section against every other
+    # snapshot/restore consumer of the process-global RNG (other BoTorch
+    # calls, Thompson sampling, the BayBE backend's seeded scope):
+    # without it an overlapping fork_rng restore rolls a concurrent
+    # seeded stream back to a stale snapshot.
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=[]):
         torch.manual_seed(random_seed)
 
         # Short-circuit for finite (purely-categorical) spaces whose unique

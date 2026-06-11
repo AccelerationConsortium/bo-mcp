@@ -27,6 +27,7 @@ from baybe.parameters import (
 from baybe.searchspace import SearchSpace
 from baybe.targets import NumericalTarget
 from bo_engine.types import (
+    AcquisitionMethod,
     ConstraintSpec,
     ConstraintType,
     ObjectiveSpec,
@@ -41,6 +42,7 @@ from bo_engine_baybe.converters import (
     dataframe_to_suggestions,
     observations_to_dataframe,
     pending_points_to_dataframe,
+    spec_to_acquisition_function,
     spec_to_constraints,
     spec_to_objective,
     spec_to_parameters,
@@ -154,6 +156,135 @@ class TestSpecToObjective:
         objective = spec_to_objective(spec)
         assert isinstance(objective, ParetoObjective)
 
+    def test_log_transform_chains_logarithmic_transformation(self) -> None:
+        """``log_transform=True`` maps to BayBE's logarithmic target transformation.
+
+        BayBE's modern target interface composes transformations onto
+        ``NumericalTarget`` (``target.log()``); the converter must emit it
+        so the user's log intent is honored instead of silently dropped.
+        Reference: BayBE target transformations —
+        https://emdgroup.github.io/baybe/stable/userguide/targets.html
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="rate", minimize=True, log_transform=True)],
+        )
+        objective = spec_to_objective(spec)
+        assert isinstance(objective, SingleTargetObjective)
+        target = objective._target
+        assert isinstance(target, NumericalTarget)
+        assert target.minimize is True
+        assert "Logarithmic" in type(target.transformation).__name__
+
+    def test_log_transform_with_maximize_rejected(self) -> None:
+        """``log_transform=True`` + ``minimize=False`` is outside the contract.
+
+        Mirrors the BoTorch model factory: the neutral
+        :class:`bo_engine.types.ObjectiveSpec` contract restricts the flag
+        to minimize objectives, so both backends must reject the maximize
+        combination with a ``ValueError`` instead of diverging silently.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="rate", minimize=False, log_transform=True)],
+        )
+        with pytest.raises(ValueError, match="minimize=True"):
+            spec_to_objective(spec)
+
+    def test_without_log_transform_no_transformation_chained(self) -> None:
+        """Plain objectives keep the identity transformation (regression guard)."""
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        objective = spec_to_objective(spec)
+        assert isinstance(objective, SingleTargetObjective)
+        target = objective._target
+        assert isinstance(target, NumericalTarget)
+        assert "Logarithmic" not in type(target.transformation).__name__
+
+
+class TestSpecToAcquisitionFunction:
+    """``spec.acquisition_method`` → BayBE acquisition-function name.
+
+    The dispatch mirrors ``bo_engine.acquisition.create_acquisition``:
+    the objective count selects the acquisition family and the requested
+    method is consulted within it. BayBE acqf names per
+    https://emdgroup.github.io/baybe/stable/userguide/acquisition.html
+    """
+
+    @staticmethod
+    def _spec(method: AcquisitionMethod, n_objectives: int = 1) -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name=f"y{i}", minimize=True) for i in range(n_objectives)],
+            acquisition_method=method,
+        )
+
+    def test_auto_keeps_baybe_default(self) -> None:
+        assert spec_to_acquisition_function(self._spec(AcquisitionMethod.AUTO)) is None
+
+    def test_single_objective_expected_improvement(self) -> None:
+        assert (
+            spec_to_acquisition_function(self._spec(AcquisitionMethod.EXPECTED_IMPROVEMENT))
+            == "qLogEI"
+        )
+
+    def test_single_objective_noisy_ei(self) -> None:
+        assert spec_to_acquisition_function(self._spec(AcquisitionMethod.NOISY_EI)) == "qLogNEI"
+
+    def test_multi_objective_hypervolume(self) -> None:
+        assert (
+            spec_to_acquisition_function(
+                self._spec(AcquisitionMethod.HYPERVOLUME_IMPROVEMENT, n_objectives=2)
+            )
+            == "qLogNEHVI"
+        )
+
+    def test_multi_objective_scalarized(self) -> None:
+        assert (
+            spec_to_acquisition_function(
+                self._spec(AcquisitionMethod.SCALARIZED_MULTI_OBJ, n_objectives=2)
+            )
+            == "qLogNParEGO"
+        )
+
+    def test_family_mismatch_resolves_like_botorch(self) -> None:
+        """A multi-objective-only method on a single-objective spec → noisy EI.
+
+        Mirrors the BoTorch dispatch (``use_noisy = method != EI`` for
+        single-objective specs) so ``backend="auto"`` comparisons stay
+        like-for-like instead of erroring inside BayBE.
+        """
+        assert (
+            spec_to_acquisition_function(self._spec(AcquisitionMethod.HYPERVOLUME_IMPROVEMENT))
+            == "qLogNEI"
+        )
+        assert (
+            spec_to_acquisition_function(
+                self._spec(AcquisitionMethod.EXPECTED_IMPROVEMENT, n_objectives=2)
+            )
+            == "qLogNEHVI"
+        )
+
+    def test_unmappable_methods_fall_back_to_default(self) -> None:
+        """cost_weighted_ei / multi_fidelity_kg have no BayBE equivalent.
+
+        The capability layer reports them; the converter returns ``None``
+        so an acknowledged run still produces suggestions with BayBE's
+        default acquisition function.
+        """
+        assert spec_to_acquisition_function(self._spec(AcquisitionMethod.COST_WEIGHTED_EI)) is None
+        assert spec_to_acquisition_function(self._spec(AcquisitionMethod.MULTI_FIDELITY_KG)) is None
+
 
 class TestObservationsToDataframe:
     def test_basic_conversion(self, simple_spec: OptimizationSpec) -> None:
@@ -172,6 +303,46 @@ class TestObservationsToDataframe:
         assert list(df.columns) == ["x1", "x2", "y"]
         assert math.isclose(df.iloc[0]["x1"], 0.5)
         assert math.isclose(df.iloc[1]["y"], 0.7)
+
+    @staticmethod
+    def _log_spec() -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="rate", minimize=True, log_transform=True)],
+        )
+
+    def test_log_transform_rejects_non_positive_targets(self) -> None:
+        """Non-positive targets for a log objective fail loud at the boundary.
+
+        ``log(y)`` is undefined for ``y <= 0``; without this guard the
+        failure mode is a NaN cascade inside the GP fit. Mirrors the
+        BoTorch model factory's construction-time check
+        (``_assert_positive_for_log_transform``) so both backends raise
+        the same clear ``ValueError``.
+        """
+        observations = [
+            ObservationData(parameter_values={"x": 0.2}, objective_values={"rate": 1.5}),
+            ObservationData(parameter_values={"x": 0.6}, objective_values={"rate": -0.1}),
+        ]
+        with pytest.raises(ValueError, match="strictly positive"):
+            observations_to_dataframe(observations, self._log_spec())
+
+    def test_log_transform_rejects_non_finite_targets(self) -> None:
+        observations = [
+            ObservationData(parameter_values={"x": 0.2}, objective_values={"rate": float("nan")}),
+        ]
+        with pytest.raises(ValueError, match="finite"):
+            observations_to_dataframe(observations, self._log_spec())
+
+    def test_log_transform_accepts_positive_targets(self) -> None:
+        observations = [
+            ObservationData(parameter_values={"x": 0.2}, objective_values={"rate": 0.001}),
+            ObservationData(parameter_values={"x": 0.6}, objective_values={"rate": 150.0}),
+        ]
+        df = observations_to_dataframe(observations, self._log_spec())
+        assert len(df) == 2
 
 
 class TestPendingPointsToDataframe:

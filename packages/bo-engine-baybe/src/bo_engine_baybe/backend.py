@@ -35,7 +35,9 @@ without modification.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from collections.abc import Iterator
 from typing import Any, ClassVar
 
 import pandas as pd
@@ -44,6 +46,7 @@ import torch
 from baybe import Campaign
 from baybe import __version__ as baybe_version
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
+from baybe.utils.random import temporary_seed
 from bo_engine.backend import (
     Feature,
     SuggestionBatch,
@@ -70,10 +73,12 @@ from bo_engine.diagnostics import (
 )
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reference_point import get_reference_point
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
 from bo_engine.result_validation import (
     detect_outliers,
 )
 from bo_engine.types import (
+    AcquisitionMethod,
     ObservationData,
     OptimizationSpec,
 )
@@ -89,8 +94,10 @@ from bo_engine_baybe.capabilities import (
     _validate_parameter_role,
 )
 from bo_engine_baybe.converters import (
+    BAYBE_UNSUPPORTED_ACQUISITION,
     baybe_constraint_support,
     dataframe_to_suggestions,
+    log_transform_maximize_reason,
     observations_to_dataframe,
     pending_points_to_dataframe,
 )
@@ -140,6 +147,32 @@ _MIN_OBSERVATIONS_FOR_CONFIDENCE = 5
 # Minimum observations before fitting a model for diagnostics
 _MIN_DATA_ABSOLUTE = 3
 _MIN_DATA_PARAM_MULTIPLIER = 2
+
+# Seed-derivation context tags (see bo_engine.reproducibility.derive_seed).
+# Namespaced with "baybe:" so seeds derived for this backend can never
+# collide with the BoTorch backend's per-phase tags at the same master seed.
+_SEED_CONTEXT_INITIAL_DESIGN = "baybe:initial_design"
+_SEED_CONTEXT_ITERATION_TEMPLATE = "baybe:iter_{iteration}"
+
+# Human-readable labels for the acquisition methods BayBE cannot express,
+# keyed by the neutral enum. Used by the capability reports and the
+# validate_spec warning surface; the mapping itself lives in
+# bo_engine_baybe.converters.BAYBE_UNSUPPORTED_ACQUISITION.
+_UNSUPPORTED_ACQUISITION_LABELS: dict[AcquisitionMethod, str] = {
+    AcquisitionMethod.COST_WEIGHTED_EI: "Cost-weighted acquisition (cost_weighted_ei)",
+    AcquisitionMethod.MULTI_FIDELITY_KG: ("Multi-fidelity knowledge gradient (multi_fidelity_kg)"),
+}
+
+# Reason attached to the DEGRADED capability report for log_transform
+# objectives: BayBE honors the flag, but with weaker semantics than the
+# BoTorch backend's Log → Standardize outcome transform.
+_LOG_TRANSFORM_DEGRADED_REASON = (
+    "BayBE applies log_transform at the acquisition-objective level "
+    "(improvement is measured on the log scale), but its GP surrogate "
+    "still fits the raw target scale — unlike BoTorch's Log → Standardize "
+    "outcome transform. Pin backend='botorch' if log-scale model fitting "
+    "is required."
+)
 
 
 # Re-export private symbols that the test suite imports from this module.
@@ -410,33 +443,102 @@ class BayBEBackend(BaseBackend):
                     )
                 )
                 continue
-            if attr in acknowledged_attrs:
-                reports.append(
-                    CapabilityReport(
-                        key=attr,
-                        status=CapabilityStatus.IGNORED,
-                        reason=(
-                            f"{label} is not supported by BayBE and will be ignored "
-                            "(degradation acknowledged)."
-                        ),
-                    )
-                )
-            else:
-                reports.append(
-                    CapabilityReport(
-                        key=attr,
-                        status=CapabilityStatus.UNSUPPORTED,
-                        reason=(
-                            f"{label} is not supported by BayBE; running this spec "
-                            "on BayBE would silently drop the option. Pin "
-                            "backend='botorch' (or 'auto'), or list "
-                            f"'{attr}' in 'acknowledge_degradations' to accept "
-                            "the degraded run."
-                        ),
-                    )
-                )
+            reports.append(self._degradable_option_report(attr, label, acknowledged_attrs))
+        reports.extend(self._acquisition_method_reports(spec, acknowledged_attrs))
+        reports.extend(self._log_transform_reports(spec))
         reports.extend(self._parameter_option_reports(spec))
         reports.extend(self._backend_option_reports(spec))
+        return reports
+
+    @staticmethod
+    def _degradable_option_report(
+        attr: str,
+        label: str,
+        acknowledged_attrs: set[str],
+    ) -> CapabilityReport:
+        """UNSUPPORTED report for a knob BayBE drops; IGNORED when acknowledged."""
+        if attr in acknowledged_attrs:
+            return CapabilityReport(
+                key=attr,
+                status=CapabilityStatus.IGNORED,
+                reason=(
+                    f"{label} is not supported by BayBE and will be ignored "
+                    "(degradation acknowledged)."
+                ),
+            )
+        return CapabilityReport(
+            key=attr,
+            status=CapabilityStatus.UNSUPPORTED,
+            reason=(
+                f"{label} is not supported by BayBE; running this spec "
+                "on BayBE would silently drop the option. Pin "
+                "backend='botorch' (or 'auto'), or list "
+                f"'{attr}' in 'acknowledge_degradations' to accept "
+                "the degraded run."
+            ),
+        )
+
+    def _acquisition_method_reports(
+        self,
+        spec: OptimizationSpec,
+        acknowledged_attrs: set[str],
+    ) -> list[CapabilityReport]:
+        """Report ``spec.acquisition_method`` values BayBE cannot express.
+
+        Mappable methods (expected_improvement, noisy EI, hypervolume,
+        scalarized) are wired into ``BotorchRecommender`` by
+        :func:`bo_engine_baybe.converters.spec_to_acquisition_function`
+        and need no report. The unmappable subset
+        (:data:`BAYBE_UNSUPPORTED_ACQUISITION`) follows the standard
+        degradable-knob policy: UNSUPPORTED by default, IGNORED once
+        ``'acquisition_method'`` is acknowledged — the campaign then runs
+        with BayBE's default acquisition function.
+        """
+        method = spec.acquisition_method
+        if method not in BAYBE_UNSUPPORTED_ACQUISITION:
+            return []
+        label = _UNSUPPORTED_ACQUISITION_LABELS[method]
+        return [self._degradable_option_report("acquisition_method", label, acknowledged_attrs)]
+
+    @staticmethod
+    def _log_transform_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
+        """Per-objective report for ``log_transform`` objectives.
+
+        Minimize objectives report DEGRADED: BayBE honors the flag (the
+        converter chains a logarithmic target transformation), but with
+        weaker semantics than BoTorch — the log enters the acquisition
+        objective only, while the GP surrogate still fits the raw target
+        scale. DEGRADED keeps the spec compatible (no acknowledgement
+        gate) while ``backend="auto"`` tiering and the warning surface
+        make the difference visible.
+
+        Maximize objectives report UNSUPPORTED with the same reason the
+        converter raises at construction time
+        (:func:`log_transform_maximize_reason`) — otherwise
+        ``is_compatible`` would accept a spec that
+        ``generate_suggestions`` is guaranteed to reject.
+        """
+        reports: list[CapabilityReport] = []
+        for idx, obj in enumerate(spec.objectives):
+            if not obj.log_transform:
+                continue
+            key = f"objectives[{idx}].log_transform"
+            if not obj.minimize:
+                reports.append(
+                    CapabilityReport(
+                        key=key,
+                        status=CapabilityStatus.UNSUPPORTED,
+                        reason=log_transform_maximize_reason(obj.name),
+                    )
+                )
+                continue
+            reports.append(
+                CapabilityReport(
+                    key=key,
+                    status=CapabilityStatus.DEGRADED,
+                    reason=_LOG_TRANSFORM_DEGRADED_REASON,
+                )
+            )
         return reports
 
     def _parameter_option_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
@@ -489,6 +591,20 @@ class BayBEBackend(BaseBackend):
             is_set = bool(value) if not isinstance(value, list) else len(value) > 0
             if is_set:
                 warnings.append(f"{label} is not supported by BayBE and will be ignored.")
+        if spec.acquisition_method in BAYBE_UNSUPPORTED_ACQUISITION:
+            label = _UNSUPPORTED_ACQUISITION_LABELS[spec.acquisition_method]
+            warnings.append(f"{label} is not supported by BayBE and will be ignored.")
+        warnings.extend(
+            log_transform_maximize_reason(obj.name)
+            if not obj.minimize
+            else (
+                f"log_transform for objective '{obj.name}' is applied at the "
+                "acquisition-objective level on BayBE; the GP surrogate still "
+                "fits the raw target scale."
+            )
+            for obj in spec.objectives
+            if obj.log_transform
+        )
         return warnings
 
     def generate_initial_design(
@@ -496,11 +612,17 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         n_points: int,
     ) -> list[dict[str, Any]]:
-        """Recommend an initial batch of suggestions before any observations exist."""
+        """Recommend an initial batch of suggestions before any observations exist.
+
+        Honors ``spec.random_seed``: when set, the recommendation runs
+        inside :func:`_baybe_rng_scope` so repeated calls return the same
+        design without leaking RNG state into the rest of the process.
+        """
         from bo_engine_baybe.state import _build_campaign
 
-        campaign = _build_campaign(spec)
-        rec_df = campaign.recommend(batch_size=n_points)
+        with _baybe_rng_scope(spec, _SEED_CONTEXT_INITIAL_DESIGN):
+            campaign = _build_campaign(spec)
+            rec_df = campaign.recommend(batch_size=n_points)
         return dataframe_to_suggestions(rec_df, spec)
 
     def generate_suggestions(
@@ -513,17 +635,26 @@ class BayBEBackend(BaseBackend):
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
-        """Recommend the next batch and translate BayBE/BoTorch errors to backend exceptions."""
+        """Recommend the next batch and translate BayBE/BoTorch errors to backend exceptions.
+
+        The whole call runs inside :func:`_baybe_rng_scope` so a set
+        ``spec.random_seed`` makes the batch reproducible without leaking
+        seeded RNG state into the rest of the process.
+        """
         try:
-            return self._generate_suggestions_unwrapped(
-                spec=spec,
-                observations=observations,
-                batch_size=batch_size,
-                iteration=iteration,
-                backend_state=backend_state,
-                pending_points=pending_points,
-                progress_callback=progress_callback,
-            )
+            with _baybe_rng_scope(
+                spec, _SEED_CONTEXT_ITERATION_TEMPLATE.format(iteration=iteration)
+            ) as random_seed:
+                return self._generate_suggestions_unwrapped(
+                    spec=spec,
+                    observations=observations,
+                    batch_size=batch_size,
+                    iteration=iteration,
+                    backend_state=backend_state,
+                    pending_points=pending_points,
+                    progress_callback=progress_callback,
+                    random_seed=random_seed,
+                )
         except (*_BAYBE_SAFE_EXCEPTIONS,) as exc:
             # Translate every library-level exception that escapes
             # BayBE/BoTorch/GPyTorch into the typed backend hierarchy
@@ -541,6 +672,7 @@ class BayBEBackend(BaseBackend):
         backend_state: dict[str, Any] | None,
         pending_points: list[dict[str, Any]] | None,
         progress_callback: ProgressCallback | None,
+        random_seed: int | None,
     ) -> SuggestionBatch:
         # BayBE's campaign loop is internally segmented but does not yet
         # expose intermediate hooks; emit start/done milestones so the
@@ -587,6 +719,7 @@ class BayBEBackend(BaseBackend):
             iteration,
             batch_size,
             acquisition_label=acq_label,
+            random_seed=random_seed,
         )
 
         warnings_out = self.validate_spec(spec)
@@ -939,6 +1072,38 @@ class BayBEBackend(BaseBackend):
             return {"outliers": None}
 
 
+@contextlib.contextmanager
+def _baybe_rng_scope(spec: OptimizationSpec, context: str) -> Iterator[int | None]:
+    """Scope the RNG-consuming section of a BayBE recommendation call.
+
+    Every path holds the engine-wide
+    :data:`bo_engine.reproducibility.GLOBAL_RNG_LOCK` — the same lock
+    the BoTorch suggestion and Thompson-sampling paths hold around their
+    ``fork_rng`` sections — so all global-RNG snapshot/restore consumers
+    in the process are serialized consistently across worker threads
+    (the server offloads generation via ``asyncio.to_thread``). When
+    ``spec.random_seed`` is set, a per-phase seed is derived via
+    :func:`bo_engine.reproducibility.derive_seed` and applied through
+    BayBE's own :func:`baybe.utils.random.temporary_seed` (Python, NumPy,
+    and Torch), which snapshots the process-wide RNG states on entry and
+    restores them on exit. Unseeded calls take the lock without seeding:
+    they consume the ambient streams as-is (the documented
+    non-reproducible path), and serializing them keeps their draws out
+    of any concurrent seeded scope's window. (Residual limitation: RNG
+    consumers outside the lock — e.g. diagnostics model fits — can still
+    interleave with a seeded scope.) Yields the derived seed so callers
+    can stamp it into suggestion provenance, or ``None`` when the spec
+    carries no seed.
+    """
+    if spec.random_seed is None:
+        with GLOBAL_RNG_LOCK:
+            yield None
+        return
+    seed = derive_seed(spec.random_seed, context)
+    with GLOBAL_RNG_LOCK, temporary_seed(seed):
+        yield seed
+
+
 def _build_suggestion_list(
     param_dicts: list[dict[str, Any]],
     predictions: list[dict[str, dict[str, float] | None]],
@@ -948,6 +1113,7 @@ def _build_suggestion_list(
     iteration: int,
     batch_size: int,
     acquisition_label: str,
+    random_seed: int | None,
 ) -> list[dict[str, Any]]:
     """Build the suggestion list with full BayBE-sourced provenance."""
     suggestions: list[dict[str, Any]] = []
@@ -964,6 +1130,7 @@ def _build_suggestion_list(
                     "generation_method": "baybe_bo",
                     "acquisition_function": acquisition_label,
                     "acquisition_value": acq_val,
+                    "random_seed": random_seed,
                     "model_type": method_info.get("model_type", _MODEL_TYPE_SINGLE),
                     "confidence_level": (
                         "medium" if len(observations) < _MIN_OBSERVATIONS_FOR_CONFIDENCE else "high"

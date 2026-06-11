@@ -206,6 +206,28 @@ def test_auto_prefers_full_support_over_degraded(monkeypatch):
     assert resolved == "botorch"
 
 
+def test_auto_prefers_full_support_over_degraded_log_transform(monkeypatch):
+    """DEGRADED reports demote a backend below FULL, just like IGNORED ones.
+
+    BayBE honors per-objective ``log_transform`` only at the
+    acquisition-objective level (its GP fits the raw target scale), which
+    its capability report classifies as ``DEGRADED``. BoTorch honors the
+    flag fully via a ``Log → Standardize`` outcome transform. Even with
+    ``BO_BACKEND=baybe``, auto must route the spec to the backend with
+    the stronger guarantee.
+    """
+    monkeypatch.setenv("BO_BACKEND", "baybe")
+    spec_dict = {
+        "name": "LogScale",
+        "parameters": [
+            {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+        ],
+        "objectives": [{"name": "rate", "direction": "minimize", "log_transform": True}],
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "botorch"
+
+
 def test_auto_picks_env_default_when_both_fully_support(monkeypatch):
     """Within the FULL tier, ``BO_BACKEND`` env default still wins ties.
 
@@ -249,3 +271,30 @@ def test_auto_falls_back_to_degraded_when_no_full_support(monkeypatch):
     }
     resolved = resolve_backend_name("auto", spec_dict)
     assert resolved == "baybe"
+
+
+def test_degraded_selection_log_covers_both_semantics(monkeypatch, caplog):
+    """The degraded-selection log must not claim every option is dropped.
+
+    ``DEGRADED`` reports can mean "honored with weaker semantics" (e.g.
+    BayBE applying ``log_transform`` at the acquisition level), not only
+    "ignored" — the operator-facing log line has to reflect both readings
+    so it does not misreport an applied option as dropped.
+    """
+    from bo_mcp_server import backend as backend_module
+
+    monkeypatch.setenv("BO_BACKEND", "baybe")
+    monkeypatch.setattr(backend_module, "_get_available_backend_names", lambda: ["baybe"])
+    spec_dict = {
+        "name": "LogScale",
+        "parameters": [
+            {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+        ],
+        "objectives": [{"name": "rate", "direction": "minimize", "log_transform": True}],
+    }
+    with caplog.at_level("INFO", logger=backend_module.logger.name):
+        resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "baybe"
+    degraded_logs = [r.getMessage() for r in caplog.records if "degraded" in r.getMessage()]
+    assert degraded_logs
+    assert any("ignored or honored with weaker semantics" in m for m in degraded_logs)

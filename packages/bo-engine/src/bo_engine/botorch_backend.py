@@ -191,6 +191,34 @@ _UNROUTED_OPTION_REASONS: dict[str, str] = {
 }
 
 
+def _log_transform_direction_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
+    """UNSUPPORTED report per ``log_transform=True`` + ``minimize=False`` objective.
+
+    The suggestion pipeline rejects this combination at generation time
+    (``ObjectiveSpec.log_transform`` is contractually restricted to
+    minimize objectives — see the guards in
+    :mod:`bo_engine.suggestions_single_objective` and
+    :mod:`bo_engine.suggestions_multi_objective`). Reporting it here
+    keeps ``validate_capabilities`` aligned with that runtime contract,
+    so a pinned ``backend="botorch"`` campaign is rejected at intake
+    instead of failing on its first suggestion batch.
+    """
+    return [
+        CapabilityReport(
+            key=f"objectives[{idx}].log_transform",
+            status=CapabilityStatus.UNSUPPORTED,
+            reason=(
+                f"ObjectiveSpec.log_transform=True is only supported for "
+                f"minimize=True objectives (objective[{idx}] '{obj.name}' is "
+                "maximize). Flip the objective definition or pre-transform "
+                "the data."
+            ),
+        )
+        for idx, obj in enumerate(spec.objectives)
+        if obj.log_transform and not obj.minimize
+    ]
+
+
 class BoTorchBackend(BaseBackend):
     """BoTorch-based Bayesian Optimization backend.
 
@@ -251,6 +279,10 @@ class BoTorchBackend(BaseBackend):
           standalone ``bo_engine.multifidelity`` /
           ``bo_engine.transfer_learning`` / ``bo_engine.saasbo`` helpers
           remain available for direct workflows.
+        * ``log_transform=True`` on a ``minimize=False`` objective
+          (``_log_transform_direction_reports``): the suggestion
+          pipeline rejects the combination at generation time, so the
+          capability surface must veto it at intake.
         """
         feature_reports = []
         for feature in sorted(required_features(spec)):
@@ -291,6 +323,7 @@ class BoTorchBackend(BaseBackend):
                     reason=_UNROUTED_FEATURES[Feature.MULTI_FIDELITY],
                 )
             )
+        option_reports.extend(_log_transform_direction_reports(spec))
         option_reports.extend(_substance_parameter_reports(spec))
         return BackendValidationResult(
             backend=self.name,

@@ -100,11 +100,20 @@ MIN_DATA_ABSOLUTE = 3
 # =============================================================================
 # Confidence Level Thresholds
 # =============================================================================
+#
+# These thresholds are *relative*: they apply to the candidate posterior std
+# after it has been divided by the model's ``Standardize.stdvs`` (the
+# training-data scale). A value of 0.1 therefore means "the predictive std is
+# 10% of the objective's spread", independent of the objective's units. The
+# raw posterior std is reported on the user's scale because ``Standardize``
+# un-transforms it, so comparing it directly against absolute cutoffs would
+# make every suggestion "low" confidence for a large-scale objective and
+# "high" for a tiny-scale one. See ``suggestions_common._normalize_uncertainty``.
 
-# Uncertainty below this value is "high" confidence
+# Relative uncertainty below this value is "high" confidence
 CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD = 0.1
 
-# Uncertainty below this value is "medium" confidence (above is "low")
+# Relative uncertainty below this value is "medium" confidence (above is "low")
 CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD = 0.3
 
 # =============================================================================
@@ -182,6 +191,13 @@ RESTART_WARN_TOLERANCE = 0.05
 # they resolve to the base counts used by the dimension-adaptive formula.
 NUM_RESTARTS = NUM_RESTARTS_BASE
 RAW_SAMPLES = RAW_SAMPLES_MIN
+
+# Floor applied to the cost model's predicted expected cost before inverse-cost
+# weighting (EIpu = EI / cost). A GP cost posterior can dip to (near-)zero or
+# slightly negative in extrapolation; clamping keeps the division well-defined
+# and satisfies BoTorch's strictly-positive-cost requirement for
+# ``InverseCostWeightedUtility``.
+COST_AWARE_MIN_EXPECTED_COST = 1e-6
 
 # =============================================================================
 # Discrete / Mixed Search Space Optimization
@@ -587,12 +603,33 @@ THOMPSON_NUM_CANDIDATES = 1000
 # Minimum distance for diverse batch in Thompson Sampling
 THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE = 0.05
 
+# Augmentation weight ``rho`` for the augmented Tchebycheff (ParEGO)
+# scalarization ``max_k(w_k y_k) + rho * sum_k(w_k y_k)``. The small linear
+# term keeps the scalarization strictly monotone (Pareto-compliant) without
+# materially shifting the Tchebycheff optimum. Default from Knowles (2006).
+PAREGO_AUGMENTED_RHO = 0.05
+
 # =============================================================================
 # What-If Analysis (Section 3.8)
 # =============================================================================
 
 # Default number of suggestions to compute in what-if analysis
 WHATIF_DEFAULT_NUM_SUGGESTIONS = 4
+
+# Value-of-information component weights. Each component is normalized to a
+# dimensionless ~[0, 1] scale before weighting (fraction of variance removed,
+# normalized suggestion shift, relative hypervolume gain, Pareto indicator), so
+# the weighted sum is a unit-free score that does not change when the objective
+# is rescaled. The weights express relative importance, not units.
+WHATIF_VOI_UNCERTAINTY_WEIGHT = 0.5
+WHATIF_VOI_SHIFT_WEIGHT = 0.1
+WHATIF_VOI_HYPERVOLUME_WEIGHT = 0.3
+WHATIF_VOI_PARETO_WEIGHT = 0.2
+
+# Recommendation cutoffs applied to the dimensionless VOI score.
+WHATIF_VOI_HIGH_THRESHOLD = 0.5
+WHATIF_VOI_MODERATE_THRESHOLD = 0.2
+WHATIF_VOI_LOW_THRESHOLD = 0.1
 
 # =============================================================================
 # Exploration / Exploitation Metrics (diagnostics)

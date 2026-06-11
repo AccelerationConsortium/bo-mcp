@@ -20,6 +20,7 @@ from bo_engine.transfer_learning import (
     RGPE,
     PriorTaskData,
     RGPEConfig,
+    RGPELogEI,
     create_base_model,
     create_rgpe_model,
     generate_rgpe_suggestions,
@@ -661,3 +662,55 @@ class TestLegacyPathDirection:
             f"Legacy RGPE suggestion x={suggested_x:.3f} is outside the "
             f"minimum's basin around {optimum}."
         )
+
+
+@pytest.mark.usefixtures("torch_rng")
+class TestRGPELogEINumericalStability:
+    """``RGPELogEI`` must stay finite where the naive log-EI produced NaN (L6).
+
+    Near a densely sampled point a well-fit, near-noiseless model drives the
+    predictive ``std`` to its 1e-6 clamp, so ``z = (best_f - mean)/std`` is a
+    huge negative number. The previous ``log(z * Phi(z) + phi(z))`` underflowed
+    the cdf clamp into a negative argument and returned NaN even though
+    ``h(z) = z*Phi(z) + phi(z)`` is mathematically positive. The stable
+    ``_log_ei_helper`` (Ament et al. 2023) keeps the value finite.
+    """
+
+    def test_log_ei_finite_at_training_point(self) -> None:
+        """Evaluating at an observed point of a near-noiseless model stays finite."""
+        torch.manual_seed(0)
+        bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double)
+
+        target_x = torch.linspace(0, 1, 12, dtype=torch.double).unsqueeze(-1)
+        target_y = (target_x - 0.3) ** 2
+        prior_x = torch.linspace(0, 1, 15, dtype=torch.double).unsqueeze(-1)
+        prior_y = (prior_x - 0.3) ** 2 + 0.01
+        prior_tasks = [PriorTaskData(name="same_bowl", train_x=prior_x, train_y=prior_y)]
+
+        rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
+        acqf = RGPELogEI(rgpe, best_f=float(target_y.min().item()), maximize=False)
+
+        # Evaluate exactly at training points (q=1, shape (n, 1, d)) — the
+        # regime where std collapses and |z| explodes.
+        candidates = target_x.unsqueeze(1)
+        log_ei = acqf(candidates)
+
+        assert torch.isfinite(log_ei).all(), (
+            f"RGPELogEI produced non-finite values at training points: {log_ei}"
+        )
+
+    def test_log_ei_finite_for_extreme_negative_z(self) -> None:
+        """A hand-built extreme |z| (via best_f far below the data) stays finite."""
+        torch.manual_seed(1)
+        bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double)
+        target_x = torch.linspace(0, 1, 12, dtype=torch.double).unsqueeze(-1)
+        target_y = (target_x - 0.3) ** 2
+        prior_tasks = [
+            PriorTaskData(name="p", train_x=target_x, train_y=target_y + 0.01),
+        ]
+        rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds)
+
+        # best_f far below every prediction forces large negative z.
+        acqf = RGPELogEI(rgpe, best_f=-1e6, maximize=False)
+        log_ei = acqf(target_x.unsqueeze(1))
+        assert torch.isfinite(log_ei).all()

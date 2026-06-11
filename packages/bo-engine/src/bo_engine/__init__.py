@@ -236,7 +236,6 @@ from bo_engine.outcome_constraints import (
     compute_constraint_probability,
     compute_expected_constraint_violation,
     compute_outcome_constraint_calibration,
-    create_constraint_callable_continuous,
 )
 from bo_engine.pending_points import (
     PendingPoint,
@@ -681,7 +680,6 @@ __all__ = [
     "create_and_fit_single_task_model",
     "create_base_model",
     "create_constraint_callable",
-    "create_constraint_callable_continuous",
     "create_cost_model",
     "create_mfkg_acquisition",
     "create_model",

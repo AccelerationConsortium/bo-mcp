@@ -32,6 +32,7 @@ from typing import Any, cast
 
 import torch
 from botorch.acquisition import AcquisitionFunction
+from botorch.acquisition.analytic import _log_ei_helper
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement
 from botorch.acquisition.objective import GenericMCObjective
 from botorch.fit import fit_gpytorch_mll
@@ -690,15 +691,16 @@ class RGPELogEI(AcquisitionFunction):
 
         z = (mean - self.best_f) / std if self.maximize else (self.best_f - mean) / std
 
-        # Log-EI computation for numerical stability
-        # log(EI) = log(std) + log(z * Phi(z) + phi(z))
-        normal = Normal(torch.zeros_like(z), torch.ones_like(z))
-        log_pdf = normal.log_prob(z)
-        log_cdf = torch.log(normal.cdf(z).clamp(min=1e-10))
-
-        # Use log-sum-exp for stability
+        # log(EI) = log(std) + log(z * Phi(z) + phi(z)). The bracket
+        # ``h(z) = z*Phi(z) + phi(z)`` is strictly positive, but the naive
+        # ``log(z * exp(log_cdf) + ...)`` underflows the cdf clamp into a
+        # negative argument for large negative z (reachable because ``std``
+        # clamps to 1e-6 near well-sampled points), yielding ``log(negative)``
+        # = NaN. BoTorch's ``_log_ei_helper`` evaluates ``log h(z)`` in a
+        # branch-stable, differentiable way for |z| up to 1e100 (Ament et al.
+        # 2023, "Unexpected Improvements to Expected Improvement").
         log_std = torch.log(std)
-        log_ei = log_std + torch.log(z * torch.exp(log_cdf) + torch.exp(log_pdf) + 1e-10)
+        log_ei = _log_ei_helper(z) + log_std
 
         # Condition on pending batch members. log-EI can be negative, so
         # the multiplicative penalizer is applied additively in log space

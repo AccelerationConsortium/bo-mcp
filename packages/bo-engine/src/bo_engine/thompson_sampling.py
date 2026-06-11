@@ -19,6 +19,7 @@ References:
 from __future__ import annotations
 
 import logging
+import math
 import random
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -26,11 +27,13 @@ from typing import TYPE_CHECKING
 import torch
 from botorch.generation.sampling import MaxPosteriorSampling
 from botorch.models import ModelListGP, SingleTaskGP
+from botorch.utils.multi_objective.scalarization import get_chebyshev_scalarization
 from torch import Tensor
 
 from bo_engine.constants import (
     MAX_RANDOM_SEED,
     NUMERICAL_EPSILON,
+    PAREGO_AUGMENTED_RHO,
     THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE,
     THOMPSON_NUM_CANDIDATES,
     THOMPSON_NUM_POSTERIOR_SAMPLES,
@@ -233,31 +236,80 @@ def generate_thompson_samples(
         )
 
 
+def _raw_observed_outcomes(model: ModelListGP) -> Tensor:
+    """Return the model's training outcomes on the raw objective scale.
+
+    Each sub-model stores ``Standardize``-transformed targets; un-transforming
+    them recovers the user-scale observations ParEGO needs to normalize each
+    objective onto a common ``[0, 1]`` range. Shape ``(n_observations,
+    n_objectives)``.
+    """
+    columns: list[Tensor] = []
+    for obj_idx in range(len(model.models)):
+        sub = model.models[obj_idx]
+        targets = sub.train_targets.reshape(-1, 1)  # ty: ignore[call-non-callable]
+        outcome_transform = getattr(sub, "outcome_transform", None)
+        if outcome_transform is not None:
+            targets, _ = outcome_transform.untransform(targets)
+        columns.append(targets.reshape(-1))
+    return torch.stack(columns, dim=-1)
+
+
+def _aggregate_posterior_stats(model: ModelListGP, x: Tensor) -> tuple[float, float]:
+    """Aggregate per-objective posterior mean/std at ``x`` across all objectives.
+
+    Returns the mean of the per-objective posterior means and the
+    root-mean-square of the per-objective posterior stds, so the reported
+    uncertainty reflects every objective rather than only the first one.
+    """
+    means: list[float] = []
+    variances: list[float] = []
+    with torch.no_grad():
+        for obj_idx in range(len(model.models)):
+            posterior = model.models[obj_idx].posterior(x)  # ty: ignore[call-non-callable]
+            means.append(float(posterior.mean.mean().item()))
+            variances.append(float(posterior.variance.mean().item()))
+    mean = sum(means) / len(means)
+    std = math.sqrt(sum(variances) / len(variances))
+    return mean, std
+
+
 def generate_thompson_samples_multi_objective(
     model: ModelListGP,
     bounds: Tensor,
     n_samples: int = 1,
     config: ThompsonConfig | None = None,
     weights: list[float] | None = None,
+    minimize: bool = True,
 ) -> ThompsonBatch:
-    """Generate multi-objective suggestions via Thompson Sampling.
+    """Generate multi-objective suggestions via Thompson Sampling with ParEGO.
 
-    For multi-objective optimization, we scalarize using random weights
-    (like ParEGO) or specified weights, then apply Thompson Sampling.
+    Each sample draws random scalarization weights (or uses the supplied fixed
+    weights) and combines the per-objective posterior draws with the
+    **augmented Tchebycheff** scalarization on objectives normalized to a common
+    ``[0, 1]`` range — this is true ParEGO. Unlike a plain weighted sum, the
+    Tchebycheff form can reach concave regions of the Pareto front and is not
+    dominated by whichever objective happens to have the largest numeric scale.
 
     Args:
         model: Fitted ModelListGP.
         bounds: Parameter bounds (2 x d tensor).
         n_samples: Number of suggestions to generate.
         config: Thompson Sampling configuration.
-        weights: Fixed scalarization weights. If None, random weights per sample.
+        weights: Fixed (non-negative) scalarization weights. If None, fresh
+            random weights are drawn per sample.
+        minimize: Whether the objectives are minimized (default). The
+            direction is encoded as the sign of the scalarization weights, per
+            BoTorch's ``get_chebyshev_scalarization`` convention.
 
     Returns:
         ThompsonBatch containing the suggestions.
 
     References:
         - Knowles "ParEGO: A Hybrid Algorithm with On-Line Landscape
-          Approximation" (2006)
+          Approximation" (2006) — augmented Tchebycheff scalarization.
+        - Daulton et al. "Differentiable Expected Hypervolume Improvement"
+          NeurIPS 2020 — q-ParEGO via BoTorch's Chebyshev scalarization.
     """
     device = get_device()
     dtype = get_dtype()
@@ -274,67 +326,68 @@ def generate_thompson_samples_multi_objective(
         torch.manual_seed(_resolve_call_seed(config.seed))
 
         n_objectives = len(model.models)
+        # Observed outcomes set the per-objective [0, 1] normalization bounds.
+        observed_y = _raw_observed_outcomes(model).to(device=device, dtype=dtype)
+        # BoTorch's Chebyshev scalarization is written for maximization and
+        # expects negative weights on objectives that should be minimized.
+        direction = -1.0 if minimize else 1.0
 
-        all_samples: list[Tensor] = []
+        thompson_samples: list[ThompsonSample] = []
+        selected: list[Tensor] = []
 
         for _ in range(n_samples):
-            # Random weights if not specified
             if weights is None:
                 w = torch.rand(n_objectives, device=device, dtype=dtype)
-                w = w / w.sum()  # Normalize to sum to 1
+                w = w / w.sum()
             else:
                 w = torch.tensor(weights, device=device, dtype=dtype)
+            scalarization = get_chebyshev_scalarization(
+                weights=direction * w,
+                Y=observed_y,
+                alpha=PAREGO_AUGMENTED_RHO,
+            )
 
-            # Generate candidates
             candidates = _generate_sobol_candidates(
                 bounds=bounds,
                 n_candidates=config.num_candidates,
             )
 
-            # Draw posterior samples and scalarize
+            # Draw one joint posterior sample per objective and stack into an
+            # (n_candidates, n_objectives) matrix for the scalarization.
             with torch.no_grad():
-                scalarized_samples = torch.zeros(config.num_candidates, device=device, dtype=dtype)
+                objective_samples = [
+                    model.models[obj_idx].posterior(candidates).rsample().reshape(-1)  # ty: ignore[call-non-callable]
+                    for obj_idx in range(n_objectives)
+                ]
+                sampled_outcomes = torch.stack(objective_samples, dim=-1)
+                # ``get_chebyshev_scalarization`` returns a value to MAXIMIZE
+                # (it negates the augmented Tchebycheff cost internally). The
+                # optional second arg (X) is passed explicitly for the typed
+                # Callable signature.
+                scalarized = scalarization(sampled_outcomes, None)
 
-                for obj_idx in range(n_objectives):
-                    posterior = model.models[obj_idx].posterior(candidates)  # ty: ignore[call-non-callable]
-                    sample = posterior.rsample()  # 1 x n_candidates x 1
-                    sample = sample.squeeze()
-                    scalarized_samples += w[obj_idx] * sample
+            best_idx = int(scalarized.argmax().item())
+            x = candidates[best_idx : best_idx + 1]
+            selected.append(x)
 
-            # Find best (assuming minimization of scalarized objective)
-            best_idx = scalarized_samples.argmin()
-            all_samples.append(candidates[best_idx : best_idx + 1])
-
-        samples = torch.cat(all_samples, dim=0)
-
-        # Build ThompsonSample objects
-        thompson_samples: list[ThompsonSample] = []
-
-        for i in range(n_samples):
-            x = samples[i : i + 1]
-            # Use first objective for mean/std (or could aggregate)
-            with torch.no_grad():
-                posterior = model.models[0].posterior(x)  # ty: ignore[call-non-callable]
-                mean = posterior.mean.item()
-                std = posterior.variance.sqrt().item()
-                sampled = posterior.rsample().item()
-
+            mean, std = _aggregate_posterior_stats(model, x)
             thompson_samples.append(
                 ThompsonSample(
                     parameters=x.squeeze(0),
-                    sampled_value=sampled,
+                    sampled_value=float(scalarized[best_idx].item()),
                     posterior_mean=mean,
                     posterior_std=std,
                 )
             )
 
+        samples = torch.cat(selected, dim=0)
         diversity_score = _compute_batch_diversity(samples, bounds)
 
         return ThompsonBatch(
             samples=thompson_samples,
             parameters_tensor=samples,
             diversity_score=diversity_score,
-            method_info="Thompson Sampling (multi-objective with random scalarization)",
+            method_info="Thompson Sampling (multi-objective, augmented Tchebycheff / ParEGO)",
         )
 
 

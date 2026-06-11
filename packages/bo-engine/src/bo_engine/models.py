@@ -343,57 +343,107 @@ def _log_fitted_noise(model: SingleTaskGP | ModelListGP, *, fixed_noise: bool) -
         )
 
 
+class _HammingCategoricalKernel(CategoricalKernel):
+    """``CategoricalKernel`` whose one-hot block decays as ``exp(-Hamming / ls)``.
+
+    BoTorch's stock :class:`CategoricalKernel` averages the per-column mismatch
+    indicators (``delta.mean(-1)``). On a one-hot block a single category change
+    flips exactly **two** columns (the old and new "1"), so the stock kernel
+    reports a distance of ``2 / k`` (``k`` = number of categories) rather than
+    the intended Hamming distance of 1 — the decay then depends on how many
+    categories the parameter happens to have, and only coincides with the
+    ordinal ``exp(-1 / ls)`` for binary parameters. This subclass divides the
+    summed mismatch by two so a category change always maps to distance 1, i.e.
+    ``K(catA, catB) = exp(-1 / lengthscale)`` for any ``k``. It keeps the
+    one-hot encoding and a single shared lengthscale per block (no per-bit ARD),
+    recovering the ordinal Hamming-kernel semantics the docstring promises.
+
+    References:
+        - Wan et al., "Think Global and Act Local: Bayesian Optimisation over
+          High-Dimensional Categorical and Mixed Search Spaces", ICML 2021 —
+          Hamming kernels for categorical / mixed spaces.
+        - BoTorch ``CategoricalKernel`` — the averaged one-hot variant this
+          compensates.
+    """
+
+    def forward(
+        self,
+        x1: Tensor,
+        x2: Tensor,
+        diag: bool = False,
+        last_dim_is_batch: bool = False,
+    ) -> Tensor:
+        """Compute ``exp(-Hamming(x1, x2) / lengthscale)`` over a one-hot block."""
+        if last_dim_is_batch:
+            # Per-dimension output requested (no cross-column reduction);
+            # defer to BoTorch's behavior, which the one-hot 2x factor does
+            # not apply to because nothing is summed across the block here.
+            return super().forward(x1, x2, diag=diag, last_dim_is_batch=True)
+        delta = x1.unsqueeze(-2) != x2.unsqueeze(-3)
+        # One-hot toggles two columns per category change, so the summed
+        # mismatch is twice the Hamming distance — halve it back to 1.
+        dists = (delta / self.lengthscale.unsqueeze(-2)).sum(-1) / 2.0
+        res = torch.exp(-dists)
+        if diag:
+            res = torch.diagonal(res, dim1=-1, dim2=-2)
+        return res
+
+
 def build_mixed_kernel(
     n_total_dims: int,
-    categorical_dim_indices: list[int],
+    categorical_blocks: list[list[int]],
 ) -> Kernel:
-    """Build an additive ``RBF(continuous) + CategoricalKernel(one_hot)`` kernel.
+    """Build an additive ``RBF(continuous) + CategoricalKernel(one_hot blocks)`` kernel.
 
     Used when :attr:`OptimizationSpec.use_categorical_kernel` is set on a spec
-    that mixes continuous and one-hot categorical columns. The continuous
-    block uses the same ARD ``RBFKernel`` shape that ``SingleTaskGP``'s
-    default kernel uses (``ScaleKernel(RBFKernel(ard_num_dims=k))``); the
-    categorical block uses BoTorch's :class:`CategoricalKernel` restricted
-    to the one-hot column indices via ``active_dims`` so it computes
-    Hamming-style similarity on the categorical sub-space rather than
-    Euclidean distance on the one-hot expansion. The two kernels are
-    summed inside a single ``ScaleKernel`` so the model can learn a joint
+    that mixes continuous and one-hot categorical columns. The continuous block
+    uses the same ARD ``RBFKernel`` shape that ``SingleTaskGP``'s default kernel
+    uses (``ScaleKernel(RBFKernel(ard_num_dims=k))``); each categorical parameter
+    gets its **own** :class:`_HammingCategoricalKernel` restricted to that
+    parameter's one-hot columns via ``active_dims``. Per-block kernels mean each
+    categorical parameter learns a single shared lengthscale (rather than one
+    ARD lengthscale per one-hot bit, which over-parameterizes the kernel and
+    couples unrelated parameters through a shared mismatch average). All parts
+    are summed inside a single ``ScaleKernel`` so the model learns a joint
     outputscale.
 
     Args:
         n_total_dims: Total number of encoded input dimensions (continuous +
             one-hot categorical columns).
-        categorical_dim_indices: Sorted list of column indices that belong
-            to one-hot categorical blocks.
+        categorical_blocks: One inner list per categorical parameter, holding
+            that parameter's one-hot column indices (see
+            :func:`bo_engine.transforms.get_categorical_blocks`).
 
     Returns:
         A composite :class:`ScaleKernel` ready to be assigned to
         ``SingleTaskGP.covar_module``.
 
     Raises:
-        ValueError: If the categorical indices fall outside ``[0, n_total_dims)``.
+        ValueError: If any categorical index falls outside ``[0, n_total_dims)``.
     """
-    if any(i < 0 or i >= n_total_dims for i in categorical_dim_indices):
+    flat_indices = [i for block in categorical_blocks for i in block]
+    if any(i < 0 or i >= n_total_dims for i in flat_indices):
         msg = (
-            "categorical_dim_indices must all lie in "
-            f"[0, {n_total_dims}); got {categorical_dim_indices}."
+            "categorical_blocks indices must all lie in "
+            f"[0, {n_total_dims}); got {categorical_blocks}."
         )
         raise ValueError(msg)
-    cont_indices = [i for i in range(n_total_dims) if i not in set(categorical_dim_indices)]
+    categorical_columns = set(flat_indices)
+    cont_indices = [i for i in range(n_total_dims) if i not in categorical_columns]
 
     parts: list[Kernel] = []
     if cont_indices:
-        rbf = RBFKernel(
-            ard_num_dims=len(cont_indices),
-            active_dims=tuple(cont_indices),
+        parts.append(
+            RBFKernel(
+                ard_num_dims=len(cont_indices),
+                active_dims=tuple(cont_indices),
+            )
         )
-        parts.append(rbf)
-    if categorical_dim_indices:
-        cat = CategoricalKernel(
-            ard_num_dims=len(categorical_dim_indices),
-            active_dims=tuple(categorical_dim_indices),
-        )
-        parts.append(cat)
+    for block in categorical_blocks:
+        if not block:
+            continue
+        # ``ard_num_dims`` omitted → one shared lengthscale for the whole block.
+        parts.append(_HammingCategoricalKernel(active_dims=tuple(block)))
 
     if not parts:
         # Degenerate case (n_total_dims == 0); shouldn't happen for a real spec.
@@ -483,7 +533,7 @@ def create_single_task_model(
     noise_prior: Prior | None = None,
     log_transform: bool = False,
     *,
-    categorical_dim_indices: list[int] | None = None,
+    categorical_blocks: list[list[int]] | None = None,
     auto_shift_for_log: bool = False,
     target_negated: bool = False,
 ) -> SingleTaskGP:
@@ -513,10 +563,11 @@ def create_single_task_model(
             objectives spanning several orders of magnitude (e.g. reaction
             rates) train against a roughly homoskedastic scale. Requires
             strictly positive targets.
-        categorical_dim_indices: Optional list of column indices that
-            belong to one-hot categorical blocks. When supplied, the GP is
-            built with an additive ``RBF(continuous) +
-            CategoricalKernel(one_hot)`` kernel via
+        categorical_blocks: Optional one-hot column indices grouped per
+            categorical parameter (see
+            :func:`bo_engine.transforms.get_categorical_blocks`). When
+            supplied, the GP is built with an additive ``RBF(continuous) +
+            CategoricalKernel(one_hot blocks)`` kernel via
             :func:`build_mixed_kernel` so categorical similarity is
             Hamming-style rather than Euclidean on the one-hot expansion.
             ``None`` (default) preserves the historical pure-RBF behavior.
@@ -574,10 +625,10 @@ def create_single_task_model(
             log_transform, negate_before_log=negate_before_log
         ),
     }
-    if categorical_dim_indices:
+    if categorical_blocks:
         kwargs["covar_module"] = build_mixed_kernel(
             n_total_dims=int(train_x.shape[-1]),
-            categorical_dim_indices=list(categorical_dim_indices),
+            categorical_blocks=list(categorical_blocks),
         )
     if train_yvar is not None:
         # Heteroskedastic / known-uncertainty path. BoTorch routes Yvar
@@ -605,7 +656,7 @@ def create_model(
     noise_prior: Prior | None = None,
     log_transform: bool | list[bool] = False,
     *,
-    categorical_dim_indices: list[int] | None = None,
+    categorical_blocks: list[list[int]] | None = None,
     target_negated: bool | list[bool] = False,
 ) -> ModelListGP:
     """Create a ModelListGP for multi-objective optimization.
@@ -633,8 +684,8 @@ def create_model(
             dimension to enable it per-objective; objectives with
             multi-decade magnitudes (e.g. concentrations) typically
             benefit while bounded ones (yield in [0, 1]) do not.
-        categorical_dim_indices: Indices of categorical (one-hot) dimensions
-            in ``train_x``. Used to route those columns through the
+        categorical_blocks: One-hot column indices grouped per categorical
+            parameter in ``train_x``. Used to route each block through its own
             ``CategoricalKernel`` instead of the default Matérn.
         target_negated: ``True`` for columns whose targets are the negation
             of the raw objective (maximization-form convention for minimize
@@ -679,10 +730,10 @@ def create_model(
                 log_flags[i], negate_before_log=negate_before_log
             ),
         }
-        if categorical_dim_indices:
+        if categorical_blocks:
             kwargs["covar_module"] = build_mixed_kernel(
                 n_total_dims=n_dims,
-                categorical_dim_indices=list(categorical_dim_indices),
+                categorical_blocks=list(categorical_blocks),
             )
         if train_yvar is not None:
             kwargs["train_Yvar"] = train_yvar[:, i : i + 1]
@@ -772,7 +823,7 @@ def create_and_fit_single_task_model(
     noise_prior: Prior | None = None,
     log_transform: bool = False,
     *,
-    categorical_dim_indices: list[int] | None = None,
+    categorical_blocks: list[list[int]] | None = None,
     auto_shift_for_log: bool = False,
     target_negated: bool = False,
 ) -> SingleTaskGP:
@@ -790,7 +841,7 @@ def create_and_fit_single_task_model(
         noise_prior: Optional GPyTorch prior on the trainable noise
             hyperparameter. See :func:`create_single_task_model`.
         log_transform: Forwarded to :func:`create_single_task_model`.
-        categorical_dim_indices: Forwarded to :func:`create_single_task_model`.
+        categorical_blocks: Forwarded to :func:`create_single_task_model`.
         auto_shift_for_log: Forwarded to :func:`create_single_task_model`.
         target_negated: Forwarded to :func:`create_single_task_model`.
 
@@ -805,7 +856,7 @@ def create_and_fit_single_task_model(
         train_yvar=train_yvar,
         noise_prior=noise_prior,
         log_transform=log_transform,
-        categorical_dim_indices=categorical_dim_indices,
+        categorical_blocks=categorical_blocks,
         auto_shift_for_log=auto_shift_for_log,
         target_negated=target_negated,
     )
@@ -821,7 +872,7 @@ def create_and_fit_model(
     noise_prior: Prior | None = None,
     log_transform: bool | list[bool] = False,
     *,
-    categorical_dim_indices: list[int] | None = None,
+    categorical_blocks: list[list[int]] | None = None,
     target_negated: bool | list[bool] = False,
 ) -> ModelListGP:
     """Create and fit a ModelListGP.
@@ -839,7 +890,7 @@ def create_and_fit_model(
             :func:`create_model`.
         log_transform: Per-objective ``Log → Standardize`` opt-in.
             Forwarded to :func:`create_model`.
-        categorical_dim_indices: Forwarded to :func:`create_model`.
+        categorical_blocks: Forwarded to :func:`create_model`.
         target_negated: Forwarded to :func:`create_model`.
 
     Returns:
@@ -853,7 +904,7 @@ def create_and_fit_model(
         train_yvar=train_yvar,
         noise_prior=noise_prior,
         log_transform=log_transform,
-        categorical_dim_indices=categorical_dim_indices,
+        categorical_blocks=categorical_blocks,
         target_negated=target_negated,
     )
     return fit_model(model)

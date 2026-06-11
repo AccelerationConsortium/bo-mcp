@@ -284,6 +284,35 @@ def get_categorical_dim_indices(spec: OptimizationSpec) -> list[int]:
     return indices
 
 
+def get_categorical_blocks(spec: OptimizationSpec) -> list[list[int]]:
+    """Return the encoded one-hot column indices grouped per categorical parameter.
+
+    Unlike :func:`get_categorical_dim_indices` (which flattens every
+    categorical column into one list), this preserves the block boundaries:
+    each inner list holds the one-hot columns of a single categorical
+    parameter. The boundaries cannot be recovered from the flat list alone
+    because two adjacent categorical parameters produce contiguous columns,
+    so :func:`bo_engine.models.build_mixed_kernel` consumes the grouped form
+    to give each parameter its own ``CategoricalKernel`` (and therefore its
+    own shared lengthscale).
+
+    Empty list when ``spec`` has no categorical parameters.
+    """
+    blocks: list[list[int]] = []
+    dim_idx = 0
+    for param in spec.parameters:
+        if param.type == ParameterType.CATEGORICAL:
+            if param.categories is None:
+                msg = f"Categorical parameter '{param.name}' has no categories defined"
+                raise ValueError(msg)
+            n_cats = len(param.categories)
+            blocks.append(list(range(dim_idx, dim_idx + n_cats)))
+            dim_idx += n_cats
+        else:
+            dim_idx += 1
+    return blocks
+
+
 def _encode_param_value(param: ParameterSpec, value: int | float | str) -> list[float]:
     """Encode a single parameter value into its tensor representation.
 

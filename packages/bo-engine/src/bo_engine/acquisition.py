@@ -26,6 +26,7 @@ from typing import Any, cast
 import torch
 from botorch.acquisition import AcquisitionFunction
 from botorch.acquisition.analytic import ExpectedImprovement
+from botorch.acquisition.cost_aware import InverseCostWeightedUtility
 from botorch.acquisition.logei import qLogExpectedImprovement, qLogNoisyExpectedImprovement
 from botorch.acquisition.multi_objective.logei import qLogNoisyExpectedHypervolumeImprovement
 from botorch.acquisition.multi_objective.objective import IdentityMCMultiOutputObjective
@@ -38,6 +39,7 @@ from botorch.optim.optimize import optimize_acqf_discrete, optimize_acqf_mixed
 from torch import Tensor
 
 from bo_engine.constants import (
+    COST_AWARE_MIN_EXPECTED_COST,
     MIXED_CATEGORICAL_COMBO_THRESHOLD,
     NUMERICAL_EPSILON,
     RESTART_WARN_TOLERANCE,
@@ -691,10 +693,29 @@ def create_cost_aware_acquisition(
     )
 
 
+def _positive_cost_objective() -> GenericMCObjective:
+    """Cost objective that squeezes the single output and floors it positive.
+
+    ``InverseCostWeightedUtility`` requires strictly positive costs; a GP cost
+    posterior can dip to (near-)zero or slightly negative in extrapolation, so
+    we clamp to ``COST_AWARE_MIN_EXPECTED_COST`` before the inverse weighting.
+    """
+    return GenericMCObjective(
+        lambda samples, X=None: samples.squeeze(-1).clamp_min(COST_AWARE_MIN_EXPECTED_COST)  # noqa: ARG005, N803
+    )
+
+
 class EIpuAcquisition(AcquisitionFunction):
     """Expected Improvement per Unit cost acquisition function.
 
-    Computes EI(x) / E[cost(x)] to optimize for efficiency.
+    Computes ``EI(x) / E[cost(x)]`` to optimize for efficiency. The
+    inverse-cost weighting is delegated to BoTorch's
+    :class:`~botorch.acquisition.cost_aware.InverseCostWeightedUtility`, which
+    evaluates the cost posterior *with* gradients (the previous hand-rolled
+    quotient detached the cost under ``torch.no_grad``, so L-BFGS-B ascended a
+    surface whose gradient treated ``cost(x)`` as locally constant — missing the
+    quotient-rule term). The utility also handles non-positive improvements by
+    scaling rather than dividing, so the ranking stays sensible there.
     """
 
     def __init__(
@@ -715,6 +736,11 @@ class EIpuAcquisition(AcquisitionFunction):
         super().__init__(model)
         self.ei = ExpectedImprovement(model=model, best_f=best_f, maximize=True)
         self.cost_model = cost_model
+        self.cost_utility = InverseCostWeightedUtility(
+            cost_model=cost_model,
+            use_mean=True,
+            cost_objective=_positive_cost_objective(),
+        )
         self.outcome_constraint_models = outcome_constraint_models
         # X_pending is required for sequential optimization
         self._X_pending: Tensor | None = None
@@ -743,29 +769,14 @@ class EIpuAcquisition(AcquisitionFunction):
         Returns:
             Acquisition values of shape (...) matching EI output
         """
-        # Compute EI - returns shape (...)
+        # Compute EI - returns shape (...) = batch_shape
         ei_val = self.ei(X)
 
-        # Compute expected cost
-        # X has shape (..., q, d) and we need to average cost over q dimension
-        self.cost_model.eval()
-        with torch.no_grad():
-            cost_posterior = self.cost_model.posterior(X)
-            # posterior.mean has shape (..., q, 1)
-            expected_cost = cost_posterior.mean
-
-            # Average over q dimension and squeeze output dimension
-            # Shape: (..., q, 1) -> (..., q) -> (...)
-            expected_cost = expected_cost.squeeze(-1)  # (..., q)
-            if expected_cost.dim() > ei_val.dim():
-                # Average over q dimension to match EI shape
-                expected_cost = expected_cost.mean(dim=-1)
-
-            # Ensure positive cost
-            expected_cost = expected_cost.clamp(min=1e-6)
-
-        # Compute EI per unit cost (EIpu)
-        eipu = ei_val / expected_cost
+        # Inverse-cost weight EI/E[cost]. The utility differentiates through the
+        # cost posterior (no ``no_grad``), so the optimizer sees the full
+        # quotient gradient. ``deltas`` is ``num_fantasies x batch_shape``; EI is
+        # not fantasized, so we add a singleton leading dim and drop it after.
+        eipu = self.cost_utility(X=X, deltas=ei_val.unsqueeze(0)).squeeze(0)
 
         # Apply outcome constraints if any
         if self.outcome_constraint_models:

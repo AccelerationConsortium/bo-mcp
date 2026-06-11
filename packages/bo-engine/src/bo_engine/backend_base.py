@@ -41,6 +41,7 @@ from bo_engine.backend import (
 )
 from bo_engine.batch_diversity import compute_batch_diversity
 from bo_engine.device import get_device, get_dtype
+from bo_engine.models import ModelFittingError
 from bo_engine.progress import ProgressCallback
 from bo_engine.result_validation import detect_duplicates as engine_detect_duplicates
 from bo_engine.suggestions import generate_initial_design as engine_generate_initial_design
@@ -136,6 +137,17 @@ class BackendInternalError(BackendError):
 # which case the wrap helper passes them through unchanged).
 _INPUT_ERROR_TYPES: tuple[type[BaseException], ...] = (ValueError, TypeError)
 
+# Engine-domain exceptions whose classification is finer than the
+# generic RuntimeError catch-all. ``ModelFittingError`` is a singular
+# matrix / numerical-instability flake during GP fitting — exactly the
+# retryable case ``BackendTransientError`` documents — but it subclasses
+# ``RuntimeError`` and would otherwise fall through to
+# ``BackendInternalError`` (terminal). Entries are checked most-specific
+# first; add new domain exceptions here so the taxonomy lives in one place.
+_DOMAIN_ERROR_MAP: tuple[tuple[type[BaseException], type[BackendError]], ...] = (
+    (ModelFittingError, BackendTransientError),
+)
+
 
 def wrap_backend_exception(
     exc: BaseException,
@@ -146,14 +158,15 @@ def wrap_backend_exception(
 
     Pass-through for anything already in :class:`BackendError` so a
     backend that classified its own error keeps the original
-    sub-type. :class:`ValueError` and :class:`TypeError` always
-    indicate a caller-input bug, so they map to
-    :class:`BackendInputError`. Other unexpected exceptions surface
-    as :class:`BackendInternalError` — the catch-all that operators
-    triage on. Backends that want a finer mapping (e.g. classifying
-    a specific :class:`RuntimeError` as transient) should catch it
-    themselves and raise the matching :class:`BackendError` subclass
-    before reaching this helper.
+    sub-type. Engine-domain exceptions listed in ``_DOMAIN_ERROR_MAP``
+    (e.g. :class:`ModelFittingError`) map to their declared subclass —
+    a fit flake becomes a retryable :class:`BackendTransientError`.
+    :class:`ValueError` and :class:`TypeError` always indicate a
+    caller-input bug, so they map to :class:`BackendInputError`. Other
+    unexpected exceptions surface as :class:`BackendInternalError` — the
+    catch-all that operators triage on. Backends that want an even finer
+    mapping should catch the error themselves and raise the matching
+    :class:`BackendError` subclass before reaching this helper.
 
     The ``backend_name`` is woven into the diagnostic so a
     multi-backend deployment can attribute the failure without
@@ -161,6 +174,12 @@ def wrap_backend_exception(
     """
     if isinstance(exc, BackendError):
         return exc
+    for source_type, target_type in _DOMAIN_ERROR_MAP:
+        if isinstance(exc, source_type):
+            return target_type(
+                f"Backend '{backend_name}' hit a recoverable {type(exc).__name__}: {exc}",
+                cause=exc,
+            )
     if isinstance(exc, _INPUT_ERROR_TYPES):
         return BackendInputError(
             f"Backend '{backend_name}' rejected the spec/observations: {exc}",

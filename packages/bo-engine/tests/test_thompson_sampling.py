@@ -26,11 +26,12 @@ import pytest
 import torch
 
 from bo_engine.batch_diversity import compute_batch_diversity
-from bo_engine.models import create_and_fit_single_task_model
+from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
 from bo_engine.thompson_sampling import (
     ThompsonConfig,
     generate_diverse_thompson_batch,
     generate_thompson_samples,
+    generate_thompson_samples_multi_objective,
 )
 
 
@@ -134,5 +135,109 @@ class TestDiverseBatch:
         )
         second = generate_diverse_thompson_batch(
             model, bounds, n_samples=3, config=ThompsonConfig(seed=21)
+        )
+        assert torch.equal(first.parameters_tensor, second.parameters_tensor)
+
+
+@pytest.fixture(scope="module")
+def conflicting_scaled_model() -> tuple[object, torch.Tensor]:
+    """A 1-D, two-objective problem with a 1000x scale gap and a real trade-off.
+
+    ``obj0(x) = x`` (scale ~[0, 1], minimized at x=0) conflicts with
+    ``obj1(x) = 1000 * (1 - x)`` (scale ~[0, 1000], minimized at x=1). A plain
+    weighted sum is dominated by ``obj1``'s magnitude, so even a tiny weight on
+    ``obj1`` pulls every pick to x≈1; ParEGO normalizes both objectives onto
+    [0, 1] first, so the weights actually steer the trade-off.
+    """
+    torch.manual_seed(2024)
+    bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double)
+    train_x = torch.linspace(0, 1, 14, dtype=torch.double).unsqueeze(-1)
+    obj0 = train_x
+    obj1 = 1000.0 * (1.0 - train_x)
+    train_y = torch.cat([obj0, obj1], dim=-1)
+    model = create_and_fit_model(train_x, train_y, bounds)
+    return model, bounds
+
+
+class TestMultiObjectiveParEGO:
+    """Augmented Tchebycheff scalarization on normalized objectives (M25)."""
+
+    def test_weight_steers_trade_off_despite_scale_gap(
+        self, conflicting_scaled_model: tuple
+    ) -> None:
+        """Heavy weight on the small-scale objective must select near its optimum.
+
+        With weights ``[0.99, 0.01]`` and minimization, ParEGO normalizes both
+        objectives to [0, 1], so the pick lands near ``obj0``'s optimum (x≈0).
+        The old linear scalarization ``0.99*x + 0.01*1000*(1-x)`` is minimized
+        at x=1 (``obj1``'s optimum), so this assertion fails on the pre-fix code.
+        """
+        model, bounds = conflicting_scaled_model
+        batch = generate_thompson_samples_multi_objective(
+            model,
+            bounds,
+            n_samples=1,
+            weights=[0.99, 0.01],
+            minimize=True,
+            config=ThompsonConfig(seed=3),
+        )
+        x = float(batch.parameters_tensor[0, 0].item())
+        assert x < 0.3, (
+            f"ParEGO selected x={x:.3f}; a 0.99 weight on the small-scale "
+            "objective should pick near its optimum x=0, not be dragged to "
+            "obj1's optimum at x=1 by raw scale."
+        )
+
+    def test_random_weights_do_not_collapse_to_large_scale_optimum(
+        self, conflicting_scaled_model: tuple
+    ) -> None:
+        """Random scalarizations spread along the front, not all at obj1's optimum."""
+        model, bounds = conflicting_scaled_model
+        batch = generate_thompson_samples_multi_objective(
+            model,
+            bounds,
+            n_samples=8,
+            minimize=True,
+            config=ThompsonConfig(seed=5),
+        )
+        xs = batch.parameters_tensor[:, 0]
+        # At least one pick must fall in obj0's half — a scale-dominated linear
+        # sum would push every random-weighted pick toward x≈1.
+        assert float(xs.min().item()) < 0.5, (
+            f"All ParEGO picks clustered at x≥0.5 ({xs.tolist()}); the "
+            "large-scale objective is still dominating the scalarization."
+        )
+
+    def test_per_sample_stats_aggregate_all_objectives(
+        self, conflicting_scaled_model: tuple
+    ) -> None:
+        """Reported posterior mean reflects every objective, not just objective 0.
+
+        ``obj0`` lives in [0, 1] while ``obj1`` runs to ~1000, so the
+        across-objective mean is in the hundreds. The old code reported
+        objective 0 only (mean ≤ 1), so a mean ≫ 1 proves the aggregation.
+        """
+        model, bounds = conflicting_scaled_model
+        batch = generate_thompson_samples_multi_objective(
+            model,
+            bounds,
+            n_samples=2,
+            minimize=True,
+            config=ThompsonConfig(seed=9),
+        )
+        for sample in batch.samples:
+            assert sample.posterior_mean > 10.0, (
+                f"posterior_mean={sample.posterior_mean:.3f} looks like obj0 "
+                "alone (∈ [0, 1]); the stats must aggregate obj1's ~1000 scale."
+            )
+            assert sample.posterior_std > 0.0
+
+    def test_seeded_calls_reproducible(self, conflicting_scaled_model: tuple) -> None:
+        model, bounds = conflicting_scaled_model
+        first = generate_thompson_samples_multi_objective(
+            model, bounds, n_samples=3, config=ThompsonConfig(seed=42)
+        )
+        second = generate_thompson_samples_multi_objective(
+            model, bounds, n_samples=3, config=ThompsonConfig(seed=42)
         )
         assert torch.equal(first.parameters_tensor, second.parameters_tensor)

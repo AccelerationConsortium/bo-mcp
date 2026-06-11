@@ -29,7 +29,6 @@ References:
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -380,48 +379,6 @@ def compute_expected_constraint_violation(
         expected_violation = std * (_standard_normal_pdf(z) + z * (1 - _standard_normal_cdf(-z)))
 
     return expected_violation.clamp(min=0.0)
-
-
-def create_constraint_callable_continuous(
-    model_result: ConstraintModelResult,
-) -> Callable[[Tensor], Tensor]:
-    """Create a constraint callable for use with BoTorch acquisition functions.
-
-    This callable returns positive values when the constraint is satisfied
-    (probability above threshold) and negative values otherwise.
-
-    Args:
-        model_result: Fitted constraint model result
-
-    Returns:
-        Callable compatible with BoTorch's constraints parameter
-    """
-    threshold = model_result.config.probability_threshold
-
-    def constraint_callable(samples: Tensor) -> Tensor:
-        """Constraint function: positive means feasible.
-
-        Args:
-            samples: Posterior samples of shape (num_samples, batch_size, 1)
-
-        Returns:
-            Constraint values (positive = satisfied)
-        """
-        # Samples are from the constraint model
-        if model_result.method == ConstraintModelingMethod.CONTINUOUS:
-            # For continuous, interpret samples as objective predictions
-            obj_threshold = model_result.constraint_spec.threshold
-
-            if model_result.constraint_spec.greater_than:
-                # Want objective >= threshold
-                # Return positive when satisfied
-                return samples.squeeze(-1) - obj_threshold
-            # Want objective <= threshold
-            return obj_threshold - samples.squeeze(-1)
-        # For binary, samples are P(feasible) predictions
-        return samples.squeeze(-1) - threshold
-
-    return constraint_callable
 
 
 def build_outcome_constraint_models(

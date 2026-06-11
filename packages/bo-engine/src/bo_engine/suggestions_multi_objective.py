@@ -9,6 +9,8 @@ module. :mod:`bo_engine.suggestions` calls
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import torch
 from gpytorch.priors import GammaPrior
 from torch import Tensor
@@ -21,6 +23,7 @@ from bo_engine.constraints import build_botorch_linear_constraints
 from bo_engine.initial_design import _apply_constraints_to_samples
 from bo_engine.models import (
     create_and_fit_model,
+    inspect_standardize_stdvs,
     post_fit_verification,
 )
 from bo_engine.reference_point import (
@@ -32,13 +35,14 @@ from bo_engine.suggestions_common import (
     _extract_scalar_prediction,
     _get_confidence_level,
     _get_model_predictions,
+    _mean_relative_uncertainty,
 )
 from bo_engine.suggestions_outcome_constraints import (
     _build_outcome_constraint_models,
 )
 from bo_engine.transforms import (
     decode_categorical,
-    get_categorical_dim_indices,
+    get_categorical_blocks,
 )
 from bo_engine.types import (
     AcquisitionMethod,
@@ -128,6 +132,7 @@ def _create_multi_objective_suggestions(
     random_seed: int,
     method: AcquisitionMethod,
     model_warnings: tuple[str, ...] = (),
+    confidence_scales: Sequence[float] | None = None,
 ) -> list[SuggestionResult]:
     """Create SuggestionResult objects for multi-objective optimization.
 
@@ -142,12 +147,17 @@ def _create_multi_objective_suggestions(
         method: Acquisition method used
         model_warnings: Non-fatal warnings produced during model fitting that
             should be threaded into each suggestion's provenance.
+        confidence_scales: Per-objective ``Standardize.stdvs`` values; each
+            objective's raw-scale std is divided by its own scale before the
+            confidence-level thresholds are applied so the verdict is
+            invariant to any objective's numeric scale.
 
     Returns:
         List of SuggestionResult objects
     """
     batch_size = candidates.shape[0]
     acq_name = method.value
+    scales: Sequence[float] = confidence_scales if confidence_scales is not None else ()
     suggestions = []
 
     for i in range(batch_size):
@@ -156,7 +166,7 @@ def _create_multi_objective_suggestions(
         acq_val, avg_std, predicted_objectives, predicted_std_dict = (
             _build_multi_objective_provenance(means, stds, acq_values, i, spec)
         )
-        confidence_level = _get_confidence_level(avg_std)
+        confidence_level = _get_confidence_level(_mean_relative_uncertainty(stds, i, scales))
         explanation = _build_multi_objective_explanation(acq_name, acq_val)
 
         suggestion = SuggestionResult(
@@ -247,7 +257,7 @@ def _generate_multi_objective_batch(
     # every observation supplied it for every objective. ``target_negated``
     # tells the factory which columns arrive negated so a ``Log`` outcome
     # stage can undo (and redo on the posterior) the negation.
-    cat_dim_indices = get_categorical_dim_indices(spec) if spec.use_categorical_kernel else None
+    cat_blocks = get_categorical_blocks(spec) if spec.use_categorical_kernel else None
     model = create_and_fit_model(
         train_x,
         train_y_bo,
@@ -255,7 +265,7 @@ def _generate_multi_objective_batch(
         use_input_warping=spec.use_input_warping,
         train_yvar=ctx.train_yvar,
         log_transform=log_flags,
-        categorical_dim_indices=cat_dim_indices,
+        categorical_blocks=cat_blocks,
         noise_prior=noise_prior,
         target_negated=minimize_mask.tolist(),
     )
@@ -339,6 +349,10 @@ def _generate_multi_objective_batch(
     # Get model predictions for provenance
     means, stds = _get_model_predictions(model, candidates)
 
+    # Per-objective Standardize.stdvs so the confidence threshold normalizes
+    # each objective's raw-scale std (scale-invariant verdict).
+    confidence_scales = inspect_standardize_stdvs(model)
+
     return _create_multi_objective_suggestions(
         candidates,
         acq_values,
@@ -349,4 +363,5 @@ def _generate_multi_objective_batch(
         ctx.random_seed,
         method,
         model_warnings=tuple(model_warnings),
+        confidence_scales=confidence_scales,
     )

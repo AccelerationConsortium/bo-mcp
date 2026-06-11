@@ -23,19 +23,21 @@ from bo_engine.constraints import build_botorch_linear_constraints
 from bo_engine.initial_design import _apply_constraints_to_samples
 from bo_engine.models import (
     create_and_fit_single_task_model,
+    inspect_standardize_stdvs,
     post_fit_verification,
 )
 from bo_engine.suggestions_common import (
     _extract_scalar_prediction,
     _get_confidence_level,
     _get_model_predictions,
+    _normalize_uncertainty,
 )
 from bo_engine.suggestions_outcome_constraints import (
     _build_outcome_constraint_models,
 )
 from bo_engine.transforms import (
     decode_categorical,
-    get_categorical_dim_indices,
+    get_categorical_blocks,
 )
 from bo_engine.turbo import (
     TurboState,
@@ -214,6 +216,7 @@ def _create_single_objective_suggestions(
     turbo_info: str,
     model_warnings: tuple[str, ...] = (),
     auto_shift: float = 0.0,
+    confidence_scale: float = 1.0,
 ) -> list[SuggestionResult]:
     """Create SuggestionResult objects from optimization results.
 
@@ -234,6 +237,10 @@ def _create_single_objective_suggestions(
         auto_shift: Offset applied to ``train_y`` before fitting (e.g. for
             log-transformed objectives); subtracted from posterior means
             so predictions are reported on the raw scale.
+        confidence_scale: The model's ``Standardize.stdvs`` for the
+            objective; the raw-scale candidate std is divided by it before
+            the confidence-level thresholds are applied so the verdict is
+            invariant to the objective's numeric scale.
 
     Returns:
         List of SuggestionResult objects
@@ -262,7 +269,7 @@ def _create_single_objective_suggestions(
                 means, stds, acq_values, i, obj_name, minimize, auto_shift=auto_shift
             )
         )
-        confidence_level = _get_confidence_level(std_val)
+        confidence_level = _get_confidence_level(_normalize_uncertainty(std_val, confidence_scale))
 
         explanation = (
             f"Suggested by {acq_name} acquisition function. "
@@ -348,7 +355,7 @@ def _generate_single_objective_batch(
     # known noise instead of re-estimating it from MLL. ``target_negated``
     # tells the factory that a minimize objective arrives negated, which
     # the ``Log`` outcome stage must undo (and redo on the posterior).
-    cat_dim_indices = get_categorical_dim_indices(spec) if spec.use_categorical_kernel else None
+    cat_blocks = get_categorical_blocks(spec) if spec.use_categorical_kernel else None
     model = create_and_fit_single_task_model(
         train_x,
         train_y_bo,
@@ -356,7 +363,7 @@ def _generate_single_objective_batch(
         use_input_warping=spec.use_input_warping,
         train_yvar=train_yvar,
         log_transform=log_transform,
-        categorical_dim_indices=cat_dim_indices,
+        categorical_blocks=cat_blocks,
         auto_shift_for_log=spec.auto_shift_for_log,
         noise_prior=noise_prior,
         target_negated=minimize,
@@ -444,6 +451,10 @@ def _generate_single_objective_batch(
     # observations). The provenance helper subtracts it so user-facing
     # ``predicted_objectives`` are reported on the raw scale.
     auto_shift = float(getattr(model, "_auto_shift_for_log", 0.0))
+    # The posterior std is reported on the raw objective scale (Standardize
+    # un-transforms it); normalize the confidence threshold by the model's
+    # recorded Standardize.stdvs so the verdict is scale-invariant.
+    confidence_scale = inspect_standardize_stdvs(model)[0]
     suggestions = _create_single_objective_suggestions(
         candidates,
         acq_values,
@@ -458,6 +469,7 @@ def _generate_single_objective_batch(
         turbo_info,
         model_warnings=tuple(model_warnings),
         auto_shift=auto_shift,
+        confidence_scale=confidence_scale,
     )
 
     return suggestions, turbo_state

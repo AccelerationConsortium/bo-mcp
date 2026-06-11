@@ -25,9 +25,14 @@ from unittest.mock import patch
 
 import pytest
 
-from bo_engine.backend_base import BackendInputError, BackendInternalError
+from bo_engine.backend_base import (
+    BackendInputError,
+    BackendInternalError,
+    BackendTransientError,
+)
 from bo_engine.botorch_backend import BoTorchBackend
 from bo_engine.initial_design import SearchSpaceExhaustedError
+from bo_engine.models import ModelFittingError
 from bo_engine.types import ObjectiveSpec, OptimizationSpec, ParameterSpec, ParameterType
 
 
@@ -94,6 +99,39 @@ def test_runtime_error_in_generate_maps_to_internal_error() -> None:
         )
     assert exc_info.value.retryable is False
     assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def test_model_fitting_error_maps_to_transient_error() -> None:
+    """A ``ModelFittingError`` (GP fit flake) becomes a retryable transient error.
+
+    ``ModelFittingError`` subclasses ``RuntimeError`` and would otherwise
+    fall through to the terminal ``BackendInternalError``. The
+    ``BackendTransientError`` docstring names exactly this case — a
+    singular-matrix / numerical-instability hiccup during GP fitting that
+    a different seed may clear — as the canonical retryable failure, so
+    the wrapper's domain map must surface it with ``retryable=True`` so
+    clients back off and retry instead of treating it as a hard bug.
+    """
+    backend = BoTorchBackend()
+    spec = _two_param_spec()
+    with (
+        patch(
+            "bo_engine.botorch_backend.generate_next_batch",
+            side_effect=ModelFittingError(
+                "singular covariance matrix",
+                original_error=RuntimeError("cholesky failed"),
+            ),
+        ),
+        pytest.raises(BackendTransientError) as exc_info,
+    ):
+        backend.generate_suggestions(
+            spec=spec,
+            observations=[],
+            batch_size=1,
+            iteration=0,
+        )
+    assert exc_info.value.retryable is True
+    assert isinstance(exc_info.value.__cause__, ModelFittingError)
 
 
 def test_search_space_exhausted_propagates_unwrapped() -> None:

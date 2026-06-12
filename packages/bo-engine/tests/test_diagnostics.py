@@ -159,3 +159,54 @@ class TestOutlierDiagnosticsUserScale:
             f"{corrupted_value} for a maximize objective; got {flagged} "
             "(a sign flip here means the report is on the internal scale)."
         )
+
+
+class TestHypervolumeReferencePointConsistency:
+    """``compute_hypervolume`` and the diagnostics path must agree.
+
+    Both surfaces must derive the hypervolume reference point from the same
+    ``get_reference_point`` helper. The standalone ``compute_hypervolume``
+    previously inlined ``worst + 0.1 * range``, which diverges from the
+    diagnostics path's relative-floor padding whenever an objective's spread
+    is small relative to its magnitude — so the same campaign could report
+    two different hypervolumes. The near-zero-range objective below sits
+    exactly in that regime (range 0.5 around a worst of ~100), where the old
+    inline formula and the relative-floor helper produced different
+    reference points.
+    """
+
+    def test_standalone_matches_diagnostics_hypervolume(self) -> None:
+        from bo_engine.backend_base import ObservationData
+        from bo_engine.botorch_backend import BoTorchBackend
+        from bo_engine.types import (
+            ObjectiveSpec,
+            OptimizationSpec,
+            ParameterSpec,
+            ParameterType,
+        )
+
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[
+                ObjectiveSpec(name="a", minimize=True),
+                # Large magnitude, small spread → relative-floor regime, where
+                # the old inline ``worst + 0.1 * range`` and the diagnostics
+                # path's relative-floor padding produced different ref points.
+                ObjectiveSpec(name="b", minimize=True),
+            ],
+        )
+        observations = [
+            ObservationData(parameter_values={"x": 0.1}, objective_values={"a": 1.0, "b": 100.0}),
+            ObservationData(parameter_values={"x": 0.5}, objective_values={"a": 2.0, "b": 99.5}),
+            ObservationData(parameter_values={"x": 0.9}, objective_values={"a": 1.5, "b": 99.8}),
+        ]
+
+        backend = BoTorchBackend()
+        standalone = backend.compute_hypervolume(spec, observations)
+        diagnostics = backend.compute_diagnostics(
+            spec, observations, sections=frozenset({"objectives"})
+        )["hypervolume"]
+
+        assert standalone is not None
+        assert standalone > 0.0
+        assert standalone == pytest.approx(diagnostics)

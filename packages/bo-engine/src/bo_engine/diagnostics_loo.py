@@ -147,12 +147,22 @@ def compute_loo_cv_metrics(
 
     mean_std_error = sum(standardized_errors) / len(standardized_errors)
 
+    # Fraction of held-out points whose standardized error lands inside the
+    # 95% predictive interval. Mirrors ``compute_loo_cv_for_model`` so the
+    # per-fold-refit path reports a measured coverage instead of the default.
+    coverage_95 = (
+        sum(1 for err in standardized_errors if err < CI_95_Z_SCORE) / len(standardized_errors)
+        if standardized_errors
+        else float("nan")
+    )
+
     return LOOCVMetrics(
         rmse=rmse,
         mae=mae,
         r_squared=r_squared,
         mean_standardized_error=mean_std_error,
         per_fold_errors=per_fold_errors,
+        coverage_95=coverage_95,
     )
 
 

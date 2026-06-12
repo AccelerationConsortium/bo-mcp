@@ -48,6 +48,14 @@ from bo_engine.constants import (
 )
 from bo_engine.device import ensure_device, get_device, get_dtype, to_device
 
+# Single source of truth for the constraint spec. This module deliberately
+# re-exports the canonical ``types`` dataclass instead of defining its own:
+# a local copy with ``name``/``bound``/``constraint_type`` fields used to
+# coexist here and was unified away. Do not reintroduce a separate class —
+# consumers below rely on the ``objective_name``/``threshold``/``greater_than``
+# shape, and ``bo_engine.OutcomeConstraintSpec`` must stay identical to this.
+from bo_engine.types import OutcomeConstraintSpec
+
 
 class ConstraintModelingMethod(Enum):
     """Method for modeling outcome constraints."""
@@ -55,36 +63,6 @@ class ConstraintModelingMethod(Enum):
     BINARY = "binary"  # Current: Convert to binary, fit GP on labels
     CONTINUOUS = "continuous"  # New: Model objective directly
     PROBABILISTIC_CLASSIFICATION = "probabilistic_classification"  # GP classification
-
-
-@dataclass
-class OutcomeConstraintSpec:
-    """Specification for an outcome constraint.
-
-    Attributes:
-        name: Name of the objective being constrained
-        bound: Constraint threshold value
-        constraint_type: String indicating constraint type, either "<=" or ">="
-    """
-
-    name: str
-    bound: float
-    constraint_type: str = "<="  # "<=" or ">="
-
-    @property
-    def greater_than(self) -> bool:
-        """Return True if constraint is objective >= bound."""
-        return self.constraint_type == ">="
-
-    @property
-    def threshold(self) -> float:
-        """Alias for bound for backward compatibility."""
-        return self.bound
-
-    @property
-    def objective_name(self) -> str:
-        """Alias for name for backward compatibility."""
-        return self.name
 
 
 @dataclass

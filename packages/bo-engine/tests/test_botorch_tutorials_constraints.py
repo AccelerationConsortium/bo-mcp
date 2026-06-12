@@ -70,21 +70,21 @@ class TestOutcomeConstraints:
         """OutcomeConstraintSpec should correctly represent constraints."""
         # Less than constraint: g(x) <= 0.5
         spec_lt = OutcomeConstraintSpec(
-            name="constraint",
-            bound=0.5,
-            constraint_type="<=",
+            objective_name="constraint",
+            threshold=0.5,
+            greater_than=False,
         )
-        assert spec_lt.bound == 0.5
-        assert spec_lt.constraint_type == "<="
+        assert spec_lt.threshold == 0.5
+        assert spec_lt.greater_than is False
 
         # Greater than constraint: g(x) >= 0.0
         spec_gt = OutcomeConstraintSpec(
-            name="constraint",
-            bound=0.0,
-            constraint_type=">=",
+            objective_name="constraint",
+            threshold=0.0,
+            greater_than=True,
         )
-        assert spec_gt.bound == 0.0
-        assert spec_gt.constraint_type == ">="
+        assert spec_gt.threshold == 0.0
+        assert spec_gt.greater_than is True
 
     @pytest.mark.smoke
     def test_constraint_probability_computation(self) -> None:
@@ -296,9 +296,9 @@ class TestOutcomeConstraintModeling:
             observations.append({"sum_constraint": constraint_value})
 
         constraint_spec = OutcomeConstraintSpec(
-            name="sum_constraint",
-            bound=0.0,
-            constraint_type="<=",
+            objective_name="sum_constraint",
+            threshold=0.0,
+            greater_than=False,
         )
 
         results = build_outcome_constraint_models(

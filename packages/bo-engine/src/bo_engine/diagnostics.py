@@ -58,7 +58,10 @@ class LOOCVMetrics:
     r_squared: float
     mean_standardized_error: float
     per_fold_errors: list[float]
-    coverage_95: float = 0.95  # Fraction of points within 95% CI
+    # Fraction of points whose held-out target falls within the 95% predictive
+    # interval. Defaults to NaN ("not measured") rather than the perfect 0.95 so
+    # callers can distinguish a computed-perfect calibration from an unset field.
+    coverage_95: float = float("nan")
 
 
 def compute_pareto_front(

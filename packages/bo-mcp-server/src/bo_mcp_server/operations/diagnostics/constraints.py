@@ -169,9 +169,9 @@ def _per_constraint_report(
         device=get_device(),
     )
     constraint_spec = EngineOutcomeConstraintSpec(
-        name=oc.objective_name,
-        bound=oc.threshold,
-        constraint_type=">=" if oc.greater_than else "<=",
+        objective_name=oc.objective_name,
+        threshold=oc.threshold,
+        greater_than=oc.greater_than,
     )
     per_reports = compute_outcome_constraint_calibration(
         constraint_specs=[constraint_spec],

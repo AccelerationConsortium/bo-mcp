@@ -100,7 +100,7 @@ class TestAssessConstraintModelQuality:
     def test_returns_new_calibration_metrics(self) -> None:
         train_x, obj = _make_balanced_dataset()
         bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
-        spec = OutcomeConstraintSpec(name="yield", bound=0.5, constraint_type="<=")
+        spec = OutcomeConstraintSpec(objective_name="yield", threshold=0.5, greater_than=False)
         result = build_constraint_model_binary(
             train_x,
             obj,
@@ -133,7 +133,7 @@ class TestAssessConstraintModelQuality:
         """Perfectly separable feasibility → small Brier on training data."""
         train_x, obj = _make_balanced_dataset()
         bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
-        spec = OutcomeConstraintSpec(name="yield", bound=0.5, constraint_type="<=")
+        spec = OutcomeConstraintSpec(objective_name="yield", threshold=0.5, greater_than=False)
         result = build_constraint_model_binary(
             train_x,
             obj,
@@ -155,8 +155,8 @@ class TestComputeOutcomeConstraintCalibration:
         bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
         objective_values = {"yield": obj.squeeze(-1)}
         constraint_specs = [
-            OutcomeConstraintSpec(name="yield", bound=0.5, constraint_type="<="),
-            OutcomeConstraintSpec(name="yield", bound=0.3, constraint_type=">="),
+            OutcomeConstraintSpec(objective_name="yield", threshold=0.5, greater_than=False),
+            OutcomeConstraintSpec(objective_name="yield", threshold=0.3, greater_than=True),
         ]
         reports = compute_outcome_constraint_calibration(
             constraint_specs=constraint_specs,
@@ -175,7 +175,7 @@ class TestComputeOutcomeConstraintCalibration:
         """A constraint that points at an unobserved objective surfaces a marker."""
         train_x, _ = _make_balanced_dataset()
         bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
-        specs = [OutcomeConstraintSpec(name="missing", bound=0.5, constraint_type="<=")]
+        specs = [OutcomeConstraintSpec(objective_name="missing", threshold=0.5, greater_than=False)]
         reports = compute_outcome_constraint_calibration(
             constraint_specs=specs,
             train_x=train_x,

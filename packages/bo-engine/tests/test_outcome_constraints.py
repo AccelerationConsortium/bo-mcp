@@ -102,6 +102,20 @@ class TestOutcomeConstraintSpec:
         assert oc.threshold == 100.0
         assert oc.greater_than is False
 
+    def test_single_spec_class_across_modules(self) -> None:
+        """The facade, ``types`` and ``outcome_constraints`` share one class.
+
+        Guards against the spec re-fragmenting into two same-named-but-
+        differently-shaped dataclasses (the calibration/diagnostics path
+        and the facade must consume the identical type).
+        """
+        import bo_engine
+        import bo_engine.outcome_constraints as oc_module
+        import bo_engine.types as types_module
+
+        assert bo_engine.OutcomeConstraintSpec is types_module.OutcomeConstraintSpec
+        assert oc_module.OutcomeConstraintSpec is types_module.OutcomeConstraintSpec
+
 
 class TestOutcomeConstraintIntegration:
     """Test outcome constraint integration with suggestions."""

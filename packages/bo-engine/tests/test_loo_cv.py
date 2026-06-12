@@ -75,6 +75,42 @@ class TestLOOCVMetricsComputation:
         assert len(metrics.per_fold_errors) <= n_samples
 
 
+class TestLOOCVCoverage:
+    """``coverage_95`` must report a measured value, never a perfect default.
+
+    The field defaults to NaN ("not computed") rather than 0.95, so a caller
+    can distinguish a measured-perfect calibration from a never-measured one.
+    The per-fold-refit path (``compute_loo_cv_metrics``) must populate it
+    from the held-out standardized errors instead of leaving the sentinel.
+    """
+
+    def test_coverage_is_nan_below_data_threshold(self) -> None:
+        """Insufficient data must surface NaN coverage, not the 0.95 default."""
+        train_x = torch.rand(2, 2, dtype=torch.double)
+        train_y = torch.rand(2, 1, dtype=torch.double)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+
+        metrics = compute_loo_cv_metrics(train_x, train_y, bounds)
+
+        assert math.isnan(metrics.coverage_95)
+
+    def test_coverage_is_measured_above_threshold(self) -> None:
+        """A well-specified GP yields a measured coverage in [0, 1]."""
+        torch.manual_seed(42)
+        # Smooth quadratic + small noise: the GP fits it well, so the 95%
+        # predictive interval should contain most held-out points.
+        train_x = torch.linspace(0, 1, 20, dtype=torch.float64).unsqueeze(-1)
+        train_y = (train_x - 0.5) ** 2 + 0.01 * torch.randn_like(train_x)
+        bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
+
+        metrics = compute_loo_cv_metrics(train_x, train_y, bounds)
+
+        assert not math.isnan(metrics.coverage_95)
+        assert 0.0 <= metrics.coverage_95 <= 1.0
+        # Well-specified model → most held-out points inside the 95% interval.
+        assert metrics.coverage_95 >= 0.6
+
+
 class TestLOOCVForModel:
     """Test LOO-CV for fitted models."""
 

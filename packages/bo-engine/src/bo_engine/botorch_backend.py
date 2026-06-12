@@ -473,10 +473,7 @@ class BoTorchBackend(BaseBackend):
 
         pareto_y, _ = compute_pareto_front(y_bo)
 
-        worst = y_bo.max(dim=0).values
-        ranges = y_bo.max(dim=0).values - y_bo.min(dim=0).values
-        ranges = torch.where(ranges < 1e-6, torch.ones_like(ranges), ranges)
-        ref_point = worst + 0.1 * ranges
+        ref_point = get_reference_point(y_bo, minimize_mask)
 
         return compute_hypervolume(pareto_y, ref_point)
 

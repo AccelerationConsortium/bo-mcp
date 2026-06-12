@@ -7,7 +7,6 @@ from bo_engine.convergence import (
     detect_hypervolume_convergence,
     detect_single_objective_convergence,
 )
-
 from bo_mcp_server.domain import CampaignSpec
 
 logger = logging.getLogger(__name__)

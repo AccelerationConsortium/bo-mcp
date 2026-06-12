@@ -50,7 +50,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from bo_engine.progress import ProgressCallback, ProgressEvent
-
 from bo_mcp_server.metrics import PROGRESS_NOTIFY_FAILURES
 
 if TYPE_CHECKING:

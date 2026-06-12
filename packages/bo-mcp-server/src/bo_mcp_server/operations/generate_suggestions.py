@@ -14,13 +14,17 @@ MCP event loop while other requests are served concurrently.
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from bo_engine.backend import BOBackend
-from bo_engine.backend_base import BackendError
+from bo_engine.backend_base import BackendError, BackendTransientError
 from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
 from bo_engine.convergence import (
     StoppingDecision,
@@ -31,9 +35,6 @@ from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.pending_points import filter_pending_points
 from bo_engine.progress import ProgressCallback
 from bo_engine.types import ObservationData, OptimizationSpec
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bo_mcp_server.backend import get_backend_async
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
@@ -65,6 +66,7 @@ from bo_mcp_server.response_formatter import (
     format_suggestions_response,
     with_response_metadata,
 )
+from bo_mcp_server.settings import get_bo_compute_timeout_seconds
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -937,6 +939,31 @@ def _build_pending_info(
     }
 
 
+async def _await_compute_with_timeout[T](compute: Awaitable[T]) -> T:
+    """Await a backend compute, optionally bounded by ``BO_COMPUTE_TIMEOUT_SECONDS``.
+
+    The compute runs on a worker thread (``asyncio.to_thread``) and is therefore
+    *not* cancellable: when the budget elapses ``asyncio.wait_for`` cancels the
+    awaiting coroutine and raises, but the worker thread keeps running until the
+    GP fit finishes (its result is then discarded). The bound's value is freeing
+    the request — and its idempotency reservation slot — from a hung backend, not
+    killing the thread. A timeout surfaces as a retryable
+    :class:`BackendTransientError` so the existing error routing returns a
+    ``BACKEND_TRANSIENT_ERROR`` envelope and the reservation is dropped for retry.
+    The budget defaults to a conservative 30 minutes (see
+    ``BO_COMPUTE_TIMEOUT_SECONDS``); ``0`` disables the timeout and waits
+    indefinitely.
+    """
+    timeout = get_bo_compute_timeout_seconds()
+    if timeout <= 0:
+        return await compute
+    try:
+        return await asyncio.wait_for(compute, timeout=timeout)
+    except TimeoutError as exc:
+        msg = f"Backend compute exceeded the {timeout:.0f}s timeout"
+        raise BackendTransientError(msg, cause=exc) from exc
+
+
 async def _compute_generation_batch(
     snapshot: _GenerationSnapshot,
     backend: BOBackend,
@@ -1203,7 +1230,7 @@ async def _generate_via_backend(
     # legitimately-slow runs (SAASBO MCMC, large batches) finish
     # without surrendering their slot to a concurrent retry storm.
     async with reservation_heartbeat():
-        batch = await asyncio.to_thread(
+        compute = asyncio.to_thread(
             backend.generate_suggestions,
             spec=opt_spec,
             observations=observations,
@@ -1213,6 +1240,7 @@ async def _generate_via_backend(
             pending_points=pending_parameter_values,
             progress_callback=progress_callback,
         )
+        batch = await _await_compute_with_timeout(compute)
     # Re-validate the batch shape against the documented contract.
     # ``bo-engine`` is Pydantic-free for third-party backend plugins, so
     # a misbehaving backend can hand us a partial dict that would otherwise

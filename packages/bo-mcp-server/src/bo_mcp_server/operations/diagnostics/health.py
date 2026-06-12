@@ -9,7 +9,6 @@ import logging
 from typing import Any
 
 from bo_engine.diagnostics import compute_campaign_health
-
 from bo_mcp_server.domain import CampaignSpec, Result
 
 logger = logging.getLogger(__name__)

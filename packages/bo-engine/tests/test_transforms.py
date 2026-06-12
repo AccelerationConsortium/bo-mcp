@@ -62,6 +62,46 @@ class TestTransforms:
         assert (bounds[0] == 0).all()
         assert (bounds[1] == 1).all()
 
+    def test_get_bounds_tensor_discrete_without_bounds_or_values_raises(self):
+        """A discrete parameter with neither bounds nor values fails loudly.
+
+        ``_encode_param_value`` emits exactly one column for a discrete
+        parameter, so a zero-column bounds contribution would silently shift
+        every subsequent parameter's bounds (a wrong-domain optimization that
+        need not even crash). The bounds builder must raise with the offending
+        parameter name, mirroring the continuous/categorical branches.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="bad", type=ParameterType.DISCRETE),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+
+        with pytest.raises(ValueError, match="Discrete parameter 'bad'"):
+            get_bounds_tensor(spec)
+
+    def test_bounds_tensor_width_matches_n_dims(self):
+        """Bounds-tensor width and ``get_n_dims`` agree for every parameter type.
+
+        Both helpers must report the same encoded width, otherwise the bounds
+        tensor and ``train_x`` columns misalign downstream. This pins the
+        invariant across a mixed continuous/discrete/categorical spec.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="d_bounds", type=ParameterType.DISCRETE, bounds=(1.0, 10.0)),
+                ParameterSpec(name="d_values", type=ParameterType.DISCRETE, values=[2.0, 4.0, 8.0]),
+                ParameterSpec(
+                    name="cat", type=ParameterType.CATEGORICAL, categories=["A", "B", "C"]
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+
+        assert get_bounds_tensor(spec).shape[1] == get_n_dims(spec)
+
     def test_get_n_dims(self):
         """get_n_dims counts dimensions correctly."""
         spec = OptimizationSpec(

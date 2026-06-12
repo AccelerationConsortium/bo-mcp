@@ -1,6 +1,7 @@
 """Tests for REST endpoints that mirror MCP-only functionality."""
 
 import pytest
+
 from bo_mcp_server.domain import ResultSubmissionInput
 from bo_mcp_server.operations.export_campaign import export_campaign_operation
 from bo_mcp_server.operations.list_capabilities import list_capabilities_operation

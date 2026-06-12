@@ -187,6 +187,16 @@ RAW_SAMPLES_MAX = 8192
 # no longer probing distinct basins and the BO algorithm is likely trapped.
 RESTART_WARN_TOLERANCE = 0.05
 
+# Per-restart L-BFGS-B inner-loop budget passed to ``optimize_acqf`` via its
+# ``options`` dict. ``batch_limit`` caps how many restarts run in one batched
+# gradient step (memory/parallelism trade-off); ``maxiter`` caps the L-BFGS-B
+# iterations per restart and materially affects convergence quality in high-D
+# campaigns. Defaults follow the BoTorch tutorial guidance (Balandat et al.,
+# 2020); centralized here (rather than inlined per call site) so continuous
+# and mixed acquisition paths cannot drift.
+ACQF_LBFGS_BATCH_LIMIT = 5
+ACQF_LBFGS_MAXITER = 200
+
 # Legacy compatibility aliases. Existing callers still reference these names;
 # they resolve to the base counts used by the dimension-adaptive formula.
 NUM_RESTARTS = NUM_RESTARTS_BASE

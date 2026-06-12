@@ -23,8 +23,8 @@ from baybe.recommenders import (
     TwoPhaseMetaRecommender,
 )
 from baybe.searchspace import SearchSpaceType
-from bo_engine.types import ObservationData, OptimizationSpec
 
+from bo_engine.types import ObservationData, OptimizationSpec
 from bo_engine_baybe.converters import (
     observations_to_dataframe,
     spec_to_acquisition_function,

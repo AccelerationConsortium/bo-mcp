@@ -154,7 +154,7 @@ class TestLiveMockDipoleCampaign:
             headers=HEADERS,
             timeout=60.0,
         )
-        assert create.status_code == 200, create.text
+        assert create.status_code == 201, create.text
         create_data = create.json()
         assert create_data["success"] is True, create_data
         campaign_id = create_data["campaign_id"]
@@ -168,7 +168,7 @@ class TestLiveMockDipoleCampaign:
                 headers=HEADERS,
                 timeout=60.0,
             )
-            assert generate.status_code == 200, generate.text
+            assert generate.status_code == 201, generate.text
             generate_data = generate.json()
             assert generate_data["success"] is True, generate_data
 
@@ -210,7 +210,7 @@ class TestLiveMockDipoleCampaign:
                 headers=HEADERS,
                 timeout=60.0,
             )
-            assert submit.status_code == 200, submit.text
+            assert submit.status_code == 201, submit.text
             submit_data = submit.json()
             assert submit_data["success"] is True, (
                 f"Result submission failed on iteration {iteration}: {submit_data}"

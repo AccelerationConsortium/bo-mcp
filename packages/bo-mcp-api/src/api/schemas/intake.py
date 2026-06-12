@@ -14,6 +14,13 @@ without a ``model_dump() -> model_validate()`` round-trip.
 
 from typing import Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from api.limits import (
+    MAX_INTAKE_CONSTRAINTS,
+    MAX_INTAKE_OBJECTIVES,
+    MAX_INTAKE_PARAMETERS,
+)
 from bo_mcp_server.client import (
     AcquisitionMethod,
     AcquisitionOptimizationConfig,
@@ -25,13 +32,6 @@ from bo_mcp_server.client import (
     SaasboConfig,
     TransferLearningConfig,
     TurboConfig,
-)
-from pydantic import BaseModel, ConfigDict, Field
-
-from api.limits import (
-    MAX_INTAKE_CONSTRAINTS,
-    MAX_INTAKE_OBJECTIVES,
-    MAX_INTAKE_PARAMETERS,
 )
 
 
@@ -104,7 +104,8 @@ class IntakeData(BaseModel):
     outcome_constraints: tuple[OutcomeConstraint, ...] = Field(default_factory=tuple)
     # Caller opt-in to "this backend may silently drop these option
     # fields". Mirrors :class:`CampaignIntakeInput.acknowledge_degradations`
-    # so the REST and MCP transports accept the same shape.
-    acknowledge_degradations: list[str] = Field(default_factory=list)
+    # (same ``tuple[str, ...]`` annotation) so the REST and MCP transports
+    # accept and validate the identical shape.
+    acknowledge_degradations: tuple[str, ...] = Field(default_factory=tuple)
 
     model_config = ConfigDict(extra="forbid")

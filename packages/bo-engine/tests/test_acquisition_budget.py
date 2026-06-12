@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import torch
 
-from bo_engine.acquisition import _resolve_restart_budget
+from bo_engine.acquisition import _lbfgs_options, _resolve_restart_budget
 from bo_engine.constants import (
+    ACQF_LBFGS_BATCH_LIMIT,
+    ACQF_LBFGS_MAXITER,
     NUM_RESTARTS_BASE,
     NUM_RESTARTS_MAX,
     NUM_RESTARTS_PER_DIM,
@@ -142,3 +144,26 @@ class TestConfigResolveMonotonicity:
             _, samples = config.resolve(d)
             assert samples >= last
             last = samples
+
+
+class TestLbfgsOptions:
+    """The shared L-BFGS-B options helper feeds both ``optimize_acqf`` paths."""
+
+    def test_options_come_from_constants(self) -> None:
+        """The helper injects the centralized batch_limit / maxiter constants.
+
+        Pins the M10 fix: the continuous and mixed acquisition paths build
+        their ``options`` dict from one helper so the L-BFGS-B budget cannot
+        drift between them or diverge from ``constants``.
+        """
+        options = _lbfgs_options()
+        assert options == {
+            "batch_limit": ACQF_LBFGS_BATCH_LIMIT,
+            "maxiter": ACQF_LBFGS_MAXITER,
+        }
+
+    def test_options_are_independent_copies(self) -> None:
+        """Each call returns a fresh dict so a mutating caller cannot leak state."""
+        first = _lbfgs_options()
+        first["maxiter"] = -1
+        assert _lbfgs_options()["maxiter"] == ACQF_LBFGS_MAXITER

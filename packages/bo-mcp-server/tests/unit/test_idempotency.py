@@ -378,6 +378,164 @@ async def test_apply_idempotency_drops_reservation_on_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_idempotency_drops_reservation_on_cancelled_error() -> None:
+    """An executor raising ``asyncio.CancelledError`` still frees the slot.
+
+    ``CancelledError`` is a ``BaseException`` subclass, so the broad
+    ``except Exception`` cleanup does not catch it. Before the fix the
+    reservation stayed ``pending`` until its TTL and the immediate retry
+    saw ``IDEMPOTENCY_IN_PROGRESS`` though nothing was running. The
+    dedicated ``except asyncio.CancelledError`` clause must drop the slot
+    so the retry executes.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    n_calls = 0
+
+    async def run(_session: AsyncSession) -> dict[str, Any]:
+        nonlocal n_calls
+        n_calls += 1
+        if n_calls == 1:
+            raise asyncio.CancelledError
+        return {"success": True, "attempt": n_calls}
+
+    with pytest.raises(asyncio.CancelledError):
+        await apply_idempotency(
+            tool_name="test_tool",
+            idempotency_key="key-cancel",
+            request_payload={"x": 1},
+            executor=run,
+        )
+
+    result = await apply_idempotency(
+        tool_name="test_tool",
+        idempotency_key="key-cancel",
+        request_payload={"x": 1},
+        executor=run,
+    )
+
+    # The retry executed instead of returning IDEMPOTENCY_IN_PROGRESS.
+    assert result["attempt"] == 2
+    assert result.get("idempotency_replay") is not True
+
+
+@pytest.mark.asyncio
+async def test_apply_idempotency_drops_reservation_on_task_cancel() -> None:
+    """A real ``task.cancel()`` mid-execution frees the slot for retry.
+
+    Mirrors the production failure mode: an MCP client disconnects and the
+    server cancels the in-flight tool task. The reservation must not be
+    left ``pending``; a follow-up call with the same key must execute.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    started = asyncio.Event()
+    n_calls = 0
+
+    async def run(_session: AsyncSession) -> dict[str, Any]:
+        nonlocal n_calls
+        n_calls += 1
+        if n_calls == 1:
+            started.set()
+            # Block until cancelled by the outer task.cancel().
+            await asyncio.sleep(3600)
+        return {"success": True, "attempt": n_calls}
+
+    task = asyncio.create_task(
+        apply_idempotency(
+            tool_name="test_tool",
+            idempotency_key="key-task-cancel",
+            request_payload={"x": 1},
+            executor=run,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    result = await apply_idempotency(
+        tool_name="test_tool",
+        idempotency_key="key-task-cancel",
+        request_payload={"x": 1},
+        executor=run,
+    )
+
+    assert result["attempt"] == 2
+    assert result.get("idempotency_replay") is not True
+
+
+@pytest.mark.asyncio
+async def test_double_cancellation_during_cleanup_still_drops_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second cancel while the reservation drop is awaiting must not leak the slot.
+
+    The cancellation handler drops the reservation as a *shielded* task and
+    awaits it to completion in ``finally`` even when its own wait is cancelled
+    again (server shutdown, an impatient client). Without the shield the second
+    cancel would interrupt the drop mid-flight and the slot would stay
+    ``pending`` until its TTL — the exact failure M36 closes. We drive the
+    race deterministically by blocking the drop on an event so the second
+    cancel lands while it is in progress.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    import bo_mcp_server.idempotency as idem
+
+    original_drop = idem._drop_reservation
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    dropped = asyncio.Event()
+
+    async def blocking_drop(tool_name: str, idempotency_key: str, reservation_token: str) -> None:
+        entered.set()
+        await release.wait()
+        await original_drop(tool_name, idempotency_key, reservation_token)
+        dropped.set()
+
+    monkeypatch.setattr(idem, "_drop_reservation", blocking_drop)
+
+    started = asyncio.Event()
+    n_calls = 0
+
+    async def run(_session: AsyncSession) -> dict[str, Any]:
+        nonlocal n_calls
+        n_calls += 1
+        if n_calls == 1:
+            started.set()
+            await asyncio.sleep(3600)
+        return {"success": True, "attempt": n_calls}
+
+    task = asyncio.create_task(
+        apply_idempotency(
+            tool_name="test_tool",
+            idempotency_key="key-double-cancel",
+            request_payload={"x": 1},
+            executor=run,
+        )
+    )
+    await started.wait()
+    task.cancel()  # first cancel → enters the shielded drop
+    await entered.wait()
+    task.cancel()  # second cancel → interrupts our shielded wait
+    release.set()  # let the (shielded) drop finish
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await dropped.wait()
+
+    # The reservation was dropped despite the double cancel, so a retry runs.
+    result = await apply_idempotency(
+        tool_name="test_tool",
+        idempotency_key="key-double-cancel",
+        request_payload={"x": 1},
+        executor=run,
+    )
+    assert result["attempt"] == 2
+    assert result.get("idempotency_replay") is not True
+
+
+@pytest.mark.asyncio
 async def test_canonical_hash_accepts_large_payload() -> None:
     """Large payloads hash without raising — SHA256 is O(n) and cheap.
 

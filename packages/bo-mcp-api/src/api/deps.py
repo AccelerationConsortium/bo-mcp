@@ -8,6 +8,9 @@ imported here directly; the facade owns that translation.
 from typing import Annotated
 from uuid import UUID
 
+from fastapi import Depends, Header, HTTPException, Security, status
+from fastapi.security import APIKeyHeader
+
 from bo_mcp_server.client import (
     Campaign,
     InvalidIdentifierError,
@@ -23,8 +26,6 @@ from bo_mcp_server.client import (
 from bo_mcp_server.client import (
     ensure_owned_campaigns as _ensure_owned_campaigns,
 )
-from fastapi import Depends, Header, HTTPException, Security, status
-from fastapi.security import APIKeyHeader
 
 api_key_header = APIKeyHeader(
     name="X-API-Key",

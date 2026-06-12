@@ -18,7 +18,6 @@ from bo_engine.interop import (
     BAYBE_PARAMETER_ROLE_KEY,
     BAYBE_SUBSTANCE_ROLE,
 )
-
 from bo_engine_baybe.backend import BayBEBackend
 from bo_engine_baybe.options import BayBEParameterOptions, BayBEParameterRole
 

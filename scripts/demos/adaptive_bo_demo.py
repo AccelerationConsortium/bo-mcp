@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from adaptive_bo_benchmarks import BENCHMARKS, BenchmarkFunction, get_benchmark
 from adaptive_bo_database import AdaptiveBODatabase
 from adaptive_bo_plots import create_dashboard, save_plots
+
 from bo_mcp_server.domain import User
 from bo_mcp_server.storage import UserRepository, get_session, init_database
 from bo_mcp_server.tools.create_campaign import create_campaign

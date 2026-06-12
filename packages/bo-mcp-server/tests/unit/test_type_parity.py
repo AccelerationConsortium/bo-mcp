@@ -12,7 +12,6 @@ Reference: https://docs.python.org/3/library/enum.html
 from bo_engine.types import AcquisitionMethod as BOAcquisitionMethod
 from bo_engine.types import ConstraintType as BOConstraintType
 from bo_engine.types import ParameterType as BOParameterType
-
 from bo_mcp_server.domain import (
     AcquisitionMethod,
     ConstraintType,

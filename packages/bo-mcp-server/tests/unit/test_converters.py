@@ -16,7 +16,6 @@ from bo_engine.types import (
 from bo_engine.types import (
     ParameterType as BOParameterType,
 )
-
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     AcquisitionMethod,

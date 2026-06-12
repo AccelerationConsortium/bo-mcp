@@ -47,6 +47,7 @@ from baybe import Campaign
 from baybe import __version__ as baybe_version
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
 from baybe.utils.random import temporary_seed
+
 from bo_engine.backend import (
     Feature,
     SuggestionBatch,
@@ -83,7 +84,6 @@ from bo_engine.types import (
     ObservationData,
     OptimizationSpec,
 )
-
 from bo_engine_baybe.capabilities import (
     _BAYBE_DEGRADABLE_FEATURES,
     _CHEMISTRY_AVAILABLE,

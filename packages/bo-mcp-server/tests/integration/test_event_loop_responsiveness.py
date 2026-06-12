@@ -30,8 +30,8 @@ import time
 from uuid import uuid4
 
 import pytest
-from bo_engine.botorch_backend import BoTorchBackend
 
+from bo_engine.botorch_backend import BoTorchBackend
 from bo_mcp_server import backend as backend_module
 
 # Chosen so the test stays hermetic under CI load: long enough that any

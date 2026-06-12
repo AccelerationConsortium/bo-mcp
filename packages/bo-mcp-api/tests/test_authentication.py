@@ -20,6 +20,7 @@ References
 from __future__ import annotations
 
 import pytest
+
 from bo_mcp_server.tools.create_campaign import create_campaign
 
 pytestmark = pytest.mark.usefixtures("persisted_user")

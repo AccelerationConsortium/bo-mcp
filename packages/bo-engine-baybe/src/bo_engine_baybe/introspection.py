@@ -16,12 +16,12 @@ from typing import cast
 import pandas as pd
 import torch
 from baybe import Campaign
+from botorch.models import ModelListGP, SingleTaskGP
+
 from bo_engine.device import get_device, get_dtype
 from bo_engine.diagnostics import observations_to_minimization_form
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.types import ObservationData, OptimizationSpec
-from botorch.models import ModelListGP, SingleTaskGP
-
 from bo_engine_baybe.converters import observations_to_dataframe
 from bo_engine_baybe.state import _BAYBE_SAFE_EXCEPTIONS, _build_campaign
 

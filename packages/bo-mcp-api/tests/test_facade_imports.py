@@ -1,17 +1,31 @@
 """Enforce the ``bo_mcp_server.client`` facade boundary.
 
 The REST API is a transport adapter; it must import from
-:mod:`bo_mcp_server.client` only. Direct imports from
-:mod:`bo_mcp_server.storage`, :mod:`bo_mcp_server.operations`,
-:mod:`bo_mcp_server.domain`, :mod:`bo_mcp_server.errors`,
-:mod:`bo_mcp_server.response_formatter`, or
-:mod:`bo_mcp_server.result_upload_parser` indicate a leaked internal —
-storage refactors then ripple into REST contracts and the boundary
-becomes fictitious (see project guidance on the API/server boundary).
+:mod:`bo_mcp_server.client` only. Any other ``bo_mcp_server.*`` import is a
+leaked internal — storage / operations / domain refactors then ripple into
+REST contracts and the boundary becomes fictitious (see project guidance on
+the API/server boundary).
 
-Test-suite files are intentionally exempt: they exercise storage
-fixtures and persisted-row helpers that are not part of the public
-facade contract.
+This guard is an **allowlist**, not a denylist. A denylist of forbidden
+prefixes lets every newly-added server module through by default and
+silently leaks (e.g. ``bo_mcp_server.idempotency_gc`` does not prefix-match
+``bo_mcp_server.idempotency``). The allowlist inverts that: only
+:mod:`bo_mcp_server.client` (and its submodules) is permitted, plus one
+narrowly-scoped, documented exception:
+
+* :mod:`bo_mcp_server.logging_config` — imported once in ``api.main`` to
+  call ``configure_logging()`` *before* importing the facade, whose import
+  chain emits a backend-discovery log record at import time. Routing this
+  through the facade would import the facade first and defeat the ordering,
+  so the direct import is intentional.
+
+Every other transport-support symbol the API needs (idempotency GC
+lifespan, trace-context binding, OpenAPI schema augmentation) is re-exported
+from :mod:`bo_mcp_server.client` so the API imports it via the facade.
+
+Test-suite files are intentionally exempt: they exercise storage fixtures
+and persisted-row helpers that are not part of the public facade contract
+(only ``src/api`` is scanned).
 
 Reference: scanning project source for forbidden imports is a standard
 architecture-fitness function; see e.g. ArchUnit (Java) or the
@@ -27,23 +41,12 @@ import pytest
 
 API_SRC = Path(__file__).resolve().parent.parent / "src" / "api"
 
-# Every internal submodule the API must not import from directly.
-FORBIDDEN_PREFIXES = (
-    "bo_mcp_server.storage",
-    "bo_mcp_server.operations",
-    "bo_mcp_server.domain",
-    "bo_mcp_server.errors",
-    "bo_mcp_server.response_formatter",
-    "bo_mcp_server.result_upload_parser",
-    "bo_mcp_server.tools",
-    "bo_mcp_server.resources",
-    "bo_mcp_server.converters",
-    "bo_mcp_server.audit",
-    "bo_mcp_server.cache",
-    "bo_mcp_server.idempotency",
-    "bo_mcp_server.pagination",
-    "bo_mcp_server.progress_bridge",
-    "bo_mcp_server.constants",
+# The only ``bo_mcp_server.*`` modules the REST API may import directly. Any
+# other ``bo_mcp_server`` import is a leaked internal. See the module
+# docstring for why ``logging_config`` is permitted.
+ALLOWED_MODULES = (
+    "bo_mcp_server.client",
+    "bo_mcp_server.logging_config",
 )
 
 
@@ -51,23 +54,34 @@ def _iter_python_files(root: Path) -> list[Path]:
     return [p for p in root.rglob("*.py") if "__pycache__" not in p.parts]
 
 
+def _is_bo_mcp_server_module(module: str) -> bool:
+    """True when ``module`` is the server package or one of its submodules."""
+    return module == "bo_mcp_server" or module.startswith("bo_mcp_server.")
+
+
+def _is_allowed(module: str) -> bool:
+    """True when ``module`` is the facade or a documented allowlist exception."""
+    return any(module == allowed or module.startswith(allowed + ".") for allowed in ALLOWED_MODULES)
+
+
+def _imported_modules(node: ast.AST) -> list[tuple[str, str]]:
+    """Return ``(module, rendered)`` for each import statement on ``node``."""
+    if isinstance(node, ast.ImportFrom) and node.module:
+        names = ", ".join(alias.name for alias in node.names)
+        return [(node.module, f"{node.lineno} from {node.module} import {names}")]
+    if isinstance(node, ast.Import):
+        return [(alias.name, f"{node.lineno} import {alias.name}") for alias in node.names]
+    return []
+
+
 def _collect_forbidden_imports(path: Path) -> list[str]:
-    """Return the offending ``from ... import ...`` statements in ``path``."""
+    """Return ``bo_mcp_server`` imports in ``path`` that bypass the facade."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     offenders: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            for prefix in FORBIDDEN_PREFIXES:
-                if node.module == prefix or node.module.startswith(prefix + "."):
-                    names = ", ".join(alias.name for alias in node.names)
-                    offenders.append(f"{path.name}:{node.lineno} from {node.module} import {names}")
-                    break
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                for prefix in FORBIDDEN_PREFIXES:
-                    if alias.name == prefix or alias.name.startswith(prefix + "."):
-                        offenders.append(f"{path.name}:{node.lineno} import {alias.name}")
-                        break
+        for module, rendered in _imported_modules(node):
+            if _is_bo_mcp_server_module(module) and not _is_allowed(module):
+                offenders.append(f"{path.name}:{rendered}")
     return offenders
 
 
@@ -81,5 +95,6 @@ def test_api_module_imports_only_from_client_facade(py_file: Path) -> None:
     offenders = _collect_forbidden_imports(py_file)
     assert not offenders, (
         f"{py_file.relative_to(API_SRC)} reaches into bo_mcp_server internals. "
-        "Import via bo_mcp_server.client instead:\n  " + "\n  ".join(offenders)
+        "Import via bo_mcp_server.client instead (or, for bootstrap ordering, "
+        "bo_mcp_server.logging_config):\n  " + "\n  ".join(offenders)
     )

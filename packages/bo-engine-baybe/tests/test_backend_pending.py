@@ -13,6 +13,7 @@ Reference: BayBE asynchronous-workflow docs (pending experiments).
 from __future__ import annotations
 
 import pytest
+
 from bo_engine.types import (
     ObjectiveSpec,
     ObservationData,
@@ -20,7 +21,6 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-
 from bo_engine_baybe.backend import BayBEBackend
 
 

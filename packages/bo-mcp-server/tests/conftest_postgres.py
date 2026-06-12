@@ -112,7 +112,7 @@ def postgres_engine(postgres_url: str):
     )
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def postgres_tables(postgres_engine):
     """Create all database tables in the PostgreSQL container.
 
@@ -130,9 +130,10 @@ async def postgres_tables(postgres_engine):
     #     await conn.run_sync(Base.metadata.drop_all)
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def postgres_session(
-    request: pytest.FixtureRequest, postgres_engine
+    postgres_tables,  # noqa: ARG001 - requested for its schema-creation side effect
+    postgres_engine,
 ) -> AsyncGenerator[AsyncSession]:
     """Create an async session for PostgreSQL integration tests.
 
@@ -153,7 +154,6 @@ async def postgres_session(
     Yields:
         AsyncSession: Database session connected to PostgreSQL.
     """
-    request.getfixturevalue("postgres_tables")
     async with postgres_engine.connect() as connection:
         outer_transaction = await connection.begin()
         session = AsyncSession(bind=connection, expire_on_commit=True)
@@ -176,9 +176,10 @@ async def postgres_session(
                 await outer_transaction.rollback()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def postgres_session_committed(
-    request: pytest.FixtureRequest, postgres_engine
+    postgres_tables,  # noqa: ARG001 - requested for its schema-creation side effect
+    postgres_engine,
 ) -> AsyncGenerator[AsyncSession]:
     """Create a session that commits changes (for tests that need persistence).
 
@@ -190,7 +191,6 @@ async def postgres_session_committed(
     Yields:
         AsyncSession: Database session that commits changes.
     """
-    request.getfixturevalue("postgres_tables")
     async_session_factory = async_sessionmaker(
         postgres_engine,
         class_=AsyncSession,

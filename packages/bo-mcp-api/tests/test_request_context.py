@@ -13,8 +13,6 @@ import json
 import logging
 
 import pytest
-from bo_mcp_server.logging_config import configure_logging
-from bo_mcp_server.trace_context import bind_trace_id
 
 from api.request_context import (
     RequestIdLogFilter,
@@ -22,6 +20,8 @@ from api.request_context import (
     install_request_id_log_filter,
     request_id_var,
 )
+from bo_mcp_server.logging_config import configure_logging
+from bo_mcp_server.trace_context import bind_trace_id
 
 pytestmark = pytest.mark.usefixtures("persisted_user")
 

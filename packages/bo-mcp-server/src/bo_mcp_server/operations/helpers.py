@@ -9,7 +9,6 @@ from typing import Any
 from uuid import UUID
 
 from bo_engine.types import ObservationData
-
 from bo_mcp_server.domain import Result
 from bo_mcp_server.errors import ErrorCode, ValidationError, make_error_response
 from bo_mcp_server.response_formatter import VerbosityLevel

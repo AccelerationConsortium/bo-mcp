@@ -66,7 +66,7 @@ class TestAPIEndpoints:
             json=intake_data,
             headers=HEADERS,
         )
-        assert response.status_code == 200, f"Create campaign failed: {response.text}"
+        assert response.status_code == 201, f"Create campaign failed: {response.text}"
         data = response.json()
         assert data["success"] is True, f"Campaign creation failed: {data.get('errors')}"
         assert data["campaign_id"] is not None
@@ -121,7 +121,7 @@ class TestAPIEndpoints:
             f"{BASE_URL}/api/suggestions/{TestAPIEndpoints.campaign_id}/generate",
             headers=HEADERS,
         )
-        assert response.status_code == 200, f"Generate suggestions failed: {response.text}"
+        assert response.status_code == 201, f"Generate suggestions failed: {response.text}"
         data = response.json()
         assert data["success"] is True, f"Generation failed: {data.get('errors')}"
         assert len(data["suggestions"]) > 0
@@ -163,7 +163,7 @@ class TestAPIEndpoints:
             json=results_data,
             headers=HEADERS,
         )
-        assert response.status_code == 200, f"Submit results failed: {response.text}"
+        assert response.status_code == 201, f"Submit results failed: {response.text}"
         data = response.json()
         assert data["success"] is True, f"Result submission failed: {data.get('errors')}"
         assert len(data["result_ids"]) > 0
@@ -273,7 +273,7 @@ class TestAPIEndpoints:
             json=compare_intake,
             headers=HEADERS,
         )
-        assert create_response.status_code == 200, (
+        assert create_response.status_code == 201, (
             f"Create compare campaign failed: {create_response.text}"
         )
         TestAPIEndpoints.compare_campaign_id = create_response.json()["campaign_id"]
@@ -282,7 +282,7 @@ class TestAPIEndpoints:
             f"{BASE_URL}/api/suggestions/{TestAPIEndpoints.compare_campaign_id}/generate",
             headers=HEADERS,
         )
-        assert generate_response.status_code == 200, (
+        assert generate_response.status_code == 201, (
             f"Generate compare suggestions failed: {generate_response.text}"
         )
 
@@ -300,7 +300,7 @@ class TestAPIEndpoints:
             json=result_payload,
             headers=HEADERS,
         )
-        assert submit_response.status_code == 200, (
+        assert submit_response.status_code == 201, (
             f"Submit compare results failed: {submit_response.text}"
         )
 
@@ -372,10 +372,10 @@ class TestAPIEndpoints:
             json=target_intake,
             headers=HEADERS,
         )
-        assert source_response.status_code == 200, (
+        assert source_response.status_code == 201, (
             f"Create transfer source failed: {source_response.text}"
         )
-        assert target_response.status_code == 200, (
+        assert target_response.status_code == 201, (
             f"Create transfer target failed: {target_response.text}"
         )
 
@@ -386,7 +386,7 @@ class TestAPIEndpoints:
             f"{BASE_URL}/api/suggestions/{TestAPIEndpoints.transfer_source_campaign_id}/generate",
             headers=HEADERS,
         )
-        assert generate_response.status_code == 200, (
+        assert generate_response.status_code == 201, (
             f"Generate transfer suggestions failed: {generate_response.text}"
         )
 
@@ -412,7 +412,7 @@ class TestAPIEndpoints:
             json=result_payload,
             headers=HEADERS,
         )
-        assert submit_response.status_code == 200, (
+        assert submit_response.status_code == 201, (
             f"Submit transfer results failed: {submit_response.text}"
         )
 

@@ -34,11 +34,7 @@ from enum import Enum
 from typing import Any
 
 import torch
-from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
-from botorch.models.transforms.input import Normalize
-from botorch.models.transforms.outcome import Standardize
-from gpytorch.mlls import ExactMarginalLogLikelihood
 from sklearn.metrics import roc_auc_score
 from torch import Tensor
 
@@ -47,6 +43,7 @@ from bo_engine.constants import (
     CONSTRAINT_CALIBRATION_WARN_THRESHOLD,
 )
 from bo_engine.device import ensure_device, get_device, get_dtype, to_device
+from bo_engine.models import create_and_fit_single_task_model
 
 # Single source of truth for the constraint spec. This module deliberately
 # re-exports the canonical ``types`` dataclass instead of defining its own:
@@ -138,18 +135,11 @@ def build_constraint_model_continuous(
     if objective_values.dim() == 1:
         objective_values = objective_values.unsqueeze(-1)
 
-    n_dims = train_x.shape[-1]
-
-    # Fit GP directly to objective values
-    model = SingleTaskGP(
-        train_X=train_x,
-        train_Y=objective_values,
-        input_transform=Normalize(d=n_dims, bounds=bounds),
-        outcome_transform=Standardize(m=1),
-    )
-
-    mll = ExactMarginalLogLikelihood(model.likelihood, model)
-    fit_gpytorch_mll(mll)
+    # Fit GP directly to objective values through the hardened factory so the
+    # constraint GP inherits the calibrated noise prior + inferred-noise floor,
+    # ModelFittingError wrapping, and post-fit verification (single source of
+    # truth shared with the pipeline's constraint-GP path).
+    model = create_and_fit_single_task_model(train_x, objective_values, bounds)
 
     # Compute feasibility rate
     if constraint_spec.greater_than:
@@ -197,24 +187,16 @@ def build_constraint_model_binary(
     if objective_values.dim() == 1:
         objective_values = objective_values.unsqueeze(-1)
 
-    n_dims = train_x.shape[-1]
-
     # Convert to binary feasibility
     if constraint_spec.greater_than:
         feasible = (objective_values >= constraint_spec.threshold).double()
     else:
         feasible = (objective_values <= constraint_spec.threshold).double()
 
-    # Fit GP on binary labels
-    model = SingleTaskGP(
-        train_X=train_x,
-        train_Y=feasible,
-        input_transform=Normalize(d=n_dims, bounds=bounds),
-        outcome_transform=Standardize(m=1),
-    )
-
-    mll = ExactMarginalLogLikelihood(model.likelihood, model)
-    fit_gpytorch_mll(mll)
+    # Fit GP on binary labels through the hardened factory (see the continuous
+    # builder); the factory normalizes dtype, so the prior ``.double()`` and the
+    # continuous path's engine-dtype targets converge on the same scale.
+    model = create_and_fit_single_task_model(train_x, feasible, bounds)
 
     feasibility_rate = feasible.mean().item()
 
@@ -491,17 +473,13 @@ def assess_constraint_model_quality(
     if actual_feasible.sum() > 0 and actual_feasible.sum() < len(actual_feasible):
         try:
             auc = roc_auc_score(actual_feasible.cpu().numpy(), probs.detach().cpu().numpy())
-        except ImportError:
-            # Compute simple AUC approximation
-            feasible_probs = probs[actual_feasible == 1]
-            infeasible_probs = probs[actual_feasible == 0]
-            if len(feasible_probs) > 0 and len(infeasible_probs) > 0:
-                auc = (
-                    (feasible_probs.unsqueeze(1) > infeasible_probs.unsqueeze(0))
-                    .float()
-                    .mean()
-                    .item()
-                )
+        except ValueError:
+            # ``roc_auc_score`` raises ``ValueError`` on degenerate inputs
+            # (e.g. a single class slipping past the guard above); fall back
+            # to the uninformative 0.5 rather than propagating. sklearn is a
+            # hard dependency imported at module top, so ``ImportError`` is
+            # impossible at this call site.
+            auc = 0.5
 
     # Boundary uncertainty: uncertainty at points near threshold
     model_result.model.eval()

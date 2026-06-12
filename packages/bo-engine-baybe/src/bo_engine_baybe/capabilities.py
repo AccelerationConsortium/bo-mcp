@@ -12,13 +12,13 @@ from __future__ import annotations
 from typing import Any
 
 import pydantic
+
 from bo_engine.backend import Feature
 from bo_engine.backend_base import (
     CapabilityReport,
     CapabilityStatus,
 )
 from bo_engine.types import OptimizationSpec, ParameterSpec, ParameterType
-
 from bo_engine_baybe.options import (
     BayBEParameterOptions,
     BayBEParameterRole,

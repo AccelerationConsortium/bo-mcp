@@ -21,7 +21,6 @@ from uuid import UUID
 
 from bo_engine.backend import BOBackend
 from bo_engine.constants import DUPLICATE_DETECTION_TOLERANCE
-
 from bo_mcp_server.domain import (
     CampaignSpec,
     Result,

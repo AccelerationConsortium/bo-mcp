@@ -26,6 +26,7 @@ from baybe.parameters import (
 )
 from baybe.searchspace import SearchSpace
 from baybe.targets import NumericalTarget
+
 from bo_engine.spec_ir import (
     ConstraintTargetClass,
     NormalizedConstraint,
@@ -45,7 +46,6 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-
 from bo_engine_baybe.options import (
     DEFAULT_SUBSTANCE_ENCODING,
     BayBEParameterEncoding,

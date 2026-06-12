@@ -13,6 +13,7 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
+
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
 
 pytestmark = pytest.mark.usefixtures("persisted_user")

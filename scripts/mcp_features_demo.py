@@ -256,6 +256,7 @@ def demo_loo_cv_diagnostics():
     print()
 
     import torch
+
     from bo_engine.transforms import get_bounds_tensor
 
     # Create spec with enough data for LOO-CV

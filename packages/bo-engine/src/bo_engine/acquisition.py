@@ -39,6 +39,8 @@ from botorch.optim.optimize import optimize_acqf_discrete, optimize_acqf_mixed
 from torch import Tensor
 
 from bo_engine.constants import (
+    ACQF_LBFGS_BATCH_LIMIT,
+    ACQF_LBFGS_MAXITER,
     COST_AWARE_MIN_EXPECTED_COST,
     MIXED_CATEGORICAL_COMBO_THRESHOLD,
     NUMERICAL_EPSILON,
@@ -1063,6 +1065,20 @@ def _merge_avoid_tensors(
     return torch.cat([x_avoid, X_pending], dim=0)
 
 
+def _lbfgs_options() -> dict[str, bool | float | int | str]:
+    """L-BFGS-B inner-loop options shared by the continuous and mixed paths.
+
+    Centralizing the dict keeps the two ``optimize_acqf`` call sites from
+    drifting and routes the budget knobs through ``constants`` per project
+    policy. The return type matches BoTorch's ``optimize_acqf(options=...)``
+    parameter so the (invariant) ``dict`` value type checks at both call sites.
+    """
+    return {
+        "batch_limit": ACQF_LBFGS_BATCH_LIMIT,
+        "maxiter": ACQF_LBFGS_MAXITER,
+    }
+
+
 def _optimize_continuous(
     acqf: AcquisitionFunction,
     bounds: Tensor,
@@ -1104,10 +1120,7 @@ def _optimize_continuous(
         "raw_samples": raw_samples,
         "sequential": not capture_restarts,
         "return_best_only": not capture_restarts,
-        "options": {
-            "batch_limit": 5,
-            "maxiter": 200,
-        },
+        "options": _lbfgs_options(),
     }
     if inequality_constraints:
         kwargs["inequality_constraints"] = inequality_constraints
@@ -1252,10 +1265,7 @@ def _optimize_mixed(
         num_restarts=num_restarts,
         raw_samples=raw_samples,
         fixed_features_list=fixed_features,
-        options={
-            "batch_limit": 5,
-            "maxiter": 200,
-        },
+        options=_lbfgs_options(),
     )
     return candidates, acq_values
 

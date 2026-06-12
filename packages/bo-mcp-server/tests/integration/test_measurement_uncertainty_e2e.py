@@ -30,9 +30,9 @@ async def test_measurement_uncertainty_drives_fixed_noise_likelihood() -> None:
     # Patch where the GP factory is *resolved* at call time. The single-
     # objective dispatch lives in :mod:`bo_engine.suggestions_single_objective`
     # after the suggestions god-module split.
-    from bo_engine import suggestions_single_objective as sugg_mod
     from gpytorch.likelihoods import FixedNoiseGaussianLikelihood
 
+    from bo_engine import suggestions_single_objective as sugg_mod
     from bo_mcp_server.operations.submit_results import submit_results_operation
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -114,9 +114,9 @@ async def test_partial_measurement_uncertainty_falls_back_to_trainable_noise() -
     # Patch where the GP factory is *resolved* at call time. The single-
     # objective dispatch lives in :mod:`bo_engine.suggestions_single_objective`
     # after the suggestions god-module split.
-    from bo_engine import suggestions_single_objective as sugg_mod
     from gpytorch.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood
 
+    from bo_engine import suggestions_single_objective as sugg_mod
     from bo_mcp_server.operations.submit_results import submit_results_operation
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions

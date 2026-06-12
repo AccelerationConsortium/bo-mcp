@@ -191,7 +191,6 @@ async def fresh_alembic_database(postgres_container: Any) -> AsyncGenerator[str]
             await admin.close()
 
 
-@pytest.mark.asyncio
 async def test_alembic_upgrade_persists_application_tables_on_fresh_postgres(
     fresh_alembic_database: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -262,7 +261,6 @@ async def test_alembic_upgrade_persists_application_tables_on_fresh_postgres(
     )
 
 
-@pytest.mark.asyncio
 async def test_alembic_upgrade_stamps_head_revision_in_alembic_version(
     fresh_alembic_database: str,
     monkeypatch: pytest.MonkeyPatch,

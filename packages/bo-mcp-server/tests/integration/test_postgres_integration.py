@@ -54,14 +54,16 @@ from bo_mcp_server.storage.repositories import (
 # Import PostgreSQL fixtures
 pytest_plugins = ["tests.conftest_postgres"]
 
-# Mark all tests in this module as requiring PostgreSQL
-pytestmark = pytest.mark.postgres
+# Mark all tests in this module as requiring PostgreSQL. The session-scoped
+# PostgreSQL engine/schema fixtures run on a session-scoped event loop, so the
+# tests must share that loop — otherwise asyncpg raises "got Future attached to
+# a different loop". ``loop_scope="session"`` pins every test here to it.
+pytestmark = [pytest.mark.postgres, pytest.mark.asyncio(loop_scope="session")]
 
 
 class TestPostgresConnection:
     """Tests for PostgreSQL connection and basic operations."""
 
-    @pytest.mark.asyncio
     async def test_connection_works(self, postgres_session: AsyncSession) -> None:
         """Verify basic PostgreSQL connectivity.
 
@@ -72,7 +74,6 @@ class TestPostgresConnection:
         assert row is not None
         assert row[0] == 1
 
-    @pytest.mark.asyncio
     async def test_postgres_version(self, postgres_session: AsyncSession) -> None:
         """Verify PostgreSQL version is 16.x as configured.
 
@@ -83,7 +84,6 @@ class TestPostgresConnection:
         assert version is not None
         assert "PostgreSQL 16" in version
 
-    @pytest.mark.asyncio
     async def test_tables_created(self, postgres_session: AsyncSession) -> None:
         """Verify all expected tables exist in PostgreSQL.
 
@@ -104,7 +104,6 @@ class TestPostgresConnection:
 class TestPostgresUserRepository:
     """Integration tests for UserRepository with PostgreSQL."""
 
-    @pytest.mark.asyncio
     async def test_save_and_retrieve_user(
         self, postgres_session: AsyncSession, pg_sample_user_data: dict
     ) -> None:
@@ -129,7 +128,6 @@ class TestPostgresUserRepository:
         assert retrieved.name == user.name
         assert retrieved.email == user.email
 
-    @pytest.mark.asyncio
     async def test_unique_email_constraint(
         self, postgres_session: AsyncSession, pg_sample_user_data: dict
     ) -> None:
@@ -161,7 +159,6 @@ class TestPostgresUserRepository:
         with pytest.raises(IntegrityError):
             await _save_and_flush()
 
-    @pytest.mark.asyncio
     async def test_get_by_email(
         self, postgres_session: AsyncSession, pg_sample_user_data: dict
     ) -> None:
@@ -184,7 +181,6 @@ class TestPostgresUserRepository:
 class TestPostgresCampaignLifecycle:
     """Integration tests for full campaign lifecycle with PostgreSQL."""
 
-    @pytest.mark.asyncio
     async def test_create_campaign_with_spec(self, postgres_session: AsyncSession) -> None:
         """Test creating a campaign with its specification in PostgreSQL.
 
@@ -233,11 +229,22 @@ class TestPostgresCampaignLifecycle:
         assert retrieved.owner_id == user.id
         assert retrieved.status == CampaignStatus.CREATED
 
-    @pytest.mark.asyncio
-    async def test_cascade_delete_suggestions(self, postgres_session: AsyncSession) -> None:
-        """Test that deleting a campaign cascades to suggestions.
+    async def test_delete_campaign_with_suggestions_is_restricted(
+        self, postgres_session: AsyncSession
+    ) -> None:
+        """Hard-deleting a campaign that still has suggestions is refused.
 
-        Reference: PostgreSQL CASCADE behavior verification.
+        The ``suggestions.campaign_id`` FK is ``ON DELETE RESTRICT`` with a
+        NOT-NULL column and the ORM relationship carries no delete cascade:
+        production soft-deletes campaigns (stamping ``deleted_at``) and leaves
+        the children intact, and a physical removal must explicitly delete the
+        children first (see ``CampaignRepository.hard_delete``). A raw ORM
+        ``delete(campaign)`` must therefore be refused rather than silently
+        cascading or orphaning rows — SQLAlchemy attempts to null the children's
+        FK, which the NOT-NULL/RESTRICT constraint rejects.
+
+        Reference: SQLAlchemy ``ON DELETE`` / ``passive_deletes`` semantics
+        https://docs.sqlalchemy.org/en/20/orm/cascades.html#using-foreign-key-on-delete-with-orm-relationships
         """
         # Create user, spec, campaign
         user = UserModel(
@@ -280,18 +287,15 @@ class TestPostgresCampaignLifecycle:
         postgres_session.add(suggestion)
         await postgres_session.flush()
 
-        suggestion_id = suggestion.id
+        # Deleting the campaign while a suggestion references it must be
+        # refused by the RESTRICT / NOT-NULL constraint rather than cascading or
+        # orphaning the child row.
+        async def _delete_campaign() -> None:
+            await postgres_session.delete(campaign)
+            await postgres_session.flush()
 
-        # Delete campaign - should cascade to suggestion
-        await postgres_session.delete(campaign)
-        await postgres_session.flush()
-
-        # Verify suggestion was deleted
-        result = await postgres_session.execute(
-            text("SELECT id FROM suggestions WHERE id = :id"),
-            {"id": suggestion_id},
-        )
-        assert result.fetchone() is None
+        with pytest.raises(IntegrityError):
+            await _delete_campaign()
 
 
 class TestPostgresJsonSerialization:
@@ -301,7 +305,6 @@ class TestPostgresJsonSerialization:
     These tests verify serialization/deserialization works correctly.
     """
 
-    @pytest.mark.asyncio
     async def test_json_parameters_round_trip(self, postgres_session: AsyncSession) -> None:
         """Test JSON parameter storage and retrieval in PostgreSQL."""
         spec = CampaignSpecModel(
@@ -339,7 +342,6 @@ class TestPostgresJsonSerialization:
         assert objectives[0]["direction"] == "minimize"
         assert constraints[0]["type"] == "linear"
 
-    @pytest.mark.asyncio
     async def test_complex_nested_json(self, postgres_session: AsyncSession) -> None:
         """Test complex nested JSON structures in PostgreSQL.
 
@@ -419,7 +421,6 @@ class TestPostgresEnumHandling:
     These tests verify enum behavior is consistent.
     """
 
-    @pytest.mark.asyncio
     async def test_campaign_status_enum(self, postgres_session: AsyncSession) -> None:
         """Test CampaignStatus enum storage in PostgreSQL."""
         user_id = str(uuid4())
@@ -474,7 +475,6 @@ class TestPostgresConcurrency:
     which is more relevant for PostgreSQL than SQLite.
     """
 
-    @pytest.mark.asyncio
     async def test_optimistic_locking(self, postgres_session: AsyncSession) -> None:
         """Test optimistic locking with version field.
 
@@ -525,7 +525,6 @@ class TestPostgresConcurrency:
 class TestPostgresBulkOperations:
     """Tests for bulk insert/update operations in PostgreSQL."""
 
-    @pytest.mark.asyncio
     async def test_bulk_insert_suggestions(self, postgres_session: AsyncSession) -> None:
         """Test bulk inserting suggestions efficiently.
 
@@ -606,7 +605,6 @@ class TestPostgresSavepointIsolation:
 
     _SHARED_EMAIL = "savepoint_isolation@example.com"
 
-    @pytest.mark.asyncio
     async def test_a_write_then_commit_inside_savepoint(
         self, postgres_session: AsyncSession
     ) -> None:
@@ -626,7 +624,6 @@ class TestPostgresSavepointIsolation:
         found = await repo.get_by_email(self._SHARED_EMAIL)
         assert found is not None
 
-    @pytest.mark.asyncio
     async def test_b_writes_same_email_after_rollback(self, postgres_session: AsyncSession) -> None:
         """If isolation held, the prior test's row is gone and this insert succeeds.
 
@@ -648,7 +645,6 @@ class TestPostgresSavepointIsolation:
         assert found is not None
         assert found.api_key_hash == "iso_hash_b"
 
-    @pytest.mark.asyncio
     async def test_savepoint_restarts_after_commit_within_single_test(
         self, postgres_session: AsyncSession
     ) -> None:

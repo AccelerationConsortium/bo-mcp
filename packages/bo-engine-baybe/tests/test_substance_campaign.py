@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 from baybe.parameters import SubstanceParameter
 from baybe.parameters.enum import SubstanceEncoding
+
 from bo_engine.types import (
     ObjectiveSpec,
     ObservationData,
@@ -26,7 +27,6 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-
 from bo_engine_baybe.backend import BayBEBackend
 from bo_engine_baybe.converters import spec_to_parameters, spec_to_searchspace
 

@@ -2,8 +2,9 @@
 
 from typing import Final
 
-from bo_mcp_server.client import RESPONSE_SCHEMA_VERSION, VerbosityLevel
 from pydantic import BaseModel, Field
+
+from bo_mcp_server.client import RESPONSE_SCHEMA_VERSION, VerbosityLevel
 
 # Re-export the engine-side constant under a stable name. The REST
 # response envelope advertises the same version the MCP path does, so

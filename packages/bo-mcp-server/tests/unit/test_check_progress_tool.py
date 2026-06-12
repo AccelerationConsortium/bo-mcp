@@ -10,8 +10,8 @@ tracked. Push delivery itself is exercised by
 from __future__ import annotations
 
 import pytest
-from bo_engine.progress import ProgressEvent
 
+from bo_engine.progress import ProgressEvent
 from bo_mcp_server.progress_bridge import (
     ProgressStatus,
     register_progress_status,

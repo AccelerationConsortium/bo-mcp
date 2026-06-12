@@ -11,14 +11,6 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, cast
 
-from bo_engine.types import (
-    LEGACY_ACQUISITION_VALUES as _LEGACY_ACQUISITION_VALUES,
-)
-from bo_engine.types import (
-    AcquisitionMethod,
-    ConstraintType,
-    ParameterType,
-)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -26,6 +18,15 @@ from pydantic import (
     field_serializer,
     field_validator,
     model_validator,
+)
+
+from bo_engine.types import (
+    LEGACY_ACQUISITION_VALUES as _LEGACY_ACQUISITION_VALUES,
+)
+from bo_engine.types import (
+    AcquisitionMethod,
+    ConstraintType,
+    ParameterType,
 )
 
 

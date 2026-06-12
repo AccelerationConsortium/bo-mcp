@@ -22,7 +22,6 @@ from bo_engine.types import (
 from bo_engine.types import (
     TurboConfig as BOTurboConfig,
 )
-
 from bo_mcp_server.domain import CampaignSpec
 
 

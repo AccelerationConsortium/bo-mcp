@@ -1,6 +1,7 @@
 """Tests for BO engine diagnostics."""
 
 import torch
+
 from bo_engine.diagnostics import (
     compute_hypervolume,
     compute_pareto_front,

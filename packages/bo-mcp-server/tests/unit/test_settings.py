@@ -10,8 +10,10 @@ import pytest
 
 from bo_mcp_server.settings import (
     Settings,
+    get_bo_compute_timeout_seconds,
     get_database_url,
     get_default_backend_name,
+    get_idempotency_heartbeat_max_total_extension_seconds,
     get_settings,
     get_sql_echo,
     get_use_alembic_mode,
@@ -39,6 +41,35 @@ def test_env_override_is_observed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SQL_ECHO", "true")
     assert get_default_backend_name() == "baybe"
     assert get_sql_echo() is True
+
+
+def test_compute_timeout_default_is_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """The compute timeout is on by default so a hung backend is bounded out-of-the-box.
+
+    The M36 wedged-backend protection must not depend on every deployment
+    setting the env var; the default is a conservative 30-minute hang
+    detector. ``0`` remains the explicit opt-out.
+    """
+    monkeypatch.delenv("BO_COMPUTE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert Settings().bo_compute_timeout_seconds == 30 * 60
+    assert get_bo_compute_timeout_seconds() == 30 * 60
+
+    monkeypatch.setenv("BO_COMPUTE_TIMEOUT_SECONDS", "0")
+    assert get_bo_compute_timeout_seconds() == 0.0
+
+
+def test_heartbeat_extension_cap_default_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The reservation-heartbeat extension is capped by default (30 minutes).
+
+    Without a finite cap a wedged backend could hold a reservation slot
+    indefinitely via the heartbeat; the default bounds it.
+    """
+    monkeypatch.delenv("IDEMPOTENCY_HEARTBEAT_MAX_TOTAL_EXTENSION_SECONDS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert get_idempotency_heartbeat_max_total_extension_seconds() == 30 * 60
 
 
 def test_invalid_use_alembic_value_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -229,7 +229,12 @@ def _get_param_bounds(param: ParameterSpec) -> tuple[list[float], list[float]]:
             return [param.bounds[0]], [param.bounds[1]]
         if param.values is not None:
             return [float(min(param.values))], [float(max(param.values))]
-        return [], []
+        # A discrete parameter encodes to exactly one column (see
+        # ``_encode_param_value``), so contributing zero bound columns here
+        # would silently shift every downstream parameter's bounds. Fail loudly
+        # instead, mirroring the continuous/categorical branches.
+        msg = f"Discrete parameter '{param.name}' requires bounds or values"
+        raise ValueError(msg)
 
     # ParameterType.CATEGORICAL — one-hot encoding: each category is a dimension in [0, 1]
     if param.categories is None:

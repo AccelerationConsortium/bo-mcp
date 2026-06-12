@@ -16,8 +16,8 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from bo_engine.constants import CONSTRAINT_CALIBRATION_WARN_THRESHOLD
 
+from bo_engine.constants import CONSTRAINT_CALIBRATION_WARN_THRESHOLD
 from bo_mcp_server.domain import (
     CampaignSpec,
     InputParameter,

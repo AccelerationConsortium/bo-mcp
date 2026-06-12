@@ -1,6 +1,7 @@
 """Tests for feature importance module."""
 
 import torch
+
 from bo_engine.feature_importance import (
     compute_lengthscale_importance,
     extract_lengthscales,

@@ -73,6 +73,7 @@ from sqlalchemy.sql.dml import Update
 from bo_mcp_server.domain.utils import utcnow
 from bo_mcp_server.errors import ErrorCode, make_error_response, retry_hint_for
 from bo_mcp_server.settings import (
+    get_idempotency_heartbeat_max_total_extension_seconds,
     get_idempotency_reservation_ttl_seconds,
     get_idempotency_response_ttl_seconds,
 )
@@ -1023,15 +1024,36 @@ async def reservation_heartbeat(
     extension = (
         extension_seconds if extension_seconds is not None else DEFAULT_HEARTBEAT_EXTENSION_SECONDS
     )
+    # Bound how long the heartbeat keeps a slot alive so a wedged backend (a
+    # hung GP fit on an un-cancellable worker thread) cannot hold it forever.
+    # We measure *elapsed heartbeat runtime* (one ``cadence`` per beat), NOT
+    # the sum of requested extensions: ``_extend_reservation_ttl`` applies a
+    # monotonic ``max(current, now+extension)``, so while the requested
+    # deadline is still earlier than the initial reservation TTL the early
+    # beats match the row (return ``True``) without actually moving
+    # ``expires_at``. Counting the requested ``extension`` there would burn the
+    # cap on no-op extensions and stop the heartbeat far too early — expiring a
+    # still-running compute that the compute timeout (default 30 min) would
+    # otherwise allow. ``0`` disables the cap (unbounded — legacy behaviour).
+    max_runtime = get_idempotency_heartbeat_max_total_extension_seconds()
 
     async def _beat() -> None:
+        elapsed = 0.0
         while True:
             await asyncio.sleep(cadence)
+            if max_runtime > 0 and elapsed >= max_runtime:
+                logger.warning(
+                    "Reservation heartbeat hit its max runtime (%.0fs); stopping so "
+                    "the wedged slot can be reclaimed after its TTL.",
+                    max_runtime,
+                )
+                return
             try:
                 still_ours = await extend_active_reservation(extension)
             except SQLAlchemyError:
                 logger.warning("Reservation heartbeat extend failed", exc_info=True)
                 continue
+            elapsed += cadence
             if not still_ours:
                 logger.warning(
                     "Reservation slot lost during heartbeat; the stale-reservation "
@@ -1128,6 +1150,30 @@ async def _run_session_aware(
             # token-matched drop would no-op anyway, but skipping the call
             # makes the intent explicit). Return a retryable envelope.
             return _attach_metadata(_stale_reservation_envelope(tool_name, idempotency_key))
+        except asyncio.CancelledError:
+            # ``asyncio.CancelledError`` is a ``BaseException`` subclass, so the
+            # broad ``except Exception`` below would NOT catch a client-initiated
+            # cancel mid-execution. Without this clause the reservation row stays
+            # ``pending`` until its TTL (minutes), and the agent's immediate retry
+            # with the same key gets ``IDEMPOTENCY_IN_PROGRESS`` even though
+            # nothing is running. Drop our slot so a retry can claim it, then
+            # re-raise to honour the cancellation.
+            #
+            # The drop runs as a shielded task so a *second* cancellation
+            # (server shutdown, an impatient client) cannot interrupt it
+            # mid-flight and re-leak the slot. The ``finally`` awaits the task
+            # to completion even when our shielded wait is itself cancelled, so
+            # the reservation is always dropped before the cancellation
+            # propagates.
+            drop = asyncio.ensure_future(
+                _drop_reservation(tool_name, idempotency_key, reservation_token)
+            )
+            try:
+                await asyncio.shield(drop)
+            finally:
+                if not drop.done():
+                    await drop
+            raise
         except Exception:
             # The async with already rolled back the session; drop our
             # reservation so a future retry can claim the slot. We do

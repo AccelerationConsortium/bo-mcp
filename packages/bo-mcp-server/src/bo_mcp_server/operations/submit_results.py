@@ -25,9 +25,9 @@ import logging
 from typing import Any, Literal
 from uuid import UUID
 
-from bo_engine.backend import BOBackend
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bo_engine.backend import BOBackend
 from bo_mcp_server.backend import get_backend_async
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
@@ -268,8 +268,18 @@ async def _update_campaign_state(
             logger.debug("Failed to update backend state: %s", e)
             warnings.append(f"Could not update backend state: {e}")
 
-    if updated_campaign.version != campaign.version:
-        await campaign_repo.save(updated_campaign, expected_version=campaign.version)
+    # Always bump the campaign version on a successful submit, then write it
+    # under the optimistic-lock guard. Multi-objective submits already advance
+    # the version via ``with_hypervolume``/``with_backend_state``; single-
+    # objective submits with no backend state did not, so they committed new
+    # observations without touching ``campaign.version`` and slipped past a
+    # concurrent ``generate_suggestions`` phase-3 commit (whose guard is
+    # ``UPDATE … WHERE version = expected``). Forcing the bump makes the two
+    # writers contend on the campaign row, so a batch computed against stale
+    # observations raises ``ConcurrentModificationError`` instead of committing.
+    if updated_campaign.version == campaign.version:
+        updated_campaign = updated_campaign.increment_version()
+    await campaign_repo.save(updated_campaign, expected_version=campaign.version)
 
 
 async def _fetch_campaign_and_spec(

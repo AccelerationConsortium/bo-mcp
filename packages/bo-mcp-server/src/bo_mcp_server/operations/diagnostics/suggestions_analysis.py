@@ -10,7 +10,6 @@ from bo_engine.diagnostics import (
 )
 from bo_engine.transforms import get_bounds_tensor, stack_encoded_values
 from bo_engine.types import OptimizationSpec
-
 from bo_mcp_server.constants import DIVERSITY_HIGH_THRESHOLD, DIVERSITY_MODERATE_THRESHOLD
 from bo_mcp_server.domain import CampaignSpec, Result, Suggestion, SuggestionStatus
 

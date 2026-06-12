@@ -15,15 +15,6 @@ from bo_mcp_server.logging_config import configure_logging
 # PII/correlation filters.
 configure_logging()
 
-from bo_mcp_server.client import (  # noqa: E402
-    CorruptedJsonColumnError,
-    ensure_dev_user,
-    init_database,
-    ping_database_detailed,
-)
-from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan  # noqa: E402
-from bo_mcp_server.schema_extension import augment_parameter_options  # noqa: E402
-from bo_mcp_server.trace_context import bind_trace_id  # noqa: E402
 from fastapi import APIRouter, FastAPI, Request, Response  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.openapi.utils import get_openapi  # noqa: E402
@@ -40,6 +31,15 @@ from api.metrics import install_metrics  # noqa: E402
 from api.request_context import install_request_id_log_filter, request_id_var  # noqa: E402
 from api.routes import campaigns, capabilities, diagnostics, results, suggestions  # noqa: E402
 from api.settings import WILDCARD_ORIGIN, ApiSettings, get_api_settings  # noqa: E402
+from bo_mcp_server.client import (  # noqa: E402
+    CorruptedJsonColumnError,
+    augment_parameter_options,
+    bind_trace_id,
+    ensure_dev_user,
+    idempotency_gc_lifespan,
+    init_database,
+    ping_database_detailed,
+)
 
 # Suffixes the body-size middleware exempts because they apply their
 # own per-route streaming reader. Listed as suffixes so both the

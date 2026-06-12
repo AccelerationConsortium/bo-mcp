@@ -22,6 +22,8 @@ import json
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
+from pydantic import BaseModel, ConfigDict, model_serializer
+
 from bo_engine.backend_base import (
     BackendError,
     BackendIncompatibilityError,
@@ -29,8 +31,6 @@ from bo_engine.backend_base import (
     BackendInternalError,
     BackendTransientError,
 )
-from pydantic import BaseModel, ConfigDict, model_serializer
-
 from bo_mcp_server.constants import CONCURRENT_MODIFICATION_RETRY_AFTER_SECONDS
 
 if TYPE_CHECKING:

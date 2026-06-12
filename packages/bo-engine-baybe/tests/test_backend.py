@@ -11,6 +11,7 @@ Reference: BOBackend protocol definition in bo_engine/backend.py
 import math
 
 import pytest
+
 from bo_engine.backend import (
     BatchDiversityMetrics,
     BOBackend,
@@ -24,7 +25,6 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-
 from bo_engine_baybe.backend import BayBEBackend
 
 

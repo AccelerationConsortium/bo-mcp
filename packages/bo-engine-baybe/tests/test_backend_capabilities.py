@@ -21,7 +21,6 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-
 from bo_engine_baybe.backend import BayBEBackend
 
 

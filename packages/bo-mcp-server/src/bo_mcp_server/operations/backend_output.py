@@ -18,9 +18,9 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from bo_engine.backend import SuggestionBatch
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from bo_engine.backend import SuggestionBatch
 from bo_mcp_server.domain import SuggestionProvenance
 
 if TYPE_CHECKING:

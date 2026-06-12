@@ -269,7 +269,6 @@ async def test_stale_pending_accepted_during_compute_returns_conflict(
     from datetime import datetime as _dt
 
     from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
-
     from bo_mcp_server.domain import (
         Suggestion,
         SuggestionProvenance,
@@ -448,3 +447,48 @@ async def test_event_loop_responsive_during_slow_compute(
         f"(sleep took {sleep_elapsed:.3f}s, work was {work_seconds}s)"
     )
     assert total >= work_seconds * 0.5
+
+
+@pytest.mark.asyncio
+async def test_compute_timeout_raises_backend_transient_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compute exceeding ``BO_COMPUTE_TIMEOUT_SECONDS`` is retryable.
+
+    The backend compute is offloaded to an un-cancellable worker thread, so
+    the timeout cannot kill it — its value is freeing the request (and its
+    idempotency reservation slot) from a hung backend. It must surface as a
+    retryable :class:`BackendTransientError`, which the generation error
+    routing maps to a ``BACKEND_TRANSIENT_ERROR`` envelope and the
+    idempotency layer treats as transient (dropping the reservation).
+
+    The budget is driven through the real ``BO_COMPUTE_TIMEOUT_SECONDS``
+    env var (not a patched getter) so the settings → accessor → ``wait_for``
+    wiring is exercised end to end.
+    """
+    from bo_engine.backend_base import BackendTransientError
+
+    monkeypatch.setenv("BO_COMPUTE_TIMEOUT_SECONDS", "0.05")
+
+    async def never_finishes() -> Any:
+        await asyncio.sleep(3600)
+
+    with pytest.raises(BackendTransientError):
+        await gs._await_compute_with_timeout(never_finishes())
+
+
+@pytest.mark.asyncio
+async def test_compute_timeout_disabled_awaits_to_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicitly disabling the timeout (``0``) awaits the compute unbounded.
+
+    Driven through the real env var so the disable path is the production
+    accessor returning ``0``, not a patched getter.
+    """
+    monkeypatch.setenv("BO_COMPUTE_TIMEOUT_SECONDS", "0")
+
+    async def quick() -> dict[str, bool]:
+        return {"ok": True}
+
+    assert await gs._await_compute_with_timeout(quick()) == {"ok": True}

@@ -2,16 +2,16 @@
 
 from typing import Annotated
 
-from bo_mcp_server.client import (
-    VerbosityLevel,
-    get_diagnostics_operation,
-    http_status_for_error,
-)
 from fastapi import APIRouter, HTTPException, Query
 
 from api.deps import CurrentUser, get_authorized_campaign
 from api.schemas.diagnostics import DiagnosticsResponse
 from api.schemas.errors import COMMON_HTTP_ERROR_RESPONSES
+from bo_mcp_server.client import (
+    VerbosityLevel,
+    get_diagnostics_operation,
+    http_status_for_error,
+)
 
 router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 

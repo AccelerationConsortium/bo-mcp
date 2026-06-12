@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
@@ -26,6 +27,12 @@ from bo_engine.backend_base import (
     option_is_active,
     required_features,
     wrap_backend_exception,
+)
+from bo_engine.constants import (
+    MIN_DATA_ABSOLUTE,
+    MIN_DATA_PARAM_MULTIPLIER,
+    MIN_OBSERVATIONS_FOR_LOO_CV,
+    OUTLIER_DETECTION_MIN_OBSERVATIONS,
 )
 from bo_engine.diagnostics import (
     LOOCVMetrics,
@@ -218,6 +225,24 @@ def _log_transform_direction_reports(spec: OptimizationSpec) -> list[CapabilityR
         for idx, obj in enumerate(spec.objectives)
         if obj.log_transform and not obj.minimize
     ]
+
+
+@dataclass(frozen=True)
+class _DiagnosticModelFit:
+    """A GP fit on the observations, shared across diagnostics sections.
+
+    Fitting the GP dominates the cost of a diagnostics call. The ``model`` and
+    ``suggestions_tensor`` sections both consume the same fit, so it is computed
+    once per :meth:`BoTorchBackend.compute_diagnostics` invocation and reused
+    rather than refit per section.
+    """
+
+    model: SingleTaskGP | ModelListGP
+    train_x: torch.Tensor
+    train_y: torch.Tensor
+    param_names: list[str]
+    obj_names: list[str]
+    is_single: bool
 
 
 class BoTorchBackend(BaseBackend):
@@ -529,13 +554,26 @@ class BoTorchBackend(BaseBackend):
 
         announce("diagnostics_start", f"Computing diagnostics: {sorted(requested)}")
 
+        # The ``model`` and ``suggestions_tensor`` sections both consume a GP
+        # fit on the same data. Fit it at most once per call and share the
+        # result instead of refitting per section.
+        shared_fit: _DiagnosticModelFit | None = None
+        fit_computed = False
+
+        def diagnostic_fit() -> _DiagnosticModelFit | None:
+            nonlocal shared_fit, fit_computed
+            if not fit_computed:
+                shared_fit = self._fit_diagnostic_model(spec, observations, is_single)
+                fit_computed = True
+            return shared_fit
+
         if "objectives" in requested:
             result.update(self._compute_objective_diagnostics(spec, observations))
             completed += 1
             announce("diagnostics_objectives_done", "Objective metrics complete")
 
         if "model" in requested:
-            result.update(self._compute_model_diagnostics(spec, observations, is_single))
+            result.update(self._compute_model_diagnostics(diagnostic_fit()))
             completed += 1
             announce("diagnostics_model_done", "Model fitting and LOO-CV complete")
 
@@ -545,7 +583,7 @@ class BoTorchBackend(BaseBackend):
             announce("diagnostics_outliers_done", "Outlier detection complete")
 
         if "suggestions_tensor" in requested:
-            result.update(self._compute_hyperparameters(spec, observations, is_single))
+            result.update(self._compute_hyperparameters(diagnostic_fit()))
             completed += 1
             announce("diagnostics_hyperparameters_done", "Hyperparameter extraction complete")
 
@@ -631,23 +669,23 @@ class BoTorchBackend(BaseBackend):
         result["n_pareto_points"] = len(result["pareto_front"])
         return result
 
-    def _compute_model_diagnostics(
+    def _fit_diagnostic_model(
         self,
         spec: OptimizationSpec,
         observations: list[ObservationData],
         is_single: bool,
-    ) -> dict[str, Any]:
-        """Fit GP model and compute correlation, feature importance, LOO-CV."""
-        n_params = len(spec.parameters)
-        min_data = max(3, 2 * n_params)
-        empty: dict[str, Any] = {
-            "feature_importance": None,
-            "loo_cv_metrics": None,
-            "model_correlation": None,
-        }
+    ) -> _DiagnosticModelFit | None:
+        """Fit one GP on the observations for the diagnostics sections.
 
+        Returns ``None`` when there is insufficient data to fit (the same gate
+        the model and hyperparameter sections previously applied individually)
+        or when the fit raises, so each section can fall back to its own empty
+        result.
+        """
+        n_params = len(spec.parameters)
+        min_data = max(MIN_DATA_ABSOLUTE, MIN_DATA_PARAM_MULTIPLIER * n_params)
         if len(observations) < min_data:
-            return empty
+            return None
 
         try:
             train_x, train_y, param_names, obj_names = self._prepare_training_data(
@@ -656,7 +694,7 @@ class BoTorchBackend(BaseBackend):
             bounds = get_bounds_tensor(spec)
 
             if is_single:
-                model = create_and_fit_single_task_model(
+                model: SingleTaskGP | ModelListGP = create_and_fit_single_task_model(
                     train_x,
                     train_y,
                     bounds,
@@ -669,15 +707,43 @@ class BoTorchBackend(BaseBackend):
                     bounds,
                     use_input_warping=spec.use_input_warping,
                 )
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug("Diagnostic model fit failed: %s", e)
+            return None
 
-            corr = self._model_correlation(model, train_x, train_y, is_single)
+        return _DiagnosticModelFit(
+            model=model,
+            train_x=train_x,
+            train_y=train_y,
+            param_names=param_names,
+            obj_names=obj_names,
+            is_single=is_single,
+        )
+
+    def _compute_model_diagnostics(
+        self,
+        fit: _DiagnosticModelFit | None,
+    ) -> dict[str, Any]:
+        """Compute correlation, feature importance and LOO-CV from a shared GP fit."""
+        empty: dict[str, Any] = {
+            "feature_importance": None,
+            "loo_cv_metrics": None,
+            "model_correlation": None,
+        }
+        if fit is None:
+            return empty
+
+        try:
+            corr = self._model_correlation(fit.model, fit.train_x, fit.train_y, fit.is_single)
             fi = compute_feature_importance(
-                model,
-                train_x,
-                param_names,
+                fit.model,
+                fit.train_x,
+                fit.param_names,
                 include_shap=False,
             )
-            loo = self._loo_cv(model, train_x, train_y, obj_names, len(observations))
+            loo = self._loo_cv(
+                fit.model, fit.train_x, fit.train_y, fit.obj_names, fit.train_x.shape[0]
+            )
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Model diagnostics failed: %s", e)
             return empty
@@ -715,7 +781,7 @@ class BoTorchBackend(BaseBackend):
         n_obs: int,
     ) -> dict[str, dict[str, float]] | None:
         """Compute LOO-CV metrics per objective."""
-        if n_obs < 5:
+        if n_obs < MIN_OBSERVATIONS_FOR_LOO_CV:
             return None
         try:
             loo = compute_loo_cv_for_model(model, train_x, train_y)
@@ -738,7 +804,7 @@ class BoTorchBackend(BaseBackend):
         observations: list[ObservationData],
     ) -> dict[str, Any]:
         """Detect outliers via LOO residuals."""
-        if len(observations) < 5:
+        if len(observations) < OUTLIER_DETECTION_MIN_OBSERVATIONS:
             return {"outliers": None}
 
         try:
@@ -780,34 +846,14 @@ class BoTorchBackend(BaseBackend):
 
     def _compute_hyperparameters(
         self,
-        spec: OptimizationSpec,
-        observations: list[ObservationData],
-        is_single: bool,
+        fit: _DiagnosticModelFit | None,
     ) -> dict[str, Any]:
-        """Extract GP hyperparameters and compute suggestion-tensor metrics."""
-        n_params = len(spec.parameters)
-        min_data = max(3, 2 * n_params)
-        if len(observations) < min_data:
+        """Extract GP hyperparameters from a shared diagnostic GP fit."""
+        if fit is None:
             return {"hyperparameters": None}
 
         try:
-            train_x, train_y, param_names, _ = self._prepare_training_data(spec, observations)
-            bounds = get_bounds_tensor(spec)
-            if is_single:
-                model = create_and_fit_single_task_model(
-                    train_x,
-                    train_y,
-                    bounds,
-                    use_input_warping=spec.use_input_warping,
-                )
-            else:
-                model = create_and_fit_model(
-                    train_x,
-                    train_y,
-                    bounds,
-                    use_input_warping=spec.use_input_warping,
-                )
-            hp = extract_hyperparameters(model, param_names)
+            hp = extract_hyperparameters(fit.model, fit.param_names)
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Hyperparameter extraction failed: %s", e)
             return {"hyperparameters": None}

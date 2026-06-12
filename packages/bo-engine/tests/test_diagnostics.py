@@ -3,6 +3,12 @@
 import pytest
 import torch
 
+from bo_engine.backend_base import ObservationData
+from bo_engine.botorch_backend import BoTorchBackend
+from bo_engine.constants import (
+    MIN_DATA_ABSOLUTE,
+    MIN_DATA_PARAM_MULTIPLIER,
+)
 from bo_engine.diagnostics import (
     compute_convergence_metric,
     compute_hypervolume,
@@ -12,6 +18,12 @@ from bo_engine.diagnostics import (
     summarize_pareto_front,
 )
 from bo_engine.diagnostics_single import compute_single_objective_improvement_rate
+from bo_engine.types import (
+    ObjectiveSpec,
+    OptimizationSpec,
+    ParameterSpec,
+    ParameterType,
+)
 
 
 class TestDiagnostics:
@@ -210,3 +222,214 @@ class TestHypervolumeReferencePointConsistency:
         assert standalone is not None
         assert standalone > 0.0
         assert standalone == pytest.approx(diagnostics)
+
+
+def _continuous_spec(n_params: int) -> OptimizationSpec:
+    """A single-objective spec with ``n_params`` continuous parameters on [0, 1]."""
+    return OptimizationSpec(
+        parameters=[
+            ParameterSpec(name=f"x{i}", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))
+            for i in range(n_params)
+        ],
+        objectives=[ObjectiveSpec(name="y", minimize=True)],
+    )
+
+
+def _spread_observations(n_params: int, n: int) -> list[ObservationData]:
+    """``n`` observations whose coordinates spread across [0, 1] per dimension."""
+    denom = max(n - 1, 1)
+    return [
+        ObservationData(
+            parameter_values={f"x{i}": ((k + i) % n) / denom for i in range(n_params)},
+            objective_values={"y": float(k)},
+        )
+        for k in range(n)
+    ]
+
+
+def _multi_objective_spec(n_params: int, obj_names: tuple[str, ...]) -> OptimizationSpec:
+    """A multi-objective spec with ``n_params`` continuous parameters on [0, 1]."""
+    return OptimizationSpec(
+        parameters=[
+            ParameterSpec(name=f"x{i}", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))
+            for i in range(n_params)
+        ],
+        objectives=[ObjectiveSpec(name=name, minimize=True) for name in obj_names],
+    )
+
+
+def _multi_objective_observations(
+    n_params: int, obj_names: tuple[str, ...], n: int
+) -> list[ObservationData]:
+    """``n`` observations spread across [0, 1] with one value per objective."""
+    denom = max(n - 1, 1)
+    return [
+        ObservationData(
+            parameter_values={f"x{i}": ((k + i) % n) / denom for i in range(n_params)},
+            objective_values={name: float(k + 2 * j) for j, name in enumerate(obj_names)},
+        )
+        for k in range(n)
+    ]
+
+
+class TestDiagnosticDataSufficiencyGate:
+    """Model/hyperparameter sections gate on the shared data-sufficiency constants.
+
+    The minimum number of observations before a diagnostic GP is fit is
+    ``max(MIN_DATA_ABSOLUTE, MIN_DATA_PARAM_MULTIPLIER * n_params)`` — the same
+    constants the rest of the engine uses — so a value tuned in ``constants.py``
+    reaches the backend rather than a re-hardcoded literal. Parameterizing on
+    the constants pins the gate to them.
+    """
+
+    @pytest.mark.parametrize("n_params", [1, 2, 3])
+    def test_below_minimum_yields_empty_model_sections(self, n_params: int) -> None:
+        # ``n_params == 1`` exercises the MIN_DATA_ABSOLUTE floor; 2/3 exercise
+        # the MIN_DATA_PARAM_MULTIPLIER branch.
+        min_data = max(MIN_DATA_ABSOLUTE, MIN_DATA_PARAM_MULTIPLIER * n_params)
+        spec = _continuous_spec(n_params)
+        observations = _spread_observations(n_params, min_data - 1)
+
+        result = BoTorchBackend().compute_diagnostics(
+            spec, observations, sections=frozenset({"model", "suggestions_tensor"})
+        )
+
+        assert result["model_correlation"] is None
+        assert result["feature_importance"] is None
+        assert result["loo_cv_metrics"] is None
+        assert result["hyperparameters"] is None
+
+    @pytest.mark.parametrize("n_params", [2, 3])
+    def test_at_minimum_populates_model_sections(self, n_params: int) -> None:
+        min_data = max(MIN_DATA_ABSOLUTE, MIN_DATA_PARAM_MULTIPLIER * n_params)
+        spec = _continuous_spec(n_params)
+        observations = _spread_observations(n_params, min_data)
+
+        result = BoTorchBackend().compute_diagnostics(
+            spec, observations, sections=frozenset({"model", "suggestions_tensor"})
+        )
+
+        assert result["model_correlation"] is not None
+        assert result["feature_importance"] is not None
+        assert result["hyperparameters"] is not None
+
+
+class TestDiagnosticModelFitSharing:
+    """``compute_diagnostics`` fits the diagnostic GP at most once per call.
+
+    The ``model`` and ``suggestions_tensor`` sections both consume a GP fit on
+    the same data; they share a single fit instead of each refitting (which
+    doubled GP-fit cost per diagnostics call).
+    """
+
+    def test_model_and_hyperparameter_sections_share_one_fit(self, monkeypatch) -> None:
+        import bo_engine.botorch_backend as backend_mod
+
+        real_factory = backend_mod.create_and_fit_single_task_model
+        calls = {"n": 0}
+
+        def counting_factory(*args, **kwargs):
+            calls["n"] += 1
+            return real_factory(*args, **kwargs)
+
+        monkeypatch.setattr(backend_mod, "create_and_fit_single_task_model", counting_factory)
+
+        spec = _continuous_spec(2)
+        observations = _spread_observations(2, 6)
+
+        result = BoTorchBackend().compute_diagnostics(
+            spec, observations, sections=frozenset({"model", "suggestions_tensor"})
+        )
+
+        assert calls["n"] == 1, (
+            "model and suggestions_tensor sections must share a single GP fit "
+            f"per compute_diagnostics call; got {calls['n']}"
+        )
+        # Both sections still produced their outputs from the shared fit.
+        assert result["model_correlation"] is not None
+        assert result["hyperparameters"] is not None
+
+    def test_multi_objective_sections_share_one_fit(self, monkeypatch) -> None:
+        # The multi-objective path fits through ``create_and_fit_model`` (a
+        # different factory than the single-objective ``SingleTaskGP`` one), so
+        # it needs its own guard against reintroduced double-fitting.
+        import bo_engine.botorch_backend as backend_mod
+
+        real_factory = backend_mod.create_and_fit_model
+        calls = {"n": 0}
+
+        def counting_factory(*args, **kwargs):
+            calls["n"] += 1
+            return real_factory(*args, **kwargs)
+
+        monkeypatch.setattr(backend_mod, "create_and_fit_model", counting_factory)
+
+        spec = _multi_objective_spec(2, ("a", "b"))
+        observations = _multi_objective_observations(2, ("a", "b"), 6)
+
+        result = BoTorchBackend().compute_diagnostics(
+            spec, observations, sections=frozenset({"model", "suggestions_tensor"})
+        )
+
+        assert calls["n"] == 1, (
+            "multi-objective model and suggestions_tensor sections must share a "
+            f"single GP fit per compute_diagnostics call; got {calls['n']}"
+        )
+        # Both sections still produced their outputs from the shared fit.
+        assert result["model_correlation"] is not None
+        assert result["hyperparameters"] is not None
+
+
+class TestDiagnosticGatesReadConstants:
+    """The LOO-CV and outlier gates move with their ``constants.py`` values.
+
+    Monkeypatching the constant proves the backend reads the shared name rather
+    than a re-hardcoded literal — a regression back to ``< 5`` would no longer
+    track the constant and would fail these tests.
+    """
+
+    def test_loo_cv_gate_reads_constant(self, monkeypatch) -> None:
+        import bo_engine.botorch_backend as backend_mod
+
+        backend = BoTorchBackend()
+        spec = _continuous_spec(2)
+        # Six observations clear both the fit-data gate and the default LOO gate.
+        fit = backend._fit_diagnostic_model(spec, _spread_observations(2, 6), True)
+        assert fit is not None
+
+        # Default constant (5): LOO-CV is computed for six observations.
+        default = backend._compute_model_diagnostics(fit)
+        assert default["model_correlation"] is not None
+        assert default["loo_cv_metrics"] is not None
+
+        # Raise the threshold above the data size: only the LOO gate must close;
+        # correlation/feature importance (which do not read this constant) stay.
+        monkeypatch.setattr(backend_mod, "MIN_OBSERVATIONS_FOR_LOO_CV", 100)
+        gated = backend._compute_model_diagnostics(fit)
+        assert gated["model_correlation"] is not None
+        assert gated["loo_cv_metrics"] is None
+
+    def test_outlier_gate_reads_constant(self, monkeypatch) -> None:
+        import bo_engine.botorch_backend as backend_mod
+
+        detect_calls = {"n": 0}
+
+        def fake_detect_outliers(**_kwargs):
+            detect_calls["n"] += 1
+            return []
+
+        monkeypatch.setattr(backend_mod, "detect_outliers", fake_detect_outliers)
+        monkeypatch.setattr(backend_mod, "OUTLIER_DETECTION_MIN_OBSERVATIONS", 8)
+
+        backend = BoTorchBackend()
+        spec = _continuous_spec(2)
+
+        # Seven observations sit below the patched threshold: the detector must
+        # not run and the section reports no outlier result.
+        below = backend._compute_outlier_diagnostics(spec, _spread_observations(2, 7))
+        assert below == {"outliers": None}
+        assert detect_calls["n"] == 0
+
+        # Eight observations reach the patched threshold: the detector runs.
+        backend._compute_outlier_diagnostics(spec, _spread_observations(2, 8))
+        assert detect_calls["n"] == 1

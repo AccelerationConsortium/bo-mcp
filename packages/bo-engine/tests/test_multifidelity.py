@@ -469,9 +469,9 @@ class TestMultiFidelityDirectionHandling:
         captured: dict[str, torch.Tensor] = {}
         original = mf.create_and_fit_multifidelity_model
 
-        def capture(x: torch.Tensor, y: torch.Tensor, fidelity_dim: int):  # type: ignore[no-untyped-def]
+        def capture(x: torch.Tensor, y: torch.Tensor, fidelity_dim: int, bounds=None):  # type: ignore[no-untyped-def]
             captured["y"] = y.clone()
-            return original(x, y, fidelity_dim)
+            return original(x, y, fidelity_dim, bounds)
 
         monkeypatch.setattr(mf, "create_and_fit_multifidelity_model", capture)
         _, _, metadata = mf.generate_multifidelity_suggestions(
@@ -492,6 +492,152 @@ class TestMultiFidelityDirectionHandling:
         train_y, fitted_y, metadata = self._captured_fit_targets(monkeypatch, minimize=False)
         assert torch.allclose(fitted_y, train_y)
         assert metadata["minimize"] is False
+
+
+class TestMultiFidelityNormalization:
+    """Inputs must be normalized to the unit cube before the GP kernel.
+
+    Every other model path in the package (transfer learning, calibration,
+    cross-validation) normalizes inputs; the MF-GP previously fit on raw
+    inputs. On heterogeneous scales (here x1 ∈ [0, 100]) an unnormalized fit
+    yields a lengthscale tied to the raw magnitude, whereas a normalized fit
+    keeps lengthscales O(1) — the regime BoTorch's GammaPrior is calibrated
+    for (Balandat et al., 2020, NeurIPS).
+    """
+
+    def test_fit_succeeds_on_non_unit_bounds(self) -> None:
+        torch.manual_seed(0)
+        bounds = torch.tensor([[0.0, 0.0, 0.0], [100.0, 1.0, 1.0]], dtype=torch.double)
+        x = torch.rand(20, 3, dtype=torch.double)
+        x[:, 0] *= 100.0  # temperature-like scale
+        y = (x[:, 0:1] / 100.0) ** 2 + x[:, 1:2] ** 2
+
+        model = create_and_fit_multifidelity_model(x, y, fidelity_dim=2, bounds=bounds)
+
+        model.eval()
+        with torch.no_grad():
+            test_x = torch.tensor([[50.0, 0.5, 1.0]], dtype=torch.double)
+            posterior = model.posterior(test_x)
+        assert posterior.mean.shape == (1, 1)
+        assert torch.isfinite(posterior.mean).all()
+
+    def test_normalized_lengthscales_are_order_one(self) -> None:
+        """Non-fidelity lengthscales stay O(1) once inputs are normalized.
+
+        Without the input transform the x1 ∈ [0, 100] lengthscale would scale
+        with the raw 0-100 magnitude; with normalization it stays well below
+        the raw range.
+        """
+        torch.manual_seed(0)
+        bounds = torch.tensor([[0.0, 0.0, 0.0], [100.0, 1.0, 1.0]], dtype=torch.double)
+        x = torch.rand(30, 3, dtype=torch.double)
+        x[:, 0] *= 100.0
+        y = (x[:, 0:1] / 100.0) ** 2 + x[:, 1:2] ** 2
+
+        model = create_and_fit_multifidelity_model(x, y, fidelity_dim=2, bounds=bounds)
+
+        lengthscales = [
+            float(v)
+            for name, param in model.named_parameters()
+            if name.endswith("lengthscale")
+            for v in param.detach().reshape(-1)
+        ]
+        assert lengthscales, "expected at least one fitted lengthscale"
+        # In normalized [0, 1] space lengthscales are O(1); a raw-input fit on
+        # x1 ∈ [0, 100] would push the first lengthscale toward the 0-100 scale.
+        assert max(lengthscales) < 10.0, (
+            f"lengthscales {lengthscales} are not O(1); inputs were not "
+            "normalized before the kernel."
+        )
+
+
+class TestMultiFidelityReproducibility:
+    """A configured ``random_seed`` must make candidates reproducible.
+
+    Mirrors ``tests/test_derive_seed_routing.py``: a master seed is routed
+    through ``derive_seed`` and installed inside a ``fork_rng`` block, so two
+    independent calls on identical campaign state yield identical candidates.
+    """
+
+    @staticmethod
+    def _problem() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        torch.manual_seed(7)
+        train_x = torch.rand(15, 3, dtype=torch.double)
+        train_y = torch.rand(15, 1, dtype=torch.double)
+        bounds = torch.tensor([[0.0, 0.0, 0.1], [1.0, 1.0, 1.0]], dtype=torch.double)
+        return train_x, train_y, bounds
+
+    def test_same_seed_reproduces_candidates(self) -> None:
+        train_x, train_y, bounds = self._problem()
+        config = MultiFidelityConfig(
+            fidelity_spec=FidelitySpec(fidelity_dim=2, target_fidelity=1.0),
+            num_fantasies=4,
+            num_restarts=2,
+            raw_samples=32,
+            random_seed=2024,
+        )
+
+        cand_a, _, meta_a = generate_multifidelity_suggestions(
+            train_x, train_y, bounds, config, batch_size=1
+        )
+        cand_b, _, meta_b = generate_multifidelity_suggestions(
+            train_x, train_y, bounds, config, batch_size=1
+        )
+
+        assert torch.allclose(cand_a, cand_b), (
+            "Identical master seeds must reproduce identical MFKG candidates."
+        )
+        assert meta_a["random_seed"] == meta_b["random_seed"]
+        assert meta_a["random_seed"] is not None
+
+    def test_unseeded_calls_differ(self) -> None:
+        """Without a configured seed, consecutive calls must not replay.
+
+        ``fork_rng`` restores the global torch RNG on exit, so a per-call
+        seed (fresh entropy when unseeded) is required — otherwise two
+        unseeded calls return the identical candidates, collapsing the
+        standalone MFKG helper's exploration.
+        """
+        train_x, train_y, bounds = self._problem()
+        config = MultiFidelityConfig(
+            fidelity_spec=FidelitySpec(fidelity_dim=2, target_fidelity=1.0),
+            num_fantasies=4,
+            num_restarts=2,
+            raw_samples=32,
+        )
+
+        cand_a, _, _ = generate_multifidelity_suggestions(
+            train_x, train_y, bounds, config, batch_size=1
+        )
+        cand_b, _, _ = generate_multifidelity_suggestions(
+            train_x, train_y, bounds, config, batch_size=1
+        )
+
+        assert not torch.allclose(cand_a, cand_b), (
+            "Two consecutive unseeded MFKG calls returned identical candidates "
+            "— fork_rng restored the global state and no per-call seed was "
+            "installed."
+        )
+
+    def test_seed_does_not_leak_past_fork_rng(self) -> None:
+        """The seeded fit must not mutate the caller's global torch RNG."""
+        train_x, train_y, bounds = self._problem()
+        config = MultiFidelityConfig(
+            fidelity_spec=FidelitySpec(fidelity_dim=2, target_fidelity=1.0),
+            num_fantasies=4,
+            num_restarts=2,
+            raw_samples=32,
+            random_seed=2024,
+        )
+
+        torch.manual_seed(999)
+        before = torch.get_rng_state()
+        generate_multifidelity_suggestions(train_x, train_y, bounds, config, batch_size=1)
+        after = torch.get_rng_state()
+
+        assert torch.equal(before, after), (
+            "fork_rng must restore the global torch RNG state on exit."
+        )
 
 
 @pytest.mark.usefixtures("torch_rng")

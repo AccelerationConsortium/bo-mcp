@@ -17,6 +17,7 @@ from bo_engine.constants import (
     CONVERGENCE_IMPROVEMENT_THRESHOLD,
     CONVERGENCE_MIN_OBSERVATIONS,
     CONVERGENCE_WINDOW_SIZE,
+    ESTIMATE_REMAINING_MAX_ITERATIONS,
     IMPROVEMENT_TOLERANCE_ABSOLUTE,
 )
 from bo_engine.types import ObjectiveSpec, ObservationData, OptimizationSpec
@@ -430,12 +431,19 @@ def evaluate_stopping_decision(
 def estimate_remaining_iterations(
     metric_history: list[float],
     target_improvement: float,
-    max_iterations: int = 100,
+    max_iterations: int = ESTIMATE_REMAINING_MAX_ITERATIONS,
 ) -> int | None:
     """Estimate iterations needed to achieve target improvement.
 
     Based on current improvement rate, estimates how many more iterations
     might be needed. Returns None if improvement is too slow to estimate.
+
+    The per-step improvement rate uses the same scale-invariant denominator
+    as :func:`detect_convergence` (:func:`_step_denominator` over
+    :func:`_history_scale`), so a campaign rescaled by a constant factor
+    (e.g. dollars vs cents) yields the same estimate. The previous
+    ``delta / abs(prev)`` divisor was magnitude-dependent and disagreed with
+    the converged/not-converged verdict computed right next to it.
 
     Args:
         metric_history: History of optimization metric
@@ -445,15 +453,16 @@ def estimate_remaining_iterations(
     Returns:
         Estimated iterations needed, or None if cannot estimate
     """
-    if len(metric_history) < 5:
+    if len(metric_history) < CONVERGENCE_WINDOW_SIZE:
         return None
 
-    # Compute recent improvement rate
-    recent = metric_history[-5:]
+    # Robust history scale, consulted by _step_denominator only when a
+    # step's |prev| falls below the absolute floor.
+    scale = _history_scale(metric_history)
+    recent = metric_history[-CONVERGENCE_WINDOW_SIZE:]
     improvements = [
-        (recent[i] - recent[i - 1]) / abs(recent[i - 1])
+        (recent[i] - recent[i - 1]) / _step_denominator(recent[i - 1], scale)
         for i in range(1, len(recent))
-        if abs(recent[i - 1]) > 1e-10
     ]
 
     if not improvements:

@@ -10,6 +10,7 @@ v2.3: Added GPU auto-detection and acceleration
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,12 +23,21 @@ from botorch.acquisition.utils import project_to_target_fidelity
 from botorch.fit import fit_gpytorch_mll
 from botorch.models.cost import AffineFidelityCostModel
 from botorch.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
+from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.optim import optimize_acqf
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
 
-from bo_engine.device import ensure_device, to_device
+from bo_engine.constants import (
+    MAX_RANDOM_SEED,
+    MF_ACQF_BATCH_LIMIT,
+    MF_ACQF_MAXITER,
+    MF_DEFAULT_COST_WEIGHT,
+    MF_DEFAULT_FIXED_COST,
+)
+from bo_engine.device import ensure_device, fork_rng_devices, to_device
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
 
 
 @dataclass(frozen=True)
@@ -49,8 +59,8 @@ class FidelitySpec:
 
     fidelity_dim: int  # Index of the fidelity dimension
     target_fidelity: float = 1.0  # Target fidelity for final optimization
-    fixed_cost: float = 5.0  # Fixed base cost
-    cost_weight: float = 1.0  # Cost scaling factor for fidelity
+    fixed_cost: float = MF_DEFAULT_FIXED_COST  # Fixed base cost
+    cost_weight: float = MF_DEFAULT_COST_WEIGHT  # Cost scaling factor for fidelity
     name: str = "fidelity"  # Name of the fidelity parameter
     bounds: tuple[float, float] = (0.0, 1.0)  # (min_fidelity, max_fidelity)
 
@@ -62,26 +72,50 @@ class FidelitySpec:
 
 @dataclass(frozen=True)
 class MultiFidelityConfig:
-    """Configuration for multi-fidelity optimization."""
+    """Configuration for multi-fidelity optimization.
+
+    Attributes:
+        fidelity_spec: Fidelity-parameter specification.
+        num_fantasies: Number of fantasy samples for qMFKG.
+        num_restarts: Optimization restarts for the inner / outer problems.
+        raw_samples: Raw samples for multi-start initialization.
+        random_seed: Optional master seed. When set, the model fit and the
+            MFKG candidate optimization run inside a forked torch RNG scope
+            seeded via :func:`bo_engine.reproducibility.derive_seed`, so two
+            independent calls on the same campaign state reproduce identical
+            candidates without leaking the seed to concurrent callers.
+    """
 
     fidelity_spec: FidelitySpec
     num_fantasies: int = 64  # Number of fantasies for qMFKG
     num_restarts: int = 10  # Optimization restarts
     raw_samples: int = 512  # Raw samples for initialization
+    random_seed: int | None = None  # Master seed for reproducible candidates
 
 
 def create_multifidelity_model(
     train_x: Tensor,
     train_y: Tensor,
     fidelity_dim: int,
+    bounds: Tensor | None = None,
 ) -> SingleTaskMultiFidelityGP:
     """Create a multi-fidelity GP model.
+
+    Inputs are normalized to the unit cube before the kernel sees them, matching
+    every other model path in the package (transfer learning, calibration, CV).
+    Without normalization the GP is fit on raw inputs, so parameters on
+    heterogeneous scales (e.g. temperature 20-80 vs. ratio 0-1 vs. fidelity
+    [0, 1]) get a single ill-conditioned lengthscale and the fit degrades.
 
     Args:
         train_x: Training inputs of shape (n_samples, n_dims)
             where the last column (or fidelity_dim) is the fidelity parameter.
         train_y: Training outputs of shape (n_samples, 1)
         fidelity_dim: Index of the fidelity dimension in train_x
+        bounds: Parameter bounds of shape (2, n_dims) used to build the
+            ``Normalize`` input transform. When ``None`` the bounds are learned
+            from ``train_x`` (min/max per column), which is adequate for data
+            already on the unit cube but less robust than explicit bounds.
 
     Returns:
         SingleTaskMultiFidelityGP model (unfitted)
@@ -91,9 +125,17 @@ def create_multifidelity_model(
     if train_y.dim() == 1:
         train_y = train_y.unsqueeze(-1)
 
+    n_dims = train_x.shape[-1]
+    if bounds is not None:
+        (bounds,) = ensure_device(bounds)
+        input_transform = Normalize(d=n_dims, bounds=bounds)
+    else:
+        input_transform = Normalize(d=n_dims)
+
     return SingleTaskMultiFidelityGP(
         train_X=train_x,
         train_Y=train_y,
+        input_transform=input_transform,
         outcome_transform=Standardize(m=1),
         data_fidelities=[fidelity_dim],
     )
@@ -119,6 +161,7 @@ def create_and_fit_multifidelity_model(
     train_x: Tensor,
     train_y: Tensor,
     fidelity_dim: int,
+    bounds: Tensor | None = None,
 ) -> SingleTaskMultiFidelityGP:
     """Create and fit a multi-fidelity GP model.
 
@@ -126,18 +169,20 @@ def create_and_fit_multifidelity_model(
         train_x: Training inputs of shape (n_samples, n_dims)
         train_y: Training outputs of shape (n_samples, 1)
         fidelity_dim: Index of the fidelity dimension
+        bounds: Parameter bounds of shape (2, n_dims) for the ``Normalize``
+            input transform; learned from the data when ``None``.
 
     Returns:
         Fitted SingleTaskMultiFidelityGP
     """
-    model = create_multifidelity_model(train_x, train_y, fidelity_dim)
+    model = create_multifidelity_model(train_x, train_y, fidelity_dim, bounds)
     return fit_multifidelity_model(model)
 
 
 def create_cost_model(
     fidelity_dim: FidelitySpec | int,
-    cost_weight: float = 1.0,
-    fixed_cost: float = 5.0,
+    cost_weight: float = MF_DEFAULT_COST_WEIGHT,
+    fixed_cost: float = MF_DEFAULT_FIXED_COST,
 ) -> AffineFidelityCostModel:
     """Create a cost model for multi-fidelity optimization.
 
@@ -272,8 +317,8 @@ def optimize_mfkg(
         num_restarts=num_restarts,
         raw_samples=raw_samples,
         options={
-            "batch_limit": 5,
-            "maxiter": 200,
+            "batch_limit": MF_ACQF_BATCH_LIMIT,
+            "maxiter": MF_ACQF_MAXITER,
         },
     )
 
@@ -323,32 +368,53 @@ def generate_multifidelity_suggestions(
     # boundary -- BoTorch's KG stack has no direction flag.
     train_y_bo = -train_y if minimize else train_y
 
-    # Create and fit model
-    model = create_and_fit_multifidelity_model(train_x, train_y_bo, fidelity_dim)
+    # Resolve a per-call torch seed for the stochastic fit + MFKG
+    # optimization. A configured master seed is derived deterministically
+    # (role-tagged so it can't collide with another phase); otherwise fresh
+    # stdlib entropy is drawn. The fallback is essential: fork_rng restores
+    # the global RNG on exit, so without installing a per-call seed two
+    # consecutive *unseeded* calls would replay the identical candidates
+    # (mirrors thompson_sampling._resolve_call_seed).
+    if fidelity_config.random_seed is not None:
+        random_seed = derive_seed(fidelity_config.random_seed, "multifidelity:mfkg")
+    else:
+        # Deliberately non-reproducible — no master seed was supplied.
+        random_seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
 
-    # Create cost model
-    cost_model = create_cost_model(fidelity_spec)
+    # fork_rng isolates the global torch RNG mutation so concurrent callers
+    # cannot race on the seed (state is restored on exit); fork_rng_devices()
+    # adds the active CUDA device(s) so manual_seed's CUDA-generator mutation
+    # is restored too. GLOBAL_RNG_LOCK serializes the snapshot/restore against
+    # every other consumer of the process-global RNG.
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=fork_rng_devices()):
+        torch.manual_seed(random_seed)
 
-    # Create acquisition function
-    acqf = create_mfkg_acquisition(
-        model=model,
-        bounds=bounds,
-        fidelity_dim=fidelity_dim,
-        target_fidelity=fidelity_spec.target_fidelity,
-        cost_model=cost_model,
-        num_fantasies=fidelity_config.num_fantasies,
-        num_restarts=fidelity_config.num_restarts,
-        raw_samples=fidelity_config.raw_samples,
-    )
+        # Create and fit model on normalized inputs (bounds threaded through).
+        model = create_and_fit_multifidelity_model(train_x, train_y_bo, fidelity_dim, bounds)
 
-    # Optimize
-    candidates, acq_values = optimize_mfkg(
-        acqf=acqf,
-        bounds=bounds,
-        batch_size=batch_size,
-        num_restarts=fidelity_config.num_restarts,
-        raw_samples=fidelity_config.raw_samples,
-    )
+        # Create cost model
+        cost_model = create_cost_model(fidelity_spec)
+
+        # Create acquisition function
+        acqf = create_mfkg_acquisition(
+            model=model,
+            bounds=bounds,
+            fidelity_dim=fidelity_dim,
+            target_fidelity=fidelity_spec.target_fidelity,
+            cost_model=cost_model,
+            num_fantasies=fidelity_config.num_fantasies,
+            num_restarts=fidelity_config.num_restarts,
+            raw_samples=fidelity_config.raw_samples,
+        )
+
+        # Optimize
+        candidates, acq_values = optimize_mfkg(
+            acqf=acqf,
+            bounds=bounds,
+            batch_size=batch_size,
+            num_restarts=fidelity_config.num_restarts,
+            raw_samples=fidelity_config.raw_samples,
+        )
 
     metadata = {
         "model_type": "SingleTaskMultiFidelityGP",
@@ -357,6 +423,7 @@ def generate_multifidelity_suggestions(
         "fidelity_dim": fidelity_dim,
         "target_fidelity": fidelity_spec.target_fidelity,
         "num_fantasies": fidelity_config.num_fantasies,
+        "random_seed": random_seed,
     }
 
     return candidates, acq_values, metadata

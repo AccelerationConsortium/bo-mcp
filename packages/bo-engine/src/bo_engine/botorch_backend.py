@@ -33,6 +33,7 @@ from bo_engine.diagnostics import (
     compute_hypervolume,
     compute_improvement_history,
     compute_loo_cv_for_model,
+    compute_observed_hypervolume,
     compute_pareto_front,
     compute_rank_correlation,
     compute_single_objective_improvement_rate,
@@ -450,32 +451,13 @@ class BoTorchBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> float | None:
-        """Return the hypervolume of the observed Pareto front, or ``None`` if not applicable."""
-        if spec.n_objectives < 2:
-            return None
-        if len(observations) < 2:
-            return 0.0
+        """Return the hypervolume of the observed Pareto front, or ``None`` if not applicable.
 
-        obj_names = [o.name for o in spec.objectives]
-        minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
-
-        y_list = [
-            torch.tensor(
-                [obs.objective_values[n] for n in obj_names],
-                dtype=torch.double,
-            )
-            for obs in observations
-        ]
-        y_tensor = torch.stack(y_list)
-
-        y_bo = y_tensor.clone()
-        y_bo[:, ~minimize_mask] = -y_bo[:, ~minimize_mask]
-
-        pareto_y, _ = compute_pareto_front(y_bo)
-
-        ref_point = get_reference_point(y_bo, minimize_mask)
-
-        return compute_hypervolume(pareto_y, ref_point)
+        Delegates to the shared :func:`compute_observed_hypervolume` so the
+        ``None``/``0.0``/value contract and the reference point are identical
+        across backends (the BayBE backend delegates to the same helper).
+        """
+        return compute_observed_hypervolume(spec, observations)
 
     def update_state_after_results(
         self,

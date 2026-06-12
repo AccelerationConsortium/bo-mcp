@@ -30,6 +30,7 @@ import pytest
 import torch
 from gpytorch.mlls import ExactMarginalLogLikelihood
 
+from bo_engine.benchmarks import branin, branin_bounds
 from bo_engine.cross_validation import CVConfig, clear_cv_cache
 from bo_engine.model_selection import (
     DEFAULT_CANDIDATES,
@@ -120,6 +121,71 @@ class TestCandidateMetricsAreDistinct:
         summary = get_model_selection_summary(result)
         assert summary["selected_model"] == result.best_candidate.name
         assert summary["n_models_compared"] == len(result.all_results)
+
+
+WARPED_MATERN = ModelCandidate(
+    name="Warped (Matern 5/2)",
+    kernel=KernelType.MATERN_52,
+    use_warping=True,
+    configuration=ModelConfiguration.WARPED,
+    description="Kumaraswamy input warping for non-stationary functions.",
+)
+
+
+def _branin_dataset(n: int = 30, seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """Branin samples on its native (non-unit) bounds ``x1∈[-5,10], x2∈[0,15]``."""
+    torch.manual_seed(seed)
+    bounds = branin_bounds().to(dtype=torch.float64)
+    lo, hi = bounds[0], bounds[1]
+    train_x = lo + (hi - lo) * torch.rand(n, 2, dtype=torch.float64)
+    train_y = branin(train_x).unsqueeze(-1)
+    return train_x, train_y
+
+
+class TestWarpedCandidateOnNonUnitBounds:
+    """The warped candidate must fit on raw (non-unit) parameter spaces.
+
+    The Kumaraswamy warp is only defined on the unit cube, so warping must be
+    preceded by normalization (the ``normalize → warp`` chain used by the
+    production model factory, cf. ``tests/test_input_warping.py``). A bare
+    ``Warp`` on Branin's ``[-5,10]×[0,15]`` domain fails to fit and is scored
+    ``inf`` — making the warped GP impossible to select where it would help.
+    """
+
+    def test_warped_candidate_cv_rmse_is_finite_on_branin_bounds(self) -> None:
+        clear_cv_cache()
+        train_x, train_y = _branin_dataset()
+        bounds = branin_bounds().to(dtype=torch.float64)
+
+        config = ModelSelectionConfig(
+            candidates=[WARPED_MATERN],
+            cv_config=CVConfig(k_folds=5),
+        )
+        result = compare_models(train_x, train_y, bounds, config)
+
+        warped = result.all_results[0]
+        assert math.isfinite(warped.cv_metrics.rmse), (
+            "Warped candidate scored a non-finite CV RMSE on non-unit bounds — "
+            "the normalize→warp chain is not being applied."
+        )
+        assert warped.cv_metrics.method != "failed"
+
+    def test_warped_candidate_competes_with_standard_on_branin_bounds(self) -> None:
+        """Both candidates must produce finite, comparable metrics on raw bounds."""
+        clear_cv_cache()
+        train_x, train_y = _branin_dataset()
+        bounds = branin_bounds().to(dtype=torch.float64)
+
+        config = ModelSelectionConfig(
+            candidates=[MATCHED_SMOOTH, WARPED_MATERN],
+            cv_config=CVConfig(k_folds=5),
+        )
+        result = compare_models(train_x, train_y, bounds, config)
+
+        rmses = {r.candidate.name: r.cv_metrics.rmse for r in result.all_results}
+        assert all(math.isfinite(v) for v in rmses.values()), (
+            f"Non-finite CV RMSE on Branin bounds: {rmses}"
+        )
 
 
 class TestMisSpecifiedCandidateRanksBelow:

@@ -46,7 +46,12 @@ from botorch.models.transforms.outcome import Standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
 
-from bo_engine.constants import MIN_OBSERVATIONS_FOR_LOO_CV
+from bo_engine.constants import (
+    CI_95_Z_SCORE,
+    MIN_OBSERVATIONS_FOR_LOO_CV,
+    NUMERICAL_EPSILON,
+    SAFE_DIVISION_EPSILON,
+)
 from bo_engine.device import ensure_device
 
 logger = logging.getLogger(__name__)
@@ -616,6 +621,76 @@ def matches_model_training_data(model: SingleTaskGP, train_x: Tensor, train_y: T
     return torch.allclose(raw_targets, train_y.to(raw_targets), rtol=1e-6, atol=1e-8)
 
 
+@dataclass(frozen=True)
+class CVScoreFields:
+    """Scalar cross-validation scores shared by every CV/LOO surface.
+
+    Attributes mirror the regression-quality block that was historically
+    copy-pasted across the CV and diagnostics LOO modules; this is now the
+    single computation site so the metric definitions cannot drift.
+    """
+
+    rmse: float
+    mae: float
+    r_squared: float
+    mean_standardized_error: float
+    coverage_95: float
+
+
+def compute_cv_score_fields(
+    predictions: Tensor,
+    variances: Tensor,
+    actuals: Tensor,
+) -> CVScoreFields:
+    """Single source of truth for the RMSE/MAE/R²/std-error/coverage block.
+
+    Both the CV surface (``cross_validation``) and the diagnostics LOO
+    surface (``diagnostics_loo``) route through this helper so the metric
+    definitions — and the named constants they depend on
+    (:data:`CI_95_Z_SCORE`, :data:`SAFE_DIVISION_EPSILON`,
+    :data:`NUMERICAL_EPSILON`) — stay identical.
+
+    Predictive ``variances`` include observation noise, so the standardized
+    errors and 95% coverage describe held-out *measurements*. The variance is
+    floored at :data:`SAFE_DIVISION_EPSILON` before the square root to keep the
+    standardized-error division well-defined, and R² falls back to ``0.0`` when
+    the total sum of squares is below :data:`NUMERICAL_EPSILON` (degenerate,
+    near-constant targets).
+
+    Args:
+        predictions: Predicted held-out means, shape ``(n,)``.
+        variances: Predictive (observation) variances, shape ``(n,)``.
+        actuals: Observed held-out targets, shape ``(n,)``.
+
+    Returns:
+        CVScoreFields with the scalar metrics.
+    """
+    errors = (predictions - actuals).abs()
+
+    rmse = (errors**2).mean().sqrt().item()
+    mae = errors.mean().item()
+
+    ss_res = ((predictions - actuals) ** 2).sum()
+    ss_tot = ((actuals - actuals.mean()) ** 2).sum()
+    r_squared = (
+        1 - (ss_res / (ss_tot + NUMERICAL_EPSILON)).item() if ss_tot > NUMERICAL_EPSILON else 0.0
+    )
+
+    std = variances.sqrt().clamp(min=SAFE_DIVISION_EPSILON)
+    standardized_errors = errors / std
+    mean_std_error = standardized_errors.mean().item()
+
+    coverage_95 = (standardized_errors < CI_95_Z_SCORE).float().mean().item()
+
+    return CVScoreFields(
+        rmse=rmse,
+        mae=mae,
+        r_squared=r_squared,
+        mean_standardized_error=mean_std_error,
+        coverage_95=coverage_95,
+    )
+
+
 def _compute_cv_metrics_from_predictions(
     predictions: Tensor,
     variances: Tensor,
@@ -624,29 +699,14 @@ def _compute_cv_metrics_from_predictions(
     method: str,
 ) -> CVMetrics:
     """Compute CVMetrics from prediction vs actual tensors."""
-    errors = (predictions - actuals).abs()
-    squared_errors = errors**2
-
-    rmse = squared_errors.mean().sqrt().item()
-    mae = errors.mean().item()
-
-    ss_res = ((predictions - actuals) ** 2).sum()
-    ss_tot = ((actuals - actuals.mean()) ** 2).sum()
-    r_squared = 1 - (ss_res / (ss_tot + 1e-10)).item() if ss_tot > 0 else 0.0
-
-    std = variances.sqrt().clamp(min=1e-6)
-    standardized_errors = errors / std
-    mean_std_error = standardized_errors.mean().item()
-
-    within_95ci = standardized_errors < 1.96
-    coverage_95 = within_95ci.float().mean().item()
+    scores = compute_cv_score_fields(predictions, variances, actuals)
 
     return CVMetrics(
-        rmse=rmse,
-        mae=mae,
-        r_squared=r_squared,
-        mean_standardized_error=mean_std_error,
-        coverage_95=coverage_95,
+        rmse=scores.rmse,
+        mae=scores.mae,
+        r_squared=scores.r_squared,
+        mean_standardized_error=scores.mean_standardized_error,
+        coverage_95=scores.coverage_95,
         per_fold_errors=per_fold_errors,
         computation_time=0.0,
         method=method,

@@ -32,7 +32,7 @@ from botorch.models.transforms.outcome import Standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
 
-from bo_engine.constants import CI_95_Z_SCORE, NUMERICAL_EPSILON, SAFE_DIVISION_EPSILON
+from bo_engine.cross_validation import compute_cv_score_fields
 from bo_engine.device import ensure_device
 
 if TYPE_CHECKING:
@@ -83,7 +83,7 @@ def compute_loo_cv_metrics(
 
     predictions: list[float] = []
     actuals: list[float] = []
-    standardized_errors: list[float] = []
+    variances: list[float] = []
     per_fold_errors: list[float] = []
 
     for fold_idx in range(n_samples):
@@ -111,13 +111,10 @@ def compute_loo_cv_metrics(
                 pred_mean = posterior.mean
                 pred_var = posterior.variance
 
-            error = (pred_mean - test_y_fold).abs().item()
-            per_fold_errors.append(error)
+            per_fold_errors.append((pred_mean - test_y_fold).abs().item())
             predictions.append(pred_mean.squeeze().item())
             actuals.append(test_y_fold.squeeze().item())
-
-            std_err = (pred_mean - test_y_fold).abs() / (pred_var.sqrt() + NUMERICAL_EPSILON)
-            standardized_errors.append(std_err.item())
+            variances.append(pred_var.squeeze().item())
 
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("LOO-CV fold %d failed to fit: %s: %s", fold_idx, type(e).__name__, e)
@@ -132,37 +129,21 @@ def compute_loo_cv_metrics(
             per_fold_errors=per_fold_errors,
         )
 
-    predictions_t = torch.tensor(predictions)
-    actuals_t = torch.tensor(actuals)
-    errors = (predictions_t - actuals_t).abs()
-
-    rmse = (errors**2).mean().sqrt().item()
-    mae = errors.mean().item()
-
-    ss_res = ((predictions_t - actuals_t) ** 2).sum()
-    ss_tot = ((actuals_t - actuals_t.mean()) ** 2).sum()
-    r_squared = (
-        1 - (ss_res / (ss_tot + NUMERICAL_EPSILON)).item() if ss_tot > NUMERICAL_EPSILON else 0.0
-    )
-
-    mean_std_error = sum(standardized_errors) / len(standardized_errors)
-
-    # Fraction of held-out points whose standardized error lands inside the
-    # 95% predictive interval. Mirrors ``compute_loo_cv_for_model`` so the
-    # per-fold-refit path reports a measured coverage instead of the default.
-    coverage_95 = (
-        sum(1 for err in standardized_errors if err < CI_95_Z_SCORE) / len(standardized_errors)
-        if standardized_errors
-        else float("nan")
+    # Same metric block as the batched LOO path — including the measured 95%
+    # coverage — so the per-fold-refit surface cannot drift from it.
+    scores = compute_cv_score_fields(
+        torch.tensor(predictions),
+        torch.tensor(variances),
+        torch.tensor(actuals),
     )
 
     return LOOCVMetrics(
-        rmse=rmse,
-        mae=mae,
-        r_squared=r_squared,
-        mean_standardized_error=mean_std_error,
+        rmse=scores.rmse,
+        mae=scores.mae,
+        r_squared=scores.r_squared,
+        mean_standardized_error=scores.mean_standardized_error,
         per_fold_errors=per_fold_errors,
-        coverage_95=coverage_95,
+        coverage_95=scores.coverage_95,
     )
 
 
@@ -200,112 +181,58 @@ def compute_loo_cv_for_model(
         LOOCVMetrics for single-objective models, or
         Dictionary mapping objective index to LOOCVMetrics for multi-objective
     """
-    from bo_engine.diagnostics import LOOCVMetrics
-
     if isinstance(model, SingleTaskGP):
-        cv_folds = gen_loo_cv_folds(train_X=train_x, train_Y=train_y)
-        try:
-            cv_results = batch_cross_validation(
-                model_cls=SingleTaskGP,
-                mll_cls=ExactMarginalLogLikelihood,
-                cv_folds=cv_folds,
-                observation_noise=True,
-            )
-            pred_mean = cv_results.posterior.mean.squeeze()
-            pred_var = cv_results.posterior.variance.squeeze()
-            actuals = train_y.squeeze()
-            errors = (pred_mean - actuals).abs()
-
-            rmse = (errors**2).mean().sqrt().item()
-            mae = errors.mean().item()
-
-            ss_res = ((pred_mean - actuals) ** 2).sum()
-            ss_tot = ((actuals - actuals.mean()) ** 2).sum()
-            r_squared = (
-                1 - (ss_res / (ss_tot + NUMERICAL_EPSILON)).item()
-                if ss_tot > NUMERICAL_EPSILON
-                else 0.0
-            )
-
-            std = pred_var.sqrt().clamp(min=SAFE_DIVISION_EPSILON)
-            standardized_errors = errors / std
-            mean_std_error = standardized_errors.mean().item()
-
-            within_95ci = standardized_errors < CI_95_Z_SCORE
-            coverage_95 = within_95ci.float().mean().item()
-
-            return LOOCVMetrics(
-                rmse=rmse,
-                mae=mae,
-                r_squared=r_squared,
-                mean_standardized_error=mean_std_error,
-                per_fold_errors=errors.tolist(),
-                coverage_95=coverage_95,
-            )
-        except (RuntimeError, ValueError, TypeError) as e:
-            logger.debug(
-                "Cross-validation for single-objective model failed: %s: %s", type(e).__name__, e
-            )
-            return LOOCVMetrics(
-                rmse=float("nan"),
-                mae=float("nan"),
-                r_squared=float("nan"),
-                mean_standardized_error=float("nan"),
-                per_fold_errors=[],
-                coverage_95=float("nan"),
-            )
+        return _batched_loo_metrics(train_x, train_y, label="single-objective model")
 
     results: dict[int, LOOCVMetrics] = {}
     for i, _m in enumerate(model.models):
         train_y_i = train_y[:, i : i + 1]
-        cv_folds = gen_loo_cv_folds(train_X=train_x, train_Y=train_y_i)
-        try:
-            cv_results = batch_cross_validation(
-                model_cls=SingleTaskGP,
-                mll_cls=ExactMarginalLogLikelihood,
-                cv_folds=cv_folds,
-                observation_noise=True,
-            )
-            pred_mean = cv_results.posterior.mean.squeeze()
-            pred_var = cv_results.posterior.variance.squeeze()
-            actuals = train_y_i.squeeze()
-            errors = (pred_mean - actuals).abs()
-
-            rmse = (errors**2).mean().sqrt().item()
-            mae = errors.mean().item()
-
-            ss_res = ((pred_mean - actuals) ** 2).sum()
-            ss_tot = ((actuals - actuals.mean()) ** 2).sum()
-            r_squared = (
-                1 - (ss_res / (ss_tot + NUMERICAL_EPSILON)).item()
-                if ss_tot > NUMERICAL_EPSILON
-                else 0.0
-            )
-
-            std = pred_var.sqrt().clamp(min=SAFE_DIVISION_EPSILON)
-            standardized_errors = errors / std
-            mean_std_error = standardized_errors.mean().item()
-
-            within_95ci = standardized_errors < CI_95_Z_SCORE
-            coverage_95 = within_95ci.float().mean().item()
-
-            results[i] = LOOCVMetrics(
-                rmse=rmse,
-                mae=mae,
-                r_squared=r_squared,
-                mean_standardized_error=mean_std_error,
-                per_fold_errors=errors.tolist(),
-                coverage_95=coverage_95,
-            )
-        except (RuntimeError, ValueError, TypeError) as e:
-            logger.debug("Cross-validation for objective %d failed: %s: %s", i, type(e).__name__, e)
-            results[i] = LOOCVMetrics(
-                rmse=float("nan"),
-                mae=float("nan"),
-                r_squared=float("nan"),
-                mean_standardized_error=float("nan"),
-                per_fold_errors=[],
-                coverage_95=float("nan"),
-            )
+        results[i] = _batched_loo_metrics(train_x, train_y_i, label=f"objective {i}")
 
     return results
+
+
+def _batched_loo_metrics(train_x: Tensor, train_y: Tensor, *, label: str) -> LOOCVMetrics:
+    """Batched LOO-CV metrics for one output, scored via the shared helper.
+
+    Refits default ``SingleTaskGP`` folds with BoTorch's batch CV and routes
+    the held-out predictions through :func:`compute_cv_score_fields`, the same
+    metric block the optimized CV surface uses, so the diagnostics and CV
+    surfaces report identical numbers for identical inputs.
+    """
+    from bo_engine.diagnostics import LOOCVMetrics
+
+    cv_folds = gen_loo_cv_folds(train_X=train_x, train_Y=train_y)
+    try:
+        cv_results = batch_cross_validation(
+            model_cls=SingleTaskGP,
+            mll_cls=ExactMarginalLogLikelihood,
+            cv_folds=cv_folds,
+            observation_noise=True,
+        )
+    except (RuntimeError, ValueError, TypeError) as e:
+        logger.debug("Cross-validation for %s failed: %s: %s", label, type(e).__name__, e)
+        return LOOCVMetrics(
+            rmse=float("nan"),
+            mae=float("nan"),
+            r_squared=float("nan"),
+            mean_standardized_error=float("nan"),
+            per_fold_errors=[],
+            coverage_95=float("nan"),
+        )
+
+    pred_mean = cv_results.posterior.mean.squeeze()
+    pred_var = cv_results.posterior.variance.squeeze()
+    actuals = train_y.squeeze()
+    per_fold_errors = (pred_mean - actuals).abs().tolist()
+
+    scores = compute_cv_score_fields(pred_mean, pred_var, actuals)
+
+    return LOOCVMetrics(
+        rmse=scores.rmse,
+        mae=scores.mae,
+        r_squared=scores.r_squared,
+        mean_standardized_error=scores.mean_standardized_error,
+        per_fold_errors=per_fold_errors,
+        coverage_95=scores.coverage_95,
+    )

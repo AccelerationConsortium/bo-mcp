@@ -17,6 +17,7 @@ import pandas as pd
 import torch
 from baybe import Campaign
 from bo_engine.device import get_device, get_dtype
+from bo_engine.diagnostics import observations_to_minimization_form
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.types import ObservationData, OptimizationSpec
 from botorch.models import ModelListGP, SingleTaskGP
@@ -37,27 +38,16 @@ def _observations_to_minimization_tensor(
     spec: OptimizationSpec,
     observations: list[ObservationData],
 ) -> torch.Tensor:
-    """Convert observations to a tensor in BoTorch minimization convention."""
-    obj_names = [o.name for o in spec.objectives]
-    minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
+    """Convert observations to a tensor in BoTorch minimization convention.
 
-    y_list = [
-        torch.tensor([obs.objective_values[n] for n in obj_names], dtype=torch.double)
-        for obs in observations
-    ]
-    y_tensor = torch.stack(y_list)
-    y_bo = y_tensor.clone()
-    y_bo[:, ~minimize_mask] = -y_bo[:, ~minimize_mask]
+    Thin wrapper over the shared
+    :func:`bo_engine.diagnostics.observations_to_minimization_form` so the
+    BayBE diagnostics surface and the engine backends build the
+    minimization-form tensor identically (this helper drops the mask the
+    shared function also returns).
+    """
+    y_bo, _ = observations_to_minimization_form(spec, observations)
     return y_bo
-
-
-def _compute_reference_point(y_bo: torch.Tensor) -> torch.Tensor:
-    """Compute a reference point from minimization-convention objective values."""
-    worst = y_bo.max(dim=0).values  # noqa: PD011
-    ranges = worst - y_bo.min(dim=0).values  # noqa: PD011
-    abs_scale = worst.abs().clamp(min=1e-6)
-    ranges = torch.where(ranges < 1e-6, abs_scale, ranges)
-    return worst + 0.1 * ranges
 
 
 def _extract_posterior_stats(

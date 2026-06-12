@@ -33,7 +33,6 @@ from typing import Any
 
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
-from botorch.models.transforms.input import Normalize, Warp
 from botorch.models.transforms.outcome import Standardize
 from gpytorch.kernels import MaternKernel, RBFKernel, ScaleKernel
 from gpytorch.mlls import ExactMarginalLogLikelihood
@@ -46,6 +45,7 @@ from bo_engine.cross_validation import (
     compute_loo_cv_optimized,
 )
 from bo_engine.device import ensure_device
+from bo_engine.models import create_input_transform
 
 logger = logging.getLogger(__name__)
 
@@ -323,16 +323,16 @@ def _build_model(
     """
     n_dims = train_x.shape[-1]
 
-    # Build input transform
-    if candidate.use_warping:
-        input_transform = Warp(
-            d=n_dims,
-            indices=list(range(n_dims)),
-            concentration1_prior=None,
-            concentration0_prior=None,
-        )
-    else:
-        input_transform = Normalize(d=n_dims, bounds=bounds)
+    # Build input transform. Reuse the production factory so the warped
+    # candidate gets the same ``normalize → warp`` chain as the live model
+    # path: the Kumaraswamy CDF is only defined on the unit cube, so warping
+    # raw inputs on non-unit bounds would fail to fit (and be silently scored
+    # ``inf``, never selected).
+    input_transform = create_input_transform(
+        n_dims=n_dims,
+        bounds=bounds,
+        use_input_warping=candidate.use_warping,
+    )
 
     # Build kernel
     kernel = _build_kernel(candidate.kernel, n_dims)

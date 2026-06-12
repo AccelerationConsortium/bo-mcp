@@ -111,6 +111,43 @@ class TestLOOCVCoverage:
         assert metrics.coverage_95 >= 0.6
 
 
+class TestCVMetricEquivalenceAcrossModules:
+    """The diagnostics LOO surface and the CV surface must agree.
+
+    Both modules now route their RMSE/MAE/R²/standardized-error/coverage
+    computation through the single ``compute_cv_score_fields`` helper, so the
+    same batched LOO predictions must yield identical metrics regardless of
+    which entry point produced them. This pins the de-duplication: a future
+    edit that re-forks one block (or drifts a constant) breaks this test.
+    """
+
+    def test_diagnostics_and_cv_modules_agree(self) -> None:
+        from bo_engine.cross_validation import CVConfig, compute_loo_cv_optimized
+
+        torch.manual_seed(42)
+        train_x = torch.rand(12, 2, dtype=torch.double)
+        train_y = train_x[:, 0:1] ** 2 + train_x[:, 1:2]
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+
+        model = create_and_fit_single_task_model(train_x, train_y, bounds)
+
+        # Reset the RNG before each batched fit so both paths start the
+        # fold-model optimization from identical state — any metric
+        # difference then comes from the computation block, not the fit.
+        torch.manual_seed(0)
+        diag = compute_loo_cv_for_model(model, train_x, train_y)
+        assert isinstance(diag, LOOCVMetrics)
+
+        torch.manual_seed(0)
+        cv = compute_loo_cv_optimized(train_x, train_y, bounds, CVConfig(method="batch_loo"))
+
+        assert diag.rmse == cv.rmse
+        assert diag.mae == cv.mae
+        assert diag.r_squared == cv.r_squared
+        assert diag.mean_standardized_error == cv.mean_standardized_error
+        assert diag.coverage_95 == cv.coverage_95
+
+
 class TestLOOCVForModel:
     """Test LOO-CV for fitted models."""
 

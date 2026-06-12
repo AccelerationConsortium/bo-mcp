@@ -95,6 +95,140 @@ class TestSeededReproducibility:
         assert torch.equal(before, after), "fork_rng isolation was lost"
 
 
+class TestSampledValueIsWinningDraw:
+    """``ThompsonSample.sampled_value`` must be the winning sample, not a re-draw.
+
+    The reported value should be the value of the posterior sample path whose
+    optimum selected the point — recomputing a *fresh* independent draw at the
+    point (the previous behaviour) returns a number uncorrelated with why the
+    point won, and is statistically far from the selecting minimum.
+
+    Reference: Russo et al. "A Tutorial on Thompson Sampling" (2018) — the
+    chosen action is the argmax/argmin of a single sampled reward function;
+    the reported reward is that sample's value, not a new sample.
+    """
+
+    def test_sampled_value_matches_recorded_winning_draw(
+        self, fitted_model_and_bounds: tuple
+    ) -> None:
+        from bo_engine.thompson_sampling import _generate_sobol_candidates
+
+        model, bounds = fitted_model_and_bounds
+        seed = 4242
+        num_candidates = 64
+
+        batch = generate_thompson_samples(
+            model,
+            bounds,
+            n_samples=1,
+            config=ThompsonConfig(
+                seed=seed, num_candidates=num_candidates, use_max_posterior_sampling=True
+            ),
+            minimize=True,
+        )
+        sample = batch.samples[0]
+
+        # Replay the exact internal selection: same seed, same candidate set,
+        # same single posterior draw. fork_rng keeps the global state clean.
+        with torch.random.fork_rng():
+            torch.manual_seed(seed)
+            candidates = _generate_sobol_candidates(bounds, num_candidates)
+            with torch.no_grad():
+                sampled_values = model.posterior(candidates).rsample().reshape(-1)
+            best_idx = int(sampled_values.argmin().item())
+            expected_value = float(sampled_values[best_idx].item())
+            expected_point = candidates[best_idx]
+
+        assert sample.sampled_value == pytest.approx(expected_value), (
+            "sampled_value is not the winning sample-path value — it looks "
+            "like an independent fresh draw at the selected point."
+        )
+        assert torch.allclose(sample.parameters, expected_point)
+
+    def test_sampled_value_not_a_fresh_independent_draw(
+        self, fitted_model_and_bounds: tuple
+    ) -> None:
+        """The winning (minimum) draw should sit at/below the posterior mean.
+
+        A fresh draw at the point is symmetric about the mean, so it lands
+        above the mean ~half the time; the selecting minimum over many
+        candidates is essentially never above it. This distinguishes the two
+        behaviours without replaying the RNG.
+        """
+        model, bounds = fitted_model_and_bounds
+        sample = generate_thompson_samples(
+            model,
+            bounds,
+            n_samples=1,
+            config=ThompsonConfig(seed=7, num_candidates=256),
+            minimize=True,
+        ).samples[0]
+
+        assert sample.sampled_value <= sample.posterior_mean + sample.posterior_std, (
+            "The winning minimum draw is implausibly high — sampled_value is "
+            "not the selecting sample path."
+        )
+
+
+class TestDirectBatchNoDuplicates:
+    """A direct multi-sample batch over a shared candidate set must not repeat.
+
+    The shared-candidate path restores ``MaxPosteriorSampling(replacement=
+    False)``: selecting from one candidate set without removing chosen points
+    let independent argmin/argmax draws collapse onto the same candidate
+    (observed: ``seed=1, num_candidates=16, n_samples=5`` → 4 repeats). The
+    diverse-batch API was protected, but the direct API was not.
+    """
+
+    @pytest.mark.parametrize("minimize", [True, False])
+    def test_no_duplicate_rows_in_direct_batch(
+        self, fitted_model_and_bounds: tuple, minimize: bool
+    ) -> None:
+        model, bounds = fitted_model_and_bounds
+        batch = generate_thompson_samples(
+            model,
+            bounds,
+            n_samples=5,
+            config=ThompsonConfig(seed=1, num_candidates=16),
+            minimize=minimize,
+        )
+        params = batch.parameters_tensor
+        for i in range(params.shape[0]):
+            for j in range(i + 1, params.shape[0]):
+                assert not torch.allclose(params[i], params[j]), (
+                    f"Direct Thompson batch slots {i} and {j} are identical — "
+                    "without-replacement selection regressed."
+                )
+
+
+class TestSingleCandidateConfig:
+    """``num_candidates=1`` is a valid public config and must not crash."""
+
+    @pytest.mark.parametrize("minimize", [True, False])
+    def test_single_candidate_returns_finite_sample(
+        self, fitted_model_and_bounds: tuple, minimize: bool
+    ) -> None:
+        """A single-candidate draw must not collapse to a 0-D scalar.
+
+        ``squeeze()`` on a 1-candidate posterior draw produced a 0-D tensor
+        that ``sampled_values[best_idx]`` could not index (``IndexError``);
+        ``reshape(-1)`` keeps it 1-D.
+        """
+        import math
+
+        model, bounds = fitted_model_and_bounds
+        batch = generate_thompson_samples(
+            model,
+            bounds,
+            n_samples=1,
+            config=ThompsonConfig(seed=3, num_candidates=1),
+            minimize=minimize,
+        )
+        assert len(batch.samples) == 1
+        assert math.isfinite(batch.samples[0].sampled_value)
+        assert batch.parameters_tensor.shape == (1, 1)
+
+
 class TestDiverseBatch:
     """The diversity retry loop must produce spread-out batches."""
 

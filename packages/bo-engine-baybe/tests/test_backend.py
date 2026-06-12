@@ -10,6 +10,8 @@ Reference: BOBackend protocol definition in bo_engine/backend.py
 
 import math
 
+import pytest
+
 from bo_engine.backend import (
     BatchDiversityMetrics,
     BOBackend,
@@ -23,7 +25,6 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-
 from bo_engine_baybe.backend import BayBEBackend
 
 
@@ -616,6 +617,104 @@ class TestComputeHypervolume:
         backend = BayBEBackend()
         result = backend.compute_hypervolume(simple_spec, [])
         assert result is None
+
+
+class TestHypervolumeCrossBackendParity:
+    """The hypervolume contract must be identical across backends.
+
+    ``campaign.hypervolume_history`` drives convergence detection, so the two
+    backends must agree on (a) the ``None``/``0.0``/value return contract and
+    (b) the dominated hypervolume itself — both now delegate to the single
+    ``bo_engine.diagnostics.compute_observed_hypervolume`` helper using one
+    shared reference point. Without this both backends could report different
+    HV for the same Pareto front (BayBE previously returned ``None`` below two
+    observations where BoTorch returned ``0.0``, and used a different
+    degenerate-range reference-point fallback).
+    """
+
+    @staticmethod
+    def _multi_objective_spec() -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[
+                ObjectiveSpec(name="y1", minimize=True),
+                ObjectiveSpec(name="y2", minimize=False),
+            ],
+        )
+
+    @staticmethod
+    def _observations() -> list[ObservationData]:
+        # A fixed 2-objective trade-off front (mixed directions).
+        return [
+            ObservationData(parameter_values={"x": 0.1}, objective_values={"y1": 1.0, "y2": 4.0}),
+            ObservationData(parameter_values={"x": 0.4}, objective_values={"y1": 2.0, "y2": 3.0}),
+            ObservationData(parameter_values={"x": 0.7}, objective_values={"y1": 3.0, "y2": 2.0}),
+            ObservationData(parameter_values={"x": 0.9}, objective_values={"y1": 4.0, "y2": 1.0}),
+        ]
+
+    def test_backends_agree_on_hypervolume(self) -> None:
+        from bo_engine.botorch_backend import BoTorchBackend
+
+        spec = self._multi_objective_spec()
+        observations = self._observations()
+
+        baybe_hv = BayBEBackend().compute_hypervolume(spec, observations)
+        botorch_hv = BoTorchBackend().compute_hypervolume(spec, observations)
+
+        assert baybe_hv is not None
+        assert botorch_hv is not None
+        assert baybe_hv == botorch_hv
+
+    def test_hypervolume_matches_hand_computed_value(self) -> None:
+        """Independent numeric oracle (not just routing parity).
+
+        Two minimize objectives with ``A=(1,1)`` dominating ``B=(2,2)`` give a
+        Pareto front of ``{(1,1)}``. The static reference point is
+        ``worst + 0.1·window`` with ``worst=(2,2)`` and ``window=range=(1,1)``
+        (the ``|worst|·0.01`` relative floor is below the range), i.e.
+        ``(2.1, 2.1)``, so the dominated hypervolume is
+        ``(2.1-1)·(2.1-1) = 1.21`` — independent of the backend delegation.
+        """
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[
+                ObjectiveSpec(name="y1", minimize=True),
+                ObjectiveSpec(name="y2", minimize=True),
+            ],
+        )
+        observations = [
+            ObservationData(parameter_values={"x": 0.2}, objective_values={"y1": 1.0, "y2": 1.0}),
+            ObservationData(parameter_values={"x": 0.6}, objective_values={"y1": 2.0, "y2": 2.0}),
+        ]
+
+        hv = BayBEBackend().compute_hypervolume(spec, observations)
+        assert hv == pytest.approx(1.21)
+
+    def test_backends_agree_below_observation_threshold(self) -> None:
+        """Fewer than two observations ⇒ both return ``0.0`` (front not formed)."""
+        from bo_engine.botorch_backend import BoTorchBackend
+
+        spec = self._multi_objective_spec()
+        one_obs = self._observations()[:1]
+
+        assert BayBEBackend().compute_hypervolume(spec, one_obs) == 0.0
+        assert BoTorchBackend().compute_hypervolume(spec, one_obs) == 0.0
+
+    def test_backends_agree_for_single_objective(self) -> None:
+        """A single-objective spec ⇒ both return ``None`` (HV undefined)."""
+        from bo_engine.botorch_backend import BoTorchBackend
+
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        observations = [
+            ObservationData(parameter_values={"x": 0.2}, objective_values={"y": 1.0}),
+            ObservationData(parameter_values={"x": 0.6}, objective_values={"y": 0.5}),
+        ]
+
+        assert BayBEBackend().compute_hypervolume(spec, observations) is None
+        assert BoTorchBackend().compute_hypervolume(spec, observations) is None
 
 
 class TestValidateSpec:

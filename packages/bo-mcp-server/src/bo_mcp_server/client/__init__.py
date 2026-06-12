@@ -86,6 +86,7 @@ from bo_mcp_server.errors import (
     make_corrupted_json_response,
     make_error_response,
 )
+from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan
 from bo_mcp_server.metrics import (
     observe_suggestion_latency,
     record_campaign_created,
@@ -131,7 +132,9 @@ from bo_mcp_server.response_formatter import (
     format_validate_intake_response,
 )
 from bo_mcp_server.result_upload_parser import parse_named_result_rows
+from bo_mcp_server.schema_extension import augment_parameter_options
 from bo_mcp_server.storage.models import CorruptedJsonColumnError
+from bo_mcp_server.trace_context import bind_trace_id, get_trace_id
 
 __all__ = [
     "DEV_API_KEY",
@@ -179,10 +182,12 @@ __all__ = [
     "User",
     "ValidateIntakeSpecSummary",
     "VerbosityLevel",
+    "augment_parameter_options",
     "authorize_campaign",
     "authorize_suggestion",
     # Operations
     "batch_get_status_operation",
+    "bind_trace_id",
     "canonical_create_campaign_payload",
     "canonical_submit_results_payload",
     "compare_campaigns_operation",
@@ -199,8 +204,10 @@ __all__ = [
     "get_diagnostics_operation",
     "get_spec_for_user",
     "get_suggestion_explanation_operation",
+    "get_trace_id",
     "get_user_by_api_key",
     "http_status_for_error",
+    "idempotency_gc_lifespan",
     "init_database",
     "list_campaign_results",
     "list_campaign_suggestions",

@@ -1,6 +1,7 @@
 """Shared test fixtures for bo-engine-baybe tests."""
 
 import pytest
+
 from bo_engine.types import (
     ConstraintSpec,
     ConstraintType,

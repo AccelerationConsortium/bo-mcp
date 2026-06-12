@@ -212,6 +212,45 @@ class Settings(BaseSettings):
             "request."
         ),
     )
+    idempotency_heartbeat_max_total_extension_seconds: float = Field(
+        default=30 * 60,
+        ge=0,
+        alias="IDEMPOTENCY_HEARTBEAT_MAX_TOTAL_EXTENSION_SECONDS",
+        description=(
+            "Maximum wall-clock runtime of a reservation heartbeat, measured "
+            "from when the heartbeat starts. The heartbeat extends a slow "
+            "operation's reservation so it is not reclaimed mid-run, but without "
+            "a bound a wedged backend (a hung GP fit on an un-cancellable worker "
+            "thread) would hold the slot indefinitely. After running this many "
+            "seconds the heartbeat stops, letting the reservation expire so a "
+            "retry can reclaim the slot. Counted as elapsed runtime (one beat "
+            "period at a time), NOT as the sum of requested extensions — the "
+            "monotonic ``max(current, now+extension)`` expiry means early beats "
+            "match the row without moving the deadline, and charging those "
+            "no-ops against the bound would stop the heartbeat long before a "
+            "legitimate long compute finishes. Keep this at or above "
+            "BO_COMPUTE_TIMEOUT_SECONDS so a legitimately slow run keeps its "
+            "slot. ``0`` disables the bound (unbounded — legacy behaviour)."
+        ),
+    )
+    bo_compute_timeout_seconds: float = Field(
+        default=30 * 60,
+        ge=0,
+        alias="BO_COMPUTE_TIMEOUT_SECONDS",
+        description=(
+            "Hard wall-clock budget for a single backend compute (GP fit + "
+            "acquisition optimization) offloaded to a worker thread. When the "
+            "budget elapses the server stops awaiting the thread and returns a "
+            "retryable BACKEND_TRANSIENT_ERROR envelope, freeing the request "
+            "(the orphaned thread is not cancellable and finishes in the "
+            "background — its result is discarded). The 30-minute default is a "
+            "conservative hang-detector: it sits beyond any realistic single "
+            "GP-fit + acquisition run (seconds to a few minutes, even for "
+            "SAASBO MCMC / large batches) so it only fires on a wedged backend, "
+            "while still bounding an otherwise-indefinite request. Raise it for "
+            "unusually heavy workloads; set ``0`` to disable (wait indefinitely)."
+        ),
+    )
 
 
 def get_settings() -> Settings:
@@ -321,3 +360,13 @@ def get_idempotency_reservation_ttl_seconds() -> int:
 def get_idempotency_response_ttl_seconds() -> int:
     """Return the idempotency response replay TTL (seconds)."""
     return get_settings().idempotency_response_ttl_seconds
+
+
+def get_idempotency_heartbeat_max_total_extension_seconds() -> float:
+    """Return the max heartbeat runtime (elapsed seconds; 0 = unbounded)."""
+    return get_settings().idempotency_heartbeat_max_total_extension_seconds
+
+
+def get_bo_compute_timeout_seconds() -> float:
+    """Return the per-compute wall-clock timeout (seconds; 0 = disabled)."""
+    return get_settings().bo_compute_timeout_seconds

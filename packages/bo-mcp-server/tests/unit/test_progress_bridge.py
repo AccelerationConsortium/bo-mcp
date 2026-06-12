@@ -17,8 +17,8 @@ import asyncio
 import logging
 
 import pytest
-from bo_engine.progress import ProgressEvent
 
+from bo_engine.progress import ProgressEvent
 from bo_mcp_server.metrics import PROGRESS_NOTIFY_FAILURES
 from bo_mcp_server.progress_bridge import ProgressStatus, build_progress_callback
 

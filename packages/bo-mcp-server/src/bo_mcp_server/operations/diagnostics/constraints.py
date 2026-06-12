@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 import torch
+
 from bo_engine.constants import CONSTRAINT_CALIBRATION_WARN_THRESHOLD
 from bo_engine.device import get_device, get_dtype
 from bo_engine.diagnostics import ConstraintSatisfactionMetrics, compute_constraint_satisfaction
@@ -15,7 +16,6 @@ from bo_engine.outcome_constraints import (
 )
 from bo_engine.transforms import get_bounds_tensor, stack_encoded_values
 from bo_engine.types import OptimizationSpec
-
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result
 from bo_mcp_server.domain.campaign_spec import OutcomeConstraint
@@ -169,9 +169,9 @@ def _per_constraint_report(
         device=get_device(),
     )
     constraint_spec = EngineOutcomeConstraintSpec(
-        name=oc.objective_name,
-        bound=oc.threshold,
-        constraint_type=">=" if oc.greater_than else "<=",
+        objective_name=oc.objective_name,
+        threshold=oc.threshold,
+        greater_than=oc.greater_than,
     )
     per_reports = compute_outcome_constraint_calibration(
         constraint_specs=[constraint_spec],

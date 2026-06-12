@@ -34,7 +34,7 @@ import threading
 from collections.abc import Callable
 from contextvars import ContextVar
 
-from bo_mcp_server.trace_context import get_trace_id
+from bo_mcp_server.client import get_trace_id
 
 # ``logging.setLogRecordFactory`` accepts any callable that returns a
 # ``LogRecord``; the stdlib does not expose a typed alias so we model

@@ -53,6 +53,7 @@ from bo_engine.constants import (
 # Re-exports — initial-design helpers live in :mod:`bo_engine.initial_design`
 # after the suggestions god-module split. Imports from this module continue
 # to resolve here so external callers do not need to change.
+from bo_engine.device import fork_rng_devices
 from bo_engine.initial_design import (
     _apply_constraints_to_samples,
     _guard_categorical_space_exhaustion,
@@ -287,10 +288,13 @@ def generate_next_batch(
         via ``torch.manual_seed`` because BoTorch's ``optimize_acqf``
         sampler path consults the global state rather than accepting
         an explicit generator.  The mutation is scoped inside a
-        ``torch.random.fork_rng(devices=[])`` block so concurrent
-        callers (e.g. under ``asyncio.to_thread``) cannot race on
-        the process-wide seed: the prior RNG state is saved on entry
-        and restored on every return path.
+        ``torch.random.fork_rng(devices=fork_rng_devices())`` block so
+        concurrent callers (e.g. under ``asyncio.to_thread``) cannot
+        race on the process-wide seed: the prior RNG state is saved on
+        entry and restored on every return path. ``fork_rng_devices()``
+        adds the active CUDA device when one is selected, because
+        ``manual_seed`` also seeds the CUDA generators — a bare
+        ``devices=[]`` would leak that mutation past the block on GPU.
 
     Returns:
         Tuple of (List of SuggestionResult objects, Updated TurboState or None)
@@ -350,12 +354,14 @@ def generate_next_batch(
     # fork_rng isolates the torch global RNG mutation below so concurrent
     # callers (e.g. under asyncio.to_thread) cannot race on the seed —
     # prior state is saved on entry and restored on every return path.
-    # GLOBAL_RNG_LOCK serializes this section against every other
-    # snapshot/restore consumer of the process-global RNG (other BoTorch
-    # calls, Thompson sampling, the BayBE backend's seeded scope):
-    # without it an overlapping fork_rng restore rolls a concurrent
-    # seeded stream back to a stale snapshot.
-    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=[]):
+    # fork_rng_devices() includes the active CUDA device so manual_seed's
+    # CUDA-generator mutation is restored too (a bare devices=[] snapshots
+    # only the CPU generator and would leak on GPU). GLOBAL_RNG_LOCK
+    # serializes this section against every other snapshot/restore consumer
+    # of the process-global RNG (other BoTorch calls, Thompson sampling, the
+    # BayBE backend's seeded scope): without it an overlapping fork_rng
+    # restore rolls a concurrent seeded stream back to a stale snapshot.
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=fork_rng_devices()):
         torch.manual_seed(random_seed)
 
         # Short-circuit for finite (purely-categorical) spaces whose unique

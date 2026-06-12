@@ -21,6 +21,7 @@ squaring the per-objective stddev passed in via this field.
 from uuid import uuid4
 
 import pytest
+
 from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 

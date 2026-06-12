@@ -29,11 +29,11 @@ from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from bo_mcp_server.storage.models import CorruptedJsonColumnError
 from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 
 from api.main import create_app
+from bo_mcp_server.storage.models import CorruptedJsonColumnError
 
 
 @pytest_asyncio.fixture

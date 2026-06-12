@@ -75,6 +75,79 @@ class TestLOOCVMetricsComputation:
         assert len(metrics.per_fold_errors) <= n_samples
 
 
+class TestLOOCVCoverage:
+    """``coverage_95`` must report a measured value, never a perfect default.
+
+    The field defaults to NaN ("not computed") rather than 0.95, so a caller
+    can distinguish a measured-perfect calibration from a never-measured one.
+    The per-fold-refit path (``compute_loo_cv_metrics``) must populate it
+    from the held-out standardized errors instead of leaving the sentinel.
+    """
+
+    def test_coverage_is_nan_below_data_threshold(self) -> None:
+        """Insufficient data must surface NaN coverage, not the 0.95 default."""
+        train_x = torch.rand(2, 2, dtype=torch.double)
+        train_y = torch.rand(2, 1, dtype=torch.double)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+
+        metrics = compute_loo_cv_metrics(train_x, train_y, bounds)
+
+        assert math.isnan(metrics.coverage_95)
+
+    def test_coverage_is_measured_above_threshold(self) -> None:
+        """A well-specified GP yields a measured coverage in [0, 1]."""
+        torch.manual_seed(42)
+        # Smooth quadratic + small noise: the GP fits it well, so the 95%
+        # predictive interval should contain most held-out points.
+        train_x = torch.linspace(0, 1, 20, dtype=torch.float64).unsqueeze(-1)
+        train_y = (train_x - 0.5) ** 2 + 0.01 * torch.randn_like(train_x)
+        bounds = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
+
+        metrics = compute_loo_cv_metrics(train_x, train_y, bounds)
+
+        assert not math.isnan(metrics.coverage_95)
+        assert 0.0 <= metrics.coverage_95 <= 1.0
+        # Well-specified model → most held-out points inside the 95% interval.
+        assert metrics.coverage_95 >= 0.6
+
+
+class TestCVMetricEquivalenceAcrossModules:
+    """The diagnostics LOO surface and the CV surface must agree.
+
+    Both modules now route their RMSE/MAE/R²/standardized-error/coverage
+    computation through the single ``compute_cv_score_fields`` helper, so the
+    same batched LOO predictions must yield identical metrics regardless of
+    which entry point produced them. This pins the de-duplication: a future
+    edit that re-forks one block (or drifts a constant) breaks this test.
+    """
+
+    def test_diagnostics_and_cv_modules_agree(self) -> None:
+        from bo_engine.cross_validation import CVConfig, compute_loo_cv_optimized
+
+        torch.manual_seed(42)
+        train_x = torch.rand(12, 2, dtype=torch.double)
+        train_y = train_x[:, 0:1] ** 2 + train_x[:, 1:2]
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+
+        model = create_and_fit_single_task_model(train_x, train_y, bounds)
+
+        # Reset the RNG before each batched fit so both paths start the
+        # fold-model optimization from identical state — any metric
+        # difference then comes from the computation block, not the fit.
+        torch.manual_seed(0)
+        diag = compute_loo_cv_for_model(model, train_x, train_y)
+        assert isinstance(diag, LOOCVMetrics)
+
+        torch.manual_seed(0)
+        cv = compute_loo_cv_optimized(train_x, train_y, bounds, CVConfig(method="batch_loo"))
+
+        assert diag.rmse == cv.rmse
+        assert diag.mae == cv.mae
+        assert diag.r_squared == cv.r_squared
+        assert diag.mean_standardized_error == cv.mean_standardized_error
+        assert diag.coverage_95 == cv.coverage_95
+
+
 class TestLOOCVForModel:
     """Test LOO-CV for fitted models."""
 

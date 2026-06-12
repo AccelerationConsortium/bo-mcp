@@ -2,17 +2,21 @@
 
 The BO-engine seeds ``torch``'s global RNG inside ``generate_next_batch``
 (and inside both Thompson-sampling entry points) because BoTorch's
-``optimize_acqf`` / ``MaxPosteriorSampling`` / ``posterior().rsample()``
-all consult the process-wide generator rather than accepting an explicit
+``optimize_acqf`` and the Thompson ``posterior().rsample()`` draws both
+consult the process-wide generator rather than accepting an explicit
 ``torch.Generator``.  Without isolation, two concurrent calls — e.g. two
 campaigns whose BO phase runs under ``asyncio.to_thread`` — would clobber
 each other's seed and either diverge from their declared reproducibility
 guarantee or race on each other's draws.
 
-The fix wraps the mutation in ``torch.random.fork_rng(devices=[])``, which
-saves the RNG state on entry and restores it on every return path.  These
-tests assert that property directly so a future refactor that drops the
-fork cannot re-introduce the bug silently.
+The fix wraps the mutation in
+``torch.random.fork_rng(devices=fork_rng_devices())``, which saves the RNG
+state on entry and restores it on every return path.  ``fork_rng_devices()``
+adds the active CUDA device when one is selected, because ``manual_seed``
+also seeds the CUDA generators — a bare ``devices=[]`` would restore only the
+CPU generator and leak the CUDA mutation on GPU. These tests assert that
+property directly so a future refactor that drops the fork (or the CUDA
+device) cannot re-introduce the bug silently.
 
 References:
 - PyTorch RNG fork semantics:
@@ -169,6 +173,67 @@ class TestConcurrentBoCallsAreIsolated:
         assert torch.equal(baseline, after), (
             "Concurrent generate_next_batch calls under a thread pool "
             "leaked their internal seeds into the outer torch RNG stream."
+        )
+
+
+class TestForkRngDevices:
+    """``fork_rng_devices`` must list every CUDA device so manual_seed is scoped.
+
+    ``torch.manual_seed`` seeds the CPU generator **and every CUDA device**,
+    so the ``fork_rng`` block must snapshot all CUDA devices too — a bare
+    ``devices=[]`` saves only the CPU generator and would leak the CUDA
+    mutation past the block on a GPU deployment, and snapshotting only the
+    active device would still leak the other devices' generators in a
+    multi-GPU process (``device.py`` auto-selects CUDA when available).
+    """
+
+    def test_cpu_device_yields_empty_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On CPU, no device RNG needs forking (the cheap original path)."""
+        import bo_engine.device as device_mod
+
+        monkeypatch.setattr(device_mod, "get_device", lambda: torch.device("cpu"))
+        assert device_mod.fork_rng_devices() == []
+
+    def test_all_cuda_devices_are_forked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When CUDA is selected, every CUDA device id must be in the fork list.
+
+        ``manual_seed`` mutates all CUDA generators, so a multi-GPU process
+        must snapshot all of them — not just the active device.
+        """
+        import bo_engine.device as device_mod
+
+        monkeypatch.setattr(device_mod, "get_device", lambda: torch.device("cuda", 0))
+        monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+        assert device_mod.fork_rng_devices() == [0, 1]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+class TestCudaRngIsolation:
+    """On a real GPU, ``generate_next_batch`` must not leak the CUDA RNG."""
+
+    def test_cuda_rng_state_preserved_across_bo_call(
+        self,
+        single_obj_spec_seeded: OptimizationSpec,
+        observations_dense: list[ObservationData],
+    ) -> None:
+        """``torch.cuda.get_rng_state()`` is unchanged after a seeded BO call.
+
+        With ``devices=[]`` the in-block ``manual_seed`` would reseed the
+        CUDA generator and leave it mutated on exit; forking the CUDA device
+        restores it.
+        """
+        before = torch.cuda.get_rng_state()
+        generate_next_batch(
+            single_obj_spec_seeded,
+            observations_dense,
+            batch_size=1,
+            iteration=2,
+        )
+        after = torch.cuda.get_rng_state()
+
+        assert torch.equal(before, after), (
+            "generate_next_batch leaked its internal seed into the CUDA RNG "
+            "state — fork_rng must include the CUDA device."
         )
 
 

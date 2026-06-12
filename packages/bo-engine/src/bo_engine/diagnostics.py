@@ -39,12 +39,15 @@ from bo_engine.constants import (
     FALLBACK_HYPERVOLUME_IMPROVEMENT,
     HYPERVOLUME_STABILITY_THRESHOLD,
     MIN_IMPROVEMENT_RATE,
+    MIN_OBSERVATIONS_FOR_HYPERVOLUME,
     NUMERICAL_EPSILON,
     PROGRESS_IMPROVING_THRESHOLD,
     PROGRESS_REGRESSING_THRESHOLD,
     is_zero,
 )
 from bo_engine.device import ensure_device, to_device
+from bo_engine.reference_point import get_reference_point
+from bo_engine.types import ObservationData, OptimizationSpec
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,10 @@ class LOOCVMetrics:
     r_squared: float
     mean_standardized_error: float
     per_fold_errors: list[float]
-    coverage_95: float = 0.95  # Fraction of points within 95% CI
+    # Fraction of points whose held-out target falls within the 95% predictive
+    # interval. Defaults to NaN ("not measured") rather than the perfect 0.95 so
+    # callers can distinguish a computed-perfect calibration from an unset field.
+    coverage_95: float = float("nan")
 
 
 def compute_pareto_front(
@@ -121,6 +127,74 @@ def compute_hypervolume(
     if hasattr(result, "item"):
         return float(result.item())  # type: ignore[union-attr]  # ty: ignore[call-non-callable]
     return float(result)
+
+
+def observations_to_minimization_form(
+    spec: OptimizationSpec,
+    observations: list[ObservationData],
+) -> tuple[Tensor, Tensor]:
+    """Stack observed objective values into canonical minimization form.
+
+    Maximization columns are negated so every column is "lower = better"
+    (the convention documented in :mod:`bo_engine.types`). Shared by every
+    backend's hypervolume / Pareto-front path so the conversion cannot drift.
+
+    Args:
+        spec: Optimization specification (objective names and directions).
+        observations: Observed results.
+
+    Returns:
+        Tuple ``(y_bo, minimize_mask)`` where ``y_bo`` has shape
+        ``(n_observations, n_objectives)`` in minimization form and
+        ``minimize_mask`` records each objective's user-facing direction.
+    """
+    obj_names = [o.name for o in spec.objectives]
+    minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
+    y_tensor = torch.stack(
+        [
+            torch.tensor([obs.objective_values[n] for n in obj_names], dtype=torch.double)
+            for obs in observations
+        ]
+    )
+    y_bo = y_tensor.clone()
+    y_bo[:, ~minimize_mask] = -y_bo[:, ~minimize_mask]
+    return y_bo, minimize_mask
+
+
+def compute_observed_hypervolume(
+    spec: OptimizationSpec,
+    observations: list[ObservationData],
+) -> float | None:
+    """Observed-Pareto-front hypervolume under one cross-backend contract.
+
+    Single source of truth shared by every backend's ``compute_hypervolume``
+    so ``campaign.hypervolume_history`` — which drives convergence detection —
+    is comparable across backends. The contract:
+
+    * ``n_objectives < 2`` → ``None`` (hypervolume is undefined for a
+      single-objective campaign).
+    * fewer than :data:`~bo_engine.constants.MIN_OBSERVATIONS_FOR_HYPERVOLUME`
+      observations → ``0.0`` (multi-objective, but no Pareto front yet).
+    * otherwise → the dominated hypervolume of the observed Pareto front with
+      respect to the shared static reference point
+      (:func:`bo_engine.reference_point.get_reference_point`).
+
+    Args:
+        spec: Optimization specification.
+        observations: Observed results.
+
+    Returns:
+        Hypervolume, ``0.0``, or ``None`` per the contract above.
+    """
+    if spec.n_objectives < 2:
+        return None
+    if len(observations) < MIN_OBSERVATIONS_FOR_HYPERVOLUME:
+        return 0.0
+
+    y_bo, minimize_mask = observations_to_minimization_form(spec, observations)
+    pareto_y, _ = compute_pareto_front(y_bo)
+    ref_point = get_reference_point(y_bo, minimize_mask)
+    return compute_hypervolume(pareto_y, ref_point)
 
 
 def compute_hypervolume_improvement(

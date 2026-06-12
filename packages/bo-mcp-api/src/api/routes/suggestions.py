@@ -2,17 +2,6 @@
 
 from typing import Annotated
 
-from bo_mcp_server.client import (
-    InvalidIdentifierError,
-    NotAuthorizedError,
-    NotFoundError,
-    SuggestionStatus,
-    generate_suggestions_operation,
-    get_suggestion_explanation_operation,
-    list_campaign_suggestions,
-    list_suggestions_operation,
-    update_suggestion_status_operation,
-)
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from api.deps import (
@@ -33,6 +22,17 @@ from api.schemas.suggestion import (
 )
 from api.schemas.suggestion import (
     SuggestionProvenance as SuggestionProvenanceSchema,
+)
+from bo_mcp_server.client import (
+    InvalidIdentifierError,
+    NotAuthorizedError,
+    NotFoundError,
+    SuggestionStatus,
+    generate_suggestions_operation,
+    get_suggestion_explanation_operation,
+    list_campaign_suggestions,
+    list_suggestions_operation,
+    update_suggestion_status_operation,
 )
 
 router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)

@@ -47,6 +47,7 @@ from baybe import Campaign
 from baybe import __version__ as baybe_version
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
 from baybe.utils.random import temporary_seed
+
 from bo_engine.backend import (
     Feature,
     SuggestionBatch,
@@ -62,6 +63,7 @@ from bo_engine.backend_base import (
 from bo_engine.diagnostics import (
     compute_best_value,
     compute_improvement_history,
+    compute_observed_hypervolume,
     compute_single_objective_improvement_rate,
     summarize_pareto_front,
 )
@@ -82,7 +84,6 @@ from bo_engine.types import (
     ObservationData,
     OptimizationSpec,
 )
-
 from bo_engine_baybe.capabilities import (
     _BAYBE_DEGRADABLE_FEATURES,
     _CHEMISTRY_AVAILABLE,
@@ -111,7 +112,6 @@ from bo_engine_baybe.introspection import (
     _baybe_model_correlation,
     _build_fitted_campaign,
     _campaign_searchspace_label,
-    _compute_reference_point,
     _extract_acquisition_values,
     _extract_feature_importance,
     _extract_model_info,
@@ -830,14 +830,16 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> float | None:
-        """Return the hypervolume of observed Pareto front, or ``None`` if not applicable."""
-        if spec.n_objectives < 2 or len(observations) < 2:
-            return None
+        """Return the hypervolume of observed Pareto front, or ``None`` if not applicable.
 
-        y_bo = _observations_to_minimization_tensor(spec, observations)
-        pareto_y, _ = engine_compute_pareto_front(y_bo)
-        ref_point = _compute_reference_point(y_bo)
-        return engine_compute_hypervolume(pareto_y, ref_point)
+        Delegates to the shared :func:`compute_observed_hypervolume` so this
+        backend reports the *same* ``None``/``0.0``/value contract and the
+        *same* reference point as the BoTorch backend — the HV history that
+        drives convergence detection is therefore comparable across backends,
+        and consistent with this backend's own diagnostics surface (which
+        already scores HV via ``get_reference_point``).
+        """
+        return compute_observed_hypervolume(spec, observations)
 
     def select_methods(
         self,

@@ -48,6 +48,7 @@ from bo_engine.constants import (
     TURBO_UNIT_SCALE_MEAN_ABS_MAX,
     TURBO_UNIT_SCALE_STD_MAX,
     TURBO_UNIT_SCALE_STD_MIN,
+    is_zero,
 )
 
 if TYPE_CHECKING:
@@ -329,11 +330,15 @@ def update_turbo_state(
     y_flat = y_internal.detach().reshape(-1)
     y_max = float(y_flat.max().item())
 
-    # Check improvement with tolerance for numerical stability
+    # Check improvement with tolerance for numerical stability. ``is_zero``
+    # replaces a bare ``!= 0`` so a near-zero incumbent (e.g. 1e-16 on a
+    # standardized or sign-changing objective) does not yield a relative
+    # tolerance far below ``IMPROVEMENT_TOLERANCE_ABSOLUTE`` — which would make
+    # the trust region expand on pure noise as the incumbent crosses ~0.
     tolerance = (
-        IMPROVEMENT_TOLERANCE_RELATIVE * abs(state.best_value)
-        if state.best_value != 0
-        else IMPROVEMENT_TOLERANCE_ABSOLUTE
+        IMPROVEMENT_TOLERANCE_ABSOLUTE
+        if is_zero(state.best_value)
+        else IMPROVEMENT_TOLERANCE_RELATIVE * abs(state.best_value)
     )
     improvement_threshold = state.best_value + tolerance
 

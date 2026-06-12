@@ -1,11 +1,11 @@
 """Capabilities routes."""
 
-from bo_mcp_server.client import list_capabilities_operation
 from fastapi import APIRouter, Depends
 
 from api.deps import get_current_user
 from api.schemas.campaign import CapabilitiesResponse
 from api.schemas.errors import AUTH_ERROR_RESPONSES
+from bo_mcp_server.client import list_capabilities_operation
 
 router = APIRouter(responses=AUTH_ERROR_RESPONSES)
 

@@ -25,7 +25,6 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import torch
-from botorch.generation.sampling import MaxPosteriorSampling
 from botorch.models import ModelListGP, SingleTaskGP
 from botorch.utils.multi_objective.scalarization import get_chebyshev_scalarization
 from torch import Tensor
@@ -36,9 +35,8 @@ from bo_engine.constants import (
     PAREGO_AUGMENTED_RHO,
     THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE,
     THOMPSON_NUM_CANDIDATES,
-    THOMPSON_NUM_POSTERIOR_SAMPLES,
 )
-from bo_engine.device import get_device, get_dtype
+from bo_engine.device import fork_rng_devices, get_device, get_dtype
 from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
 
 if TYPE_CHECKING:
@@ -71,7 +69,9 @@ class ThompsonSample:
 
     Attributes:
         parameters: Parameter configuration (1 x d tensor).
-        sampled_value: Value from posterior sample at this point.
+        sampled_value: Value of the winning posterior sample path at this
+            point — the draw whose optimum selected the point, not a fresh
+            independent draw.
         posterior_mean: Posterior mean at this point.
         posterior_std: Posterior std at this point.
     """
@@ -105,14 +105,14 @@ class ThompsonConfig:
 
     Attributes:
         num_candidates: Number of candidates to draw for optimization.
-        num_posterior_samples: Number of posterior samples per candidate.
         batch_diversity_min_distance: Minimum distance for diverse batches.
-        use_max_posterior_sampling: Use BoTorch's MaxPosteriorSampling.
+        use_max_posterior_sampling: When True, reuse one shared Sobol
+            candidate set across the whole batch (max-posterior-sampling
+            style); when False, draw a fresh candidate set per batch point.
         seed: Random seed for reproducibility.
     """
 
     num_candidates: int = THOMPSON_NUM_CANDIDATES
-    num_posterior_samples: int = THOMPSON_NUM_POSTERIOR_SAMPLES
     batch_diversity_min_distance: float = THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE
     use_max_posterior_sampling: bool = True
     seed: int | None = None
@@ -162,22 +162,24 @@ def generate_thompson_samples(
         config = ThompsonConfig()
 
     # fork_rng isolates the global torch RNG for the duration of this
-    # call — BoTorch's MaxPosteriorSampling / manual posterior draws
-    # read from the process-wide torch state, so without isolation two
-    # concurrent calls (e.g. under asyncio.to_thread) would race on the
-    # seed and clobber each other's reproducibility. Because fork_rng
+    # call — the posterior ``rsample`` draws read from the process-wide
+    # torch state, so without isolation two concurrent calls (e.g. under
+    # asyncio.to_thread) would race on the seed and clobber each other's
+    # reproducibility. Because fork_rng
     # also RESTORES the state on exit, every call must install its own
     # seed — otherwise consecutive unseeded calls replay the identical
     # draw (see _resolve_call_seed). GLOBAL_RNG_LOCK serializes the
     # section against every other global-RNG snapshot/restore consumer
     # (suggestion pipeline, BayBE seeded scopes) so an overlapping
-    # restore cannot roll a concurrent seeded stream back.
-    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=[]):
+    # restore cannot roll a concurrent seeded stream back. fork_rng_devices()
+    # adds the active CUDA device so manual_seed's CUDA-generator mutation is
+    # restored too (a bare devices=[] snapshots only the CPU generator).
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=fork_rng_devices()):
         torch.manual_seed(_resolve_call_seed(config.seed))
 
         if config.use_max_posterior_sampling:
-            # Use BoTorch's efficient MaxPosteriorSampling
-            samples = _thompson_via_max_posterior_sampling(
+            # Reuse one shared candidate set across the batch.
+            samples, winning_values = _thompson_via_max_posterior_sampling(
                 model=model,
                 bounds=bounds,
                 n_samples=n_samples,
@@ -185,8 +187,8 @@ def generate_thompson_samples(
                 minimize=minimize,
             )
         else:
-            # Manual implementation for educational purposes
-            samples = _thompson_manual(
+            # Draw a fresh candidate set per batch point.
+            samples, winning_values = _thompson_manual(
                 model=model,
                 bounds=bounds,
                 n_samples=n_samples,
@@ -216,13 +218,13 @@ def generate_thompson_samples(
                     )
                 clamped_variance = max(raw_variance, NUMERICAL_EPSILON)
                 std = clamped_variance**0.5
-                # Get a sampled value for this point
-                sampled = posterior.rsample().item()
 
             thompson_samples.append(
                 ThompsonSample(
                     parameters=x.squeeze(0),
-                    sampled_value=sampled,
+                    # The value of the sample path that *selected* this point,
+                    # not a fresh independent draw at the point.
+                    sampled_value=winning_values[i],
                     posterior_mean=mean,
                     posterior_std=std,
                 )
@@ -326,7 +328,7 @@ def generate_thompson_samples_multi_objective(
     # single-objective variant above — see its fork_rng comment (incl.
     # the GLOBAL_RNG_LOCK serialization rationale); the per-call seed
     # likewise keeps consecutive unseeded calls distinct.
-    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=[]):
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=fork_rng_devices()):
         torch.manual_seed(_resolve_call_seed(config.seed))
 
         n_objectives = len(model.models)
@@ -534,36 +536,77 @@ def _find_diverse_sample(
     return best_sample
 
 
+def _select_thompson_point(
+    model: SingleTaskGP,
+    candidates: Tensor,
+    minimize: bool,
+    exclude: set[int] | None = None,
+) -> tuple[Tensor, float, int]:
+    """Draw one posterior sample path over ``candidates`` and pick its optimum.
+
+    This is exactly max-posterior sampling: one joint posterior draw per
+    candidate, then the optimizing candidate. Implemented inline (rather than
+    via BoTorch's ``MaxPosteriorSampling``) so the *winning* sample value —
+    the value of the drawn path at the selected point — is returned alongside
+    the point and can be reported as ``ThompsonSample.sampled_value`` instead
+    of an uncorrelated fresh draw.
+
+    ``exclude`` masks already-selected candidate indices so a batch drawn over
+    a shared candidate set is sampled without replacement (restoring
+    ``MaxPosteriorSampling(replacement=False)``). If ``exclude`` covers every
+    candidate the mask is ignored, so selection gracefully falls back to
+    allowing repeats once the candidate set is exhausted.
+
+    Returns:
+        Tuple ``(point, winning_value, best_idx)`` where ``point`` has shape
+        ``(1, d)`` and ``best_idx`` is the selected candidate index.
+    """
+    with torch.no_grad():
+        # reshape(-1), not squeeze(): squeeze collapses a single-candidate
+        # draw to a 0-D scalar that cannot be indexed (num_candidates == 1).
+        sampled_values = model.posterior(candidates).rsample().reshape(-1)
+
+    scores = sampled_values
+    if exclude and len(exclude) < sampled_values.shape[0]:
+        scores = sampled_values.clone()
+        fill = float("inf") if minimize else float("-inf")
+        idx = torch.tensor(sorted(exclude), device=scores.device, dtype=torch.long)
+        scores[idx] = fill
+
+    best_idx = int((scores.argmin() if minimize else scores.argmax()).item())
+    point = candidates[best_idx : best_idx + 1]
+    # Report the actual drawn value at the winner, never the masking sentinel.
+    winning_value = float(sampled_values[best_idx].item())
+    return point, winning_value, best_idx
+
+
 def _thompson_via_max_posterior_sampling(
     model: SingleTaskGP,
     bounds: Tensor,
     n_samples: int,
     num_candidates: int,
     minimize: bool,
-) -> Tensor:
-    """Thompson Sampling using BoTorch's MaxPosteriorSampling."""
-    # Generate candidate points
+) -> tuple[Tensor, list[float]]:
+    """Max-posterior-sampling batch over one shared Sobol candidate set.
+
+    Selects without replacement across batch slots (no duplicate points until
+    the candidate set is exhausted), and returns, per point, the value of the
+    posterior sample path that selected it (see :func:`_select_thompson_point`).
+    """
     candidates = _generate_sobol_candidates(bounds, num_candidates)
 
-    # Use BoTorch's MaxPosteriorSampling
-    mps = MaxPosteriorSampling(model=model, replacement=False)
+    points: list[Tensor] = []
+    winning_values: list[float] = []
+    selected: set[int] = set()
+    for _ in range(n_samples):
+        point, winning_value, best_idx = _select_thompson_point(
+            model, candidates, minimize, exclude=selected
+        )
+        points.append(point)
+        winning_values.append(winning_value)
+        selected.add(best_idx)
 
-    if minimize:
-        # For minimization, we need to negate
-        # MaxPosteriorSampling maximizes by default
-        # We can sample and find min, or use a workaround
-        # Let's sample multiple times and pick minimum
-        samples: list[Tensor] = []
-        for _ in range(n_samples):
-            with torch.no_grad():
-                posterior = model.posterior(candidates)
-                # Draw one sample per candidate
-                sampled_values = posterior.rsample().squeeze()  # num_candidates
-                best_idx = sampled_values.argmin()
-                samples.append(candidates[best_idx : best_idx + 1])
-        return torch.cat(samples, dim=0)
-    # Maximization: use MPS directly
-    return mps(candidates, num_samples=n_samples)
+    return torch.cat(points, dim=0), winning_values
 
 
 def _thompson_manual(
@@ -572,25 +615,23 @@ def _thompson_manual(
     n_samples: int,
     num_candidates: int,
     minimize: bool,
-) -> Tensor:
-    """Manual Thompson Sampling implementation."""
-    samples: list[Tensor] = []
+) -> tuple[Tensor, list[float]]:
+    """Thompson Sampling drawing a fresh candidate set per batch point.
+
+    Each slot draws an independent candidate set, so duplicates across slots
+    are already unlikely; returns, per point, the value of the posterior
+    sample path that selected it (see :func:`_select_thompson_point`).
+    """
+    points: list[Tensor] = []
+    winning_values: list[float] = []
 
     for _ in range(n_samples):
-        # Generate candidates
         candidates = _generate_sobol_candidates(bounds, num_candidates)
+        point, winning_value, _ = _select_thompson_point(model, candidates, minimize)
+        points.append(point)
+        winning_values.append(winning_value)
 
-        with torch.no_grad():
-            # Draw posterior samples
-            posterior = model.posterior(candidates)
-            sampled_values = posterior.rsample().squeeze()
-
-            # Find optimum of this sample
-            best_idx = sampled_values.argmin() if minimize else sampled_values.argmax()
-
-            samples.append(candidates[best_idx : best_idx + 1])
-
-    return torch.cat(samples, dim=0)
+    return torch.cat(points, dim=0), winning_values
 
 
 def _generate_sobol_candidates(

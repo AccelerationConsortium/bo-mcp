@@ -14,13 +14,13 @@ References:
 """
 
 import pytest
-from bo_engine.types import AcquisitionMethod
 from mcp.types import (
     CompletionArgument,
     PromptReference,
     ResourceTemplateReference,
 )
 
+from bo_engine.types import AcquisitionMethod
 from bo_mcp_server.completion import handle_completion
 from bo_mcp_server.domain import CampaignStatus, SuggestionStatus
 

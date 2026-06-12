@@ -26,6 +26,7 @@ from baybe.parameters import (
 )
 from baybe.searchspace import SearchSpace
 from baybe.targets import NumericalTarget
+
 from bo_engine.types import (
     AcquisitionMethod,
     ConstraintSpec,
@@ -36,7 +37,6 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-
 from bo_engine_baybe.converters import (
     classify_constraint_target,
     dataframe_to_suggestions,

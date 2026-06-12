@@ -11,7 +11,6 @@ from bo_engine.constants import (
     TRANSFER_WEIGHT_OBJECTIVE,
     TRANSFER_WEIGHT_PARAMETER,
 )
-
 from bo_mcp_server.constants import (
     TRANSFER_SIMILARITY_GOOD,
     TRANSFER_SIMILARITY_MODERATE,

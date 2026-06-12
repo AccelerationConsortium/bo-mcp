@@ -28,13 +28,6 @@ from __future__ import annotations
 
 import logging
 
-from bo_mcp_server.client import (
-    ERROR_CODE_TO_HTTP_STATUS,
-    CorruptedJsonColumnError,
-    ErrorCode,
-    make_corrupted_json_response,
-    make_error_response,
-)
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -42,6 +35,13 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.request_context import request_id_var
+from bo_mcp_server.client import (
+    ERROR_CODE_TO_HTTP_STATUS,
+    CorruptedJsonColumnError,
+    ErrorCode,
+    make_corrupted_json_response,
+    make_error_response,
+)
 
 logger = logging.getLogger(__name__)
 

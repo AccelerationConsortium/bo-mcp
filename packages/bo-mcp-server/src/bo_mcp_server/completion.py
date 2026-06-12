@@ -51,7 +51,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from bo_engine.types import AcquisitionMethod
 from mcp.server.fastmcp import FastMCP
 from mcp.types import (
     Completion,
@@ -61,6 +60,7 @@ from mcp.types import (
     ResourceTemplateReference,
 )
 
+from bo_engine.types import AcquisitionMethod
 from bo_mcp_server.domain import CampaignStatus, SuggestionStatus
 
 # Hard cap mirroring the MCP spec: ``Completion.values`` MUST NOT exceed

@@ -26,15 +26,6 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 
-# Re-export the domain instrument hooks via the ``bo_mcp_server.client``
-# facade so the API layer stays inside the facade boundary the
-# ``test_facade_imports`` regression enforces.
-from bo_mcp_server.client import (  # noqa: F401 — re-exported via /metrics
-    observe_suggestion_latency,
-    record_campaign_created,
-    record_diagnostics_cache,
-    snapshot_db_pool,
-)
 from fastapi import FastAPI, Request, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -44,6 +35,16 @@ from prometheus_client import (
     Gauge,
     Histogram,
     generate_latest,
+)
+
+# Re-export the domain instrument hooks via the ``bo_mcp_server.client``
+# facade so the API layer stays inside the facade boundary the
+# ``test_facade_imports`` regression enforces.
+from bo_mcp_server.client import (  # noqa: F401 — re-exported via /metrics
+    observe_suggestion_latency,
+    record_campaign_created,
+    record_diagnostics_cache,
+    snapshot_db_pool,
 )
 
 logger = logging.getLogger(__name__)

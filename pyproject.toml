@@ -101,6 +101,14 @@ ignore = [
     "TRY003",  # raise X("msg") wants a custom exception subclass; pedantic for a research lib
 ]
 
+[tool.ruff.lint.isort]
+# With the per-package ``[tool.ruff]`` blocks removed, isort no longer
+# auto-detects each package's own module as first-party from its local
+# pyproject. Declare every workspace package here so ``bo_engine`` /
+# ``bo_mcp_server`` / ``api`` / ``bo_engine_baybe`` imports stay grouped as
+# first-party (separated from true third-party deps) across the whole tree.
+known-first-party = ["api", "bo_engine", "bo_engine_baybe", "bo_mcp_server"]
+
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 
@@ -108,10 +116,19 @@ max-complexity = 10
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
+# This is the single ruff config for the whole workspace; ruff discovers it
+# upward, so the per-package ``[tool.ruff]`` blocks were removed and the
+# package-specific deltas below are keyed by path instead. The ``**/`` prefix
+# lets each rule reach every package's directory when ruff runs from root.
 # Tests use `assert` (pytest idiom), don't need full docstrings or annotations on every helper.
-"tests/**/*.py" = ["S101", "D", "ANN"]
+"**/tests/**/*.py" = ["S101", "D", "ANN"]
 # Demo scripts have long main() functions and minimal docstrings; complexity rules apply to packages only.
 "scripts/**" = ["C901", "PLR0912", "PLR0915", "PLR0911", "D", "ANN"]
+# Cross-package contract test helpers shipped in src/ so bo-engine-baybe and
+# other backend packages can import them; pytest-style ``assert`` is intended.
+"packages/bo-engine/src/bo_engine/backend_testing.py" = ["S101"]
+# PEP 695 generic syntax (UP046) is not yet enforced in the MCP server package.
+"packages/bo-mcp-server/**" = ["UP046"]
 
 [tool.ty.environment]
 python-version = "3.13"

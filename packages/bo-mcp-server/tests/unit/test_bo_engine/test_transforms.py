@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+
 from bo_engine.transforms import (
     decode_categorical,
     encode_categorical,

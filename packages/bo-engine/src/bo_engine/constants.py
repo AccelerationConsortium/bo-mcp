@@ -187,6 +187,16 @@ RAW_SAMPLES_MAX = 8192
 # no longer probing distinct basins and the BO algorithm is likely trapped.
 RESTART_WARN_TOLERANCE = 0.05
 
+# Per-restart L-BFGS-B inner-loop budget passed to ``optimize_acqf`` via its
+# ``options`` dict. ``batch_limit`` caps how many restarts run in one batched
+# gradient step (memory/parallelism trade-off); ``maxiter`` caps the L-BFGS-B
+# iterations per restart and materially affects convergence quality in high-D
+# campaigns. Defaults follow the BoTorch tutorial guidance (Balandat et al.,
+# 2020); centralized here (rather than inlined per call site) so continuous
+# and mixed acquisition paths cannot drift.
+ACQF_LBFGS_BATCH_LIMIT = 5
+ACQF_LBFGS_MAXITER = 200
+
 # Legacy compatibility aliases. Existing callers still reference these names;
 # they resolve to the base counts used by the dimension-adaptive formula.
 NUM_RESTARTS = NUM_RESTARTS_BASE
@@ -198,6 +208,26 @@ RAW_SAMPLES = RAW_SAMPLES_MIN
 # and satisfies BoTorch's strictly-positive-cost requirement for
 # ``InverseCostWeightedUtility``.
 COST_AWARE_MIN_EXPECTED_COST = 1e-6
+
+# =============================================================================
+# Multi-Fidelity Optimization (qMFKG)
+# =============================================================================
+
+# Default ``AffineFidelityCostModel`` parameters: cost(x) = fixed_cost +
+# cost_weight * fidelity. The fixed base cost dominates at low fidelity so
+# the cost-aware utility favours cheap exploratory evaluations early; the
+# weight scales the marginal cost of moving toward the target fidelity. These
+# are the single source of truth for both ``FidelitySpec`` and
+# ``create_cost_model`` so the two default sites cannot drift apart.
+MF_DEFAULT_FIXED_COST = 5.0
+MF_DEFAULT_COST_WEIGHT = 1.0
+
+# ``optimize_acqf`` options for the qMFKG inner optimization. ``batch_limit``
+# caps how many restart candidates L-BFGS-B optimizes simultaneously (memory
+# vs. throughput), and ``maxiter`` bounds the L-BFGS-B iterations per restart.
+# Matches the BoTorch multi-fidelity tutorial defaults (Balandat et al., 2020).
+MF_ACQF_BATCH_LIMIT = 5
+MF_ACQF_MAXITER = 200
 
 # =============================================================================
 # Discrete / Mixed Search Space Optimization
@@ -230,6 +260,13 @@ REFERENCE_POINT_PADDING = 0.1
 
 # Minimum range to avoid numerical issues
 MIN_OBJECTIVE_RANGE = 1e-6
+
+# Minimum number of observations before the observed hypervolume is defined.
+# Below this a multi-objective campaign has no Pareto front yet, so every
+# backend's ``compute_hypervolume`` returns ``0.0`` (vs. ``None`` for a
+# single-objective campaign, where hypervolume is undefined). Shared by
+# ``compute_observed_hypervolume`` so the contract cannot diverge per backend.
+MIN_OBSERVATIONS_FOR_HYPERVOLUME = 2
 
 # Floor for the per-objective margin window expressed as a fraction of
 # ``abs(worst)``. The static reference point uses
@@ -413,6 +450,12 @@ CONVERGENCE_IMPROVEMENT_THRESHOLD = 0.01
 # Minimum number of observations for convergence detection
 CONVERGENCE_MIN_OBSERVATIONS = 10
 
+# Upper bound on the horizon reported by ``estimate_remaining_iterations``.
+# The estimate ``target_improvement / avg_improvement`` is unbounded as the
+# improvement rate approaches zero, so it is capped to keep the reported
+# horizon actionable rather than astronomically large.
+ESTIMATE_REMAINING_MAX_ITERATIONS = 100
+
 # =============================================================================
 # Batch Diversity Enforcement (Section 1.5)
 # =============================================================================
@@ -592,10 +635,6 @@ POSTERIOR_CHECK_KURTOSIS_THRESHOLD = 2.0
 # =============================================================================
 # Thompson Sampling (Section 3.5)
 # =============================================================================
-
-# Number of posterior samples for Thompson Sampling (5+ recommended
-# for better exploration-exploitation tradeoff)
-THOMPSON_NUM_POSTERIOR_SAMPLES = 5
 
 # Number of candidates to consider
 THOMPSON_NUM_CANDIDATES = 1000

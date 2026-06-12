@@ -3,11 +3,11 @@
 from datetime import datetime
 from typing import Any
 
-from bo_mcp_server.client import ResultMetadata
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_RESULTS
 from api.schemas.common import ResponseEnvelope, VerbosityLevel
+from bo_mcp_server.client import ResultMetadata
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain

@@ -17,6 +17,7 @@ in production.
 from __future__ import annotations
 
 import pytest
+
 from bo_mcp_server.client import (
     CampaignIntakeInput,
     ResultSubmissionInput,

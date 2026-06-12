@@ -120,6 +120,13 @@ class ReproducibilityManager:
 
     This class provides deterministic seed derivation so that the same
     campaign run with the same master seed will produce identical results.
+
+    Constructing a manager has **no global side effects**: seed derivation
+    is pure. Process-wide determinism settings (``torch`` deterministic
+    algorithms and ``CUBLAS_WORKSPACE_CONFIG``) are opt-in via the explicit
+    :meth:`apply_global_settings`, so one campaign cannot silently change
+    numerical behavior for unrelated concurrent campaigns in the same
+    process.
     """
 
     def __init__(self, config: ReproducibilityConfig) -> None:
@@ -133,11 +140,16 @@ class ReproducibilityManager:
         self._current_iteration = 0
         self._environment_hash = _compute_environment_hash()
 
-        # Set up global reproducibility settings
-        self._initialize_global_settings()
+    def apply_global_settings(self) -> None:
+        """Apply process-wide determinism settings (explicit, never automatic).
 
-    def _initialize_global_settings(self) -> None:
-        """Initialize global reproducibility settings."""
+        Enables ``torch.use_deterministic_algorithms`` and sets
+        ``CUBLAS_WORKSPACE_CONFIG`` when ``deterministic_algorithms`` is
+        configured. These mutate **process-global** state — they are never
+        reverted and affect every other campaign/thread in the same
+        process — so the caller must opt in deliberately rather than have
+        construction do it implicitly.
+        """
         if self._config.deterministic_algorithms:
             torch.use_deterministic_algorithms(True, warn_only=not self._config.strict_mode)
 
@@ -178,6 +190,22 @@ class ReproducibilityManager:
             cuda_seed=cuda_seed,
         )
 
+    def _derive_iteration_seeds(self, iteration: int) -> IterationSeeds:
+        """Derive the per-iteration seeds purely, without touching the log.
+
+        Shared by :meth:`get_iteration_seeds` (which also records the seeds)
+        and :meth:`verify_iteration` (which must not pollute the audit log).
+        """
+        master = self._config.master_seed
+
+        return IterationSeeds(
+            iteration=iteration,
+            initial_design_seed=derive_seed(master, f"initial_{iteration}"),
+            model_fit_seed=derive_seed(master, f"model_{iteration}"),
+            acquisition_opt_seed=derive_seed(master, f"acq_{iteration}"),
+            batch_seed=derive_seed(master, f"batch_{iteration}"),
+        )
+
     def get_iteration_seeds(self, iteration: int) -> IterationSeeds:
         """Get deterministic seeds for a specific iteration.
 
@@ -187,15 +215,7 @@ class ReproducibilityManager:
         Returns:
             IterationSeeds with all seeds for this iteration.
         """
-        master = self._config.master_seed
-
-        seeds = IterationSeeds(
-            iteration=iteration,
-            initial_design_seed=_derive_seed(master, f"initial_{iteration}"),
-            model_fit_seed=_derive_seed(master, f"model_{iteration}"),
-            acquisition_opt_seed=_derive_seed(master, f"acq_{iteration}"),
-            batch_seed=_derive_seed(master, f"batch_{iteration}"),
-        )
+        seeds = self._derive_iteration_seeds(iteration)
 
         if self._config.log_seeds:
             self._seed_log.append(seeds)
@@ -274,7 +294,9 @@ class ReproducibilityManager:
         Returns:
             True if seeds match, False otherwise.
         """
-        actual_seeds = self.get_iteration_seeds(iteration)
+        # Use the non-logging derivation: verification is a query, so it must
+        # not append phantom entries to the audit ``_seed_log``.
+        actual_seeds = self._derive_iteration_seeds(iteration)
 
         return (
             actual_seeds.initial_design_seed == expected_seeds.initial_design_seed

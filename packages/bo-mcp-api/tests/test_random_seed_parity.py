@@ -9,9 +9,8 @@ omitting the field has the same effect everywhere.
 
 from __future__ import annotations
 
-from bo_mcp_server.domain import CampaignIntakeInput
-
 from api.schemas.intake import IntakeData
+from bo_mcp_server.domain import CampaignIntakeInput
 
 
 def _intake_dict() -> dict:

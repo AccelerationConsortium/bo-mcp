@@ -29,11 +29,11 @@ from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from bo_mcp_server.tools.create_campaign import create_campaign
 from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 
 from api.main import create_app
+from bo_mcp_server.tools.create_campaign import create_campaign
 
 
 async def _create_campaign_for_owner(owner_id: str) -> str:

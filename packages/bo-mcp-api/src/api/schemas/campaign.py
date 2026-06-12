@@ -3,12 +3,12 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from bo_mcp_server.client import ValidateIntakeSpecSummary
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_CAMPAIGN_IDS, MAX_COMPARE_CAMPAIGN_IDS
 from api.schemas.common import ResponseEnvelope, VerbosityLevel
 from api.schemas.intake import IntakeData
+from bo_mcp_server.client import ValidateIntakeSpecSummary
 
 # ``extra="forbid"`` is applied to every request schema in this module so
 # an unknown field — typically a typo or a not-yet-supported key — raises

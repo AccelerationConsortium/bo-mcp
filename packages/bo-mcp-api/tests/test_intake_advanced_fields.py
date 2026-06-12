@@ -19,9 +19,8 @@ from __future__ import annotations
 
 import json
 
-from bo_mcp_server.domain import CampaignIntakeInput, CampaignSpec
-
 from api.schemas.intake import IntakeData
+from bo_mcp_server.domain import CampaignIntakeInput, CampaignSpec
 
 
 def _minimal_intake() -> dict:
@@ -170,3 +169,37 @@ def test_rest_intake_rejects_unknown_parameter_extras() -> None:
     }
     with pytest.raises(ValidationError):
         IntakeData.model_validate(payload)
+
+
+def test_intake_data_field_set_matches_campaign_intake_input() -> None:
+    """REST ``IntakeData`` must mirror the MCP ``CampaignIntakeInput`` field set.
+
+    The two models are hand-maintained duplicates — the REST schema adds
+    REST-specific ``Field`` limits but its docstring promises "Field set
+    mirrors CampaignIntakeInput". Without a structural fitness function the
+    sets drift silently: a field added to ``CampaignIntakeInput`` but not
+    ``IntakeData`` makes the REST transport reject (``extra="forbid"``) a
+    payload the MCP transport accepts, breaking the project's transport-
+    parity goal without any test failing. This codifies the contract.
+    """
+    assert set(IntakeData.model_fields) == set(CampaignIntakeInput.model_fields)
+
+
+def test_intake_data_annotations_match_campaign_intake_input() -> None:
+    """Each shared field carries the same type annotation on both transports.
+
+    Field-level metadata (the REST ``max_length`` limits) may differ by
+    design, but the declared *type* of every field must be identical so the
+    same JSON validates equivalently on either transport. Pins the
+    ``list[str]`` vs ``tuple[str, ...]`` drift that previously existed on
+    ``acknowledge_degradations`` (REST accepted a ``list`` the MCP model
+    typed as a ``tuple``).
+    """
+    rest_fields = IntakeData.model_fields
+    mcp_fields = CampaignIntakeInput.model_fields
+    mismatches = {
+        name: (rest_fields[name].annotation, mcp_fields[name].annotation)
+        for name in rest_fields
+        if name in mcp_fields and rest_fields[name].annotation != mcp_fields[name].annotation
+    }
+    assert mismatches == {}

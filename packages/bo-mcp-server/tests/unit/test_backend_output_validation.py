@@ -29,8 +29,8 @@ from __future__ import annotations
 import json
 
 import pytest
-from bo_engine.backend import SuggestionBatch
 
+from bo_engine.backend import SuggestionBatch
 from bo_mcp_server.operations.backend_output import (
     BackendOutputError,
     validate_backend_batch,

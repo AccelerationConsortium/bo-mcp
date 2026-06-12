@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from bo_engine.backend import Feature, SuggestionBatch
 from bo_engine.backend_base import (
     BackendValidationResult,
@@ -19,7 +20,6 @@ from bo_engine.backend_base import (
     CapabilityStatus,
 )
 from bo_engine.types import ObservationData, OptimizationSpec
-
 from bo_mcp_server import backend as backend_module
 from bo_mcp_server.backend import resolve_backend_name
 

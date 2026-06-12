@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
+
 from bo_engine import (
     compute_hypervolume,
     compute_pareto_front,

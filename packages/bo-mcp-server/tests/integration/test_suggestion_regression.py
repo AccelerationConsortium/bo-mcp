@@ -440,7 +440,6 @@ class TestSuggestionQualityRegression:
         Expected hypervolume after 3 iterations: > 0.5 (normalized)
         """
         from bo_engine.benchmarks import branin_currin
-
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics

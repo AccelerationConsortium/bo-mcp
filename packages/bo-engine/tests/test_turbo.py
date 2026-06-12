@@ -73,6 +73,27 @@ class TestUpdateTurboState:
         assert state.failure_counter == 1
         assert state.success_counter == 0
 
+    def test_near_zero_incumbent_not_credited_on_noise(self) -> None:
+        """A near-zero incumbent uses the absolute tolerance, not a vanishing relative one.
+
+        With ``best_value`` ~ 1e-16 (common for standardized or sign-changing
+        objectives as the incumbent crosses ~0), the old ``best_value != 0``
+        branch selected a *relative* tolerance of ~1e-19, so any noisy batch
+        beat the threshold and counted as a success — expanding the trust
+        region on pure noise. Routing the choice through ``is_zero`` makes the
+        absolute tolerance (1e-6) apply, so a 5e-7 "improvement" below the
+        noise floor is correctly NOT credited (it would be, pre-fix).
+
+        Reference: Eriksson et al., "Scalable Global Optimization via Local
+        Bayesian Optimization" (NeurIPS 2019) — TuRBO must expand only on
+        genuine success, or the local-search benefit is lost.
+        """
+        state = create_turbo_state(dim=10, batch_size=2, initial_best_value=1e-16)
+        updated = update_turbo_state(state, torch.tensor([5e-7]), minimize=False)
+
+        assert updated.success_counter == 0
+        assert updated.failure_counter == state.failure_counter + 1
+
     def test_expansion_on_sustained_success(self) -> None:
         """Trust region expands after success_tolerance consecutive improvements."""
         state = TurboState(

@@ -249,3 +249,115 @@ async def test_heartbeat_is_noop_outside_idempotency_context() -> None:
     assert _active_reservation.get() is None
     async with reservation_heartbeat(period_seconds=0.05, extension_seconds=10.0):
         await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_runtime_cap_counts_elapsed_not_extension_amount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The heartbeat bound is elapsed runtime (one cadence per beat), not Σ extension.
+
+    ``_extend_reservation_ttl`` applies a monotonic ``max(current, now+ext)``,
+    so a beat can match the row (return ``True``) without moving the deadline.
+    Charging the requested ``extension`` against the bound would let a single
+    large (or early no-op) extension burn the whole budget in one beat and stop
+    the heartbeat while the compute is still running. With a runtime bound a
+    huge per-beat ``extension`` is irrelevant — the heartbeat still runs
+    ``cap / cadence`` beats. (Under the old extension-amount accounting the 10 s
+    extension below would stop the beat after a *single* tick.)
+    """
+    import bo_mcp_server.idempotency as idem
+
+    extend_calls = 0
+
+    async def counting_extend(_extra_seconds: float) -> bool:
+        nonlocal extend_calls
+        extend_calls += 1
+        return True
+
+    monkeypatch.setattr(idem, "extend_active_reservation", counting_extend)
+    monkeypatch.setattr(
+        idem,
+        "get_idempotency_heartbeat_max_total_extension_seconds",
+        lambda: 0.05,
+    )
+
+    tool, key, token = "hb", "runtime-cap", "tok-cccccccccccccccccccccccccc"
+    handle = _active_reservation.set(
+        _ActiveReservation(tool_name=tool, idempotency_key=key, reservation_token=token)
+    )
+    try:
+        async with reservation_heartbeat(period_seconds=0.01, extension_seconds=10.0):
+            # Sleep far longer than the bound needs; the runtime cap, not the
+            # sleep, must be what stops the beat.
+            await asyncio.sleep(0.3)
+    finally:
+        _active_reservation.reset(handle)
+
+    # cap 0.05 / cadence 0.01 = 5 beats, independent of the 10 s extension.
+    assert extend_calls == 5
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_runs_through_noop_extensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Early no-op extensions (deadline already beyond ``now+ext``) don't stop it early.
+
+    Reproduces the regression against a *real* cache row: a reservation whose
+    deadline sits far beyond ``now + extension`` makes every extend a monotonic
+    no-op (it matches the row but leaves ``expires_at`` untouched). With the
+    runtime bound the heartbeat keeps beating through the no-ops instead of
+    stopping after ``cap / extension`` beats — the pre-fix behaviour that would
+    expire a still-running 12–20 minute compute the compute timeout still
+    allows. The previous mock-based test could not catch this because it forced
+    every extend to be "effective".
+    """
+    import bo_mcp_server.idempotency as idem
+
+    tool, key, token = "hb", "noop-extend", "tok-dddddddddddddddddddddddddd"
+    # Deadline far beyond ``now + extension`` so every extend is a monotonic
+    # no-op (matches the row, deadline unchanged).
+    far_future = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=3600)
+    async with get_session() as session:
+        session.add(
+            IdempotencyCacheModel(
+                tool_name=tool,
+                idempotency_key=key,
+                request_hash="hash",
+                reservation_token=token,
+                response_json=_PENDING_SENTINEL,
+                created_at=dt.datetime.now(dt.UTC),
+                expires_at=far_future,
+            )
+        )
+
+    real_extend = idem.extend_active_reservation
+    calls = 0
+
+    async def spy_extend(extra_seconds: float | None = None) -> bool:
+        nonlocal calls
+        calls += 1
+        return await real_extend(extra_seconds)
+
+    monkeypatch.setattr(idem, "extend_active_reservation", spy_extend)
+    monkeypatch.setattr(
+        idem,
+        "get_idempotency_heartbeat_max_total_extension_seconds",
+        lambda: 0.05,
+    )
+
+    handle = _active_reservation.set(
+        _ActiveReservation(tool_name=tool, idempotency_key=key, reservation_token=token)
+    )
+    try:
+        # extension (1 s) exceeds the 0.05 s cap; under the old extension-amount
+        # accounting the first no-op extend would burn the whole budget and
+        # stop after one beat.
+        async with reservation_heartbeat(period_seconds=0.01, extension_seconds=1.0):
+            await asyncio.sleep(0.3)
+    finally:
+        _active_reservation.reset(handle)
+
+    # The heartbeat kept beating through the no-ops: ~cap/cadence = 5 beats.
+    assert calls == 5

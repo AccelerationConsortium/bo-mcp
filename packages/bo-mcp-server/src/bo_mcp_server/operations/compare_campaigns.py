@@ -14,7 +14,6 @@ from bo_engine.diagnostics import (
     compute_improvement_history,
     compute_single_objective_improvement_rate,
 )
-
 from bo_mcp_server.backend import get_backend_async
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result

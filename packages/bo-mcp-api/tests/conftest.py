@@ -13,6 +13,9 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+from api.main import create_app
 from bo_mcp_server.domain import (
     Bounds,
     Campaign,
@@ -31,9 +34,6 @@ from bo_mcp_server.storage import (
     get_session,
     init_database,
 )
-from httpx import ASGITransport, AsyncClient
-
-from api.main import create_app
 
 
 @pytest.fixture
@@ -89,8 +89,9 @@ async def setup_database():
     https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html
     """
     # Import here to avoid circular imports and to access module internals
-    from bo_mcp_server.storage import database
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from bo_mcp_server.storage import database
 
     # Dispose existing engine if present to release connections
     await close_database()

@@ -15,6 +15,7 @@ both bump in lockstep.
 from __future__ import annotations
 
 import pytest
+
 from bo_mcp_server.tools.create_campaign import create_campaign
 
 
@@ -100,9 +101,8 @@ def test_rest_envelope_tracks_mcp_envelope_version() -> None:
     the other silently break clients that consume both. Pinning them
     in sync ensures the bump is a single edit on ``RESPONSE_SCHEMA_VERSION``.
     """
-    from bo_mcp_server.client import RESPONSE_SCHEMA_VERSION
-
     from api.schemas.common import API_RESPONSE_SCHEMA_VERSION
+    from bo_mcp_server.client import RESPONSE_SCHEMA_VERSION
 
     assert API_RESPONSE_SCHEMA_VERSION == RESPONSE_SCHEMA_VERSION
 

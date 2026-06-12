@@ -57,6 +57,30 @@ class TestSingleObjectiveBenchmarks:
         y = hartmann6(x_opt)
         assert y.item() == pytest.approx(-3.32237, rel=0.01)
 
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+    def test_hartmann6_output_dtype_follows_input(self, dtype: torch.dtype) -> None:
+        """Output dtype follows the input rather than silently upcasting.
+
+        The constant tensors are materialized with the input's dtype/device, so
+        a float32 input yields a float32 output (the old hard-coded float64
+        constants would promote it) and the function does not raise a device
+        mismatch on GPU inputs.
+        """
+        x = torch.rand(5, 6, dtype=dtype)
+        assert hartmann6(x).dtype == dtype
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_hartmann6_runs_on_cuda(self) -> None:
+        """hartmann6 accepts a CUDA input without a device mismatch.
+
+        The constant tensors used to be created on CPU, so a GPU input raised
+        ``RuntimeError: Expected all tensors to be on the same device``. Pin
+        that they now follow ``x.device``.
+        """
+        x = torch.rand(5, 6, device="cuda")
+        y = hartmann6(x)
+        assert y.device.type == "cuda"
+
     def test_branin_50d_shape(self):
         """branin_50d returns correct output shape."""
         x = torch.rand(5, 50)

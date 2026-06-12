@@ -36,7 +36,6 @@ from typing import Any
 from bo_engine.backend import BOBackend, Feature
 from bo_engine.backend_base import required_features
 from bo_engine.types import OptimizationSpec
-
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec
 from bo_mcp_server.settings import get_default_backend_name

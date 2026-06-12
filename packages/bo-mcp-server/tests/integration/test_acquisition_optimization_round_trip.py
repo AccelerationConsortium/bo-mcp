@@ -105,7 +105,6 @@ async def test_intake_without_override_uses_dimension_adaptive_defaults() -> Non
         RAW_SAMPLES_MIN,
         RAW_SAMPLES_PER_DIM,
     )
-
     from bo_mcp_server.operations.submit_results import submit_results_operation
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions

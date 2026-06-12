@@ -18,6 +18,7 @@ References:
 from __future__ import annotations
 
 import pytest
+
 from bo_engine.backend import Feature
 from bo_engine.backend_base import CapabilityStatus
 from bo_engine.types import (
@@ -26,7 +27,6 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-
 from bo_engine_baybe.backend import BayBEBackend
 
 

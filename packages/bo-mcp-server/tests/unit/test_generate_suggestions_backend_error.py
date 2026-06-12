@@ -19,13 +19,13 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from bo_engine.backend_base import (
     BackendIncompatibilityError,
     BackendInputError,
     BackendInternalError,
     BackendTransientError,
 )
-
 from bo_mcp_server.errors import (
     ErrorCode,
     error_code_for_backend_exception,

@@ -59,7 +59,11 @@ def hartmann6(x: Tensor) -> Tensor:
     Returns:
         Function values of shape (...)
     """
-    alpha = torch.tensor([1.0, 1.2, 3.0, 3.2])
+    # Materialize the constant tensors on the input's device and dtype so the
+    # benchmark runs on GPU inputs (a bare ``torch.tensor`` lands on CPU and
+    # would raise a device mismatch) and the output dtype follows the input
+    # (float32 inputs stay float32 instead of silently upcasting to float64).
+    alpha = torch.tensor([1.0, 1.2, 3.0, 3.2], dtype=x.dtype, device=x.device)
     A = torch.tensor(
         [
             [10, 3, 17, 3.5, 1.7, 8],
@@ -67,7 +71,8 @@ def hartmann6(x: Tensor) -> Tensor:
             [3, 3.5, 1.7, 10, 17, 8],
             [17, 8, 0.05, 10, 0.1, 14],
         ],
-        dtype=torch.float64,
+        dtype=x.dtype,
+        device=x.device,
     )
     P = (
         torch.tensor(
@@ -77,12 +82,13 @@ def hartmann6(x: Tensor) -> Tensor:
                 [2348, 1451, 3522, 2883, 3047, 6650],
                 [4047, 8828, 8732, 5743, 1091, 381],
             ],
-            dtype=torch.float64,
+            dtype=x.dtype,
+            device=x.device,
         )
         * 1e-4
     )
 
-    inner_sum = torch.zeros(x.shape[:-1])
+    inner_sum = torch.zeros(x.shape[:-1], dtype=x.dtype, device=x.device)
     for i in range(4):
         inner = torch.sum(A[i] * (x - P[i]) ** 2, dim=-1)
         inner_sum = inner_sum + alpha[i] * torch.exp(-inner)

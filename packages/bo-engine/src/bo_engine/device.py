@@ -92,6 +92,28 @@ def ensure_device(*tensors: Tensor) -> tuple[Tensor, ...]:
     return tuple(to_device(t) for t in tensors)
 
 
+def fork_rng_devices() -> list[int]:
+    """CUDA device ids whose RNG state ``torch.random.fork_rng`` must snapshot.
+
+    ``torch.manual_seed`` seeds the CPU generator **and every CUDA device**,
+    so a ``fork_rng(devices=[])`` block (which saves/restores only the CPU
+    generator) would let the CUDA generator mutation leak past the context
+    manager on a GPU deployment — defeating the concurrency isolation the
+    block exists to provide. When CUDA is selected this returns **every**
+    CUDA device id (not just the active one), because ``manual_seed`` mutates
+    all of them and a multi-GPU process would otherwise leak the RNG state of
+    the unforked devices. On CPU/MPS deployments the empty list keeps the
+    original cheap, CUDA-sync-free behaviour.
+
+    Returns:
+        ``list(range(torch.cuda.device_count()))`` when the selected device is
+        CUDA, else ``[]``.
+    """
+    if get_device().type == "cuda":
+        return list(range(torch.cuda.device_count()))
+    return []
+
+
 def clear_cache() -> None:
     """Clear GPU memory cache if applicable."""
     device = get_device()

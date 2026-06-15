@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, ClassVar
 
 import pandas as pd
@@ -147,6 +147,52 @@ _MIN_OBSERVATIONS_FOR_CONFIDENCE = 5
 # Minimum observations before fitting a model for diagnostics
 _MIN_DATA_ABSOLUTE = 3
 _MIN_DATA_PARAM_MULTIPLIER = 2
+
+
+def _named_lengthscales(
+    raw_lengthscales: object,
+    parameter_names: list[str],
+) -> dict[str, float] | None:
+    """Normalize BayBE lengthscales to the BOBackend diagnostics contract.
+
+    The shared diagnostics contract exposes ``lengthscales`` as
+    ``dict[str, float]`` keyed by user-facing parameter names. BayBE reports
+    raw model lengthscales as a positional vector; for encoded categorical or
+    molecular features that vector can have a different dimensionality from the
+    original search-space parameters. In that case, use stable encoded-dimension
+    labels rather than pretending those dimensions are original parameters.
+    """
+    result: dict[str, float] | None = None
+    values: list[float] | None = None
+
+    if isinstance(raw_lengthscales, Mapping):
+        result = {str(key): float(value) for key, value in raw_lengthscales.items()}
+    elif isinstance(raw_lengthscales, (int, float)):
+        values = [float(raw_lengthscales)]
+    elif isinstance(raw_lengthscales, Iterable) and not isinstance(
+        raw_lengthscales, (str, bytes)
+    ):
+        values = [float(value) for value in raw_lengthscales]
+
+    if values is not None:
+        if not values:
+            result = {}
+        elif len(values) == 1 and parameter_names:
+            value = round(values[0], 4)
+            result = {name: value for name in parameter_names}
+        elif len(values) == len(parameter_names):
+            result = {
+                name: round(value, 4)
+                for name, value in zip(parameter_names, values, strict=True)
+            }
+        else:
+            result = {
+                f"encoded_dim_{index}": round(value, 4)
+                for index, value in enumerate(values)
+            }
+
+    return result
+
 
 # Seed-derivation context tags (see bo_engine.reproducibility.derive_seed).
 # Namespaced with "baybe:" so seeds derived for this backend can never
@@ -1010,10 +1056,14 @@ class BayBEBackend(BaseBackend):
             model_info, _ = _extract_model_info(campaign)
             fi = _extract_feature_importance(campaign)
             corr = _baybe_model_correlation(campaign, obs_df, spec)
+            parameter_names = [parameter.name for parameter in spec.parameters]
 
             hp = {
                 "kernel_type": model_info.get("kernel_type"),
-                "lengthscales": model_info.get("lengthscales"),
+                "lengthscales": _named_lengthscales(
+                    model_info.get("lengthscales"),
+                    parameter_names,
+                ),
                 "noise_variance": model_info.get("noise_variance"),
                 "output_scale": model_info.get("output_scale"),
             }

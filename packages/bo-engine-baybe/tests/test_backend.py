@@ -25,7 +25,7 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
-from bo_engine_baybe.backend import BayBEBackend
+from bo_engine_baybe.backend import BayBEBackend, _named_lengthscales
 
 
 class TestProtocolCompliance:
@@ -809,6 +809,19 @@ class TestDeltaMeasurements:
 class TestComputeDiagnostics:
     """Tests for E5 — compute_diagnostics coverage."""
 
+    def test_named_lengthscales_use_parameter_names_for_matching_dimensions(self) -> None:
+        assert _named_lengthscales([0.5, 1.25], ["x1", "x2"]) == {
+            "x1": 0.5,
+            "x2": 1.25,
+        }
+
+    def test_named_lengthscales_use_encoded_labels_for_expanded_features(self) -> None:
+        assert _named_lengthscales([0.5, 1.25, 2.0], ["solvent"]) == {
+            "encoded_dim_0": 0.5,
+            "encoded_dim_1": 1.25,
+            "encoded_dim_2": 2.0,
+        }
+
     def test_diagnostics_with_observations(self, simple_spec: OptimizationSpec) -> None:
         backend = BayBEBackend()
         obs = [
@@ -826,6 +839,10 @@ class TestComputeDiagnostics:
 
         # Model section (should have hyperparameters from shared fitted campaign)
         assert "hyperparameters" in result
+        hyperparameters = result["hyperparameters"]
+        assert hyperparameters is not None
+        assert hyperparameters["lengthscales"].keys() == {"x1", "x2"}
+        assert all(isinstance(value, float) for value in hyperparameters["lengthscales"].values())
         assert "model_correlation" in result
 
     def test_diagnostics_insufficient_data(self, simple_spec: OptimizationSpec) -> None:

@@ -38,7 +38,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pandas as pd
 import pydantic
@@ -165,14 +165,15 @@ def _named_lengthscales(
     result: dict[str, float] | None = None
     values: list[float] | None = None
 
+    def as_float(value: object) -> float:
+        return float(cast("Any", value))
+
     if isinstance(raw_lengthscales, Mapping):
-        result = {str(key): float(value) for key, value in raw_lengthscales.items()}
+        result = {str(key): as_float(value) for key, value in raw_lengthscales.items()}
     elif isinstance(raw_lengthscales, (int, float)):
         values = [float(raw_lengthscales)]
-    elif isinstance(raw_lengthscales, Iterable) and not isinstance(
-        raw_lengthscales, (str, bytes)
-    ):
-        values = [float(value) for value in raw_lengthscales]
+    elif isinstance(raw_lengthscales, Iterable) and not isinstance(raw_lengthscales, (str, bytes)):
+        values = [as_float(value) for value in raw_lengthscales]
 
     if values is not None:
         if not values:
@@ -182,14 +183,10 @@ def _named_lengthscales(
             result = {name: value for name in parameter_names}
         elif len(values) == len(parameter_names):
             result = {
-                name: round(value, 4)
-                for name, value in zip(parameter_names, values, strict=True)
+                name: round(value, 4) for name, value in zip(parameter_names, values, strict=True)
             }
         else:
-            result = {
-                f"encoded_dim_{index}": round(value, 4)
-                for index, value in enumerate(values)
-            }
+            result = {f"encoded_dim_{index}": round(value, 4) for index, value in enumerate(values)}
 
     return result
 

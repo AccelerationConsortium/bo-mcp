@@ -67,6 +67,7 @@ async def test_rest_create_campaign_persists_advanced_fields(api_client, auth_he
         spec = await spec_repo.get(campaign.spec_id)
 
     assert spec is not None
+    assert spec.requested_backend == "botorch"
     assert spec.backend == "botorch"
     assert spec.backend_options == {"botorch": {"acquisition_optimizer": "lbfgsb"}}
     assert spec.parameters[0].parameter_options == {"baybe": {"encoding": "ohe"}}
@@ -78,6 +79,65 @@ async def test_rest_create_campaign_persists_advanced_fields(api_client, auth_he
     assert spec.outcome_constraints[0].objective_name == "y"
     assert spec.max_observations == 12
     assert spec.random_seed == 42
+
+    config_response = await api_client.get(
+        f"/api/campaigns/{campaign_id}/config",
+        headers=auth_headers,
+    )
+    assert config_response.status_code == 200, config_response.text
+    config = config_response.json()
+    assert "schema_version" not in config
+    assert config["campaign_id"] == campaign_id
+    assert config["spec_id"] == str(campaign.spec_id)
+    assert config["backend_requested"] == "botorch"
+    assert config["backend_resolved"] == "botorch"
+    assert config["batch_size"] == 1
+    assert config["max_observations"] == 12
+    assert config["initial_design_size_requested"] is None
+    assert config["initial_design_size"] == 2
+    assert config["initial_design_size_source"] == "botorch_default"
+    assert config["random_seed"] == 42
+    assert config["parameters"][0]["parameter_options"] == {"baybe": {"encoding": "ohe"}}
+    assert config["objectives"] == [
+        {
+            "name": "y",
+            "direction": "minimize",
+            "unit": "",
+            "target": None,
+            "log_transform": False,
+        }
+    ]
+    assert config["backend_options"] == {"botorch": {"acquisition_optimizer": "lbfgsb"}}
+    assert config["use_input_warping"] is True
+    assert config["use_cost_aware"] is True
+    assert config["turbo_config"]["initial_length"] == pytest.approx(0.5)
+    assert config["outcome_constraints"][0]["objective_name"] == "y"
+
+
+@pytest.mark.asyncio
+async def test_campaign_config_preserves_requested_initial_design_size(api_client, auth_headers):
+    payload = _intake_payload()
+    payload["initial_design_size"] = 7
+
+    create_response = await api_client.post(
+        "/api/campaigns",
+        json={"intake": payload},
+        headers=auth_headers,
+    )
+
+    assert create_response.status_code == 201, create_response.text
+    campaign_id = create_response.json()["campaign_id"]
+
+    config_response = await api_client.get(
+        f"/api/campaigns/{campaign_id}/config",
+        headers=auth_headers,
+    )
+
+    assert config_response.status_code == 200, config_response.text
+    config = config_response.json()
+    assert config["initial_design_size_requested"] == 7
+    assert config["initial_design_size"] == 7
+    assert config["initial_design_size_source"] == "requested"
 
 
 @pytest.mark.asyncio

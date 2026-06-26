@@ -62,6 +62,7 @@ class ResponseEnvelope(BaseModel):
 RESOURCE_VIEW_MODEL_NAMES: Final[frozenset[str]] = frozenset(
     {
         # Bare resource representations returned from GET-by-id routes.
+        "CampaignConfigResponse",
         "CampaignResponse",
         "SuggestionResponse",
         "ResultResponse",

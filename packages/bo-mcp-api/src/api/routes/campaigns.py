@@ -1,6 +1,7 @@
 """Campaign routes."""
 
-from typing import Annotated
+from collections.abc import Mapping
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
@@ -18,6 +19,7 @@ from api.deps import (
 from api.schemas.campaign import (
     BatchStatusRequest,
     BatchStatusResponse,
+    CampaignConfigResponse,
     CampaignCreate,
     CampaignCreateResponse,
     CampaignLifecycleRequest,
@@ -40,6 +42,7 @@ from api.schemas.errors import (
     operation_failure_response,
 )
 from api.schemas.intake import IntakeData
+from bo_engine.constants import MIN_OBSERVATIONS_FOR_MODEL
 from bo_mcp_server.client import (
     CampaignIntakeInput,
     InvalidIdentifierError,
@@ -64,6 +67,40 @@ from bo_mcp_server.client import (
 )
 
 router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
+
+
+def _dump_optional_model(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return cast("dict[str, object]", value.model_dump(mode="json"))
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {"value": value}
+
+
+def _dump_model_list(values: tuple[object, ...] | list[object]) -> list[dict[str, object]]:
+    return [
+        cast("dict[str, object]", value.model_dump(mode="json"))
+        if hasattr(value, "model_dump")
+        else dict(cast("Mapping[str, object]", value))
+        for value in values
+    ]
+
+
+def _resolved_initial_design_size(spec: object) -> tuple[int | None, str | None]:
+    requested = getattr(spec, "initial_design_size", None)
+    if requested is not None:
+        return int(requested), "requested"
+
+    # BoTorch uses an initial-design fallback until there are enough
+    # observations to fit the first GP. Other backends may not have this
+    # phase, so leave the value unset unless BO-MCP resolved to BoTorch.
+    if getattr(spec, "backend", None) != "botorch":
+        return None, None
+
+    n_parameters = len(getattr(spec, "parameters", ()))
+    return max(MIN_OBSERVATIONS_FOR_MODEL, n_parameters + 1), "botorch_default"
 
 
 def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:
@@ -459,6 +496,74 @@ async def export_campaign(
         headers={
             "Content-Disposition": f'attachment; filename="{filename}.csv"',
         },
+    )
+
+
+@router.get("/{campaign_id}/config")
+async def get_campaign_config(
+    campaign_id: str, current_user: CurrentUser
+) -> CampaignConfigResponse:
+    """Get a stable, sanitized campaign setup snapshot."""
+    try:
+        campaign, spec = await get_campaign_with_spec(campaign_id, current_user.id)
+    except InvalidIdentifierError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid campaign_id format",
+        ) from None
+    except NotAuthorizedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this campaign",
+        ) from None
+    except NotFoundError as exc:
+        detail = (
+            "Campaign spec not found"
+            if exc.resource == "Campaign spec"
+            else f"Campaign {campaign_id} not found"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=detail,
+        ) from None
+
+    initial_design_size, initial_design_size_source = _resolved_initial_design_size(spec)
+
+    return CampaignConfigResponse(
+        campaign_id=str(campaign.id),
+        spec_id=str(campaign.spec_id),
+        name=spec.name,
+        description=spec.description,
+        status=campaign.status.value,
+        iteration=campaign.iteration,
+        backend_requested=spec.requested_backend,
+        backend_resolved=spec.backend,
+        batch_size=spec.batch_size,
+        max_iterations=spec.max_iterations,
+        max_observations=spec.max_observations,
+        initial_design_size_requested=spec.initial_design_size,
+        initial_design_size=initial_design_size,
+        initial_design_size_source=initial_design_size_source,
+        random_seed=spec.random_seed,
+        convergence_tolerance=spec.convergence_tolerance,
+        parameters=_dump_model_list(spec.parameters),
+        objectives=_dump_model_list(spec.objectives),
+        constraints=_dump_model_list(spec.constraints),
+        outcome_constraints=_dump_model_list(spec.outcome_constraints),
+        acquisition_method=str(spec.acquisition_method),
+        acquisition_optimization=_dump_optional_model(spec.acquisition_optimization),
+        use_input_warping=spec.use_input_warping,
+        use_cost_aware=spec.use_cost_aware,
+        turbo_config=_dump_optional_model(spec.turbo_config),
+        saasbo_config=_dump_optional_model(spec.saasbo_config),
+        fidelity_parameter=_dump_optional_model(spec.fidelity_parameter),
+        transfer_learning=_dump_optional_model(spec.transfer_learning),
+        backend_options=(
+            {key: dict(value) for key, value in spec.backend_options.items()}
+            if spec.backend_options
+            else None
+        ),
+        acknowledge_degradations=list(spec.acknowledge_degradations),
     )
 
 

@@ -56,6 +56,7 @@ _ADVANCED_SPEC_FIELDS: tuple[str, ...] = (
     "transfer_learning",
     "outcome_constraints",
     "acknowledge_degradations",
+    "requested_backend",
 )
 
 

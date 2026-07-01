@@ -9,9 +9,12 @@ class consumes these constants and helpers when building its
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pydantic
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from bo_engine.backend import Feature
 from bo_engine.backend_base import (
@@ -318,8 +321,19 @@ def _custom_role_reports(
     import pandas as pd
     from baybe.parameters import CustomDiscreteParameter
 
+    data = pd.DataFrame.from_dict(dict(opts.custom_descriptors), orient="index")
+
+    # Named pre-checks for the two rules an agent hits most and that BayBE's
+    # own error reports anonymously (it names neither the columns nor the
+    # labels). Surfacing the specific offenders lets a caller fix just those
+    # instead of dropping the whole parameter to plain categorical.
+    named = _custom_table_reports(name, data)
+    if named:
+        return named
+
+    # Backstop: anything the named checks miss (NaN/inf, non-string labels,
+    # <2 rows, …) still surfaces at intake rather than crashing the converter.
     try:
-        data = pd.DataFrame.from_dict(dict(opts.custom_descriptors), orient="index")
         CustomDiscreteParameter(name=name, data=data, decorrelate=opts.decorrelate)
     except (ValueError, TypeError) as e:
         return [
@@ -330,6 +344,62 @@ def _custom_role_reports(
             )
         ]
     return []
+
+
+def _custom_table_reports(name: str, data: pd.DataFrame) -> list[CapabilityReport]:
+    """Report constant descriptor columns and duplicate rows, naming the offenders.
+
+    Mirrors two of BayBE's ``CustomDiscreteParameter`` validators but names the
+    specific columns / colliding labels so a caller can enrich exactly those:
+
+    * a column constant across all labels carries no information;
+    * two labels sharing an identical descriptor vector (duplicate rows) are an
+      ambiguous representation — common when coarse descriptors collapse
+      distinct items (e.g. isomers with equal MW / ring counts).
+    """
+    key = f"parameter_options[{name}].baybe.custom_descriptors"
+    reports: list[CapabilityReport] = []
+
+    # No descriptor columns at all — let the construct-catch backstop report it.
+    if len(data.columns) == 0:
+        return reports
+
+    # nunique(dropna=False) is deliberate: the PD101-suggested `(s != s[0]).any()`
+    # form mishandles NaN and multi-valued columns; nunique counts NaN as a value.
+    constant_cols = [
+        str(c)
+        for c in data.columns
+        if data[c].nunique(dropna=False) <= 1  # noqa: PD101
+    ]
+    if constant_cols:
+        reports.append(
+            CapabilityReport(
+                key=key,
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"BayBE custom_descriptors has constant column(s) {sorted(constant_cols)} "
+                    "(same value for every label — carries no information). Drop them or add "
+                    "a distinguishing feature."
+                ),
+            )
+        )
+
+    # Group labels by identical descriptor row; report each colliding group.
+    collisions = [sorted(map(str, grp.index)) for _, grp in data.groupby(list(data.columns))]
+    duplicate_groups = [grp for grp in collisions if len(grp) > 1]
+    if duplicate_groups:
+        reports.append(
+            CapabilityReport(
+                key=key,
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"BayBE custom_descriptors has labels with identical descriptor vectors "
+                    f"{sorted(duplicate_groups)}; each label needs a unique representation. "
+                    "Add higher-resolution features so these labels differ."
+                ),
+            )
+        )
+    return reports
 
 
 def _invalid_smiles_reports(name: str, substance_data: dict[str, str]) -> list[CapabilityReport]:

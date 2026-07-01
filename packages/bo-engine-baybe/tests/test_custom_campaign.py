@@ -113,6 +113,27 @@ def test_missing_descriptors_rejected_at_intake() -> None:
     assert "L4" in bad[0].reason
 
 
+def test_duplicate_descriptor_rows_rejected_and_named() -> None:
+    """Two labels with identical vectors are rejected, and the report names them."""
+    dup = {
+        "L1": {"volume": 1.0, "charge": -0.2},
+        "L2": {"volume": 5.0, "charge": 0.9},
+        "L3": {"volume": 1.0, "charge": -0.2},  # identical to L1
+    }
+    spec = _spec(descriptors=dup, categories=["L1", "L2", "L3"])
+    result = BayBEBackend().validate_capabilities(spec)
+    assert not result.is_compatible
+    bad = [
+        r
+        for r in result.option_reports
+        if r.status == CapabilityStatus.UNSUPPORTED and r.key.endswith(".baybe.custom_descriptors")
+    ]
+    assert bad
+    # The specific colliding labels are named so a caller can enrich just those.
+    assert "L1" in bad[0].reason
+    assert "L3" in bad[0].reason
+
+
 def test_constant_descriptor_column_rejected_at_intake() -> None:
     """BayBE rejects a column with a single unique value; surface it at intake."""
     constant = {

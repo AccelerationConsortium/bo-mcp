@@ -100,12 +100,28 @@ class BayBEParameterOptions(BaseModel):
     active_values: tuple[str, ...] | None = None
     substance_data: dict[str, str] | None = None
     substance_encoding: BayBESubstanceEncoding | None = None
-    # role=custom: {category label: {descriptor name: value}}. Rows become the
-    # DataFrame passed to CustomDiscreteParameter; keys must match the declared
-    # categories. ``decorrelate`` mirrors the BayBE knob (True/False or a
-    # correlation threshold in (0, 1)).
-    custom_descriptors: dict[str, dict[str, float]] | None = None
-    decorrelate: bool | float = True
+    custom_descriptors: dict[str, dict[str, float]] | None = Field(
+        default=None,
+        description=(
+            "role=custom only. Precomputed numeric representation per category: "
+            "{category label: {descriptor name: value}}. Each label becomes one row "
+            "of the table BayBE's CustomDiscreteParameter encodes. Rules (enforced at "
+            "campaign creation, rejected with a clear error): keys must match the "
+            "declared `categories` exactly (no missing/extra labels); at least 2 "
+            "categories; every value numeric and finite (no null/NaN/inf); no "
+            "descriptor column may be constant across labels (carries no information); "
+            "and no two labels may share an identical descriptor vector (ambiguous "
+            "representation). Give each label a distinct, informative vector."
+        ),
+    )
+    decorrelate: bool | float = Field(
+        default=True,
+        description=(
+            "role=custom only. Mirrors BayBE CustomDiscreteParameter.decorrelate: "
+            "true drops highly correlated descriptor columns, false keeps the table "
+            "as-is, or a float in (0, 1) sets the correlation threshold."
+        ),
+    )
 
 
 class BayBERecommenderConfig(BaseModel):

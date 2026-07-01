@@ -167,9 +167,17 @@ only how BayBE encodes them for the GP.
 - **`decorrelate`**: `true` (default) drops highly correlated descriptor columns,
   `false` keeps the table as-is, or a float in `(0, 1)` sets the correlation
   threshold. Mirrors BayBE's `CustomDiscreteParameter.decorrelate`.
-- BayBE's own table constraints (all-numeric, no NaN/inf, ≥2 rows, no constant or
-  duplicate columns) are enforced at intake as capability errors rather than
-  crashing during suggestion generation.
+- The table must satisfy BayBE's `CustomDiscreteParameter` rules, all enforced at
+  campaign creation as clear capability errors (not a deferred crash):
+  - keys match the declared `categories` exactly — no missing or extra labels;
+  - at least 2 categories;
+  - every value numeric and finite (no null / NaN / inf);
+  - no descriptor column constant across labels (a single-value column carries no
+    information);
+  - no two labels sharing an identical descriptor vector (duplicate **rows** →
+    ambiguous representation).
+  Note the last two are separate: a constant *column* and a duplicate *row* are
+  different rejections. Give each label a distinct, informative vector.
 - **BayBE-only**, same routing as substance: `backend="auto"` routes to BayBE; a
   pinned `backend="botorch"` is rejected (BoTorch would one-hot the labels and
   silently drop the representation) and the veto cannot be acknowledged away. No

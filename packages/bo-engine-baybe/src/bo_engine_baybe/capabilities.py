@@ -156,8 +156,16 @@ def _validate_parameter_role(
     * ``substance_data`` for ``role=substance`` must cover every
       declared category and ``baybe[chem]`` must be installed before
       BayBE's :class:`SubstanceParameter` can build its descriptor table.
+    * ``custom_descriptors`` for ``role=custom`` must cover every
+      declared category and yield a table BayBE's
+      :class:`CustomDiscreteParameter` accepts.
     """
-    if opts.role not in (BayBEParameterRole.TASK, BayBEParameterRole.SUBSTANCE):
+    role_needs_categorical = (
+        BayBEParameterRole.TASK,
+        BayBEParameterRole.SUBSTANCE,
+        BayBEParameterRole.CUSTOM,
+    )
+    if opts.role not in role_needs_categorical:
         return []
     if p.type != ParameterType.CATEGORICAL:
         return [
@@ -174,6 +182,8 @@ def _validate_parameter_role(
     categories = set(p.categories or [])
     if opts.role == BayBEParameterRole.TASK:
         return _task_role_reports(p.name, opts, categories)
+    if opts.role == BayBEParameterRole.CUSTOM:
+        return _custom_role_reports(p.name, opts, categories)
     return _substance_role_reports(p.name, opts, categories)
 
 
@@ -258,6 +268,68 @@ def _substance_role_reports(
     if _CHEMISTRY_AVAILABLE:
         reports.extend(_invalid_smiles_reports(name, dict(opts.substance_data)))
     return reports
+
+
+def _custom_role_reports(
+    name: str,
+    opts: BayBEParameterOptions,
+    categories: set[str],
+) -> list[CapabilityReport]:
+    """Validate the ``role=custom`` shape against the declared categories.
+
+    Two independent checks. First the bo-mcp-specific one BayBE cannot do:
+    ``CustomDiscreteParameter`` derives its labels from the DataFrame index
+    and never sees the campaign's declared ``categories``, so a descriptor
+    table that omits (or adds) a label would silently disagree with the
+    declared search space. We require exact coverage. Second we build the
+    parameter and surface any BayBE construction ``ValueError`` (non-numeric
+    values, NaN/inf, constant or duplicate columns, <2 rows, …) as an
+    intake-time report instead of a deferred crash in ``spec_to_parameters``.
+    Construction is cheap for custom (no RDKit / descriptor computation).
+    """
+    if not opts.custom_descriptors:
+        return [
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.custom_descriptors",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "BayBE custom parameter requires custom_descriptors "
+                    "(label -> {descriptor: value} map)."
+                ),
+            )
+        ]
+    labels = set(opts.custom_descriptors)
+    missing = sorted(categories - labels)
+    extra = sorted(labels - categories)
+    if missing or extra:
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing descriptors for categories {missing}")
+        if extra:
+            parts.append(f"extra descriptors for undeclared categories {extra}")
+        return [
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.custom_descriptors",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason="BayBE custom_descriptors has category mismatch: " + "; ".join(parts),
+            )
+        ]
+
+    import pandas as pd
+    from baybe.parameters import CustomDiscreteParameter
+
+    try:
+        data = pd.DataFrame.from_dict(dict(opts.custom_descriptors), orient="index")
+        CustomDiscreteParameter(name=name, data=data, decorrelate=opts.decorrelate)
+    except (ValueError, TypeError) as e:
+        return [
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.custom_descriptors",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=f"BayBE rejected the custom descriptor table: {e}",
+            )
+        ]
+    return []
 
 
 def _invalid_smiles_reports(name: str, substance_data: dict[str, str]) -> list[CapabilityReport]:

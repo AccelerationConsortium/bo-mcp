@@ -51,6 +51,7 @@ from bo_engine.feature_importance import compute_feature_importance
 from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.interop import (
     BAYBE_BACKEND_NAME,
+    BAYBE_CUSTOM_ROLE,
     BAYBE_PARAMETER_ROLE_KEY,
     BAYBE_SUBSTANCE_ROLE,
 )
@@ -104,38 +105,59 @@ def _turbo_state_to_dict(state: TurboState) -> dict[str, Any]:
     }
 
 
-def _is_baybe_substance_parameter(
+# BayBE roles encoding a representation BoTorch cannot reproduce: substance
+# (SMILES → cheminformatics descriptors) and custom (labels → user-supplied
+# numeric representation). Both would be one-hotted into opaque categories by
+# BoTorch, silently dropping the representation — so both are hard-vetoed.
+_BAYBE_UNREPRODUCIBLE_ROLES: dict[str, str] = {
+    BAYBE_SUBSTANCE_ROLE: (
+        "encode molecular SMILES as cheminformatics descriptors; BoTorch has no chemistry kernel"
+    ),
+    BAYBE_CUSTOM_ROLE: (
+        "carry a user-supplied numeric representation (e.g. quantum-chemistry "
+        "descriptors); BoTorch has no path to load a custom encoding"
+    ),
+}
+
+
+def _baybe_unreproducible_role(
     parameter_options: dict[str, dict[str, Any]] | None,
-) -> bool:
-    """Return True when a parameter declares the BayBE ``role=substance`` marker.
+) -> str | None:
+    """Return the BayBE role marker BoTorch cannot reproduce, else ``None``.
 
     Reads the documented cross-backend interop markers (see
     :mod:`bo_engine.interop`) instead of importing ``bo_engine_baybe`` —
     bo-engine must not depend on a backend package. Accepts any mapping
     (plain ``dict`` from the server converter or a frozen view) so the
-    check is robust to how the spec was built.
+    check is robust to how the spec was built. Returns the role string
+    (``substance`` / ``custom``) when it is one BoTorch must veto.
     """
     if not parameter_options:
-        return False
+        return None
     baybe_opts = parameter_options.get(BAYBE_BACKEND_NAME)
     if not isinstance(baybe_opts, Mapping):
-        return False
-    return baybe_opts.get(BAYBE_PARAMETER_ROLE_KEY) == BAYBE_SUBSTANCE_ROLE
+        return None
+    role = baybe_opts.get(BAYBE_PARAMETER_ROLE_KEY)
+    return role if role in _BAYBE_UNREPRODUCIBLE_ROLES else None
 
 
 def _substance_parameter_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
-    """Flag every BayBE ``role=substance`` parameter as ``UNSUPPORTED`` on BoTorch.
+    """Flag BayBE ``role=substance``/``role=custom`` parameters ``UNSUPPORTED`` on BoTorch.
 
-    A molecular ``SubstanceParameter`` (SMILES → descriptor encoding) needs
-    a chemistry kernel BoTorch does not have. Reporting it ``UNSUPPORTED``
-    keeps ``backend="auto"`` from silently mis-optimizing it as plain
-    categories. Ordinary categorical / ``role=task`` BayBE options carry no
-    such marker and are untouched here, so existing categorical and task
-    routing on BoTorch is unchanged.
+    Both roles carry a representation BoTorch cannot reproduce — a molecular
+    ``SubstanceParameter`` (SMILES → descriptor encoding) needs a chemistry
+    kernel, and a ``CustomDiscreteParameter`` carries a user-supplied numeric
+    encoding BoTorch has no path to load. Either way BoTorch would treat the
+    labels as opaque one-hot categories, silently dropping the representation.
+    Reporting them ``UNSUPPORTED`` keeps ``backend="auto"`` from mis-optimizing
+    them and fails a pinned ``backend="botorch"`` loudly at intake. Ordinary
+    categorical / ``role=task`` BayBE options carry no such marker and are
+    untouched here, so existing categorical and task routing is unchanged.
     """
     reports: list[CapabilityReport] = []
     for p in spec.parameters:
-        if not _is_baybe_substance_parameter(p.parameter_options):
+        role = _baybe_unreproducible_role(p.parameter_options)
+        if role is None:
             continue
         reports.append(
             CapabilityReport(
@@ -144,11 +166,10 @@ def _substance_parameter_reports(spec: OptimizationSpec) -> list[CapabilityRepor
                 ),
                 status=CapabilityStatus.UNSUPPORTED,
                 reason=(
-                    f"BayBE-native '{BAYBE_SUBSTANCE_ROLE}' parameters encode molecular "
-                    "SMILES as cheminformatics descriptors; BoTorch has no chemistry "
-                    "kernel and would treat the labels as opaque categories, silently "
-                    "dropping the chemistry. Use backend='baybe' (or 'auto'). This is a "
-                    "hard incompatibility and cannot be bypassed via "
+                    f"BayBE-native '{role}' parameters {_BAYBE_UNREPRODUCIBLE_ROLES[role]} "
+                    "and would be treated as opaque categories by BoTorch, silently "
+                    "dropping the representation. Use backend='baybe' (or 'auto'). This "
+                    "is a hard incompatibility and cannot be bypassed via "
                     "acknowledge_degradations."
                 ),
             )

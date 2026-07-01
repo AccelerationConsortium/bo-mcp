@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from bo_engine.interop import (
     BAYBE_BACKEND_NAME,
+    BAYBE_CUSTOM_ROLE,
     BAYBE_PARAMETER_ROLE_KEY,
     BAYBE_SUBSTANCE_ROLE,
 )
@@ -24,6 +25,10 @@ from bo_engine_baybe.options import BayBEParameterOptions, BayBEParameterRole
 
 def test_substance_role_marker_matches_baybe_enum() -> None:
     assert BAYBE_SUBSTANCE_ROLE == BayBEParameterRole.SUBSTANCE.value
+
+
+def test_custom_role_marker_matches_baybe_enum() -> None:
+    assert BAYBE_CUSTOM_ROLE == BayBEParameterRole.CUSTOM.value
 
 
 def test_backend_name_marker_matches_registered_backend() -> None:

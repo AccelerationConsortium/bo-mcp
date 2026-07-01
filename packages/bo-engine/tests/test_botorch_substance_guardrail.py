@@ -18,6 +18,7 @@ from bo_engine.backend_base import CapabilityStatus
 from bo_engine.botorch_backend import BoTorchBackend
 from bo_engine.interop import (
     BAYBE_BACKEND_NAME,
+    BAYBE_CUSTOM_ROLE,
     BAYBE_PARAMETER_ROLE_KEY,
     BAYBE_SUBSTANCE_ROLE,
 )
@@ -76,6 +77,51 @@ class TestSubstanceIsHardIncompatible:
             ("turbo_config", "saasbo_config", "outcome_constraints", "role"),
         ):
             result = BoTorchBackend().validate_capabilities(_substance_spec(acknowledge=ack))
+            assert not result.is_compatible, f"acknowledge={ack} unexpectedly bypassed the gate"
+
+
+def _custom_spec(acknowledge: tuple[str, ...] = ()) -> OptimizationSpec:
+    """Single-parameter spec declaring a BayBE custom-representation role."""
+    return OptimizationSpec(
+        parameters=[
+            ParameterSpec(
+                name="ligand",
+                type=ParameterType.CATEGORICAL,
+                categories=["A", "B"],
+                parameter_options={
+                    BAYBE_BACKEND_NAME: {
+                        BAYBE_PARAMETER_ROLE_KEY: BAYBE_CUSTOM_ROLE,
+                        "custom_descriptors": {
+                            "A": {"d1": 0.1, "d2": 1.0},
+                            "B": {"d1": 0.9, "d2": 2.0},
+                        },
+                    }
+                },
+            ),
+        ],
+        objectives=[ObjectiveSpec(name="y", minimize=True)],
+        acknowledge_degradations=acknowledge,
+    )
+
+
+class TestCustomIsHardIncompatible:
+    """Pinned ``backend="botorch"`` + custom representation must be hard-incompatible."""
+
+    def test_custom_parameter_makes_botorch_incompatible(self) -> None:
+        result = BoTorchBackend().validate_capabilities(_custom_spec())
+        assert not result.is_compatible
+        reports = [
+            r
+            for r in result.option_reports
+            if r.status == CapabilityStatus.UNSUPPORTED
+            and r.key.endswith(f".{BAYBE_BACKEND_NAME}.{BAYBE_PARAMETER_ROLE_KEY}")
+        ]
+        assert reports
+        assert "ligand" in reports[0].key
+
+    def test_acknowledge_degradations_cannot_bypass_custom_gate(self) -> None:
+        for ack in (("role",), ("ligand",), ("custom_descriptors", "role")):
+            result = BoTorchBackend().validate_capabilities(_custom_spec(acknowledge=ack))
             assert not result.is_compatible, f"acknowledge={ack} unexpectedly bypassed the gate"
 
 

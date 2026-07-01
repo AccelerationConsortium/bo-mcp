@@ -47,14 +47,18 @@ class BayBEParameterRole(StrEnum):
 
     ``categorical`` is the default vanilla one-hot/integer-encoded
     parameter, ``task`` switches to :class:`baybe.parameters.TaskParameter`
-    for transfer-learning across related campaigns, and ``substance``
+    for transfer-learning across related campaigns, ``substance``
     switches to :class:`baybe.parameters.SubstanceParameter` for
-    cheminformatics descriptors.
+    cheminformatics descriptors, and ``custom`` switches to
+    :class:`baybe.parameters.CustomDiscreteParameter` so the caller can
+    supply a precomputed numeric representation per label (e.g. from
+    quantum chemistry).
     """
 
     CATEGORICAL = "categorical"
     TASK = "task"
     SUBSTANCE = "substance"
+    CUSTOM = "custom"
 
 
 class BayBESubstanceEncoding(StrEnum):
@@ -96,6 +100,12 @@ class BayBEParameterOptions(BaseModel):
     active_values: tuple[str, ...] | None = None
     substance_data: dict[str, str] | None = None
     substance_encoding: BayBESubstanceEncoding | None = None
+    # role=custom: {category label: {descriptor name: value}}. Rows become the
+    # DataFrame passed to CustomDiscreteParameter; keys must match the declared
+    # categories. ``decorrelate`` mirrors the BayBE knob (True/False or a
+    # correlation threshold in (0, 1)).
+    custom_descriptors: dict[str, dict[str, float]] | None = None
+    decorrelate: bool | float = True
 
 
 class BayBERecommenderConfig(BaseModel):

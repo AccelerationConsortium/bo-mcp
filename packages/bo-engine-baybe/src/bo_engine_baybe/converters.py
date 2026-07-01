@@ -19,6 +19,7 @@ from baybe.constraints.conditions import ThresholdCondition
 from baybe.objectives import ParetoObjective, SingleTargetObjective
 from baybe.parameters import (
     CategoricalParameter,
+    CustomDiscreteParameter,
     NumericalContinuousParameter,
     NumericalDiscreteParameter,
     SubstanceParameter,
@@ -126,6 +127,7 @@ def _build_baybe_parameter(
     | CategoricalParameter
     | TaskParameter
     | SubstanceParameter
+    | CustomDiscreteParameter
 ):
     """Build a single BayBE parameter, honoring typed BayBE parameter options."""
     opts = extract_baybe_parameter_options(p.parameter_options)
@@ -154,13 +156,14 @@ def _build_baybe_parameter(
 def _build_categorical_parameter(
     p: ParameterSpec,
     opts: BayBEParameterOptions,
-) -> CategoricalParameter | TaskParameter | SubstanceParameter:
+) -> CategoricalParameter | TaskParameter | SubstanceParameter | CustomDiscreteParameter:
     """Build a BayBE categorical-family parameter, dispatching on the role.
 
     ``role=task`` produces a :class:`TaskParameter`; ``role=substance``
     produces a :class:`SubstanceParameter` with the user-provided SMILES
-    map; otherwise a vanilla :class:`CategoricalParameter` is returned
-    with the requested encoding.
+    map; ``role=custom`` produces a :class:`CustomDiscreteParameter` from
+    the user-supplied per-label descriptor table; otherwise a vanilla
+    :class:`CategoricalParameter` is returned with the requested encoding.
     """
     if p.categories is None:
         msg = f"Categorical parameter '{p.name}' requires categories"
@@ -169,6 +172,8 @@ def _build_categorical_parameter(
     if opts.role == BayBEParameterRole.TASK:
         active = tuple(opts.active_values) if opts.active_values else categories
         return TaskParameter(p.name, categories, active_values=active)
+    if opts.role == BayBEParameterRole.CUSTOM:
+        return _build_custom_parameter(p, opts)
     if opts.role == BayBEParameterRole.SUBSTANCE:
         if not opts.substance_data:
             msg = (
@@ -196,6 +201,29 @@ def _build_categorical_parameter(
     )
 
 
+def _build_custom_parameter(
+    p: ParameterSpec,
+    opts: BayBEParameterOptions,
+) -> CustomDiscreteParameter:
+    """Build a BayBE ``CustomDiscreteParameter`` from the per-label descriptor table.
+
+    ``custom_descriptors`` maps each category label to a dict of
+    ``{descriptor name: value}``; ``DataFrame.from_dict(orient="index")``
+    turns it into the labels × descriptors table BayBE consumes (its
+    ``values`` are the DataFrame index). Capability validation has already
+    checked category coverage and construction validity, so a malformed
+    table cannot reach this point through the normal intake path.
+    """
+    if not opts.custom_descriptors:
+        msg = (
+            f"BayBE custom parameter '{p.name}' requires "
+            "parameter_options['baybe'].custom_descriptors"
+        )
+        raise ValueError(msg)
+    data = pd.DataFrame.from_dict(opts.custom_descriptors, orient="index")
+    return CustomDiscreteParameter(name=p.name, data=data, decorrelate=opts.decorrelate)
+
+
 def spec_to_parameters(
     spec: OptimizationSpec,
 ) -> list[
@@ -204,12 +232,14 @@ def spec_to_parameters(
     | CategoricalParameter
     | TaskParameter
     | SubstanceParameter
+    | CustomDiscreteParameter
 ]:
     """Convert bo-engine ParameterSpecs to BayBE parameter objects.
 
     Honors ``parameter_options['baybe']`` to emit BayBE-native parameter
     classes (categorical encoding, ``TaskParameter`` for transfer learning,
-    ``SubstanceParameter`` for cheminformatics descriptors). Parameters
+    ``SubstanceParameter`` for cheminformatics descriptors,
+    ``CustomDiscreteParameter`` for user-supplied representations). Parameters
     without BayBE options fall back to the previous BoTorch-shaped
     numeric/categorical mapping.
     """

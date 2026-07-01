@@ -33,5 +33,11 @@ BAYBE_BACKEND_NAME = "baybe"
 BAYBE_PARAMETER_ROLE_KEY = "role"
 
 # Role value marking a molecular ``SubstanceParameter`` (SMILES → descriptor
-# encoding). The one marker the BoTorch guardrail must veto.
+# encoding). The BoTorch guardrail must veto it.
 BAYBE_SUBSTANCE_ROLE = "substance"
+
+# Role value marking a ``CustomDiscreteParameter`` (labels → user-supplied
+# numeric representation, e.g. quantum-chemistry descriptors). Like substance,
+# BoTorch cannot reproduce the representation — it would one-hot the labels and
+# silently drop the supplied encoding — so the guardrail vetoes it too.
+BAYBE_CUSTOM_ROLE = "custom"

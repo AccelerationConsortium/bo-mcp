@@ -34,8 +34,9 @@ from bo_mcp_server.trace_context import bind_trace_id
 # by splicing the full ``CampaignIntakeInput`` JSON schema into
 # ``json_schema_extra`` so ``tools/list`` still advertises the rich
 # nested structure. The schema is enriched with each backend's typed
-# ``parameter_options`` shape (e.g. BayBE's ``role=substance`` recipe) so
-# agents discover the molecular surface from ``tools/list`` directly.
+# ``parameter_options`` shape (e.g. BayBE's ``role=substance`` and
+# ``role=custom`` recipes) so agents discover the molecular / custom-
+# representation surface from ``tools/list`` directly.
 _INTAKE_SCHEMA = intake_schema_with_parameter_options()
 IntakePayload = Annotated[
     Any,

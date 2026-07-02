@@ -131,6 +131,58 @@ Caveats:
 A complete, runnable intake payload lives at
 [`docs/examples/substance_solvent_screening.json`](../../docs/examples/substance_solvent_screening.json).
 
+## Custom representations (BayBE only)
+
+When you already have a precomputed numeric representation for each label —
+quantum-chemistry descriptors, learned embeddings, measured properties — feed it
+directly via `role="custom"`, which maps to BayBE's
+[`CustomDiscreteParameter`](https://emdgroup.github.io/baybe/stable/examples/Basics/parameters.html).
+As with `substance`, the base parameter stays `categorical` and the declared
+`categories` remain the experimental values you submit; the descriptor table is
+only how BayBE encodes them for the GP.
+
+```json
+{
+  "name": "ligand",
+  "type": "categorical",
+  "categories": ["L1", "L2", "L3", "L4"],
+  "parameter_options": {
+    "baybe": {
+      "role": "custom",
+      "custom_descriptors": {
+        "L1": {"volume": 1.0, "charge": -0.2},
+        "L2": {"volume": 2.5, "charge": 0.1},
+        "L3": {"volume": 3.1, "charge": 0.4},
+        "L4": {"volume": 4.8, "charge": -0.7}
+      },
+      "decorrelate": true
+    }
+  }
+}
+```
+
+- **`custom_descriptors`**: a `{category_label: {descriptor: value}}` map that
+  must cover every declared category (extra/missing labels are rejected at
+  intake). Each label's dict becomes a row of the descriptor table.
+- **`decorrelate`**: `true` (default) drops highly correlated descriptor columns,
+  `false` keeps the table as-is, or a float in `(0, 1)` sets the correlation
+  threshold. Mirrors BayBE's `CustomDiscreteParameter.decorrelate`.
+- The table must satisfy BayBE's `CustomDiscreteParameter` rules, all enforced at
+  campaign creation as clear capability errors (not a deferred crash):
+  - keys match the declared `categories` exactly — no missing or extra labels;
+  - at least 2 categories;
+  - every value numeric and finite (no null / NaN / inf);
+  - no descriptor column constant across labels (a single-value column carries no
+    information);
+  - no two labels sharing an identical descriptor vector (duplicate **rows** →
+    ambiguous representation).
+  Note the last two are separate: a constant *column* and a duplicate *row* are
+  different rejections. Give each label a distinct, informative vector.
+- **BayBE-only**, same routing as substance: `backend="auto"` routes to BayBE; a
+  pinned `backend="botorch"` is rejected (BoTorch would one-hot the labels and
+  silently drop the representation) and the veto cannot be acknowledged away. No
+  `baybe[chem]` needed — the representation is supplied, not computed.
+
 ## Package Structure
 
 ```text

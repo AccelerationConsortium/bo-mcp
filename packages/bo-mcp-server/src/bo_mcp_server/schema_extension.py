@@ -37,9 +37,10 @@ _PARAMETER_OPTIONS_DESCRIPTION = (
     "Per-backend parameter options, keyed by backend name. Each backend reads "
     "only its own slot and silently ignores keys addressed to other backends. "
     "Documented backends appear under 'properties' with their typed shape "
-    "(e.g. 'baybe' exposes 'role', and for role='substance' the 'substance_data' "
-    "SMILES map and 'substance_encoding'); unknown backends remain accepted via "
-    "additionalProperties."
+    "(e.g. 'baybe' exposes 'role', for role='substance' the 'substance_data' "
+    "SMILES map and 'substance_encoding', and for role='custom' the "
+    "'custom_descriptors' per-label representation table and 'decorrelate'); "
+    "unknown backends remain accepted via additionalProperties."
 )
 
 

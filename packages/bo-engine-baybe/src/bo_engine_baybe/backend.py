@@ -260,11 +260,13 @@ class BayBEBackend(BaseBackend):
 
         Surfaces the typed :class:`BayBEParameterOptions` shape — the
         categorical ``encoding``, the ``role`` selector, ``active_values``
-        for ``role=task``, and ``substance_data`` / ``substance_encoding``
-        for ``role=substance`` — so MCP and REST clients discover the
-        molecular (substance) recipe from the schema instead of reading
-        source. The fragment carries Pydantic's local ``$defs`` (nested
-        enums); the schema-extension layer inlines it before splicing.
+        for ``role=task``, ``substance_data`` / ``substance_encoding`` for
+        ``role=substance``, and ``custom_descriptors`` / ``decorrelate`` for
+        ``role=custom`` — so MCP and REST clients discover the molecular
+        (substance) and custom-representation recipes from the schema
+        instead of reading source. The fragment carries Pydantic's local
+        ``$defs`` (nested enums); the schema-extension layer inlines it
+        before splicing.
         """
         return BayBEParameterOptions.model_json_schema()
 

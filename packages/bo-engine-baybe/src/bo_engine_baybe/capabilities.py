@@ -9,9 +9,12 @@ class consumes these constants and helpers when building its
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pydantic
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from bo_engine.backend import Feature
 from bo_engine.backend_base import (
@@ -156,8 +159,16 @@ def _validate_parameter_role(
     * ``substance_data`` for ``role=substance`` must cover every
       declared category and ``baybe[chem]`` must be installed before
       BayBE's :class:`SubstanceParameter` can build its descriptor table.
+    * ``custom_descriptors`` for ``role=custom`` must cover every
+      declared category and yield a table BayBE's
+      :class:`CustomDiscreteParameter` accepts.
     """
-    if opts.role not in (BayBEParameterRole.TASK, BayBEParameterRole.SUBSTANCE):
+    role_needs_categorical = (
+        BayBEParameterRole.TASK,
+        BayBEParameterRole.SUBSTANCE,
+        BayBEParameterRole.CUSTOM,
+    )
+    if opts.role not in role_needs_categorical:
         return []
     if p.type != ParameterType.CATEGORICAL:
         return [
@@ -174,6 +185,8 @@ def _validate_parameter_role(
     categories = set(p.categories or [])
     if opts.role == BayBEParameterRole.TASK:
         return _task_role_reports(p.name, opts, categories)
+    if opts.role == BayBEParameterRole.CUSTOM:
+        return _custom_role_reports(p.name, opts, categories)
     return _substance_role_reports(p.name, opts, categories)
 
 
@@ -257,6 +270,135 @@ def _substance_role_reports(
     # import, so it stays behind this guard.
     if _CHEMISTRY_AVAILABLE:
         reports.extend(_invalid_smiles_reports(name, dict(opts.substance_data)))
+    return reports
+
+
+def _custom_role_reports(
+    name: str,
+    opts: BayBEParameterOptions,
+    categories: set[str],
+) -> list[CapabilityReport]:
+    """Validate the ``role=custom`` shape against the declared categories.
+
+    Two independent checks. First the bo-mcp-specific one BayBE cannot do:
+    ``CustomDiscreteParameter`` derives its labels from the DataFrame index
+    and never sees the campaign's declared ``categories``, so a descriptor
+    table that omits (or adds) a label would silently disagree with the
+    declared search space. We require exact coverage. Second we build the
+    parameter and surface any BayBE construction ``ValueError`` (non-numeric
+    values, NaN/inf, constant or duplicate columns, <2 rows, …) as an
+    intake-time report instead of a deferred crash in ``spec_to_parameters``.
+    Construction is cheap for custom (no RDKit / descriptor computation).
+    """
+    if not opts.custom_descriptors:
+        return [
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.custom_descriptors",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "BayBE custom parameter requires custom_descriptors "
+                    "(label -> {descriptor: value} map)."
+                ),
+            )
+        ]
+    labels = set(opts.custom_descriptors)
+    missing = sorted(categories - labels)
+    extra = sorted(labels - categories)
+    if missing or extra:
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing descriptors for categories {missing}")
+        if extra:
+            parts.append(f"extra descriptors for undeclared categories {extra}")
+        return [
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.custom_descriptors",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason="BayBE custom_descriptors has category mismatch: " + "; ".join(parts),
+            )
+        ]
+
+    import pandas as pd
+    from baybe.parameters import CustomDiscreteParameter
+
+    data = pd.DataFrame.from_dict(dict(opts.custom_descriptors), orient="index")
+
+    # Named pre-checks for the two rules an agent hits most and that BayBE's
+    # own error reports anonymously (it names neither the columns nor the
+    # labels). Surfacing the specific offenders lets a caller fix just those
+    # instead of dropping the whole parameter to plain categorical.
+    named = _custom_table_reports(name, data)
+    if named:
+        return named
+
+    # Backstop: anything the named checks miss (NaN/inf, non-string labels,
+    # <2 rows, …) still surfaces at intake rather than crashing the converter.
+    try:
+        CustomDiscreteParameter(name=name, data=data, decorrelate=opts.decorrelate)
+    except (ValueError, TypeError) as e:
+        return [
+            CapabilityReport(
+                key=f"parameter_options[{name}].baybe.custom_descriptors",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=f"BayBE rejected the custom descriptor table: {e}",
+            )
+        ]
+    return []
+
+
+def _custom_table_reports(name: str, data: pd.DataFrame) -> list[CapabilityReport]:
+    """Report constant descriptor columns and duplicate rows, naming the offenders.
+
+    Mirrors two of BayBE's ``CustomDiscreteParameter`` validators but names the
+    specific columns / colliding labels so a caller can enrich exactly those:
+
+    * a column constant across all labels carries no information;
+    * two labels sharing an identical descriptor vector (duplicate rows) are an
+      ambiguous representation — common when coarse descriptors collapse
+      distinct items (e.g. isomers with equal MW / ring counts).
+    """
+    key = f"parameter_options[{name}].baybe.custom_descriptors"
+    reports: list[CapabilityReport] = []
+
+    # No descriptor columns at all — let the construct-catch backstop report it.
+    if len(data.columns) == 0:
+        return reports
+
+    # nunique(dropna=False) is deliberate: the PD101-suggested `(s != s[0]).any()`
+    # form mishandles NaN and multi-valued columns; nunique counts NaN as a value.
+    constant_cols = [
+        str(c)
+        for c in data.columns
+        if data[c].nunique(dropna=False) <= 1  # noqa: PD101
+    ]
+    if constant_cols:
+        reports.append(
+            CapabilityReport(
+                key=key,
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"BayBE custom_descriptors has constant column(s) {sorted(constant_cols)} "
+                    "(same value for every label — carries no information). Drop them or add "
+                    "a distinguishing feature."
+                ),
+            )
+        )
+
+    # Group labels by identical descriptor row; report each colliding group.
+    collisions = [sorted(map(str, grp.index)) for _, grp in data.groupby(list(data.columns))]
+    duplicate_groups = [grp for grp in collisions if len(grp) > 1]
+    if duplicate_groups:
+        reports.append(
+            CapabilityReport(
+                key=key,
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"BayBE custom_descriptors has labels with identical descriptor vectors "
+                    f"{sorted(duplicate_groups)}; each label needs a unique representation. "
+                    "Add higher-resolution features so these labels differ."
+                ),
+            )
+        )
     return reports
 
 

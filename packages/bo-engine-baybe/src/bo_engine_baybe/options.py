@@ -47,14 +47,18 @@ class BayBEParameterRole(StrEnum):
 
     ``categorical`` is the default vanilla one-hot/integer-encoded
     parameter, ``task`` switches to :class:`baybe.parameters.TaskParameter`
-    for transfer-learning across related campaigns, and ``substance``
+    for transfer-learning across related campaigns, ``substance``
     switches to :class:`baybe.parameters.SubstanceParameter` for
-    cheminformatics descriptors.
+    cheminformatics descriptors, and ``custom`` switches to
+    :class:`baybe.parameters.CustomDiscreteParameter` so the caller can
+    supply a precomputed numeric representation per label (e.g. from
+    quantum chemistry).
     """
 
     CATEGORICAL = "categorical"
     TASK = "task"
     SUBSTANCE = "substance"
+    CUSTOM = "custom"
 
 
 class BayBESubstanceEncoding(StrEnum):
@@ -96,6 +100,28 @@ class BayBEParameterOptions(BaseModel):
     active_values: tuple[str, ...] | None = None
     substance_data: dict[str, str] | None = None
     substance_encoding: BayBESubstanceEncoding | None = None
+    custom_descriptors: dict[str, dict[str, float]] | None = Field(
+        default=None,
+        description=(
+            "role=custom only. Precomputed numeric representation per category: "
+            "{category label: {descriptor name: value}}. Each label becomes one row "
+            "of the table BayBE's CustomDiscreteParameter encodes. Rules (enforced at "
+            "campaign creation, rejected with a clear error): keys must match the "
+            "declared `categories` exactly (no missing/extra labels); at least 2 "
+            "categories; every value numeric and finite (no null/NaN/inf); no "
+            "descriptor column may be constant across labels (carries no information); "
+            "and no two labels may share an identical descriptor vector (ambiguous "
+            "representation). Give each label a distinct, informative vector."
+        ),
+    )
+    decorrelate: bool | float = Field(
+        default=True,
+        description=(
+            "role=custom only. Mirrors BayBE CustomDiscreteParameter.decorrelate: "
+            "true drops highly correlated descriptor columns, false keeps the table "
+            "as-is, or a float in (0, 1) sets the correlation threshold."
+        ),
+    )
 
 
 class BayBERecommenderConfig(BaseModel):

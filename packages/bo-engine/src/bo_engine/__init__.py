@@ -173,6 +173,7 @@ from bo_engine.diagnostics import (
 )
 from bo_engine.interop import (
     BAYBE_BACKEND_NAME,
+    BAYBE_CUSTOM_ROLE,
     BAYBE_PARAMETER_ROLE_KEY,
     BAYBE_SUBSTANCE_ROLE,
 )
@@ -440,6 +441,7 @@ from bo_engine.whatif import (
 __all__ = [
     # Cross-backend interop markers (capability routing)
     "BAYBE_BACKEND_NAME",
+    "BAYBE_CUSTOM_ROLE",
     "BAYBE_PARAMETER_ROLE_KEY",
     "BAYBE_SUBSTANCE_ROLE",
     # Constants (configurable thresholds)

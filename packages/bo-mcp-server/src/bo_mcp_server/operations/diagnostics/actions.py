@@ -65,9 +65,14 @@ def _determine_next_action(
 ) -> tuple[str, str, str]:
     """Determine the next action, reason, and urgency."""
     if campaign_status in ("paused", "completed", "failed"):
+        continuation = {
+            "paused": "Resume it to continue",
+            "completed": "Reopen it to continue optimization",
+            "failed": "Inspect errors before retrying",
+        }[campaign_status]
         return (
             "review_campaign_status",
-            f"Campaign is {campaign_status}. Resume or create new campaign if needed.",
+            f"Campaign is {campaign_status}. {continuation}.",
             "low",
         )
     if converged:

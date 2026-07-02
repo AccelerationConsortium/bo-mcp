@@ -25,7 +25,7 @@ from bo_mcp_server.operations.update_suggestion_status import (
     update_suggestion_status_operation,
 )
 from bo_mcp_server.tools.batch_operations import batch_get_status
-from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
+from bo_mcp_server.tools.campaign_lifecycle import pause_campaign, reopen_campaign
 from bo_mcp_server.tools.compare_campaigns import compare_campaigns
 from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.discover_transfer_candidates import discover_transfer_candidates
@@ -92,6 +92,39 @@ class TestSharedOperations:
         assert tool_result["status"] == "paused"
         assert operation_result["status"] == "paused"
         assert tool_result["previous_status"] == operation_result["previous_status"] == "running"
+
+    @pytest.mark.asyncio
+    async def test_reopen_returns_completed_campaign_to_running(self):
+        owner_id = str(uuid4())
+        campaign_id = await _create_single_objective_campaign(
+            owner_id,
+            "Reopen Shared Op Test",
+        )
+        await generate_suggestions(campaign_id)
+        await manage_campaign_lifecycle_operation(campaign_id, "terminate")
+
+        reopened = await reopen_campaign(campaign_id)
+
+        assert reopened["success"] is True
+        assert reopened["previous_status"] == "completed"
+        assert reopened["status"] == "running"
+        # Reopening must actually unlock the optimization loop again.
+        regenerated = await generate_suggestions(campaign_id)
+        assert regenerated["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_reopen_rejects_campaign_that_is_not_completed(self):
+        owner_id = str(uuid4())
+        campaign_id = await _create_single_objective_campaign(
+            owner_id,
+            "Reopen Invalid Transition Test",
+        )
+        await generate_suggestions(campaign_id)
+
+        result = await manage_campaign_lifecycle_operation(campaign_id, "reopen")
+
+        assert result["success"] is False
+        assert "running" in str(result["errors"])
 
     @pytest.mark.asyncio
     async def test_suggestion_explanation_operation_matches_tool(self):

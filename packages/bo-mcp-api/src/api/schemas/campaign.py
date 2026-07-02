@@ -26,7 +26,7 @@ from bo_mcp_server.client import ValidateIntakeSpecSummary
 # declared key is echoed exactly (REST stays byte-equal to MCP).
 _FORBID_EXTRA: ConfigDict = ConfigDict(extra="forbid")
 
-LifecycleAction = Literal["pause", "resume", "terminate"]
+LifecycleAction = Literal["pause", "resume", "terminate", "reopen"]
 
 
 class CampaignCreate(BaseModel):
@@ -172,9 +172,11 @@ class CampaignLifecycleRequest(BaseModel):
     action: LifecycleAction = Field(
         description=(
             'Lifecycle action to apply. Use "terminate" to end or complete a '
-            'campaign; there is no separate "complete" action.'
+            'campaign; there is no separate "complete" action. Use "reopen" '
+            "to return a completed campaign to running so optimization can "
+            "continue on its existing spec and results."
         ),
-        examples=["pause", "resume", "terminate"],
+        examples=["pause", "resume", "terminate", "reopen"],
     )
 
 

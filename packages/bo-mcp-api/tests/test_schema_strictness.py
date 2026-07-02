@@ -79,9 +79,10 @@ def test_lifecycle_action_schema_advertises_allowed_workflow() -> None:
     """Lifecycle actions should be enum-like and explain campaign completion."""
     action_schema = CampaignLifecycleRequest.model_json_schema()["properties"]["action"]
 
-    assert action_schema["enum"] == ["pause", "resume", "terminate"]
+    assert action_schema["enum"] == ["pause", "resume", "terminate", "reopen"]
     assert "terminate" in action_schema["description"]
     assert "complete" in action_schema["description"]
+    assert "reopen" in action_schema["description"]
 
     with pytest.raises(ValidationError) as exc_info:
         CampaignLifecycleRequest.model_validate({"action": "complete"})

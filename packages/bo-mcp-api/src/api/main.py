@@ -35,6 +35,7 @@ from bo_mcp_server.client import (  # noqa: E402
     CorruptedJsonColumnError,
     augment_parameter_options,
     bind_trace_id,
+    campaign_backend_scope,
     ensure_dev_user,
     idempotency_gc_lifespan,
     init_database,
@@ -195,7 +196,9 @@ def create_app() -> FastAPI:
         trace_id = request.headers.get("X-Trace-Id") or None
         token = request_id_var.set(request_id)
         try:
-            with bind_trace_id(trace_id):
+            # campaign_backend_scope isolates the ``_metadata.backend``
+            # binding per request, mirroring the trace-id binding.
+            with bind_trace_id(trace_id), campaign_backend_scope():
                 try:
                     response = await call_next(request)
                 except CorruptedJsonColumnError as exc:

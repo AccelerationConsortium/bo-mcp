@@ -12,6 +12,7 @@ import contextvars
 import pytest
 
 from bo_mcp_server.backend_context import (
+    campaign_backend_scope,
     campaign_backend_var,
     get_campaign_backend,
     set_campaign_backend,
@@ -93,6 +94,39 @@ def test_set_campaign_backend_ignores_empty() -> None:
 def test_binding_does_not_leak_across_contexts() -> None:
     contextvars.copy_context().run(set_campaign_backend, "baybe")
     assert campaign_backend_var.get() is None
+
+
+def test_scope_isolates_sequential_operations() -> None:
+    """A binding left by operation N never leaks into operation N+1.
+
+    Same-task sequences (in-process client facade, scripts) rely on the
+    transport layers entering ``campaign_backend_scope`` per dispatch.
+    """
+
+    def run() -> tuple[str | None, str | None, str | None]:
+        with campaign_backend_scope():
+            set_campaign_backend("baybe")
+            inside_first = get_campaign_backend()
+        with campaign_backend_scope():
+            inside_second = get_campaign_backend()
+        return inside_first, inside_second, get_campaign_backend()
+
+    inside_first, inside_second, after = contextvars.copy_context().run(run)
+    assert inside_first == "baybe"
+    assert inside_second is None
+    assert after is None
+
+
+def test_scope_restores_outer_binding() -> None:
+    def run() -> tuple[str | None, str | None]:
+        set_campaign_backend("botorch")
+        with campaign_backend_scope():
+            set_campaign_backend("baybe")
+        return get_campaign_backend(), campaign_backend_var.get()
+
+    restored, raw = contextvars.copy_context().run(run)
+    assert restored == "botorch"
+    assert raw == "botorch"
 
 
 # ---------------------------------------------------------------------------

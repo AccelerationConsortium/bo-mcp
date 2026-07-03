@@ -25,10 +25,11 @@ TOOL_TO_HTTP_ROUTE: dict[str, str] = {
     "bo_batch_get_status": "POST /api/campaigns/status/batch",
     "bo_compare_campaigns": "POST /api/campaigns/compare",
     "bo_export_campaign": "GET /api/campaigns/{campaign_id}/export",
-    # Campaign lifecycle (three tools -> one endpoint with action param)
+    # Campaign lifecycle (four tools -> one endpoint with action param)
     "bo_pause_campaign": "POST /api/campaigns/{campaign_id}/lifecycle",
     "bo_resume_campaign": "POST /api/campaigns/{campaign_id}/lifecycle",
     "bo_terminate_campaign": "POST /api/campaigns/{campaign_id}/lifecycle",
+    "bo_reopen_campaign": "POST /api/campaigns/{campaign_id}/lifecycle",
     # Suggestions
     "bo_generate_suggestions": "POST /api/suggestions/{campaign_id}/generate",
     "bo_list_suggestions": "POST /api/suggestions/{campaign_id}/query",

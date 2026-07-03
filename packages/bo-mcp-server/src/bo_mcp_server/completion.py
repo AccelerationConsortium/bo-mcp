@@ -75,7 +75,7 @@ _MAX_COMPLETION_VALUES = 100
 _MANUAL_SUGGESTION_TRANSITIONS = ("accepted", "rejected", "expired")
 
 # Lifecycle actions accepted by ``manage_campaign_lifecycle_operation``.
-_LIFECYCLE_ACTIONS = ("pause", "resume", "terminate")
+_LIFECYCLE_ACTIONS = ("pause", "resume", "terminate", "reopen")
 
 # Verbosity levels. Keep in sync with
 # ``bo_mcp_server.response_formatter.VerbosityLevel``.

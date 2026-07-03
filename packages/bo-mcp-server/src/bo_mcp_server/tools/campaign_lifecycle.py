@@ -1,6 +1,6 @@
 """Campaign lifecycle tools for MCP.
 
-Three individual tools wrap the shared lifecycle operation for better
+Individual tools wrap the shared lifecycle operation for better
 discoverability, audit trail clarity, and error specificity.
 """
 
@@ -83,14 +83,15 @@ async def terminate_campaign(
     Workflow: Call when the optimization goal has been reached or further
     experiments are not worthwhile.
 
-    This is irreversible.
+    A terminated campaign refuses suggestions and results until it is
+    explicitly reopened with bo_reopen_campaign.
 
     Args:
         campaign_id: UUID of the campaign to terminate.
             Must be in CREATED, RUNNING, or PAUSED status.
         dry_run: If True, validate the transition and return a preview without
             committing. Recommended for agentic workflows that want to confirm
-            this irreversible action before executing.
+            this action before executing.
         trace_id: Optional workflow trace id. See ``bo_pause_campaign``.
 
     Returns:
@@ -99,4 +100,34 @@ async def terminate_campaign(
     with bind_trace_id(trace_id):
         return await manage_campaign_lifecycle_operation(
             campaign_id=campaign_id, action="terminate", dry_run=dry_run
+        )
+
+
+@mcp.tool(name="bo_reopen_campaign", annotations=IDEMPOTENT_MUTATION)
+async def reopen_campaign(
+    campaign_id: str,
+    dry_run: bool = False,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """Reopen a completed campaign so optimization can continue.
+
+    Workflow: Call to continue a campaign that was terminated or reached its
+    stopping criteria, e.g. to run another batch of experiments. The campaign
+    keeps its spec, model history, and results — reopening is the alternative
+    to recreating the campaign and replaying prior results as seeds.
+
+    Args:
+        campaign_id: UUID of the campaign to reopen. Must be in COMPLETED
+            status.
+        dry_run: If True, validate the transition and return a preview without
+            committing. The response carries ``dry_run: True`` and a
+            ``preview`` describing the planned status change.
+        trace_id: Optional workflow trace id. See ``bo_pause_campaign``.
+
+    Returns:
+        Dictionary with success, campaign_id, status, previous_status, errors.
+    """
+    with bind_trace_id(trace_id):
+        return await manage_campaign_lifecycle_operation(
+            campaign_id=campaign_id, action="reopen", dry_run=dry_run
         )

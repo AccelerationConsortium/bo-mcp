@@ -20,7 +20,7 @@ from bo_mcp_server.subscriptions import notify_campaign_updated_after_commit
 
 logger = logging.getLogger(__name__)
 
-LifecycleAction = Literal["pause", "resume", "terminate"]
+LifecycleAction = Literal["pause", "resume", "terminate", "reopen"]
 
 _ACTION_MAPPING: dict[LifecycleAction, tuple[CampaignStatus, list[CampaignStatus]]] = {
     "pause": (CampaignStatus.PAUSED, [CampaignStatus.RUNNING]),
@@ -29,6 +29,11 @@ _ACTION_MAPPING: dict[LifecycleAction, tuple[CampaignStatus, list[CampaignStatus
         CampaignStatus.COMPLETED,
         [CampaignStatus.RUNNING, CampaignStatus.PAUSED, CampaignStatus.CREATED],
     ),
+    # A completed campaign keeps its full spec, model history, and results;
+    # reopening is the continuation path ("run another N experiments") that
+    # otherwise forces clients to rebuild the campaign and replay every prior
+    # result as seeds.
+    "reopen": (CampaignStatus.RUNNING, [CampaignStatus.COMPLETED]),
 }
 
 

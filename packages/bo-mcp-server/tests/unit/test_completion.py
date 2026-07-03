@@ -102,7 +102,7 @@ async def test_action_enum_values() -> None:
         _REF, CompletionArgument(name="action", value="re"), context=None
     )
     assert completion is not None
-    assert completion.values == ["resume"]
+    assert set(completion.values) == {"resume", "reopen"}
 
 
 @pytest.mark.asyncio

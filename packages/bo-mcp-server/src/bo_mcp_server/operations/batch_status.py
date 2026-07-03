@@ -68,9 +68,14 @@ def _minimal_next_action(
     the richer recommendation should request ``verbosity="detailed"``.
     """
     if status in (CampaignStatus.PAUSED, CampaignStatus.COMPLETED, CampaignStatus.FAILED):
+        continuation = {
+            CampaignStatus.PAUSED: "resume it to continue, or terminate it",
+            CampaignStatus.COMPLETED: "reopen it to continue optimization",
+            CampaignStatus.FAILED: "inspect errors before retrying",
+        }[status]
         return {
             "action": "review_campaign_status",
-            "reason": f"Campaign is {status.value}; resume, terminate, or create a new one.",
+            "reason": f"Campaign is {status.value}; {continuation}.",
             "urgency": "low",
         }
     if n_pending > 0:

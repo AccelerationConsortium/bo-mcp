@@ -204,9 +204,13 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
     assert clamp_logs, "Generation must clamp batch when pending consumes budget"
     assert "n_pending=1" in clamp_logs[0]
 
-    # Force the budget to its limit: import a freestanding result so we
-    # reach 2 stored + 1 pending = 3, then assert the hard stop.
-    await submit_results_operation(
+    # Force the budget to its limit with a freestanding result. Whether it
+    # lands depends on the backend: BoTorch's Sobol continuation deduped the
+    # clamped generate to zero new pending (slack left, submit accepted →
+    # 2 stored + 1 pending); BayBE returned a fresh point (1 stored +
+    # 2 pending = cap, so the overflow guard rejects the import). Both are
+    # correct budget enforcement — the hard stop below must hold either way.
+    freestanding = await submit_results_operation(
         campaign_id=campaign_id,
         results=_to_result_inputs(
             [{"parameter_values": {"x": 0.99}, "objective_values": {"y": 0.42}}]
@@ -219,8 +223,11 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
     assert blocked["error"]["code"] == "E012"  # BUDGET_EXCEEDED
     details = blocked["error"]["details"]
     assert details["stopping_reason"] == "budget_exceeded_observations"
-    assert details["n_pending"] == 1
-    assert details["n_observations"] == 2
+    # The budget invariant is what matters: stored + pending has reached
+    # the cap, regardless of how the backend split the reservation.
+    assert details["n_pending"] >= 1
+    assert details["n_observations"] == (2 if freestanding["success"] else 1)
+    assert details["n_observations"] + details["n_pending"] >= 3
 
 
 @pytest.mark.asyncio

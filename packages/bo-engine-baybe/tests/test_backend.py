@@ -101,13 +101,19 @@ class TestRandomSeedReproducibility:
         assert len(seeds) == 1
         assert next(iter(seeds)) is not None
 
-    def test_unseeded_provenance_records_none(self) -> None:
-        """No seed → the documented non-reproducible path, recorded honestly."""
+    def test_unseeded_provenance_records_applied_seed(self) -> None:
+        """No spec seed → a fresh seed is drawn, applied, and recorded.
+
+        Mirrors the BoTorch backend's ``_resolve_acquisition_seed`` fallback:
+        the actually-used seed always lands in provenance so any run can be
+        replayed after the fact.
+        """
         backend = BayBEBackend()
         batch = backend.generate_suggestions(
             spec=self._seeded_spec(seed=None), observations=[], batch_size=1, iteration=1
         )
-        assert batch.suggestions[0]["provenance"]["random_seed"] is None
+        recorded = batch.suggestions[0]["provenance"]["random_seed"]
+        assert isinstance(recorded, int)
 
     def test_seeded_calls_do_not_perturb_global_rng(self) -> None:
         """Seeded BayBE calls must not leak into process-wide RNG state.
@@ -400,7 +406,7 @@ class TestGenerateSuggestions:
         assert "parameter_values" in sugg
         prov = sugg["provenance"]
         assert prov["iteration"] == 2
-        assert prov["generation_method"] == "baybe_bo"
+        assert prov["generation_method"] in ("initial_design", "bo")
         assert "acquisition_value" in prov
         assert "predicted_objectives" in prov
         assert "predicted_std" in prov

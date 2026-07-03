@@ -604,8 +604,10 @@ class TestMethodSelectionStability:
 
         # Method selection should indicate single-objective acquisition
         method = gen2["method_selection"]["acquisition_function"]
-        # Should be a single-objective acquisition method
-        assert "expected_improvement" in method or "ei" in method.lower()
+        # Should be a single-objective acquisition method. Accept both the
+        # BoTorch-style snake_case label and BayBE's acqf class names.
+        normalized = method.lower().replace("_", "")
+        assert "expectedimprovement" in normalized or "ei" in method.lower()
 
     @pytest.mark.asyncio
     async def test_multi_objective_uses_qlognehvi(self):
@@ -651,8 +653,9 @@ class TestMethodSelectionStability:
 
         # Method selection should indicate multi-objective acquisition
         method = gen2["method_selection"]["acquisition_function"]
-        # Should be a multi-objective acquisition method
-        assert "hypervolume" in method or "multi_objective" in method
+        # Should be a multi-objective acquisition method (case-insensitive to
+        # cover BayBE's acqf class names, e.g. qLogNoisyExpectedHypervolumeImprovement).
+        assert "hypervolume" in method.lower() or "multi_objective" in method.lower()
 
     @pytest.mark.asyncio
     async def test_method_selection_explanation_present(self):

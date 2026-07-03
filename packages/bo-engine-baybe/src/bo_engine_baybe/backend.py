@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import random
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, ClassVar, cast
 
@@ -45,6 +46,7 @@ import pydantic
 import torch
 from baybe import Campaign
 from baybe import __version__ as baybe_version
+from baybe.exceptions import NotEnoughPointsLeftError
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
 from baybe.settings import Settings
 
@@ -60,6 +62,7 @@ from bo_engine.backend_base import (
     required_features,
     wrap_backend_exception,
 )
+from bo_engine.constants import MAX_RANDOM_SEED
 from bo_engine.diagnostics import (
     compute_best_value,
     compute_improvement_history,
@@ -73,6 +76,7 @@ from bo_engine.diagnostics import (
 from bo_engine.diagnostics import (
     compute_pareto_front as engine_compute_pareto_front,
 )
+from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reference_point import get_reference_point
 from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
@@ -489,6 +493,26 @@ class BayBEBackend(BaseBackend):
                 )
                 continue
             reports.append(self._degradable_option_report(attr, label, acknowledged_attrs))
+        acq_opt = getattr(spec, "acquisition_optimization", None)
+        if acq_opt is not None and (
+            acq_opt.num_restarts is not None or acq_opt.raw_samples is not None
+        ):
+            # The field is always present (default_factory); only explicit
+            # overrides count as a degradation.
+            # BoTorch L-BFGS-B restart/raw-sample budget. BayBE optimizes
+            # acquisition internally and cannot honor it; IGNORED (not
+            # UNSUPPORTED) so an explicit backend="baybe" still runs while
+            # backend="auto" prefers a backend that honors the override.
+            reports.append(
+                CapabilityReport(
+                    key="acquisition_optimization",
+                    status=CapabilityStatus.IGNORED,
+                    reason=(
+                        "Acquisition-optimizer overrides (num_restarts / raw_samples) "
+                        "target the BoTorch backend and are ignored by BayBE."
+                    ),
+                )
+            )
         reports.extend(self._acquisition_method_reports(spec, acknowledged_attrs))
         reports.extend(self._log_transform_reports(spec))
         reports.extend(self._parameter_option_reports(spec))
@@ -700,6 +724,10 @@ class BayBEBackend(BaseBackend):
                     progress_callback=progress_callback,
                     random_seed=random_seed,
                 )
+        except SearchSpaceExhaustedError:
+            # Already engine-neutral (mapped from NotEnoughPointsLeftError);
+            # the server has a dedicated SEARCH_SPACE_EXHAUSTED envelope.
+            raise
         except (*_BAYBE_SAFE_EXCEPTIONS,) as exc:
             # Translate every library-level exception that escapes
             # BayBE/BoTorch/GPyTorch into the typed backend hierarchy
@@ -744,7 +772,13 @@ class BayBEBackend(BaseBackend):
         )
 
         pending_df, pending_warnings = self._convert_pending_points(spec, pending_points)
-        rec_df = campaign.recommend(batch_size=batch_size, pending_experiments=pending_df)
+        try:
+            rec_df = campaign.recommend(batch_size=batch_size, pending_experiments=pending_df)
+        except NotEnoughPointsLeftError as exc:
+            # Translate to the engine-neutral exhaustion error so the server
+            # emits the same structured SEARCH_SPACE_EXHAUSTED envelope
+            # (counts + terminate recommendation) as the BoTorch path.
+            raise _search_space_exhausted_error(campaign, batch_size) from exc
         param_dicts = dataframe_to_suggestions(rec_df, spec)
 
         predictions, posterior_warning = _extract_posterior_stats(campaign, rec_df, spec)
@@ -1123,6 +1157,35 @@ class BayBEBackend(BaseBackend):
             return {"outliers": None}
 
 
+def _search_space_exhausted_error(
+    campaign: Campaign,
+    batch_size: int,
+) -> SearchSpaceExhaustedError:
+    """Build the engine-neutral exhaustion error from a BayBE campaign.
+
+    Counts come from the campaign itself: the discrete subspace's
+    experimental representation is the full combination grid, and the
+    measured rows (deduplicated on parameter columns) are what
+    ``allow_recommending_already_measured=False`` excludes.
+    """
+    n_total: int | None = None
+    n_available = 0
+    try:
+        exp_rep = campaign.searchspace.discrete.exp_rep
+        n_total = len(exp_rep)
+        measurements = campaign.measurements
+        param_cols = [c for c in exp_rep.columns if c in measurements.columns]
+        n_measured = len(measurements[param_cols].drop_duplicates()) if param_cols else 0
+        n_available = max(0, n_total - n_measured)
+    except (*_BAYBE_SAFE_EXCEPTIONS,) as e:  # pragma: no cover - defensive
+        logger.debug("Could not derive exhaustion counts: %s", e)
+    return SearchSpaceExhaustedError(
+        n_requested=batch_size,
+        n_available=n_available,
+        n_total_combinations=n_total,
+    )
+
+
 @contextlib.contextmanager
 def _baybe_rng_scope(spec: OptimizationSpec, context: str) -> Iterator[int | None]:
     """Scope the RNG-consuming section of a BayBE recommendation call.
@@ -1138,20 +1201,19 @@ def _baybe_rng_scope(spec: OptimizationSpec, context: str) -> Iterator[int | Non
     BayBE's own settings system (``baybe.settings.Settings`` with
     ``random_seed``; Python, NumPy, and Torch), which snapshots the
     process-wide RNG states on entry and restores them on exit.
-    Unseeded calls take the lock without seeding:
-    they consume the ambient streams as-is (the documented
-    non-reproducible path), and serializing them keeps their draws out
-    of any concurrent seeded scope's window. (Residual limitation: RNG
-    consumers outside the lock — e.g. diagnostics model fits — can still
-    interleave with a seeded scope.) Yields the derived seed so callers
-    can stamp it into suggestion provenance, or ``None`` when the spec
-    carries no seed.
+    Unseeded specs draw a fresh random seed and apply it the same way —
+    mirroring the BoTorch backend's ``_resolve_acquisition_seed``
+    fallback — so the actually-used seed is always recorded in
+    suggestion provenance and a run can be replayed after the fact.
+    (Residual limitation: RNG consumers outside the lock — e.g.
+    diagnostics model fits — can still interleave with a seeded scope.)
+    Yields the applied seed so callers can stamp it into suggestion
+    provenance.
     """
     if spec.random_seed is None:
-        with GLOBAL_RNG_LOCK:
-            yield None
-        return
-    seed = derive_seed(spec.random_seed, context)
+        seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311 - non-crypto, provenance only
+    else:
+        seed = derive_seed(spec.random_seed, context)
     # ty cannot see the attrs-generated __init__ on baybe's Settings.
     with GLOBAL_RNG_LOCK, Settings(random_seed=seed):  # ty: ignore[unknown-argument]
         yield seed
@@ -1180,7 +1242,13 @@ def _build_suggestion_list(
                 "provenance": {
                     "iteration": iteration,
                     "batch_index": i,
-                    "generation_method": "baybe_bo",
+                    # Neutral phase labels shared with the BoTorch backend:
+                    # nonpredictive recommender phase = initial design, GP
+                    # phase = model-based BO. The backend identity lives in
+                    # ``_metadata.backend`` / ``model_type``, not here.
+                    "generation_method": (
+                        "initial_design" if method_info.get("is_nonpredictive") else "bo"
+                    ),
                     "acquisition_function": acquisition_label,
                     "acquisition_value": acq_val,
                     "random_seed": random_seed,

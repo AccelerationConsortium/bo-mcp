@@ -6,6 +6,7 @@ BayBE equivalents (SearchSpace, Objective, Recommender, DataFrame).
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,7 @@ from baybe.parameters import (
 from baybe.searchspace import SearchSpace
 from baybe.targets import NumericalTarget
 
+from bo_engine.constants import DISCRETE_ENUMERATION_MAX_POINTS
 from bo_engine.spec_ir import (
     ConstraintTargetClass,
     NormalizedConstraint,
@@ -119,6 +121,30 @@ def spec_to_acquisition_function(spec: OptimizationSpec) -> str | None:
     return table[method]
 
 
+def _integer_grid_from_bounds(p: ParameterSpec) -> tuple[float, ...]:
+    """Materialize the integer grid a bounds-only discrete parameter spans."""
+    if p.bounds is None:  # pragma: no cover - caller guarantees bounds
+        msg = f"Discrete parameter '{p.name}' has no bounds"
+        raise ValueError(msg)
+    lo, hi = math.ceil(p.bounds[0]), math.floor(p.bounds[1])
+    n_points = hi - lo + 1
+    if n_points < 2:
+        msg = (
+            f"Discrete parameter '{p.name}' bounds {p.bounds} contain fewer "
+            "than 2 integer values; declare explicit values instead"
+        )
+        raise ValueError(msg)
+    if n_points > DISCRETE_ENUMERATION_MAX_POINTS:
+        msg = (
+            f"Discrete parameter '{p.name}' bounds {p.bounds} span {n_points} "
+            f"integer values, above the enumeration limit of "
+            f"{DISCRETE_ENUMERATION_MAX_POINTS}; declare explicit values or "
+            "use a continuous parameter"
+        )
+        raise ValueError(msg)
+    return tuple(float(v) for v in range(lo, hi + 1))
+
+
 def _build_baybe_parameter(
     p: ParameterSpec,
 ) -> (
@@ -140,10 +166,15 @@ def _build_baybe_parameter(
             bounds=(p.bounds[0], p.bounds[1]),
         )
     if p.type == ParameterType.DISCRETE:
-        if p.values is None:  # noqa: PD011
-            msg = f"Discrete parameter '{p.name}' requires values"
-            raise ValueError(msg)
-        return NumericalDiscreteParameter(p.name, tuple(float(v) for v in p.values))  # noqa: PD011
+        if p.values is not None:  # noqa: PD011
+            return NumericalDiscreteParameter(p.name, tuple(float(v) for v in p.values))  # noqa: PD011
+        if p.bounds is not None:
+            # Neutral-spec semantics (mirrors BoTorch): bounds-only discrete
+            # means an integer grid over [lo, hi]. BayBE needs the grid
+            # materialized, so cap it at the shared enumeration limit.
+            return NumericalDiscreteParameter(p.name, _integer_grid_from_bounds(p))
+        msg = f"Discrete parameter '{p.name}' requires values or bounds"
+        raise ValueError(msg)
     if p.type == ParameterType.CATEGORICAL:
         if p.categories is None:
             msg = f"Categorical parameter '{p.name}' requires categories"

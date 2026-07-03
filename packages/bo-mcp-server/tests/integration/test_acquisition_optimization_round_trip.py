@@ -112,6 +112,8 @@ async def test_intake_without_override_uses_dimension_adaptive_defaults() -> Non
     owner_id = str(uuid4())
     intake = {
         "name": "Default Acquisition Optimization",
+        # Dimension-adaptive restart/raw-sample defaults are BoTorch pipeline internals.
+        "backend": "botorch",
         "parameters": [
             {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
         ],

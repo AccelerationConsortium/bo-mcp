@@ -1,7 +1,7 @@
 """Campaign routes."""
 
 from collections.abc import Mapping
-from typing import Annotated, cast
+from typing import Annotated, Any, Protocol, runtime_checkable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
@@ -69,23 +69,34 @@ from bo_mcp_server.client import (
 router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
 
 
+@runtime_checkable
+class _ModelDumpable(Protocol):
+    def model_dump(self, *, mode: str) -> object: ...
+
+
+def _mapping_to_dict(value: Mapping[Any, Any]) -> dict[str, object]:
+    return {str(key): item for key, item in value.items()}
+
+
+def _dump_model(value: _ModelDumpable) -> dict[str, object]:
+    dumped = value.model_dump(mode="json")
+    if isinstance(dumped, Mapping):
+        return _mapping_to_dict(dumped)
+    return {"value": dumped}
+
+
 def _dump_optional_model(value: object) -> dict[str, object] | None:
     if value is None:
         return None
-    if hasattr(value, "model_dump"):
-        return cast("dict[str, object]", value.model_dump(mode="json"))
+    if isinstance(value, _ModelDumpable):
+        return _dump_model(value)
     if isinstance(value, Mapping):
-        return dict(value)
+        return _mapping_to_dict(value)
     return {"value": value}
 
 
 def _dump_model_list(values: tuple[object, ...] | list[object]) -> list[dict[str, object]]:
-    return [
-        cast("dict[str, object]", value.model_dump(mode="json"))
-        if hasattr(value, "model_dump")
-        else dict(cast("Mapping[str, object]", value))
-        for value in values
-    ]
+    return [dumped for value in values if (dumped := _dump_optional_model(value)) is not None]
 
 
 def _resolved_initial_design_size(spec: object) -> tuple[int | None, str | None]:

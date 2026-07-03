@@ -533,6 +533,9 @@ class CampaignSpec(BaseModel):
     # Acquisition-optimizer restart / raw-sample budget. Defaults to None so
     # the bo-engine dimension-adaptive defaults apply.
     acquisition_optimization: AcquisitionOptimizationConfig | None = None
+    # Original caller-side backend selector before "auto" is resolved. Stored
+    # for provenance only; execution uses ``backend`` below.
+    requested_backend: str | None = None
     # v3.0: Backend selection (default uses BO_BACKEND env var)
     backend: str = "botorch"
     # Typed backend-native option surface. Outer keys are backend names
@@ -684,6 +687,7 @@ class CampaignSpec(BaseModel):
                 self.transfer_learning,
                 self.saasbo_config,
                 self.acquisition_optimization,
+                self.requested_backend,
                 self.backend,
                 _hashable_backend_options(self.backend_options),
                 self.acknowledge_degradations,

@@ -189,6 +189,7 @@ async def create_campaign_operation(
     # worker thread because resolving "auto" loads every candidate
     # backend (torch / baybe imports) on the first call.
     raw_backend = spec_data.get("backend", "auto")
+    spec_data["requested_backend"] = raw_backend
     spec_data["backend"] = await asyncio.to_thread(resolve_backend_name, raw_backend, spec_data)
 
     spec = _build_spec_from_dict(spec_data)

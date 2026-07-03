@@ -52,6 +52,41 @@ class CampaignResponse(BaseModel):
     n_objectives: int
 
 
+class CampaignConfigResponse(BaseModel):
+    """Stable campaign setup snapshot for reproducibility/provenance."""
+
+    campaign_id: str
+    spec_id: str
+    name: str
+    description: str
+    status: str
+    iteration: int
+    backend_requested: str | None = None
+    backend_resolved: str | None = None
+    batch_size: int
+    max_iterations: int | None = None
+    max_observations: int | None = None
+    initial_design_size_requested: int | None = None
+    initial_design_size: int | None = None
+    initial_design_size_source: str | None = None
+    random_seed: int | None = None
+    convergence_tolerance: float | None = None
+    parameters: list[dict[str, Any]] = Field(default_factory=list)
+    objectives: list[dict[str, Any]] = Field(default_factory=list)
+    constraints: list[dict[str, Any]] = Field(default_factory=list)
+    outcome_constraints: list[dict[str, Any]] = Field(default_factory=list)
+    acquisition_method: str | None = None
+    acquisition_optimization: dict[str, Any] | None = None
+    use_input_warping: bool
+    use_cost_aware: bool
+    turbo_config: dict[str, Any] | None = None
+    saasbo_config: dict[str, Any] | None = None
+    fidelity_parameter: dict[str, Any] | None = None
+    transfer_learning: dict[str, Any] | None = None
+    backend_options: dict[str, dict[str, Any]] | None = None
+    acknowledge_degradations: list[str] = Field(default_factory=list)
+
+
 class CampaignCreateResponse(ResponseEnvelope):
     """Campaign creation response.
 

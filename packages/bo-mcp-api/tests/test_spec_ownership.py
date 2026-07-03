@@ -51,6 +51,25 @@ class TestSpecLookupOwnership:
         assert body["objectives"]
 
     @pytest.mark.asyncio
+    async def test_owner_can_read_campaign_config(
+        self, api_client, auth_headers, persisted_user
+    ) -> None:
+        campaign_id, _ = await _create_campaign_returning_spec(
+            str(persisted_user.id), "Owner Config"
+        )
+
+        response = await api_client.get(
+            f"/api/campaigns/{campaign_id}/config", headers=auth_headers
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["campaign_id"] == campaign_id
+        assert body["name"] == "Owner Config"
+        assert body["parameters"]
+        assert body["objectives"]
+
+    @pytest.mark.asyncio
     async def test_cross_tenant_returns_404(
         self,
         api_client,
@@ -77,6 +96,24 @@ class TestSpecLookupOwnership:
 
         owner_view = await get_spec_for_user(foreign_spec_id, persisted_another_user.id)
         assert owner_view is not None
+
+    @pytest.mark.asyncio
+    async def test_foreign_campaign_config_returns_403(
+        self,
+        api_client,
+        auth_headers,
+        persisted_another_user,
+    ) -> None:
+        """A caller must not read another tenant's campaign config snapshot."""
+        foreign_campaign_id, _ = await _create_campaign_returning_spec(
+            str(persisted_another_user.id), "Foreign Config"
+        )
+
+        response = await api_client.get(
+            f"/api/campaigns/{foreign_campaign_id}/config", headers=auth_headers
+        )
+
+        assert response.status_code == 403
 
     @pytest.mark.asyncio
     async def test_missing_spec_returns_404(self, api_client, auth_headers) -> None:

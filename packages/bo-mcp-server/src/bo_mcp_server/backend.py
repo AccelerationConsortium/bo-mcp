@@ -6,8 +6,8 @@ backend selection via the ``backend`` field on ``CampaignSpec``, with
 
 Usage:
     from bo_mcp_server.backend import get_backend, resolve_backend_name
-    backend = get_backend()           # default (env var or "botorch")
-    backend = get_backend("baybe")    # explicit backend name
+    backend = get_backend()           # default (env var or "baybe")
+    backend = get_backend("botorch")  # explicit backend name
     name = resolve_backend_name("auto", spec_dict)  # auto-select
 
 Entry-point discovery runs once at module import. The resulting list is
@@ -51,7 +51,7 @@ _backends: dict[str, BOBackend] = {}
 # fresh event loop.
 _backend_load_lock = threading.Lock()
 
-DEFAULT_BACKEND = "botorch"
+DEFAULT_BACKEND = "baybe"
 _ENTRY_POINT_GROUP = "bo_mcp.backends"
 
 
@@ -366,7 +366,7 @@ def get_backend(name: str | None = None) -> BOBackend:
 
     Args:
         name: Backend name. If None, uses the ``BO_BACKEND`` env var
-              (default ``"botorch"``).
+              (default ``"baybe"``).
     """
     resolved = name or get_default_backend_name()
     backend = _backends.get(resolved)

@@ -46,7 +46,7 @@ import torch
 from baybe import Campaign
 from baybe import __version__ as baybe_version
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
-from baybe.utils.random import temporary_seed
+from baybe.settings import Settings
 
 from bo_engine.backend import (
     Feature,
@@ -1135,9 +1135,10 @@ def _baybe_rng_scope(spec: OptimizationSpec, context: str) -> Iterator[int | Non
     (the server offloads generation via ``asyncio.to_thread``). When
     ``spec.random_seed`` is set, a per-phase seed is derived via
     :func:`bo_engine.reproducibility.derive_seed` and applied through
-    BayBE's own :func:`baybe.utils.random.temporary_seed` (Python, NumPy,
-    and Torch), which snapshots the process-wide RNG states on entry and
-    restores them on exit. Unseeded calls take the lock without seeding:
+    BayBE's own settings system (``baybe.settings.Settings`` with
+    ``random_seed``; Python, NumPy, and Torch), which snapshots the
+    process-wide RNG states on entry and restores them on exit.
+    Unseeded calls take the lock without seeding:
     they consume the ambient streams as-is (the documented
     non-reproducible path), and serializing them keeps their draws out
     of any concurrent seeded scope's window. (Residual limitation: RNG
@@ -1151,7 +1152,8 @@ def _baybe_rng_scope(spec: OptimizationSpec, context: str) -> Iterator[int | Non
             yield None
         return
     seed = derive_seed(spec.random_seed, context)
-    with GLOBAL_RNG_LOCK, temporary_seed(seed):
+    # ty cannot see the attrs-generated __init__ on baybe's Settings.
+    with GLOBAL_RNG_LOCK, Settings(random_seed=seed):  # ty: ignore[unknown-argument]
         yield seed
 
 

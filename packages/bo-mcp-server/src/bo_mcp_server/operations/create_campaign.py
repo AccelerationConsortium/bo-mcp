@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_engine.backend_base import BackendValidationResult
 from bo_mcp_server.backend import get_backend_async, resolve_backend_name
+from bo_mcp_server.backend_context import set_campaign_backend
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
@@ -193,6 +194,8 @@ async def create_campaign_operation(
     spec_data["backend"] = await asyncio.to_thread(resolve_backend_name, raw_backend, spec_data)
 
     spec = _build_spec_from_dict(spec_data)
+    # Stamp the resolved backend into the response envelope (issue #57).
+    set_campaign_backend(spec.backend)
     warnings: list[str] = validation.get("warnings", [])
 
     # Ask the backend whether it can handle this spec — surface warnings AND

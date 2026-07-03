@@ -145,6 +145,8 @@ class CapabilitiesResponse(ResponseEnvelope):
     backend: str
     supported_features: list[str]
     conditional_features: dict[str, str] = Field(default_factory=dict)
+    available_backends: list[str] = Field(default_factory=list)
+    default_backend: str | None = None
     server_version: str
 
 

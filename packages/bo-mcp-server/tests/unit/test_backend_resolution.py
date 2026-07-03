@@ -102,15 +102,15 @@ def _simple_spec_dict() -> dict:
 
 @pytest.mark.usefixtures("patched_backend_cache")
 def test_auto_resolution_consults_validate_capabilities():
-    """When the env default reports unsupported, auto falls back to BoTorch.
+    """When the env default reports unsupported, auto falls back to the default.
 
     Pre-1.69 the selector only checked ``required <= supported_features``.
     With the rejecting backend advertising every feature, the old code
     would have happily selected it. The new code respects
-    ``validate_capabilities`` and falls back.
+    ``validate_capabilities`` and falls back to ``DEFAULT_BACKEND`` (baybe).
     """
     resolved = resolve_backend_name("auto", _simple_spec_dict())
-    assert resolved == "botorch"
+    assert resolved == "baybe"
 
 
 def test_explicit_backend_name_bypasses_capability_check():

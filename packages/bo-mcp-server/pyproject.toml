@@ -17,6 +17,9 @@ classifiers = [
 
 dependencies = [
     "bo-engine",
+    # BayBE is the default backend; the server must always be able to load
+    # its entry point. BoTorch (bo-engine) stays as the legacy fallback.
+    "bo-engine-baybe",
     "mcp>=1.0",
     "fastmcp>=0.4",
     "sqlalchemy[asyncio]>=2.0",

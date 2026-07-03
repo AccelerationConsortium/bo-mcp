@@ -63,7 +63,7 @@ from bo_mcp_server.client import (
     list_owner_campaigns_with_specs,
     manage_campaign_lifecycle_operation,
     run_idempotent_operation,
-    validate_intake_operation,
+    validate_intake_with_capabilities,
 )
 
 router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
@@ -73,15 +73,16 @@ def _dump_optional_model(value: object) -> dict[str, object] | None:
     if value is None:
         return None
     if hasattr(value, "model_dump"):
-        return cast("dict[str, object]", value.model_dump(mode="json"))
+        # ty cannot narrow `object` through hasattr.
+        return cast("dict[str, object]", value.model_dump(mode="json"))  # ty: ignore[call-non-callable]
     if isinstance(value, Mapping):
-        return dict(value)
+        return dict(value)  # ty: ignore[no-matching-overload]
     return {"value": value}
 
 
 def _dump_model_list(values: tuple[object, ...] | list[object]) -> list[dict[str, object]]:
     return [
-        cast("dict[str, object]", value.model_dump(mode="json"))
+        cast("dict[str, object]", value.model_dump(mode="json"))  # ty: ignore[call-non-callable]
         if hasattr(value, "model_dump")
         else dict(cast("Mapping[str, object]", value))
         for value in values
@@ -316,11 +317,11 @@ async def validate_campaign_intake(
     :func:`_coerce_intake` then builds the domain intake without a
     dump/validate round-trip, surfacing any remaining cross-field/domain
     invariant error (unique names, ``backend_options`` routing) as a 422
-    rather than a 500; ``validate_intake_operation`` accepts the typed
+    rather than a 500; ``validate_intake_with_capabilities`` accepts the typed
     ``CampaignIntakeInput`` directly.
     """
     intake = _coerce_intake(request.intake)
-    full_result = validate_intake_operation(intake)
+    full_result = await validate_intake_with_capabilities(intake)
     formatted = format_validate_intake_response(full_result, VerbosityLevel.STANDARD)
 
     return ValidateIntakeResponse(

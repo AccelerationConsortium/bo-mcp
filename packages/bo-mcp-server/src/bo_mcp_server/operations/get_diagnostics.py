@@ -141,9 +141,9 @@ async def _compute_sections(
 
     # Delegate model-based computation to the backend — offloaded to a
     # worker thread so GP fitting / LOO-CV do not block the event loop.
+    backend = await get_backend_async(spec.backend)
     backend_sections = _map_backend_sections(requested)
     if backend_sections:
-        backend = await get_backend_async(spec.backend)
         observations = results_to_observations(results)
         diagnostics.update(
             await asyncio.to_thread(
@@ -155,9 +155,15 @@ async def _compute_sections(
             )
         )
 
-    # Enrich with server-side model info
+    # Enrich with server-side model info, sourced from the campaign's own
+    # backend (issue #57: the previous static text always described BoTorch).
     if "objectives" in requested or "health" in requested:
-        enrich_diagnostics(diagnostics, spec, results, is_single_objective)
+        try:
+            method_info = backend.select_methods(opt_spec, len(results))
+        except Exception:  # noqa: BLE001 — enrichment must not sink diagnostics
+            logger.warning("select_methods failed for backend %s", spec.backend, exc_info=True)
+            method_info = None
+        enrich_diagnostics(diagnostics, spec, results, is_single_objective, method_info)
 
     # Health (plain-Python functions + backend correlation)
     model_correlation = diagnostics.get("model_correlation") or 0.5

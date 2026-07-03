@@ -124,7 +124,10 @@ from bo_mcp_server.operations.transfer_candidates import (
 from bo_mcp_server.operations.update_suggestion_status import (
     update_suggestion_status_operation,
 )
-from bo_mcp_server.operations.validate_intake import validate_intake_operation
+from bo_mcp_server.operations.validate_intake import (
+    validate_intake_operation,
+    validate_intake_with_capabilities,
+)
 from bo_mcp_server.response_formatter import (
     RESPONSE_SCHEMA_VERSION,
     ValidateIntakeSpecSummary,
@@ -234,4 +237,5 @@ __all__ = [
     "submit_results_operation",
     "update_suggestion_status_operation",
     "validate_intake_operation",
+    "validate_intake_with_capabilities",
 ]

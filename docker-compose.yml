@@ -35,7 +35,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       - SQL_ECHO=${SQL_ECHO:-false}
-      - BO_BACKEND=${BO_BACKEND:-botorch}
+      - BO_BACKEND=${BO_BACKEND:-baybe}
       - BO_MCP_LOG_LEVEL=${BO_MCP_LOG_LEVEL:-INFO}
       - API_ENV=${API_ENV:-development}
       # The REST API's lifespan seeds the shared dev user when DEV_AUTH=1, so
@@ -69,7 +69,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       - SQL_ECHO=${SQL_ECHO:-false}
-      - BO_BACKEND=${BO_BACKEND:-botorch}
+      - BO_BACKEND=${BO_BACKEND:-baybe}
       - BO_MCP_LOG_LEVEL=${BO_MCP_LOG_LEVEL:-INFO}
       - API_ENV=${API_ENV:-development}
       # DEV_AUTH bootstraps a shared dev user for the mutating MCP tools, which

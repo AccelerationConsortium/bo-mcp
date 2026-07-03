@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.field_errors import shape_envelope
-from bo_mcp_server.operations.validate_intake import validate_intake_operation
+from bo_mcp_server.operations.validate_intake import validate_intake_with_capabilities
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_validate_intake_response,
@@ -118,5 +118,5 @@ async def validate_intake(
             message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
         )
 
-    full_response = validate_intake_operation(intake_data)
+    full_response = await validate_intake_with_capabilities(intake_data)
     return format_validate_intake_response(full_response, verbosity_level)

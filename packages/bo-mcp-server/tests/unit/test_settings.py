@@ -32,7 +32,7 @@ def test_default_values_when_env_unset(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert settings.database_url.get_secret_value().startswith("sqlite+aiosqlite://")
     assert settings.use_alembic == "auto"
     assert settings.sql_echo is False
-    assert settings.bo_backend == "botorch"
+    assert settings.bo_backend == "baybe"
 
 
 def test_env_override_is_observed(monkeypatch: pytest.MonkeyPatch) -> None:

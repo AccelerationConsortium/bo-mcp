@@ -23,8 +23,29 @@ def compute_objective_ranges(
     return objective_ranges
 
 
-def get_model_info(spec: CampaignSpec, is_single_objective: bool) -> dict[str, Any]:
-    """Get model information summary."""
+def get_model_info(
+    spec: CampaignSpec,
+    is_single_objective: bool,
+    method_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Get model information summary.
+
+    ``method_info`` is the backend's own ``select_methods`` report; when
+    present it is authoritative (issue #57: the static text below described
+    BoTorch regardless of the campaign's backend). The static block is kept
+    only as a legacy fallback for the BoTorch path when the backend report
+    is unavailable.
+    """
+    if method_info:
+        return {
+            "backend": spec.backend,
+            "type": method_info.get("model_type"),
+            "acquisition_function": method_info.get("acquisition_function"),
+            "batch_strategy": method_info.get("optimization_strategy"),
+            "kernel": method_info.get("kernel"),
+            "input_warping": spec.use_input_warping,
+        }
+
     acquisition_fn = spec.acquisition_method.value
     if acquisition_fn == "auto":
         acquisition_fn = (
@@ -47,6 +68,7 @@ def get_model_info(spec: CampaignSpec, is_single_objective: bool) -> dict[str, A
     )
 
     return {
+        "backend": spec.backend,
         "type": model_type,
         "acquisition_function": acquisition_desc,
         "batch_strategy": "Sequential greedy optimization",
@@ -80,14 +102,20 @@ def enrich_diagnostics(
     spec: CampaignSpec,
     results: list[Result],
     is_single_objective: bool,
+    method_info: dict[str, Any] | None = None,
 ) -> None:
     """Add server-side enrichments to backend diagnostics."""
     diagnostics["objective_ranges"] = compute_objective_ranges(spec, results)
-    diagnostics["model_info"] = get_model_info(spec, is_single_objective)
+    model_info = get_model_info(spec, is_single_objective, method_info)
 
     if diagnostics.get("hyperparameters") is not None:
         hp = diagnostics["hyperparameters"]
         hp["interpretation"] = interpret_lengthscales(hp.get("lengthscales", {}))
+        # A fitted surrogate is the ground truth for the kernel label.
+        if hp.get("kernel_type"):
+            model_info["kernel"] = hp["kernel_type"]
+
+    diagnostics["model_info"] = model_info
 
 
 def enrich_outlier_results(

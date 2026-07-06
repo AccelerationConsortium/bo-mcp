@@ -51,7 +51,9 @@ _backends: dict[str, BOBackend] = {}
 # fresh event loop.
 _backend_load_lock = threading.Lock()
 
-DEFAULT_BACKEND = "baybe"
+# The default backend name is owned by the settings layer
+# (``get_default_backend_name`` / the ``BO_BACKEND`` env var) — no module
+# constant here, so the env default cannot silently diverge from it.
 _ENTRY_POINT_GROUP = "bo_mcp.backends"
 
 
@@ -352,8 +354,12 @@ def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
         )
         return chosen
 
-    logger.warning("No backend fully supports spec, falling back to '%s'", DEFAULT_BACKEND)
-    return DEFAULT_BACKEND
+    # Last-resort fallback: honor the configured default (``BO_BACKEND``)
+    # like every other step of the selection path — a module constant here
+    # would stamp a backend the operator explicitly opted out of into the
+    # persisted spec and every capability-rejection message.
+    logger.warning("No backend fully supports spec, falling back to '%s'", env_default)
+    return env_default
 
 
 def get_backend(name: str | None = None) -> BOBackend:

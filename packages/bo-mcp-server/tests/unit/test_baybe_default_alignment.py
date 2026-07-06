@@ -140,19 +140,33 @@ def test_model_info_uses_backend_method_report() -> None:
         "model_type": "BayBE GP",
         "acquisition_function": "qLogNoisyExpectedImprovement",
         "optimization_strategy": "BotorchRecommender (GP-based)",
+        "kernel": "Matern 5/2 (BayBE default GP surrogate)",
     }
-    info = get_model_info(spec, is_single_objective=True, method_info=method_info)
+    info = get_model_info(spec, method_info=method_info)
     assert info["backend"] == "baybe"
     assert info["type"] == "BayBE GP"
     assert info["acquisition_function"] == "qLogNoisyExpectedImprovement"
     assert info["batch_strategy"] == "BotorchRecommender (GP-based)"
+    assert info["kernel"] == "Matern 5/2 (BayBE default GP surrogate)"
 
 
-def test_model_info_legacy_fallback_without_method_report() -> None:
-    spec = _make_spec(backend="botorch")
-    info = get_model_info(spec, is_single_objective=True, method_info=None)
-    assert info["backend"] == "botorch"
-    assert "SingleTaskGP" in info["type"]
+def test_model_info_without_method_report_is_generic() -> None:
+    """No backend report → nulls, never a guessed model description.
+
+    The former static fallback described BoTorch's model regardless of the
+    campaign's backend (issue #57's mislabeling class), so a BayBE campaign
+    whose ``select_methods`` failed would read "SingleTaskGP / Matern 5/2".
+    The honest contract is ``backend`` plus null model fields.
+    """
+    spec = _make_spec(backend="baybe")
+    info = get_model_info(spec, method_info=None)
+    assert info["backend"] == "baybe"
+    assert info["type"] is None
+    assert info["acquisition_function"] is None
+    assert info["batch_strategy"] is None
+    assert info["kernel"] is None
+    assert "SingleTaskGP" not in str(info)
+    assert "Matern" not in str(info)
 
 
 # ---------------------------------------------------------------------------

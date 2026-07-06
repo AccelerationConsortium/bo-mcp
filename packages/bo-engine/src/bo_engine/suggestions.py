@@ -37,7 +37,6 @@ through explicit re-exports below.
 from __future__ import annotations
 
 import logging
-import random
 import warnings
 from typing import Any
 
@@ -59,7 +58,7 @@ from bo_engine.initial_design import (
     _guard_categorical_space_exhaustion,
     generate_initial_design,
 )
-from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 from bo_engine.suggestions_common import (
     _extract_scalar_prediction,
     _get_confidence_level,
@@ -223,8 +222,9 @@ def _resolve_acquisition_seed(
        same campaign state produce identical acquisition candidates and
        the seed for any other phase at the same iteration (Sobol initial
        design, MCMC chain) cannot collide with it.
-    3. Falls back to :func:`random.randint` only when neither is
-       supplied; this path is documented as non-reproducible.
+    3. Falls back to :func:`bo_engine.reproducibility.draw_fallback_seed`
+       only when neither is supplied; this path is documented as
+       non-reproducible and never touches the process-global RNG stream.
     """
     if rng is not None:
         return int(rng.integers(0, MAX_RANDOM_SEED))
@@ -232,7 +232,7 @@ def _resolve_acquisition_seed(
         return derive_seed(spec.random_seed, f"acquisition:iter_{iteration}")
     # Deliberately non-reproducible — no seed was supplied. Used in tests
     # and ad-hoc campaigns where reproducibility is not required.
-    return random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
+    return draw_fallback_seed()
 
 
 def generate_next_batch(

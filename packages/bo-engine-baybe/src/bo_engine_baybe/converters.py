@@ -39,6 +39,10 @@ from bo_engine.spec_ir import (
 from bo_engine.spec_ir import (
     classify_constraint_target as _classify_constraint_target,
 )
+from bo_engine.transforms import (
+    count_discrete_combinations,
+    discrete_enumeration_limit_error,
+)
 from bo_engine.types import (
     AcquisitionMethod,
     ConstraintSpec,
@@ -284,7 +288,16 @@ def spec_to_searchspace(spec: OptimizationSpec) -> SearchSpace:
     runs once via :func:`bo_engine.spec_ir.normalize_spec`; the normalized
     bundle is then handed to :func:`spec_to_constraints` so capability
     reporting and construction share a single classification result.
+
+    ``SearchSpace.from_product`` materializes the Cartesian product of all
+    discrete/categorical parameters into an experimental-representation
+    DataFrame, so the shared enumeration limit is enforced on the *product*
+    before any parameter is built — per-parameter checks alone would let two
+    just-under-limit grids multiply into an unbuildable frame.
     """
+    n_combinations = count_discrete_combinations(spec)
+    if n_combinations > DISCRETE_ENUMERATION_MAX_POINTS:
+        raise discrete_enumeration_limit_error(n_combinations)
     parameters = spec_to_parameters(spec)
     if spec.constraints:
         normalized = normalize_spec(spec)

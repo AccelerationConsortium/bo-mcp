@@ -32,6 +32,11 @@ _MODEL_TYPE_SINGLE = "BayBE GP"
 _MODEL_TYPE_MULTI = "BayBE GP (CompositeSurrogate)"
 _FALLBACK_ACQ_SINGLE = "qLogNoisyExpectedImprovement"
 _FALLBACK_ACQ_MULTI = "qLogNoisyExpectedHypervolumeImprovement"
+# Covariance module of BayBE's stock GP surrogate: ``DefaultKernelFactory``
+# builds ``ScaleKernel(MaternKernel(nu=2.5))`` with dimension-interpolated
+# priors. Reported by ``select_methods`` when no fitted surrogate is
+# available to introspect; a fitted surrogate's ``kernel_type`` wins.
+_DEFAULT_KERNEL_DESCRIPTION = "Matern 5/2 (BayBE default GP surrogate)"
 
 
 def _observations_to_minimization_tensor(

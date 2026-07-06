@@ -105,8 +105,10 @@ class TestRandomSeedReproducibility:
         """No spec seed → a fresh seed is drawn, applied, and recorded.
 
         Mirrors the BoTorch backend's ``_resolve_acquisition_seed`` fallback:
-        the actually-used seed always lands in provenance so any run can be
-        replayed after the fact.
+        the actually-used seed lands in provenance for auditability. The
+        fallback path is deliberately non-reproducible — no public spec
+        field accepts a raw applied seed, so the recorded value documents
+        the run rather than promising a replay.
         """
         backend = BayBEBackend()
         batch = backend.generate_suggestions(
@@ -114,6 +116,30 @@ class TestRandomSeedReproducibility:
         )
         recorded = batch.suggestions[0]["provenance"]["random_seed"]
         assert isinstance(recorded, int)
+
+    def test_unseeded_call_leaves_global_python_stream_untouched(self) -> None:
+        """The unseeded fallback seed must not consume the global ``random`` stream.
+
+        The fallback draw comes from OS entropy
+        (:func:`bo_engine.reproducibility.draw_fallback_seed`), never from
+        the process-global Mersenne-Twister stream: a global draw would
+        happen *before* ``GLOBAL_RNG_LOCK`` is acquired, so it could
+        interleave with — and silently advance — a concurrent seeded
+        scope's stream on another worker thread. Deterministic pin: after
+        an unseeded call, the global stream must produce exactly the value
+        it would have produced without the call.
+        """
+        import random
+
+        backend = BayBEBackend()
+        random.seed(123)
+        expected_next = random.random()  # noqa: S311
+
+        random.seed(123)
+        backend.generate_suggestions(
+            spec=self._seeded_spec(seed=None), observations=[], batch_size=2, iteration=1
+        )
+        assert random.random() == expected_next  # noqa: S311
 
     def test_seeded_calls_do_not_perturb_global_rng(self) -> None:
         """Seeded BayBE calls must not leak into process-wide RNG state.

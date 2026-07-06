@@ -1,6 +1,5 @@
 """Create campaign operation - protocol-neutral business logic."""
 
-import asyncio
 import logging
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -8,9 +7,6 @@ from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_engine.backend_base import BackendValidationResult
-from bo_mcp_server.backend import get_backend_async, resolve_backend_name
-from bo_mcp_server.backend_context import set_campaign_backend
-from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
     CampaignIntakeInput,
@@ -19,6 +15,10 @@ from bo_mcp_server.domain import (
 )
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.idempotency import session_scope
+from bo_mcp_server.operations.capability_validation import (
+    capability_rejection_errors,
+    resolve_and_validate_capabilities,
+)
 from bo_mcp_server.operations.helpers import parse_verbosity
 from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import (
@@ -32,19 +32,6 @@ from bo_mcp_server.storage import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _build_spec_from_dict(data: dict[str, Any]) -> CampaignSpec:
-    """Canonically reconstruct CampaignSpec from a validated dict.
-
-    The previous implementation manually unpacked a hand-picked subset of
-    fields, dropping any advanced spec attributes (turbo_config,
-    saasbo_config, outcome_constraints, etc.) silently. Routing through
-    :meth:`CampaignSpec.model_validate` reuses the single source of truth
-    for the schema so every field present in the dict round-trips into
-    the persisted spec.
-    """
-    return CampaignSpec.model_validate(data)
 
 
 def _intake_validation_error_response(validation: dict[str, Any]) -> dict[str, Any]:
@@ -78,16 +65,12 @@ def _capability_error_response(
 ) -> dict[str, Any]:
     """Build the structured-error response for a backend capability rejection.
 
-    Capability reports are keyed by an opaque ``key`` (e.g.
-    ``"acquisition_method"``, ``"backend_options.baybe.recommender"``)
-    that already reads as a dotted path from the spec root, so we
-    forward it as-is into the field_errors map.
+    ``errors`` and ``field_errors`` come from the shared
+    :func:`capability_rejection_errors` formatter so the same rejected
+    spec renders identically here and in ``bo_validate_intake``.
     """
     unsupported_reports = [{"key": r.key, "reason": r.reason} for r in capabilities.unsupported]
-    capability_field_errors: dict[str, list[str]] = {}
-    for report in capabilities.unsupported:
-        if report.reason:
-            capability_field_errors.setdefault(report.key or "", []).append(report.reason)
+    capability_errors, capability_field_errors = capability_rejection_errors(capabilities)
     response = make_error_response(
         ErrorCode.VALIDATION_FAILED,
         message=(
@@ -102,7 +85,7 @@ def _capability_error_response(
     )
     response["campaign_id"] = None
     response["spec_id"] = None
-    response["errors"] = [r["reason"] for r in unsupported_reports if r["reason"]]
+    response["errors"] = capability_errors
     response["field_errors"] = capability_field_errors
     response["warnings"] = warnings
     return response
@@ -186,27 +169,19 @@ async def create_campaign_operation(
     # Reconstruct CampaignSpec from validated data
     spec_data = validation["spec"]
 
-    # Resolve "auto" backend to a concrete backend name. Offloaded to a
-    # worker thread because resolving "auto" loads every candidate
-    # backend (torch / baybe imports) on the first call.
-    raw_backend = spec_data.get("backend", "auto")
-    spec_data["requested_backend"] = raw_backend
-    spec_data["backend"] = await asyncio.to_thread(resolve_backend_name, raw_backend, spec_data)
-
-    spec = _build_spec_from_dict(spec_data)
-    # Stamp the resolved backend into the response envelope (issue #57).
-    set_campaign_backend(spec.backend)
+    # Shared resolve → stamp → capability pipeline (same code path as
+    # ``bo_validate_intake``): resolves "auto" to a concrete backend
+    # off-thread, stamps requested/resolved names into the spec, and asks
+    # the backend whether it can handle it. ``resolve_backend_name("auto",
+    # ...)`` already routes around incompatible backends; the
+    # explicit-backend path also has to fail-fast on UNSUPPORTED reports so
+    # misshaped BayBE ``parameter_options`` / ``backend_options`` cannot
+    # reach the suggestion path.
+    resolved = await resolve_and_validate_capabilities(spec_data)
+    spec = resolved.spec
+    capabilities = resolved.result
     warnings: list[str] = validation.get("warnings", [])
 
-    # Ask the backend whether it can handle this spec — surface warnings AND
-    # enforce typed-option/feature capability. ``resolve_backend_name("auto",
-    # ...)`` already routes around incompatible backends; the explicit-backend
-    # path also has to fail-fast on UNSUPPORTED reports so misshaped BayBE
-    # ``parameter_options`` / ``backend_options`` cannot reach the suggestion
-    # path.
-    backend = await get_backend_async(spec.backend)
-    opt_spec = campaign_spec_to_optimization_spec(spec)
-    capabilities = backend.validate_capabilities(opt_spec)
     if not capabilities.is_compatible:
         logger.warning(
             "Campaign creation rejected: backend %s reports %d unsupported items",

@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import random
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, ClassVar, cast
 
@@ -46,6 +45,7 @@ import pydantic
 import torch
 from baybe import Campaign
 from baybe import __version__ as baybe_version
+from baybe.campaign import _EXCLUDED, _MEASURED, _RECOMMENDED
 from baybe.exceptions import NotEnoughPointsLeftError
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
 from baybe.settings import Settings
@@ -62,7 +62,6 @@ from bo_engine.backend_base import (
     required_features,
     wrap_backend_exception,
 )
-from bo_engine.constants import MAX_RANDOM_SEED
 from bo_engine.diagnostics import (
     compute_best_value,
     compute_improvement_history,
@@ -79,7 +78,7 @@ from bo_engine.diagnostics import (
 from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reference_point import get_reference_point
-from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 from bo_engine.result_validation import (
     detect_outliers,
 )
@@ -107,6 +106,7 @@ from bo_engine_baybe.converters import (
     pending_points_to_dataframe,
 )
 from bo_engine_baybe.introspection import (
+    _DEFAULT_KERNEL_DESCRIPTION,
     _FALLBACK_ACQ_MULTI,
     _FALLBACK_ACQ_SINGLE,
     _MODEL_TYPE_MULTI,
@@ -778,7 +778,7 @@ class BayBEBackend(BaseBackend):
             # Translate to the engine-neutral exhaustion error so the server
             # emits the same structured SEARCH_SPACE_EXHAUSTED envelope
             # (counts + terminate recommendation) as the BoTorch path.
-            raise _search_space_exhausted_error(campaign, batch_size) from exc
+            raise _search_space_exhausted_error(campaign, batch_size, pending_df) from exc
         param_dicts = dataframe_to_suggestions(rec_df, spec)
 
         predictions, posterior_warning = _extract_posterior_stats(campaign, rec_df, spec)
@@ -885,6 +885,7 @@ class BayBEBackend(BaseBackend):
             # on this flag instead of string-matching the label.
             "acquisition_function_inferred": acq_inferred,
             "optimization_strategy": strategy,
+            "kernel": _DEFAULT_KERNEL_DESCRIPTION,
             "recommender": rec_name,
             "is_nonpredictive": is_nonpredictive,
             "searchspace_type": searchspace_str,
@@ -948,6 +949,7 @@ class BayBEBackend(BaseBackend):
             "acquisition_function": acq_fn,
             "acquisition_function_inferred": True,
             "optimization_strategy": strategy,
+            "kernel": _DEFAULT_KERNEL_DESCRIPTION,
             "is_fallback": True,
             "input_transforms": ["BayBE internal encoding"],
             "explanation": (
@@ -1157,26 +1159,54 @@ class BayBEBackend(BaseBackend):
             return {"outliers": None}
 
 
+def _excluded_candidate_mask(
+    campaign: Campaign,
+    pending_df: pd.DataFrame | None,
+) -> pd.Series:
+    """Boolean mask over the discrete grid of rows the recommender may not pick.
+
+    Mirrors the candidate filter ``baybe.Campaign.recommend`` applies before
+    raising ``NotEnoughPointsLeftError``: explicitly excluded rows, plus
+    already-recommended / already-measured / pending rows whenever the
+    corresponding ``allow_recommending_*`` flag does not permit them. Keeping
+    the expression identical to BayBE's own is what makes the derived
+    ``n_available`` the ground truth for what the recommender saw.
+    """
+    metadata = campaign._searchspace_metadata
+    mask = metadata[_EXCLUDED].astype(bool)
+    if not campaign.allow_recommending_already_recommended:
+        mask |= metadata[_RECOMMENDED]
+    if not campaign.allow_recommending_already_measured:
+        mask |= metadata[_MEASURED]
+    if pending_df is not None and not campaign.allow_recommending_pending_experiments:
+        mask |= campaign.searchspace.discrete.exp_rep.merge(
+            pending_df,
+            indicator=True,
+            how="left",
+        )["_merge"].eq("both")
+    return mask
+
+
 def _search_space_exhausted_error(
     campaign: Campaign,
     batch_size: int,
+    pending_df: pd.DataFrame | None = None,
 ) -> SearchSpaceExhaustedError:
     """Build the engine-neutral exhaustion error from a BayBE campaign.
 
     Counts come from the campaign itself: the discrete subspace's
-    experimental representation is the full combination grid, and the
-    measured rows (deduplicated on parameter columns) are what
-    ``allow_recommending_already_measured=False`` excludes.
+    experimental representation is the full combination grid, and
+    ``n_available`` counts the rows left after the same measured /
+    recommended / pending exclusions the failing ``recommend`` call
+    applied (see :func:`_excluded_candidate_mask`) — deriving it from
+    measurements alone would report unseen combinations while zero
+    candidates actually remain.
     """
     n_total: int | None = None
     n_available = 0
     try:
-        exp_rep = campaign.searchspace.discrete.exp_rep
-        n_total = len(exp_rep)
-        measurements = campaign.measurements
-        param_cols = [c for c in exp_rep.columns if c in measurements.columns]
-        n_measured = len(measurements[param_cols].drop_duplicates()) if param_cols else 0
-        n_available = max(0, n_total - n_measured)
+        n_total = len(campaign.searchspace.discrete.exp_rep)
+        n_available = int((~_excluded_candidate_mask(campaign, pending_df)).sum())
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:  # pragma: no cover - defensive
         logger.debug("Could not derive exhaustion counts: %s", e)
     return SearchSpaceExhaustedError(
@@ -1200,18 +1230,22 @@ def _baybe_rng_scope(spec: OptimizationSpec, context: str) -> Iterator[int | Non
     :func:`bo_engine.reproducibility.derive_seed` and applied through
     BayBE's own settings system (``baybe.settings.Settings`` with
     ``random_seed``; Python, NumPy, and Torch), which snapshots the
-    process-wide RNG states on entry and restores them on exit.
-    Unseeded specs draw a fresh random seed and apply it the same way —
-    mirroring the BoTorch backend's ``_resolve_acquisition_seed``
-    fallback — so the actually-used seed is always recorded in
-    suggestion provenance and a run can be replayed after the fact.
+    process-wide RNG states on entry and restores them on exit —
+    re-running the same spec with the same ``random_seed`` and phase
+    context reproduces the batch. Unseeded specs draw a fresh seed via
+    :func:`bo_engine.reproducibility.draw_fallback_seed` (OS entropy —
+    never the process-global stream a concurrent seeded scope may own)
+    and apply it the same way; that path is deliberately
+    non-reproducible, mirroring the BoTorch backend's
+    ``_resolve_acquisition_seed`` fallback. The applied seed is yielded
+    so callers can stamp it into suggestion provenance for auditability;
+    no public spec field accepts a raw applied seed, so a recorded
+    fallback seed cannot be replayed through ``spec.random_seed``.
     (Residual limitation: RNG consumers outside the lock — e.g.
     diagnostics model fits — can still interleave with a seeded scope.)
-    Yields the applied seed so callers can stamp it into suggestion
-    provenance.
     """
     if spec.random_seed is None:
-        seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311 - non-crypto, provenance only
+        seed = draw_fallback_seed()
     else:
         seed = derive_seed(spec.random_seed, context)
     # ty cannot see the attrs-generated __init__ on baybe's Settings.

@@ -8,6 +8,7 @@ set covers the coarse feature requirements.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -101,16 +102,22 @@ def _simple_spec_dict() -> dict:
 
 
 @pytest.mark.usefixtures("patched_backend_cache")
-def test_auto_resolution_consults_validate_capabilities():
-    """When the env default reports unsupported, auto falls back to BoTorch.
+def test_auto_resolution_consults_validate_capabilities(caplog):
+    """When every candidate reports unsupported, auto falls back to the env default.
 
     Pre-1.69 the selector only checked ``required <= supported_features``.
     With the rejecting backend advertising every feature, the old code
     would have happily selected it. The new code respects
-    ``validate_capabilities`` and falls back.
+    ``validate_capabilities``: the rejecting backend is never classified
+    compatible, so resolution reaches the last-resort fallback — which
+    honors ``BO_BACKEND`` (the operator's explicit default) rather than a
+    module constant that would stamp a backend the operator opted out of
+    into the stored spec.
     """
-    resolved = resolve_backend_name("auto", _simple_spec_dict())
-    assert resolved == "botorch"
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_backend_name("auto", _simple_spec_dict())
+    assert resolved == "rejecting"
+    assert any("No backend fully supports spec" in record.message for record in caplog.records)
 
 
 def test_explicit_backend_name_bypasses_capability_check():
@@ -223,6 +230,28 @@ def test_auto_prefers_full_support_over_degraded_log_transform(monkeypatch):
             {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
         ],
         "objectives": [{"name": "rate", "direction": "minimize", "log_transform": True}],
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "botorch"
+
+
+def test_auto_prefers_botorch_for_acquisition_optimizer_override(monkeypatch):
+    """Acquisition-optimizer budget overrides steer ``auto`` to the honoring backend.
+
+    BayBE reports explicit ``acquisition_optimization`` overrides
+    (``num_restarts`` / ``raw_samples``) as IGNORED — it optimizes
+    acquisition internally — which demotes it to the DEGRADED tier.
+    BoTorch honors the L-BFGS-B budget, so ``auto`` must pick it even
+    when BayBE is the env default.
+    """
+    monkeypatch.setenv("BO_BACKEND", "baybe")
+    spec_dict = {
+        "name": "OptimizerBudget",
+        "parameters": [
+            {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
+        ],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+        "acquisition_optimization": {"num_restarts": 7, "raw_samples": 33},
     }
     resolved = resolve_backend_name("auto", spec_dict)
     assert resolved == "botorch"

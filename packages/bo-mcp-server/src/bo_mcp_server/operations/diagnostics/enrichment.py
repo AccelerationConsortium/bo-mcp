@@ -23,34 +23,34 @@ def compute_objective_ranges(
     return objective_ranges
 
 
-def get_model_info(spec: CampaignSpec, is_single_objective: bool) -> dict[str, Any]:
-    """Get model information summary."""
-    acquisition_fn = spec.acquisition_method.value
-    if acquisition_fn == "auto":
-        acquisition_fn = (
-            "noisy_expected_improvement" if is_single_objective else "hypervolume_improvement"
-        )
+def get_model_info(
+    spec: CampaignSpec,
+    method_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Get model information summary.
 
-    acquisition_desc = {
-        "noisy_expected_improvement": "Log Noisy Expected Improvement (qLogNEI)",
-        "expected_improvement": "Log Expected Improvement (qLogEI)",
-        "hypervolume_improvement": "Log Expected Hypervolume Improvement (qLogNEHVI)",
-        "scalarized_multi_objective": "Parallel EGO with Chebyshev (qLogNParEGO)",
-        "cost_weighted_ei": "Expected Improvement per Unit cost (EIpu)",
-        "multi_fidelity_kg": "Multi-Fidelity Knowledge Gradient (qMFKG)",
-    }.get(acquisition_fn, acquisition_fn)
-
-    model_type = (
-        "SingleTaskGP (Gaussian Process)"
-        if is_single_objective
-        else "ModelListGP (Multi-output Gaussian Process)"
-    )
+    ``method_info`` is the backend's own ``select_methods`` report and is
+    authoritative (issue #57: model text must come from the campaign's
+    backend, never from server-side assumptions). When the backend could
+    not produce a report, every model field is ``None`` — a null is honest
+    where a guessed description could name the wrong backend's model.
+    """
+    if method_info:
+        return {
+            "backend": spec.backend,
+            "type": method_info.get("model_type"),
+            "acquisition_function": method_info.get("acquisition_function"),
+            "batch_strategy": method_info.get("optimization_strategy"),
+            "kernel": method_info.get("kernel"),
+            "input_warping": spec.use_input_warping,
+        }
 
     return {
-        "type": model_type,
-        "acquisition_function": acquisition_desc,
-        "batch_strategy": "Sequential greedy optimization",
-        "kernel": "Matern 5/2 with automatic relevance determination",
+        "backend": spec.backend,
+        "type": None,
+        "acquisition_function": None,
+        "batch_strategy": None,
+        "kernel": None,
         "input_warping": spec.use_input_warping,
     }
 
@@ -79,15 +79,20 @@ def enrich_diagnostics(
     diagnostics: dict[str, Any],
     spec: CampaignSpec,
     results: list[Result],
-    is_single_objective: bool,
+    method_info: dict[str, Any] | None = None,
 ) -> None:
     """Add server-side enrichments to backend diagnostics."""
     diagnostics["objective_ranges"] = compute_objective_ranges(spec, results)
-    diagnostics["model_info"] = get_model_info(spec, is_single_objective)
+    model_info = get_model_info(spec, method_info)
 
     if diagnostics.get("hyperparameters") is not None:
         hp = diagnostics["hyperparameters"]
         hp["interpretation"] = interpret_lengthscales(hp.get("lengthscales", {}))
+        # A fitted surrogate is the ground truth for the kernel label.
+        if hp.get("kernel_type"):
+            model_info["kernel"] = hp["kernel_type"]
+
+    diagnostics["model_info"] = model_info
 
 
 def enrich_outlier_results(

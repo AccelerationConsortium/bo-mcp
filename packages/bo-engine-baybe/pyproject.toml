@@ -19,17 +19,17 @@ dependencies = [
     "bo-engine",
     # baybe[chem] pulls in RDKit + scikit-fingerprints (and mordredcommunity
     # for the MORDRED encoding) so SubstanceParameter descriptor tables build
-    # out of the box. ``baybe[chem]>=0.14`` already implies ``baybe>=0.14``;
-    # listing the bare requirement too would be drift-prone, so this is the
-    # single canonical direct ``baybe`` requirement.
-    "baybe[chem]>=0.14",
+    # out of the box. Pinned exactly: BayBE minor releases ship breaking
+    # changes (0.15 changed multi-task kernel composition and the seed API),
+    # so upgrades are deliberate, tested bumps of this single pin.
+    "baybe[chem]==0.15.0",
     "pandas>=2.0",
     "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
 insights = [
-    "baybe[insights]>=0.14",
+    "baybe[insights]==0.15.0",
 ]
 dev = [
     "pytest>=8.0",

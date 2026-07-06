@@ -83,7 +83,7 @@ _VERBOSITY_LEVELS = ("minimal", "standard", "detailed")
 
 # Backend selectors honoured by ``CampaignIntakeInput.backend`` (see the
 # ``pattern`` constraint there).
-_BACKEND_NAMES = ("auto", "botorch", "baybe")
+_BACKEND_NAMES = ("auto", "baybe", "botorch")
 
 
 # Lookup table consumed by :func:`_enum_values_for`. Keyed by

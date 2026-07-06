@@ -7,9 +7,11 @@ Covers:
   identical campaign behavior on both transports.
 * ``CampaignIntakeInput`` validation rejects ``backend_options`` whose
   outer keys do not match the chosen backend.
-* The canonical ``CampaignSpec.model_validate`` round-trip used by
-  :func:`create_campaign_operation` preserves every advanced spec
-  field — the previous manual reconstruction dropped them silently.
+* The canonical ``CampaignSpec.model_validate`` round-trip inside the
+  shared :func:`resolve_and_validate_capabilities` pipeline (used by
+  both ``create_campaign_operation`` and ``bo_validate_intake``)
+  preserves every advanced spec field — the previous manual
+  reconstruction dropped them silently.
 * ``backend_options`` and ``parameter_options`` survive the conversion
   to ``OptimizationSpec``.
 """
@@ -27,7 +29,9 @@ from bo_mcp_server.domain import (
     Objective,
     ParameterType,
 )
-from bo_mcp_server.operations.create_campaign import _build_spec_from_dict
+from bo_mcp_server.operations.capability_validation import (
+    resolve_and_validate_capabilities,
+)
 
 
 def _minimal_intake() -> dict:
@@ -101,9 +105,10 @@ class TestBackendOptionsValidation:
 
 
 class TestCanonicalCampaignSpecRoundTrip:
-    """``_build_spec_from_dict`` preserves every field via canonical validation."""
+    """The shared create/validate pipeline preserves every field canonically."""
 
-    def test_advanced_fields_round_trip(self) -> None:
+    @pytest.mark.asyncio
+    async def test_advanced_fields_round_trip(self) -> None:
         spec = CampaignSpec(
             name="Advanced",
             parameters=(
@@ -118,12 +123,13 @@ class TestCanonicalCampaignSpecRoundTrip:
             backend="botorch",
             backend_options={"botorch": {"acquisition_optimizer": "lbfgsb"}},
         )
-        spec_dict = spec.to_dict()
-        rebuilt = _build_spec_from_dict(spec_dict)
+        resolved = await resolve_and_validate_capabilities(spec.to_dict())
+        rebuilt = resolved.spec
         assert rebuilt.use_input_warping is True
         assert rebuilt.backend_options == {"botorch": {"acquisition_optimizer": "lbfgsb"}}
 
-    def test_parameter_options_round_trip(self) -> None:
+    @pytest.mark.asyncio
+    async def test_parameter_options_round_trip(self) -> None:
         spec = CampaignSpec(
             name="Param Options",
             parameters=(
@@ -136,8 +142,8 @@ class TestCanonicalCampaignSpecRoundTrip:
             ),
             objectives=(Objective(name="y", direction="minimize"),),
         )
-        spec_dict = spec.to_dict()
-        rebuilt = _build_spec_from_dict(spec_dict)
+        resolved = await resolve_and_validate_capabilities(spec.to_dict())
+        rebuilt = resolved.spec
         assert rebuilt.parameters[0].parameter_options == {"baybe": {"encoding": "ohe"}}
 
     def test_convert_preserves_backend_options(self) -> None:

@@ -29,16 +29,39 @@ from bo_engine.device import get_device
 
 # Serializes every engine section that seeds or snapshots/restores the
 # process-global RNG state (Torch ``fork_rng``/``manual_seed`` in the
-# BoTorch suggestion and Thompson-sampling paths; ``temporary_seed`` in
-# the BayBE backend's recommendation scope). These mechanisms each save
-# and restore global state, which is only correct when sections cannot
-# interleave: the server offloads generation to worker threads via
-# ``asyncio.to_thread``, and an overlapping ``fork_rng`` block restores
-# a stale snapshot into another backend's seeded window, silently
-# rolling its stream back. A re-entrant lock so a path that nests two
-# guarded sections on one thread (e.g. Thompson sampling inside the
-# suggestion pipeline) cannot deadlock.
+# BoTorch suggestion and Thompson-sampling paths; the seeded settings
+# scope in the BayBE backend's recommendation path). These mechanisms
+# each save and restore global state, which is only correct when
+# sections cannot interleave: the server offloads generation to worker
+# threads via ``asyncio.to_thread``, and an overlapping ``fork_rng``
+# block restores a stale snapshot into another backend's seeded window,
+# silently rolling its stream back. A re-entrant lock so a path that
+# nests two guarded sections on one thread (e.g. Thompson sampling
+# inside the suggestion pipeline) cannot deadlock.
 GLOBAL_RNG_LOCK = threading.RLock()
+
+# Entropy source for fallback seed draws. ``SystemRandom`` reads the OS
+# entropy pool and keeps no Mersenne-Twister state, so drawing from it can
+# never consume from — or race with — the process-global ``random`` stream
+# that seeded scopes snapshot and restore under :data:`GLOBAL_RNG_LOCK`.
+_FALLBACK_SEED_RNG = random.SystemRandom()
+
+
+def draw_fallback_seed() -> int:
+    """Draw a fresh, deliberately non-reproducible seed for unseeded calls.
+
+    Every engine path that needs a per-call seed when the caller supplied
+    none (BoTorch acquisition, MFKG, the BayBE recommendation scope) must
+    draw it through this helper instead of ``random.randint``: a draw from
+    the process-global stream outside :data:`GLOBAL_RNG_LOCK` can interleave
+    with a seeded scope on another worker thread and silently consume from —
+    and thereby change — that scope's seeded stream. Callers should record
+    the returned seed in provenance.
+
+    Returns:
+        Seed value in ``[0, MAX_RANDOM_SEED]``.
+    """
+    return _FALLBACK_SEED_RNG.randint(0, MAX_RANDOM_SEED)
 
 
 @dataclass

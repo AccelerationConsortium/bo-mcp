@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import math
-import random
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -30,14 +29,13 @@ from botorch.utils.multi_objective.scalarization import get_chebyshev_scalarizat
 from torch import Tensor
 
 from bo_engine.constants import (
-    MAX_RANDOM_SEED,
     NUMERICAL_EPSILON,
     PAREGO_AUGMENTED_RHO,
     THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE,
     THOMPSON_NUM_CANDIDATES,
 )
 from bo_engine.device import fork_rng_devices, get_device, get_dtype
-from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 
 if TYPE_CHECKING:
     pass
@@ -53,14 +51,14 @@ def _resolve_call_seed(config_seed: int | None) -> int:
     ``rsample``) is replayed identically by the next call unless each
     call installs its own seed. A configured seed is used verbatim
     (reproducible by contract); otherwise fresh entropy is drawn from
-    the stdlib RNG, whose state lives outside the fork and therefore
-    advances between calls.
+    the OS pool, which lives outside the fork and therefore advances
+    between calls.
     """
     if config_seed is not None:
         return config_seed
     # Deliberately non-reproducible — no seed was supplied (same contract
     # as bo_engine.suggestions._resolve_acquisition_seed).
-    return random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
+    return draw_fallback_seed()
 
 
 @dataclass

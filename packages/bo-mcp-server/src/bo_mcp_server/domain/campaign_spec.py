@@ -536,7 +536,11 @@ class CampaignSpec(BaseModel):
     # Original caller-side backend selector before "auto" is resolved. Stored
     # for provenance only; execution uses ``backend`` below.
     requested_backend: str | None = None
-    # v3.0: Backend selection (default uses BO_BACKEND env var)
+    # v3.0: Backend selection (default uses BO_BACKEND env var). The literal
+    # default stays "botorch" deliberately: it is only hit when deserializing
+    # rows created before the backend column existed, and those campaigns ran
+    # on BoTorch. New specs always carry an explicitly resolved backend
+    # (BayBE by default).
     backend: str = "botorch"
     # Typed backend-native option surface. Outer keys are backend names
     # (``"botorch"``, ``"baybe"``); inner dicts hold options that have no

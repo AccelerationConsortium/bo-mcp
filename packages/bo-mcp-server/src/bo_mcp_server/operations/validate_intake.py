@@ -14,6 +14,10 @@ from bo_mcp_server.field_errors import (
     field_error_messages,
     validation_errors_to_field_errors,
 )
+from bo_mcp_server.operations.capability_validation import (
+    capability_rejection_errors,
+    resolve_and_validate_capabilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,3 +98,50 @@ def validate_intake_operation(
         "warnings": warnings,
         "spec": spec.to_dict(),
     }
+
+
+async def validate_intake_with_capabilities(
+    intake_data: CampaignIntakeInput | dict[str, Any],
+) -> dict[str, Any]:
+    """Validate an intake spec including backend capability checks.
+
+    :func:`validate_intake_operation` only runs schema validation, so a
+    spec could pass the dry-run and still be rejected by
+    ``bo_create_campaign`` on capability grounds (BayBE substance / task
+    / custom-descriptor rules). Both surfaces run the *same*
+    resolve → stamp → capability pipeline
+    (:func:`resolve_and_validate_capabilities`) and render rejections
+    through the *same* formatter (:func:`capability_rejection_errors`),
+    so validate and create cannot drift apart.
+
+    Used by the standalone validate surfaces (MCP tool, REST route).
+    """
+    response = validate_intake_operation(intake_data)
+    if not response.get("valid"):
+        return response
+
+    spec_data = dict(response["spec"])
+    resolved = await resolve_and_validate_capabilities(spec_data)
+    capabilities = resolved.result
+
+    response["backend"] = resolved.backend
+    response["spec"] = resolved.spec.to_dict()
+
+    if not capabilities.is_compatible:
+        capability_errors, capability_field_errors = capability_rejection_errors(capabilities)
+        field_errors: dict[str, list[str]] = response.get("field_errors", {})
+        for key, reasons in capability_field_errors.items():
+            field_errors.setdefault(key, []).extend(reasons)
+        logger.info(
+            "Intake capability validation failed for backend %s: %d unsupported",
+            resolved.backend,
+            len(capabilities.unsupported),
+        )
+        response["valid"] = False
+        response["errors"] = [*response.get("errors", []), *capability_errors]
+        response["field_errors"] = field_errors
+        response["spec"] = None
+        return response
+
+    response["warnings"] = [*response.get("warnings", []), *capabilities.warnings]
+    return response

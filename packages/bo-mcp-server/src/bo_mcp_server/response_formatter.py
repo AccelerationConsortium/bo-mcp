@@ -77,8 +77,10 @@ class ResponseMetadata(BaseModel):
 def get_response_metadata(protocol: str = "mcp") -> ResponseMetadata:
     """Build metadata for a formatted response.
 
-    Stays synchronous deliberately: it only resolves the *default*
-    backend, which the server warms at startup
+    Campaign-scoped operations stamp the *campaign's* backend (bound via
+    :mod:`bo_mcp_server.backend_context` when the spec is resolved); only
+    campaign-agnostic calls fall back to the default backend, which the
+    server warms at startup
     (:func:`bo_mcp_server.backend.warm_default_backend`), so the lookup
     here is a cache hit and safe to run on the event loop.
 
@@ -89,11 +91,12 @@ def get_response_metadata(protocol: str = "mcp") -> ResponseMetadata:
         Metadata with backend, protocol, and server version.
     """
     from bo_mcp_server.backend import get_backend
+    from bo_mcp_server.backend_context import get_campaign_backend
     from bo_mcp_server.trace_context import get_trace_id
 
-    backend = get_backend()
+    backend_name = get_campaign_backend() or get_backend().name
     return ResponseMetadata(
-        backend=backend.name,
+        backend=backend_name,
         protocol=protocol,
         server_version=__version__,
         trace_id=get_trace_id(),

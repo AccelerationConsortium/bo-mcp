@@ -13,11 +13,18 @@ Architecture note (1.7):
 
 import logging
 import os
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ContentBlock
+from pydantic import AnyUrl
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+
+from bo_mcp_server.backend_context import campaign_backend_scope
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +55,31 @@ def _build_allowed_origins() -> list[str]:
     return origins
 
 
+class _ScopedFastMCP(FastMCP):
+    """FastMCP with a per-dispatch campaign-backend scope.
+
+    Each tool call / resource read runs inside
+    :func:`bo_mcp_server.backend_context.campaign_backend_scope`, so a
+    campaign backend bound during one dispatch can never leak into the
+    ``_metadata.backend`` stamp of a later dispatch that happens to run
+    in the same context (issue #57 review follow-up).
+    """
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any]
+    ) -> Sequence[ContentBlock] | dict[str, Any]:
+        with campaign_backend_scope():
+            return await super().call_tool(name, arguments)
+
+    async def read_resource(self, uri: AnyUrl | str) -> Iterable[ReadResourceContents]:
+        with campaign_backend_scope():
+            return await super().read_resource(uri)
+
+
 # Module-level instance for decorator-based tool/resource registration.
 # ONLY import this in tool/resource modules for @mcp.tool()/@mcp.resource().
 # For all other uses, call create_mcp_server().
-mcp = FastMCP(
+mcp = _ScopedFastMCP(
     "bo-mcp",
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,

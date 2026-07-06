@@ -71,6 +71,14 @@ from bo_engine.types import AcquisitionMethod, ObservationData, OptimizationSpec
 logger = logging.getLogger(__name__)
 
 
+# Covariance module of the suggestion path's GP surrogates: SingleTaskGP's
+# stock kernel (BoTorch >= 0.12) and the mixed-space kernel built by
+# ``bo_engine.models.build_mixed_kernel`` are both
+# ``ScaleKernel(RBFKernel(ard_num_dims=d))``. Reported by ``select_methods``
+# for diagnostics; a fitted surrogate's ``kernel_type`` wins when available.
+_DEFAULT_KERNEL_DESCRIPTION = "RBF with automatic relevance determination (ARD)"
+
+
 def _dict_to_turbo_state(data: dict[str, Any]) -> TurboState:
     """Deserialize dict to TurboState."""
     return TurboState(
@@ -537,6 +545,7 @@ class BoTorchBackend(BaseBackend):
             "model_type": ms.model_type,
             "acquisition_function": ms.acquisition_function,
             "optimization_strategy": ms.optimization_strategy,
+            "kernel": _DEFAULT_KERNEL_DESCRIPTION,
             "input_transforms": ms.input_transforms,
             "explanation": ms.explanation,
             "confidence": ms.confidence,

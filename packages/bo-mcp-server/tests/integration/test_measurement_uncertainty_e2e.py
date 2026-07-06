@@ -40,6 +40,8 @@ async def test_measurement_uncertainty_drives_fixed_noise_likelihood() -> None:
     owner_id = str(uuid4())
     intake = {
         "name": "Measurement Uncertainty End-to-End",
+        # train_yvar / FixedNoiseGaussianLikelihood is a BoTorch-only feature.
+        "backend": "botorch",
         "parameters": [
             {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
         ],
@@ -124,6 +126,8 @@ async def test_partial_measurement_uncertainty_falls_back_to_trainable_noise() -
     owner_id = str(uuid4())
     intake = {
         "name": "Partial Measurement Uncertainty",
+        # train_yvar / FixedNoiseGaussianLikelihood is a BoTorch-only feature.
+        "backend": "botorch",
         "parameters": [
             {"name": "x", "type": "continuous", "bounds": [0.0, 1.0]},
         ],

@@ -63,7 +63,7 @@ from bo_mcp_server.client import (
     list_owner_campaigns_with_specs,
     manage_campaign_lifecycle_operation,
     run_idempotent_operation,
-    validate_intake_operation,
+    validate_intake_with_capabilities,
 )
 
 router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
@@ -327,11 +327,11 @@ async def validate_campaign_intake(
     :func:`_coerce_intake` then builds the domain intake without a
     dump/validate round-trip, surfacing any remaining cross-field/domain
     invariant error (unique names, ``backend_options`` routing) as a 422
-    rather than a 500; ``validate_intake_operation`` accepts the typed
+    rather than a 500; ``validate_intake_with_capabilities`` accepts the typed
     ``CampaignIntakeInput`` directly.
     """
     intake = _coerce_intake(request.intake)
-    full_result = validate_intake_operation(intake)
+    full_result = await validate_intake_with_capabilities(intake)
     formatted = format_validate_intake_response(full_result, VerbosityLevel.STANDARD)
 
     return ValidateIntakeResponse(

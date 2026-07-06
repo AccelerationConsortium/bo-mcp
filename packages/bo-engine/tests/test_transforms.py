@@ -3,8 +3,11 @@
 import pytest
 import torch
 
+from bo_engine.constants import DISCRETE_ENUMERATION_MAX_POINTS
 from bo_engine.transforms import (
+    count_discrete_combinations,
     decode_categorical,
+    discrete_enumeration_limit_error,
     encode_categorical,
     get_bounds_tensor,
     get_n_dims,
@@ -12,6 +15,56 @@ from bo_engine.transforms import (
     unnormalize_inputs,
 )
 from bo_engine.types import ObjectiveSpec, OptimizationSpec, ParameterSpec, ParameterType
+
+
+def _spec(parameters: list[ParameterSpec]) -> OptimizationSpec:
+    return OptimizationSpec(
+        parameters=parameters,
+        objectives=[ObjectiveSpec(name="y", minimize=True)],
+    )
+
+
+class TestCountDiscreteCombinations:
+    """Product counting across every enumerable parameter kind.
+
+    The count is what a backend materializes when it enumerates the full
+    discrete portion of the search space (e.g. BayBE's
+    ``SearchSpace.from_product``), so values grids, bounds-only integer
+    grids, and category lists must all multiply into one product.
+    """
+
+    def test_mixed_enumerable_kinds_multiply(self):
+        spec = _spec(
+            [
+                ParameterSpec(name="grid", type=ParameterType.DISCRETE, values=[1.0, 2.0, 3.0]),
+                ParameterSpec(name="n", type=ParameterType.DISCRETE, bounds=(0.0, 4.0)),
+                ParameterSpec(name="cat", type=ParameterType.CATEGORICAL, categories=["a", "b"]),
+            ]
+        )
+        assert count_discrete_combinations(spec) == 3 * 5 * 2
+
+    def test_continuous_parameters_do_not_contribute(self):
+        spec = _spec(
+            [
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="grid", type=ParameterType.DISCRETE, values=[1.0, 2.0]),
+            ]
+        )
+        assert count_discrete_combinations(spec) == 2
+
+    def test_no_enumerable_parameters_counts_one(self):
+        spec = _spec([ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))])
+        assert count_discrete_combinations(spec) == 1
+
+    def test_bounds_only_grid_counts_contained_integers(self):
+        """Bounds (0.5, 4.2) contain the integers 1..4 — the materialized grid."""
+        spec = _spec([ParameterSpec(name="n", type=ParameterType.DISCRETE, bounds=(0.5, 4.2))])
+        assert count_discrete_combinations(spec) == 4
+
+    def test_limit_error_names_count_and_limit(self):
+        error = discrete_enumeration_limit_error(123_456)
+        assert "123456" in str(error)
+        assert str(DISCRETE_ENUMERATION_MAX_POINTS) in str(error)
 
 
 class TestTransforms:

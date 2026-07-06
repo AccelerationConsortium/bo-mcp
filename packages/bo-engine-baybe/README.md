@@ -4,7 +4,7 @@ BayBE backend for Bayesian Optimization. Implements the `BOBackend` protocol usi
 
 ## Scope
 
-- Alternative backend to the default BoTorch backend
+- Default backend of BO-MCP (BoTorch remains as the legacy fallback)
 - Native support for categorical parameters with smart encodings (OHE, custom)
 - Mixed search spaces (continuous + discrete + categorical) handled natively
 - Multi-objective optimization via BayBE's `ParetoObjective` (qLogNEHVI)

@@ -1,6 +1,7 @@
 """Input/output transformations for BO."""
 
 import itertools
+import math
 from enum import StrEnum
 from typing import Any
 
@@ -74,6 +75,60 @@ def count_categorical_combinations(spec: OptimizationSpec) -> int:
     return product if has_categorical else 0
 
 
+def _enumerable_choice_count(param: ParameterSpec) -> int | None:
+    """Number of enumerable choices for one parameter, or ``None`` if not enumerable.
+
+    Categorical parameters contribute their category count; discrete
+    parameters contribute their explicit ``values`` count or, for
+    bounds-only specs, the number of integers in ``[ceil(lo), floor(hi)]``
+    (the grid the backends materialize). Continuous parameters — and
+    discrete parameters that declare neither values nor bounds, whose
+    canonical error is raised by the parameter builders — return ``None``.
+    """
+    if param.type == ParameterType.CATEGORICAL and param.categories is not None:
+        return len(param.categories)
+    if param.type == ParameterType.DISCRETE:
+        if param.values is not None:
+            return len(param.values)
+        if param.bounds is not None:
+            lo, hi = math.ceil(param.bounds[0]), math.floor(param.bounds[1])
+            return max(hi - lo + 1, 0)
+    return None
+
+
+def count_discrete_combinations(spec: OptimizationSpec) -> int:
+    """Total Cartesian-product size across discrete and categorical parameters.
+
+    This is the number of rows a backend materializes when it enumerates the
+    full discrete portion of the search space (e.g. BayBE's
+    ``SearchSpace.from_product``), so the enumeration limit must be enforced
+    on this product — a per-parameter check lets two just-under-limit grids
+    multiply into an unbuildable frame. Returns 1 when the spec has no
+    enumerable parameters.
+    """
+    product = 1
+    for param in spec.parameters:
+        n_choices = _enumerable_choice_count(param)
+        if n_choices is not None:
+            product *= n_choices
+    return product
+
+
+def discrete_enumeration_limit_error(n_combinations: int) -> ValueError:
+    """Shared error for a discrete product above ``DISCRETE_ENUMERATION_MAX_POINTS``.
+
+    Both backends raise this same error so a spec rejected for grid size
+    reads identically regardless of which backend enumerated it.
+    """
+    msg = (
+        f"Discrete space has {n_combinations} combinations, exceeding the "
+        f"enumeration limit of {DISCRETE_ENUMERATION_MAX_POINTS}. "
+        "Consider reducing the number of categories or discrete values, "
+        "or using continuous parameters."
+    )
+    return ValueError(msg)
+
+
 def enumerate_discrete_choices(spec: OptimizationSpec) -> Tensor:
     """Build a tensor of all one-hot-encoded categorical combinations.
 
@@ -95,12 +150,7 @@ def enumerate_discrete_choices(spec: OptimizationSpec) -> Tensor:
     """
     n_combos = count_categorical_combinations(spec)
     if n_combos > DISCRETE_ENUMERATION_MAX_POINTS:
-        msg = (
-            f"Discrete space has {n_combos} combinations, exceeding the "
-            f"enumeration limit of {DISCRETE_ENUMERATION_MAX_POINTS}. "
-            "Consider reducing the number of categories."
-        )
-        raise ValueError(msg)
+        raise discrete_enumeration_limit_error(n_combos)
 
     device = get_device()
     dtype = get_dtype()

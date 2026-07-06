@@ -14,6 +14,7 @@ from __future__ import annotations
 from bo_engine.backend_base import CapabilityStatus
 from bo_engine.types import (
     AcquisitionMethod,
+    AcquisitionOptimizationConfig,
     ConstraintSpec,
     ConstraintType,
     ObjectiveSpec,
@@ -268,6 +269,44 @@ class TestAcquisitionMethodCapability:
         )
         warnings = BayBEBackend().validate_spec(spec)
         assert any("cost_weighted_ei" in w for w in warnings)
+
+
+class TestAcquisitionOptimizationCapability:
+    """Explicit L-BFGS-B budget overrides are IGNORED (not UNSUPPORTED) on BayBE.
+
+    ``acquisition_optimization.num_restarts`` / ``raw_samples`` tune the
+    BoTorch acquisition optimizer; BayBE optimizes acquisition internally
+    and cannot honor them. The report is ``IGNORED`` so an explicit
+    ``backend="baybe"`` still runs, while ``backend="auto"`` demotes BayBE
+    below a backend that honors the override (the tier logic counts
+    IGNORED like DEGRADED).
+    """
+
+    def test_explicit_override_reports_ignored(self) -> None:
+        spec = _make_spec(
+            parameters=_continuous_x(),
+            acquisition_optimization=AcquisitionOptimizationConfig(num_restarts=7, raw_samples=33),
+        )
+        result = BayBEBackend().validate_capabilities(spec)
+        reports = [r for r in result.option_reports if r.key == "acquisition_optimization"]
+        assert reports
+        assert reports[0].status == CapabilityStatus.IGNORED
+        assert result.is_compatible
+
+    def test_partial_override_reports_ignored(self) -> None:
+        """A single overridden knob is enough to trigger the report."""
+        spec = _make_spec(
+            parameters=_continuous_x(),
+            acquisition_optimization=AcquisitionOptimizationConfig(num_restarts=7),
+        )
+        result = BayBEBackend().validate_capabilities(spec)
+        assert any(r.key == "acquisition_optimization" for r in result.option_reports)
+
+    def test_default_config_emits_no_report(self) -> None:
+        """The field is always present (default_factory); only overrides count."""
+        spec = _make_spec(parameters=_continuous_x())
+        result = BayBEBackend().validate_capabilities(spec)
+        assert not any(r.key == "acquisition_optimization" for r in result.option_reports)
 
 
 class TestTypedOptionValidation:

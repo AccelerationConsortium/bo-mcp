@@ -177,7 +177,7 @@ class CampaignSpecModel(Base):
     acquisition_raw_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
     initial_design_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     random_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    backend: Mapped[str] = mapped_column(String(50), default="botorch", server_default="botorch")
+    backend: Mapped[str] = mapped_column(String(50), default="baybe", server_default="baybe")
     # Per-backend native option surface. JSON-encoded because
     # each entry is opaque to the neutral spec. NULL means "no options".
     backend_options_json: Mapped[str | None] = mapped_column(Text, nullable=True)

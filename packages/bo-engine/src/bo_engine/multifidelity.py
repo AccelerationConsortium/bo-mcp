@@ -10,7 +10,6 @@ v2.3: Added GPU auto-detection and acceleration
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,14 +29,13 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
 
 from bo_engine.constants import (
-    MAX_RANDOM_SEED,
     MF_ACQF_BATCH_LIMIT,
     MF_ACQF_MAXITER,
     MF_DEFAULT_COST_WEIGHT,
     MF_DEFAULT_FIXED_COST,
 )
 from bo_engine.device import ensure_device, fork_rng_devices, to_device
-from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 
 
 @dataclass(frozen=True)
@@ -379,7 +377,7 @@ def generate_multifidelity_suggestions(
         random_seed = derive_seed(fidelity_config.random_seed, "multifidelity:mfkg")
     else:
         # Deliberately non-reproducible — no master seed was supplied.
-        random_seed = random.randint(0, MAX_RANDOM_SEED)  # noqa: S311
+        random_seed = draw_fallback_seed()
 
     # fork_rng isolates the global torch RNG mutation so concurrent callers
     # cannot race on the seed (state is restored on exit); fork_rng_devices()

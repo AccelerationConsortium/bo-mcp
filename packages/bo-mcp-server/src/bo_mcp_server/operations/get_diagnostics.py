@@ -16,6 +16,7 @@ from typing import Any
 from uuid import UUID
 
 from bo_engine.backend import DiagnosticSection
+from bo_engine.backend_base import BackendError
 from bo_engine.progress import ProgressCallback
 from bo_mcp_server.backend import get_backend_async
 from bo_mcp_server.cache import diagnostics_cache
@@ -141,23 +142,34 @@ async def _compute_sections(
 
     # Delegate model-based computation to the backend — offloaded to a
     # worker thread so GP fitting / LOO-CV do not block the event loop.
+    # The backend is loaded at point of need: sections that are pure
+    # server-side computation (convergence, constraints) must not pay a
+    # multi-second cold import for a backend they never call.
     backend_sections = _map_backend_sections(requested)
-    if backend_sections:
+    wants_model_info = bool({"objectives", "health"} & requested)
+    if backend_sections or wants_model_info:
         backend = await get_backend_async(spec.backend)
-        observations = results_to_observations(results)
-        diagnostics.update(
-            await asyncio.to_thread(
-                backend.compute_diagnostics,
-                opt_spec,
-                observations,
-                backend_sections,
-                progress_callback,
+        if backend_sections:
+            observations = results_to_observations(results)
+            diagnostics.update(
+                await asyncio.to_thread(
+                    backend.compute_diagnostics,
+                    opt_spec,
+                    observations,
+                    backend_sections,
+                    progress_callback,
+                )
             )
-        )
 
-    # Enrich with server-side model info
-    if "objectives" in requested or "health" in requested:
-        enrich_diagnostics(diagnostics, spec, results, is_single_objective)
+        # Enrich with server-side model info, sourced from the campaign's own
+        # backend (issue #57: the previous static text always described BoTorch).
+        if wants_model_info:
+            try:
+                method_info = backend.select_methods(opt_spec, len(results))
+            except BackendError:
+                logger.warning("select_methods failed for backend %s", spec.backend, exc_info=True)
+                method_info = None
+            enrich_diagnostics(diagnostics, spec, results, method_info)
 
     # Health (plain-Python functions + backend correlation)
     model_correlation = diagnostics.get("model_correlation") or 0.5

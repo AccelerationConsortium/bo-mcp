@@ -182,12 +182,12 @@ implement. Methods accept and return plain Python types (no tensors, no DataFram
 
 | Backend | Package | Strengths |
 |---------|---------|-----------|
-| **BoTorchBackend** (default) | `bo-engine` | Full BoTorch/GPyTorch stack: multi-objective, TuRBO, constraints, cost-aware. SAASBO, multi-fidelity and RGPE transfer learning ship as standalone modules (`bo_engine.saasbo`, `bo_engine.multifidelity`, `bo_engine.transfer_learning`) and are not yet routed through campaign suggestions — specs carrying `saasbo_config` / `fidelity_parameter` / `transfer_learning` are rejected with typed errors |
-| **BayBEBackend** | `bo-engine-baybe` | BayBE integration with its own search-space and surrogate model abstractions |
+| **BoTorchBackend** (legacy fallback) | `bo-engine` | Full BoTorch/GPyTorch stack: multi-objective, TuRBO, constraints, cost-aware. SAASBO, multi-fidelity and RGPE transfer learning ship as standalone modules (`bo_engine.saasbo`, `bo_engine.multifidelity`, `bo_engine.transfer_learning`) and are not yet routed through campaign suggestions — specs carrying `saasbo_config` / `fidelity_parameter` / `transfer_learning` are rejected with typed errors |
+| **BayBEBackend** (default) | `bo-engine-baybe` | BayBE integration with its own search-space and surrogate model abstractions |
 
 ### Selecting a backend
 
-1. **Global default** -- set `BO_BACKEND=baybe` (defaults to `botorch`).
+1. **Global default** -- set `BO_BACKEND=botorch` to opt into the legacy backend (defaults to `baybe`).
 2. **Per-campaign** -- set `spec.backend` when creating a campaign.
 3. **Entry-point discovery** -- third-party packages can register backends under
    the `bo_mcp.backends` entry-point group.
@@ -274,7 +274,7 @@ pre-commit run --all   # manual run
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BO_BACKEND` | `botorch` | Default backend (`botorch` or `baybe`) |
+| `BO_BACKEND` | `baybe` | Default backend (`baybe` or legacy `botorch`) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/bo_mcp.db` | Database connection string |
 | `SQL_ECHO` | `false` | Log SQL queries |
 | `BO_MCP_LOG_LEVEL` | `INFO` | Logging verbosity |

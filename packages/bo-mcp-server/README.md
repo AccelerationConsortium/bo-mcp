@@ -8,7 +8,7 @@ MCP (Model Context Protocol) server for Bayesian Optimization. Exposes a full BO
 - 5 MCP resources for campaign, suggestion, and audit event inspection
 - SQLAlchemy ORM with PostgreSQL and SQLite support
 - Protocol-neutral operations layer reusable by REST, CLI, or direct Python import
-- Pluggable backend via `BOBackend` protocol (defaults to BoTorch)
+- Pluggable backend via `BOBackend` protocol (defaults to BayBE; BoTorch is the legacy fallback)
 
 ## Installation
 
@@ -105,7 +105,7 @@ MCP tool (thin wrapper, ~30 lines)
 Operation (business logic, protocol-neutral)
   |
   v
-BOBackend protocol  -->  BoTorchBackend (default)
+BOBackend protocol  -->  BayBEBackend (default)
   |                      BayBEBackend (optional)
   v
 Database (SQLAlchemy async, PostgreSQL or SQLite)

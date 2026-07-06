@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bo_mcp_server.backend_context import set_campaign_backend
 from bo_mcp_server.domain import (
     AcquisitionOptimizationConfig,
     Campaign,
@@ -195,7 +196,13 @@ class CampaignSpecRepository:
         model = result.scalar_one_or_none()
         if model is None:
             return None
-        return self._to_entity(model)
+        spec = self._to_entity(model)
+        # Single-spec loads mark the campaign this request is about, so the
+        # response ``_metadata.backend`` stamp reflects the campaign's backend
+        # rather than the server default (issue #57). Multi-spec loads
+        # (``get_by_ids``) are cross-campaign and deliberately do not bind.
+        set_campaign_backend(spec.backend)
+        return spec
 
     async def save(self, spec: CampaignSpec, spec_id: UUID) -> CampaignSpec:
         """Save campaign spec with explicit ID (specs are immutable)."""
@@ -334,6 +341,8 @@ class CampaignSpecRepository:
             acquisition_optimization=acquisition_optimization,
             initial_design_size=model.initial_design_size,
             random_seed=model.random_seed,
+            # Legacy fallback: rows created before the backend column existed
+            # ran on BoTorch. New rows always store an explicit backend.
             backend=getattr(model, "backend", "botorch"),
             backend_options=backend_options,
             **_advanced_options_kwargs(advanced),
@@ -362,6 +371,14 @@ class CampaignRepository:
         model = result.scalar_one_or_none()
         if model is None:
             return None
+        # Mark the campaign this request is about so ``_metadata.backend``
+        # reflects the campaign's backend, not the server default (issue #57).
+        # This covers operations that never load the full spec (lifecycle,
+        # suggestion/result listings). PK-indexed scalar lookup — negligible.
+        backend = await self.session.scalar(
+            select(CampaignSpecModel.backend).where(CampaignSpecModel.id == model.spec_id)
+        )
+        set_campaign_backend(backend)
         return self._to_entity(model)
 
     async def list_by_owner(

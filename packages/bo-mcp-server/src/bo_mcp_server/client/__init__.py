@@ -23,6 +23,7 @@ The facade re-exports four kinds of entities:
 
 from __future__ import annotations
 
+from bo_mcp_server.backend_context import campaign_backend_scope
 from bo_mcp_server.client.auth import (
     DEV_API_KEY,
     DEV_USER_EMAIL,
@@ -124,7 +125,10 @@ from bo_mcp_server.operations.transfer_candidates import (
 from bo_mcp_server.operations.update_suggestion_status import (
     update_suggestion_status_operation,
 )
-from bo_mcp_server.operations.validate_intake import validate_intake_operation
+from bo_mcp_server.operations.validate_intake import (
+    validate_intake_operation,
+    validate_intake_with_capabilities,
+)
 from bo_mcp_server.response_formatter import (
     RESPONSE_SCHEMA_VERSION,
     ValidateIntakeSpecSummary,
@@ -188,6 +192,7 @@ __all__ = [
     # Operations
     "batch_get_status_operation",
     "bind_trace_id",
+    "campaign_backend_scope",
     "canonical_create_campaign_payload",
     "canonical_submit_results_payload",
     "compare_campaigns_operation",
@@ -234,4 +239,5 @@ __all__ = [
     "submit_results_operation",
     "update_suggestion_status_operation",
     "validate_intake_operation",
+    "validate_intake_with_capabilities",
 ]

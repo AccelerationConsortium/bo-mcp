@@ -27,6 +27,7 @@ from baybe.parameters import (
 from baybe.searchspace import SearchSpace
 from baybe.targets import NumericalTarget
 
+from bo_engine.constants import DISCRETE_ENUMERATION_MAX_POINTS
 from bo_engine.types import (
     AcquisitionMethod,
     ConstraintSpec,
@@ -126,6 +127,101 @@ class TestSpecToParameters:
         params = spec_to_parameters(spec)
         assert isinstance(params[0], CategoricalParameter)
         assert params[0].encoding.value == "INT"
+
+
+class TestDiscreteEnumerationLimits:
+    """Grid semantics and enumeration caps for the discrete search space.
+
+    BayBE's ``SearchSpace.from_product`` materializes the full Cartesian
+    product of all discrete/categorical parameters into a DataFrame, which
+    the BayBE user guide flags as a memory hazard for large product spaces:
+    https://emdgroup.github.io/baybe/stable/userguide/searchspace.html
+    The shared engine limit (``DISCRETE_ENUMERATION_MAX_POINTS``) is
+    therefore enforced on the *product* across parameters — a per-parameter
+    check alone would let two just-under-limit grids multiply into an
+    unbuildable (tens-of-GB) frame.
+    """
+
+    @staticmethod
+    def _spec(parameters: list[ParameterSpec]) -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=parameters,
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+
+    def test_bounds_only_discrete_materializes_integer_grid(self) -> None:
+        """Bounds-only discrete means the integer grid over [lo, hi] (BoTorch parity)."""
+        spec = self._spec([ParameterSpec(name="n", type=ParameterType.DISCRETE, bounds=(0.5, 4.2))])
+        (param,) = spec_to_parameters(spec)
+        assert isinstance(param, NumericalDiscreteParameter)
+        assert tuple(param.values) == (1.0, 2.0, 3.0, 4.0)
+
+    def test_bounds_spanning_fewer_than_two_integers_raise(self) -> None:
+        spec = self._spec([ParameterSpec(name="n", type=ParameterType.DISCRETE, bounds=(0.1, 0.9))])
+        with pytest.raises(ValueError, match="fewer than 2 integer values"):
+            spec_to_parameters(spec)
+
+    def test_single_grid_above_limit_raises(self) -> None:
+        spec = self._spec(
+            [
+                ParameterSpec(
+                    name="n",
+                    type=ParameterType.DISCRETE,
+                    bounds=(0.0, float(DISCRETE_ENUMERATION_MAX_POINTS)),
+                )
+            ]
+        )
+        with pytest.raises(ValueError, match="enumeration limit"):
+            spec_to_searchspace(spec)
+
+    def test_two_large_grids_exceed_product_limit(self) -> None:
+        """Two per-parameter-legal grids must fail the product cap before building.
+
+        Each parameter spans exactly ``DISCRETE_ENUMERATION_MAX_POINTS``
+        integers (passes any per-parameter check); their product is 10^8
+        rows, which would hang/OOM ``SearchSpace.from_product``.
+        """
+        big = float(DISCRETE_ENUMERATION_MAX_POINTS - 1)
+        spec = self._spec(
+            [
+                ParameterSpec(name="a", type=ParameterType.DISCRETE, bounds=(0.0, big)),
+                ParameterSpec(name="b", type=ParameterType.DISCRETE, bounds=(0.0, big)),
+            ]
+        )
+        with pytest.raises(ValueError, match="enumeration limit") as excinfo:
+            spec_to_searchspace(spec)
+        expected_product = DISCRETE_ENUMERATION_MAX_POINTS * DISCRETE_ENUMERATION_MAX_POINTS
+        assert str(expected_product) in str(excinfo.value)
+
+    def test_product_at_limit_builds_expected_grid(self) -> None:
+        """A product exactly at the cap still builds, with the full grid."""
+        spec = self._spec(
+            [
+                ParameterSpec(name="a", type=ParameterType.DISCRETE, bounds=(0.0, 99.0)),
+                ParameterSpec(name="b", type=ParameterType.DISCRETE, bounds=(0.0, 99.0)),
+            ]
+        )
+        searchspace = spec_to_searchspace(spec)
+        assert len(searchspace.discrete.exp_rep) == 100 * 100
+
+    def test_values_and_categorical_mix_counted_in_product(self) -> None:
+        """Explicit-values grids and category lists multiply into the same cap."""
+        spec = self._spec(
+            [
+                ParameterSpec(
+                    name="grid",
+                    type=ParameterType.DISCRETE,
+                    values=[float(i) for i in range(200)],
+                ),
+                ParameterSpec(
+                    name="cat",
+                    type=ParameterType.CATEGORICAL,
+                    categories=[f"c{i}" for i in range(100)],
+                ),
+            ]
+        )
+        with pytest.raises(ValueError, match="enumeration limit"):
+            spec_to_searchspace(spec)
 
 
 class TestSpecToObjective:

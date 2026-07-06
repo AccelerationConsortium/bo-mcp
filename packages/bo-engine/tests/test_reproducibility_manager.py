@@ -22,14 +22,17 @@ process-global switches, which is why they must be applied deliberately.
 from __future__ import annotations
 
 import os
+import random
 
 import torch
 
+from bo_engine.constants import MAX_RANDOM_SEED
 from bo_engine.reproducibility import (
     IterationSeeds,
     ReproducibilityConfig,
     ReproducibilityManager,
     derive_seed,
+    draw_fallback_seed,
 )
 
 
@@ -123,3 +126,28 @@ class TestVerifyIterationDoesNotPolluteLog:
         manager.get_iteration_seeds(3)
 
         assert len(manager.get_reproducibility_report().seed_log) == 1
+
+
+class TestDrawFallbackSeed:
+    """The unseeded-fallback draw must never touch the global ``random`` stream.
+
+    Snapshot/restore RNG scopes (``fork_rng``, BayBE's seeded settings
+    scope) hold ``GLOBAL_RNG_LOCK`` while they own the process-global
+    streams; a fallback ``random.randint`` outside the lock could consume
+    from — and silently advance — a concurrent seeded scope's stream. The
+    helper therefore draws from OS entropy (``random.SystemRandom``),
+    which keeps no Mersenne-Twister state at all.
+    """
+
+    def test_returns_seed_within_valid_range(self) -> None:
+        for _ in range(100):
+            seed = draw_fallback_seed()
+            assert 0 <= seed <= MAX_RANDOM_SEED
+
+    def test_does_not_consume_global_python_stream(self) -> None:
+        random.seed(123)
+        expected_next = random.random()  # noqa: S311
+
+        random.seed(123)
+        draw_fallback_seed()
+        assert random.random() == expected_next  # noqa: S311

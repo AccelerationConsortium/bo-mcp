@@ -77,7 +77,7 @@ class Settings(BaseSettings):
         description="If true, SQLAlchemy logs every emitted statement.",
     )
     bo_backend: str = Field(
-        default="botorch",
+        default="baybe",
         alias="BO_BACKEND",
         description="Default BO backend name when a campaign requests 'auto'.",
     )

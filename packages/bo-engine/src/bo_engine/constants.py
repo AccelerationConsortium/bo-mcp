@@ -71,6 +71,23 @@ HIGH_DIMENSION_WARNING_THRESHOLD = 20
 # Minimum observations before training a model (fallback to initial design)
 MIN_OBSERVATIONS_FOR_MODEL = 2
 
+
+def resolve_initial_design_size(n_parameters: int, requested: int | None) -> int:
+    """Minimum observations to collect before switching from initial design to a fitted model.
+
+    The GP kernel needs more data points than lengthscale hyperparameters to
+    estimate, so at least ``n_parameters + 1`` observations are required,
+    floored at :data:`MIN_OBSERVATIONS_FOR_MODEL`. A caller-supplied
+    ``initial_design_size`` can raise this floor further (e.g. to explore
+    more of the space before the first fit) but never lowers it — a request
+    for fewer points than the kernel needs still waits for the floor.
+    """
+    floor = max(MIN_OBSERVATIONS_FOR_MODEL, n_parameters + 1)
+    if requested is None:
+        return floor
+    return max(floor, requested)
+
+
 # Tolerances for verifying output standardization (see
 # models.verify_standardization). BoTorch's `Standardize(m=1)` uses `nanstd`
 # (ddof=1 / sample stdv) to normalize targets, so the post-transform *unbiased*

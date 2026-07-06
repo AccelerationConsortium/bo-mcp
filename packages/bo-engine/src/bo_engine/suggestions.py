@@ -46,7 +46,7 @@ from gpytorch.priors import GammaPrior
 
 from bo_engine.constants import (
     MAX_RANDOM_SEED,
-    MIN_OBSERVATIONS_FOR_MODEL,
+    resolve_initial_design_size,
 )
 
 # Re-exports — initial-design helpers live in :mod:`bo_engine.initial_design`
@@ -371,17 +371,9 @@ def generate_next_batch(
         # an opaque error when X_avoid covers the entire choice set.
         _guard_categorical_space_exhaustion(spec, observations, batch_size)
 
-        # If not enough data, fall back to initial design.
-        # Require at least n_params+1 observations so the GP kernel has more data points
-        # than lengthscale hyperparameters to estimate (slightly overdetermined).
-        # Note: initial_design_size (default 2*n_params+1) is a separate, stricter
-        # recommendation for how many Sobol points to generate — but a user who provides
-        # n_params+1 observations from prior data should not be forced to wait longer.
-        min_model_data = max(MIN_OBSERVATIONS_FOR_MODEL, spec.n_parameters + 1)
-        if spec.initial_design_size is not None:
-            min_data = max(min_model_data, spec.initial_design_size)
-        else:
-            min_data = min_model_data
+        # If not enough data, fall back to initial design. See
+        # resolve_initial_design_size for the floor this applies.
+        min_data = resolve_initial_design_size(spec.n_parameters, spec.initial_design_size)
         if len(observations) < min_data:
             pending = pending_points or []
             excluded = [obs.parameter_values for obs in observations] + list(pending)

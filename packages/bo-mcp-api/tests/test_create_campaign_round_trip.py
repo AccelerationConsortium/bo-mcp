@@ -141,6 +141,45 @@ async def test_campaign_config_preserves_requested_initial_design_size(api_clien
 
 
 @pytest.mark.asyncio
+async def test_campaign_config_raises_low_requested_initial_design_size_to_floor(
+    api_client, auth_headers
+):
+    """A request below n_parameters + 1 is raised to the floor, not echoed verbatim.
+
+    ``generate_next_batch`` never fits a GP on fewer than n_parameters + 1
+    observations, so a 3-parameter campaign that requests
+    ``initial_design_size=1`` still waits for 4. The config snapshot must
+    reflect what will actually run rather than the raw request.
+    """
+    payload = _intake_payload()
+    payload["parameters"] = [
+        {"name": "x0", "type": "continuous", "bounds": [0.0, 1.0]},
+        {"name": "x1", "type": "continuous", "bounds": [0.0, 1.0]},
+        {"name": "x2", "type": "continuous", "bounds": [0.0, 1.0]},
+    ]
+    payload["initial_design_size"] = 1
+
+    create_response = await api_client.post(
+        "/api/campaigns",
+        json={"intake": payload},
+        headers=auth_headers,
+    )
+    assert create_response.status_code == 201, create_response.text
+    campaign_id = create_response.json()["campaign_id"]
+
+    config_response = await api_client.get(
+        f"/api/campaigns/{campaign_id}/config",
+        headers=auth_headers,
+    )
+
+    assert config_response.status_code == 200, config_response.text
+    config = config_response.json()
+    assert config["initial_design_size_requested"] == 1
+    assert config["initial_design_size"] == 4
+    assert config["initial_design_size_source"] == "botorch_default"
+
+
+@pytest.mark.asyncio
 async def test_rest_create_campaign_rejects_saasbo_on_botorch(api_client, auth_headers):
     """A pinned ``backend="botorch"`` must reject ``saasbo_config`` at intake.
 

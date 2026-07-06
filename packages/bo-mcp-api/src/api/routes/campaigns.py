@@ -42,7 +42,7 @@ from api.schemas.errors import (
     operation_failure_response,
 )
 from api.schemas.intake import IntakeData
-from bo_engine.constants import MIN_OBSERVATIONS_FOR_MODEL
+from bo_engine.constants import resolve_initial_design_size
 from bo_mcp_server.client import (
     CampaignIntakeInput,
     InvalidIdentifierError,
@@ -101,17 +101,21 @@ def _dump_model_list(values: tuple[object, ...] | list[object]) -> list[dict[str
 
 def _resolved_initial_design_size(spec: object) -> tuple[int | None, str | None]:
     requested = getattr(spec, "initial_design_size", None)
-    if requested is not None:
-        return int(requested), "requested"
 
     # BoTorch uses an initial-design fallback until there are enough
     # observations to fit the first GP. Other backends may not have this
     # phase, so leave the value unset unless BO-MCP resolved to BoTorch.
     if getattr(spec, "backend", None) != "botorch":
-        return None, None
+        if requested is None:
+            return None, None
+        return int(requested), "requested"
 
     n_parameters = len(getattr(spec, "parameters", ()))
-    return max(MIN_OBSERVATIONS_FOR_MODEL, n_parameters + 1), "botorch_default"
+    resolved = resolve_initial_design_size(n_parameters, requested)
+    # A request below the floor is still raised by the engine (see
+    # resolve_initial_design_size), so it is not honored verbatim.
+    source = "requested" if requested is not None and resolved == requested else "botorch_default"
+    return resolved, source
 
 
 def _coerce_intake(intake: IntakeData) -> CampaignIntakeInput:

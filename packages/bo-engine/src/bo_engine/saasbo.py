@@ -26,7 +26,8 @@ from bo_engine.constants import (
     SAASBO_MIN_DIMENSIONS,
     SAASBO_WIDE_INTERVAL_LOG10_THRESHOLD,
 )
-from bo_engine.device import ensure_device
+from bo_engine.device import ensure_device, fork_rng_devices
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 from bo_engine.types import AcquisitionOptimizationConfig
 
 
@@ -42,6 +43,10 @@ class SAASBOConfig:
     num_samples: int = 128  # Number of posterior samples (recommended: 128-256)
     thinning: int = 16  # Keep every Nth sample to reduce autocorrelation
     disable_progbar: bool = True  # Disable progress bar for cleaner output
+    # Master seed for the NUTS fit and acquisition optimization in
+    # generate_saasbo_suggestions. None draws fresh entropy per call
+    # (deliberately non-reproducible).
+    random_seed: int | None = None
 
 
 def create_saasbo_model(
@@ -462,36 +467,58 @@ def generate_saasbo_suggestions(
     # boundary -- BoTorch's qLog* acquisition family has no direction flag.
     train_y_bo = -train_y if minimize else train_y
 
-    # Create and fit model. ``bounds`` are threaded through so the SAAS
-    # prior (and the inactive-lengthscale calibration) operate on the
-    # normalized unit cube rather than raw parameter scales.
-    model = create_and_fit_saasbo_model(train_x, train_y_bo, config=config, bounds=bounds)
+    # Resolve a per-call torch seed for the NUTS chains and the acquisition
+    # multi-start. A configured master seed is derived deterministically
+    # (role-tagged so it cannot collide with another phase); otherwise fresh
+    # stdlib entropy is drawn — essential because fork_rng restores the
+    # global RNG on exit, so two consecutive *unseeded* calls would replay
+    # identical chains without it (mirrors multifidelity/thompson).
+    if config is not None and config.random_seed is not None:
+        random_seed = derive_seed(config.random_seed, "saasbo:suggestions")
+    else:
+        # Deliberately non-reproducible — no master seed was supplied.
+        random_seed = draw_fallback_seed()
 
-    # Compute parameter importance (full report includes raw lengthscale
-    # and boolean active mask alongside the normalized score).
-    importance_report = compute_saasbo_importance_report(model, parameter_names)
-    importance = {entry.name: entry.importance for entry in importance_report}
+    # fork_rng isolates the global torch RNG mutation so concurrent callers
+    # cannot race on the seed (state is restored on exit); fork_rng_devices()
+    # adds the active CUDA device(s) so manual_seed's CUDA-generator mutation
+    # is restored too. GLOBAL_RNG_LOCK serializes the snapshot/restore against
+    # every other consumer of the process-global RNG — without it a
+    # concurrent SAASBO call on a worker thread could interleave with a
+    # seeded scope elsewhere and silently perturb its stream.
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=fork_rng_devices()):
+        torch.manual_seed(random_seed)
 
-    # Create acquisition function
-    model.eval()
-    acqf = qLogExpectedImprovement(
-        model=model,
-        best_f=train_y_bo.max().item(),
-    )
+        # Create and fit model. ``bounds`` are threaded through so the SAAS
+        # prior (and the inactive-lengthscale calibration) operate on the
+        # normalized unit cube rather than raw parameter scales.
+        model = create_and_fit_saasbo_model(train_x, train_y_bo, config=config, bounds=bounds)
 
-    acq_config = acquisition_optimization or AcquisitionOptimizationConfig()
-    num_restarts, raw_samples = acq_config.resolve(int(bounds.shape[-1]))
+        # Compute parameter importance (full report includes raw lengthscale
+        # and boolean active mask alongside the normalized score).
+        importance_report = compute_saasbo_importance_report(model, parameter_names)
+        importance = {entry.name: entry.importance for entry in importance_report}
 
-    # Optimize acquisition
-    candidates, acq_values = optimize_acqf(
-        acq_function=acqf,
-        bounds=bounds,
-        q=batch_size,
-        num_restarts=num_restarts,
-        raw_samples=raw_samples,
-        sequential=True,
-        options={"batch_limit": 5, "maxiter": 200},
-    )
+        # Create acquisition function
+        model.eval()
+        acqf = qLogExpectedImprovement(
+            model=model,
+            best_f=train_y_bo.max().item(),
+        )
+
+        acq_config = acquisition_optimization or AcquisitionOptimizationConfig()
+        num_restarts, raw_samples = acq_config.resolve(int(bounds.shape[-1]))
+
+        # Optimize acquisition
+        candidates, acq_values = optimize_acqf(
+            acq_function=acqf,
+            bounds=bounds,
+            q=batch_size,
+            num_restarts=num_restarts,
+            raw_samples=raw_samples,
+            sequential=True,
+            options={"batch_limit": 5, "maxiter": 200},
+        )
 
     # Get top important parameters
     sorted_importance = sorted(importance.items(), key=lambda x: x[1], reverse=True)
@@ -508,6 +535,7 @@ def generate_saasbo_suggestions(
         "parameter_lengthscales": {entry.name: entry.lengthscale for entry in importance_report},
         "active_parameters": [entry.name for entry in importance_report if entry.active],
         "inactive_parameters": [entry.name for entry in importance_report if not entry.active],
+        "random_seed": random_seed,
     }
 
     return candidates, acq_values, metadata

@@ -45,6 +45,7 @@ from botorch.models.transforms.outcome import (
     OutcomeTransform,
     Standardize,
 )
+from botorch.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 from botorch.posteriors import Posterior
 from botorch.posteriors.transformed import TransformedPosterior
 from gpytorch.constraints import GreaterThan
@@ -57,6 +58,9 @@ from gpytorch.priors.torch_priors import LogNormalPrior
 from torch import Tensor
 
 from bo_engine.constants import (
+    HAMMING_LENGTHSCALE_PRIOR_LOC,
+    HAMMING_LENGTHSCALE_PRIOR_SCALE,
+    KERNEL_LENGTHSCALE_FLOOR,
     NOISE_PRIOR_GAMMA_CONCENTRATION,
     NOISE_PRIOR_GAMMA_RATE,
     NOISE_PRIOR_MIN_INFERRED,
@@ -490,15 +494,19 @@ def build_mixed_kernel(
 
     Used when :attr:`OptimizationSpec.use_categorical_kernel` is set on a spec
     that mixes continuous and one-hot categorical columns. The continuous block
-    uses the same ARD ``RBFKernel`` shape that ``SingleTaskGP``'s default kernel
-    uses (``ScaleKernel(RBFKernel(ard_num_dims=k))``); each categorical parameter
-    gets its **own** :class:`_HammingCategoricalKernel` restricted to that
-    parameter's one-hot columns via ``active_dims``. Per-block kernels mean each
-    categorical parameter learns a single shared lengthscale (rather than one
-    ARD lengthscale per one-hot bit, which over-parameterizes the kernel and
-    couples unrelated parameters through a shared mismatch average). All parts
-    are summed inside a single ``ScaleKernel`` so the model learns a joint
-    outputscale.
+    is built via BoTorch's ``get_covar_module_with_dim_scaled_prior`` — the same
+    factory ``SingleTaskGP``'s stock kernel uses (BoTorch >= 0.12) — so it
+    carries the Hvarfner dimension-scaled ``LogNormal`` lengthscale prior and
+    the ``GreaterThan(2.5e-2)`` stability floor that regularize small-n /
+    high-d fits. Each categorical parameter gets its **own**
+    :class:`_HammingCategoricalKernel` restricted to that parameter's one-hot
+    columns via ``active_dims``, with a matching lengthscale prior and floor.
+    Per-block kernels mean each categorical parameter learns a single shared
+    lengthscale (rather than one ARD lengthscale per one-hot bit, which
+    over-parameterizes the kernel and couples unrelated parameters through a
+    shared mismatch average). All parts are summed inside a single
+    ``ScaleKernel`` so the model learns a joint outputscale (unlike the stock
+    single-kernel default, which leaves the outputscale to ``Standardize``).
 
     Args:
         n_total_dims: Total number of encoded input dimensions (continuous +
@@ -526,8 +534,10 @@ def build_mixed_kernel(
 
     parts: list[Kernel] = []
     if cont_indices:
+        # Stock factory: dimension-scaled LogNormal lengthscale prior plus the
+        # GreaterThan(2.5e-2) floor, matching a default ``SingleTaskGP``.
         parts.append(
-            RBFKernel(
+            get_covar_module_with_dim_scaled_prior(
                 ard_num_dims=len(cont_indices),
                 active_dims=tuple(cont_indices),
             )
@@ -535,8 +545,22 @@ def build_mixed_kernel(
     for block in categorical_blocks:
         if not block:
             continue
+        hamming_prior = LogNormalPrior(
+            loc=HAMMING_LENGTHSCALE_PRIOR_LOC,
+            scale=HAMMING_LENGTHSCALE_PRIOR_SCALE,
+        )
         # ``ard_num_dims`` omitted → one shared lengthscale for the whole block.
-        parts.append(_HammingCategoricalKernel(active_dims=tuple(block)))
+        parts.append(
+            _HammingCategoricalKernel(
+                active_dims=tuple(block),
+                lengthscale_prior=hamming_prior,
+                lengthscale_constraint=GreaterThan(
+                    KERNEL_LENGTHSCALE_FLOOR,
+                    transform=None,
+                    initial_value=hamming_prior.mode,
+                ),
+            )
+        )
 
     if not parts:
         # Degenerate case (n_total_dims == 0); shouldn't happen for a real spec.

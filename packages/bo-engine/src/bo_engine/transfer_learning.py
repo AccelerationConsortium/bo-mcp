@@ -55,7 +55,8 @@ from bo_engine.constants import (
     RGPE_PENDING_PENALTY_LENGTHSCALE,
 )
 from bo_engine.cross_validation import compute_exact_loo_moments
-from bo_engine.device import ensure_device
+from bo_engine.device import ensure_device, fork_rng_devices
+from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 from bo_engine.types import AcquisitionOptimizationConfig
 
 
@@ -85,6 +86,10 @@ class RGPEConfig:
 
     num_samples: int = RGPE_NUM_SAMPLES  # Posterior samples for ranking-loss estimation
     use_input_warping: bool = False  # Whether to use input warping
+    # Master seed for the stochastic fit / ranking-loss sampling / acquisition
+    # optimization in generate_rgpe_suggestions. None draws fresh entropy per
+    # call (deliberately non-reproducible).
+    random_seed: int | None = None
 
 
 def _ranking_loss(pred_left: Tensor, pred_right: Tensor, observed: Tensor) -> Tensor:
@@ -765,62 +770,85 @@ def generate_rgpe_suggestions(
     """
     target_x, target_y, bounds = ensure_device(target_x, target_y, bounds)
 
-    # Create RGPE model
-    rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds, config)
-
-    # Determine best observed value (assumes minimization)
-    best_f = target_y.min().item()
-
-    if use_ensemble_acquisition:
-        # NEW: Use ensemble predictions for acquisition (Section 2.2 fix).
-        # bounds enable the pending-point penalizer so the sequential batch
-        # loop below produces spread-out candidates instead of duplicates.
-        acqf = RGPEAcquisition(
-            rgpe_ensemble=rgpe,
-            best_f=best_f,
-            maximize=False,
-            bounds=bounds,
-        )
-        acq_name = "RGPEAcquisition (Ensemble EI)"
+    # Resolve a per-call torch seed for the stochastic base-model fits, the
+    # ranking-loss posterior sampling in compute_weights, and the acquisition
+    # multi-start. A configured master seed is derived deterministically
+    # (role-tagged so it cannot collide with another phase); otherwise fresh
+    # stdlib entropy is drawn — essential because fork_rng restores the
+    # global RNG on exit, so two consecutive *unseeded* calls would replay
+    # identical candidates without it (mirrors multifidelity/thompson).
+    if config is not None and config.random_seed is not None:
+        random_seed = derive_seed(config.random_seed, "transfer_learning:rgpe")
     else:
-        # Legacy: Use only target model for acquisition. The target model is
-        # fit on raw minimization-form targets (this module's documented
-        # contract), but BoTorch's qLogNEI always maximizes — wire a
-        # negating objective so the acquisition minimizes the raw objective
-        # instead of chasing its maximum.
-        target_model = rgpe.target_model
-        target_model.eval()
-        acqf = qLogNoisyExpectedImprovement(
-            model=target_model,
-            X_baseline=target_x,
-            prune_baseline=True,
-            cache_root=False,
-            # ``GenericMCObjective`` calls ``objective(samples, X=X)`` — the
-            # parameter must be named ``X`` even though it is unused.
-            objective=GenericMCObjective(lambda samples, X=None: -samples[..., 0]),  # noqa: N803, ARG005
+        # Deliberately non-reproducible — no master seed was supplied.
+        random_seed = draw_fallback_seed()
+
+    # fork_rng isolates the global torch RNG mutation so concurrent callers
+    # cannot race on the seed (state is restored on exit); fork_rng_devices()
+    # adds the active CUDA device(s) so manual_seed's CUDA-generator mutation
+    # is restored too. GLOBAL_RNG_LOCK serializes the snapshot/restore against
+    # every other consumer of the process-global RNG — without it a
+    # concurrent RGPE call on a worker thread could interleave with a
+    # seeded scope elsewhere and silently perturb its stream.
+    with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=fork_rng_devices()):
+        torch.manual_seed(random_seed)
+
+        # Create RGPE model
+        rgpe = create_rgpe_model(target_x, target_y, prior_tasks, bounds, config)
+
+        # Determine best observed value (assumes minimization)
+        best_f = target_y.min().item()
+
+        if use_ensemble_acquisition:
+            # NEW: Use ensemble predictions for acquisition (Section 2.2 fix).
+            # bounds enable the pending-point penalizer so the sequential batch
+            # loop below produces spread-out candidates instead of duplicates.
+            acqf = RGPEAcquisition(
+                rgpe_ensemble=rgpe,
+                best_f=best_f,
+                maximize=False,
+                bounds=bounds,
+            )
+            acq_name = "RGPEAcquisition (Ensemble EI)"
+        else:
+            # Legacy: Use only target model for acquisition. The target model is
+            # fit on raw minimization-form targets (this module's documented
+            # contract), but BoTorch's qLogNEI always maximizes — wire a
+            # negating objective so the acquisition minimizes the raw objective
+            # instead of chasing its maximum.
+            target_model = rgpe.target_model
+            target_model.eval()
+            acqf = qLogNoisyExpectedImprovement(
+                model=target_model,
+                X_baseline=target_x,
+                prune_baseline=True,
+                cache_root=False,
+                # ``GenericMCObjective`` calls ``objective(samples, X=X)`` — the
+                # parameter must be named ``X`` even though it is unused.
+                objective=GenericMCObjective(lambda samples, X=None: -samples[..., 0]),  # noqa: N803, ARG005
+            )
+            acq_name = "qLogNoisyExpectedImprovement (Target Only)"
+
+        # Optimize acquisition
+        acq_config = acquisition_optimization or AcquisitionOptimizationConfig()
+        num_restarts, raw_samples = acq_config.resolve(int(bounds.shape[-1]))
+        candidates, acq_values = optimize_acqf(
+            acq_function=acqf,
+            bounds=bounds,
+            q=batch_size,
+            num_restarts=num_restarts,
+            raw_samples=raw_samples,
+            sequential=True,
         )
-        acq_name = "qLogNoisyExpectedImprovement (Target Only)"
 
-    # Optimize acquisition
-    acq_config = acquisition_optimization or AcquisitionOptimizationConfig()
-    num_restarts, raw_samples = acq_config.resolve(int(bounds.shape[-1]))
-    candidates, acq_values = optimize_acqf(
-        acq_function=acqf,
-        bounds=bounds,
-        q=batch_size,
-        num_restarts=num_restarts,
-        raw_samples=raw_samples,
-        sequential=True,
-    )
+        # Get weight explanation
+        weight_explanation = get_rgpe_weights_explanation(rgpe, prior_tasks)
 
-    # Get weight explanation
-    weight_explanation = get_rgpe_weights_explanation(rgpe, prior_tasks)
-
-    # Compute ensemble uncertainty at candidates for metadata
-    rgpe.eval()
-    with torch.no_grad():
-        posterior = rgpe.posterior(candidates)
-        ensemble_uncertainty = posterior.variance.mean().item()
+        # Compute ensemble uncertainty at candidates for metadata
+        rgpe.eval()
+        with torch.no_grad():
+            posterior = rgpe.posterior(candidates)
+            ensemble_uncertainty = posterior.variance.mean().item()
 
     metadata = {
         "model_type": "RGPE (Rank-weighted GP Ensemble)",
@@ -831,6 +859,7 @@ def generate_rgpe_suggestions(
         "target_weight": weight_explanation["target"],
         "ensemble_uncertainty": ensemble_uncertainty,
         "best_f": best_f,
+        "random_seed": random_seed,
     }
 
     return candidates, acq_values, metadata

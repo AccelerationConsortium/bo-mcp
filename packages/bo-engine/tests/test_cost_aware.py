@@ -12,6 +12,7 @@ References:
 """
 
 import numpy as np
+import pytest
 import torch
 from botorch.models import SingleTaskGP
 
@@ -30,11 +31,21 @@ from bo_engine.models import create_and_fit_single_task_model
 # Number of candidates requested when exercising sequential-greedy batching.
 EIPU_TEST_BATCH_SIZE = 3
 
-# Minimum pairwise distance between sequential-greedy batch members (and
-# between a pending-free and a pending-conditioned candidate). Calibrated on
-# the toy models below: genuinely conditioned candidates separate by
-# >= 2.5e-3, while an acquisition that ignores pending points collapses the
-# batch to duplicates within ~1e-8.
+# Minimum distance between a pending-free and a pending-conditioned
+# candidate in ``test_pending_points_shift_the_candidate``. Calibrated on
+# the toy models below: a genuinely conditioned candidate shifts by
+# >= 2.5e-3, while an acquisition that ignores pending points leaves it
+# within ~1e-8 of the unconditioned optimum.
+#
+# NOT used as a pairwise-distance floor across a sequential-greedy batch:
+# that was tried and retracted (see git history of this file) after
+# empirically confirming that qLogNEI's soft, incumbent-baseline pending
+# conditioning can legitimately place a later greedy candidate arbitrarily
+# close to an earlier one on this smooth, single-peaked 1-D landscape — a
+# *more* thorough multi-start search found a tighter, still-genuine optimum
+# (a wider search is not a valid fix for that same reason). Batch
+# distinctness is instead verified mechanistically, in
+# ``test_sequential_greedy_forwards_growing_pending_set``.
 EIPU_MIN_CANDIDATE_DISTANCE = 1e-4
 
 # Gradient agreement tolerances: the acquisition gradient must match the
@@ -475,18 +486,95 @@ class TestEIpuBatchConditioning:
     surface at every greedy step and returns a batch of duplicates.
     """
 
-    def test_batch_members_are_distinct(self) -> None:
-        """A cost-aware batch of 3 contains three distinct experiments."""
+    def test_batch_returns_requested_candidate_count(self) -> None:
+        """A cost-aware batch request for 3 candidates returns exactly 3 rows.
+
+        This only checks the shape ``optimize_acquisition`` hands back for
+        ``batch_size > 1`` (e.g. that the sequential-greedy dispatch isn't
+        silently collapsed to a joint q=1 call). Whether the 3 candidates
+        are genuinely distinct — the actual H23 concern — is verified in
+        ``test_sequential_greedy_forwards_growing_pending_set``, not here;
+        see ``EIPU_MIN_CANDIDATE_DISTANCE`` for why a geometric distance
+        floor across the batch is not used for that.
+        """
         acqf, _cost_model, bounds, _train_x = _toy_eipu_acquisition()
 
         candidates, _ = optimize_acquisition(acqf, bounds, batch_size=EIPU_TEST_BATCH_SIZE)
 
         assert candidates.shape[0] == EIPU_TEST_BATCH_SIZE
-        distances = torch.cdist(candidates, candidates)
-        off_diagonal = distances[~torch.eye(EIPU_TEST_BATCH_SIZE, dtype=torch.bool)]
-        assert (off_diagonal > EIPU_MIN_CANDIDATE_DISTANCE).all(), (
-            f"Sequential-greedy batch members collapsed to duplicates: "
-            f"pairwise distances {off_diagonal.tolist()}"
+
+    def test_sequential_greedy_forwards_growing_pending_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every greedy step's pending set actually reaches the inner qLogNEI.
+
+        H23 was a silent no-op: the old wrapper's ``X_pending`` setter stored
+        the pending tensor as a plain attribute on the inner (then-analytic)
+        EI instead of calling its ``set_X_pending``, so the improvement term
+        never saw it and every greedy step maximized the identical surface.
+        A regression of that pattern — ``EIpuAcquisition.set_X_pending``
+        absorbing the call without forwarding it — would be invisible to a
+        spy that only records the *outer* call: BoTorch's sequential loop
+        (``_optimize_acqf_sequential_q``) calls ``acqf.set_X_pending``
+        unconditionally regardless of whether that method's body does
+        anything, so a no-op implementation would still "receive" every
+        call. Note also that ``qLogNoisyExpectedImprovement.set_X_pending``,
+        in its (default) incremental mode, does *not* store the pending
+        tensor on ``self.X_pending`` at all — it folds it into the
+        incumbent baseline via ``_init_baseline`` instead, so even
+        inspecting the inner acquisition's own ``X_pending`` attribute
+        would misdetect a working implementation as broken.
+
+        This test instead confirms, immediately after each greedy step,
+        that ``acqf.improvement.X_baseline`` — the public, documented
+        property qLogNEI's own ``forward`` reads as "the set of points that
+        should be considered as the incumbent" (its docstring; backed by
+        ``_full_X_baseline = cat([X_baseline, X_pending])``) — has grown by
+        exactly the pending rows BoTorch just set. That is exact evidence
+        that pending conditioning reaches the incremental-NEI computation,
+        independent of where L-BFGS-B happens to converge.
+
+        ``X_pending``/``X_baseline`` cannot be inspected *after*
+        ``optimize_acquisition`` returns: BoTorch resets every
+        acquisition's ``X_pending`` back to its pre-call value once the
+        batch completes (installed botorch's ``optim/optimize.py``, end of
+        ``_optimize_acqf_sequential_q``), so the mechanism must be observed
+        live, in-flight.
+        """
+        acqf, _cost_model, bounds, _train_x = _toy_eipu_acquisition()
+        original_baseline_rows = acqf.improvement.X_baseline.shape[-2]
+        observed_pending_counts: list[int] = []
+        original_set_x_pending = acqf.set_X_pending
+
+        def _recording_set_x_pending(x_pending: torch.Tensor | None = None) -> None:
+            original_set_x_pending(x_pending)
+            if x_pending is None:
+                return
+            n_pending = x_pending.shape[-2]
+            incumbent_baseline = acqf.improvement.X_baseline
+            expected_rows = original_baseline_rows + n_pending
+            assert incumbent_baseline.shape[-2] == expected_rows, (
+                f"acqf.improvement.X_baseline has {incumbent_baseline.shape[-2]} "
+                f"rows, expected {expected_rows} ({original_baseline_rows} "
+                f"original + {n_pending} pending): X_pending is not being "
+                "folded into the incremental-NEI incumbent baseline"
+            )
+            assert torch.equal(incumbent_baseline[-n_pending:], x_pending), (
+                "The pending points BoTorch just set are not present in "
+                "acqf.improvement.X_baseline: forwarding reaches the wrong "
+                "state"
+            )
+            observed_pending_counts.append(n_pending)
+
+        monkeypatch.setattr(acqf, "set_X_pending", _recording_set_x_pending)
+
+        optimize_acquisition(acqf, bounds, batch_size=EIPU_TEST_BATCH_SIZE)
+
+        expected_counts = list(range(1, EIPU_TEST_BATCH_SIZE))
+        assert observed_pending_counts == expected_counts, (
+            f"Expected set_X_pending calls carrying {expected_counts} pending "
+            f"point(s) in order, got {observed_pending_counts}: X_pending is "
+            "not being threaded through every greedy step"
         )
 
     def test_pending_points_shift_the_candidate(self) -> None:

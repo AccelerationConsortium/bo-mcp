@@ -7,6 +7,7 @@ existing bo-engine modules without duplicating logic.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
@@ -37,7 +38,6 @@ from bo_engine.constants import (
 from bo_engine.diagnostics import (
     LOOCVMetrics,
     compute_best_value,
-    compute_hypervolume,
     compute_improvement_history,
     compute_loo_cv_for_model,
     compute_observed_hypervolume,
@@ -45,6 +45,7 @@ from bo_engine.diagnostics import (
     compute_rank_correlation,
     compute_single_objective_improvement_rate,
     extract_hyperparameters,
+    observations_to_minimization_form,
     summarize_pareto_front,
 )
 from bo_engine.feature_importance import compute_feature_importance
@@ -58,12 +59,12 @@ from bo_engine.interop import (
 from bo_engine.method_selector import select_methods
 from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
-from bo_engine.reference_point import get_reference_point
 from bo_engine.result_validation import detect_outliers
 from bo_engine.suggestions import (
     generate_next_batch,
     update_turbo_after_evaluation,
 )
+from bo_engine.suggestions_training import resolve_model_options
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.turbo import TurboState, should_use_turbo
 from bo_engine.types import AcquisitionMethod, ObservationData, OptimizationSpec
@@ -72,10 +73,11 @@ logger = logging.getLogger(__name__)
 
 
 # Covariance module of the suggestion path's GP surrogates: SingleTaskGP's
-# stock kernel (BoTorch >= 0.12) and the mixed-space kernel built by
-# ``bo_engine.models.build_mixed_kernel`` are both
-# ``ScaleKernel(RBFKernel(ard_num_dims=d))``. Reported by ``select_methods``
-# for diagnostics; a fitted surrogate's ``kernel_type`` wins when available.
+# stock kernel (BoTorch >= 0.12) is a dimension-scaled ARD ``RBFKernel``; the
+# mixed-space kernel built by ``bo_engine.models.build_mixed_kernel`` adds
+# per-parameter Hamming kernels on top of the same dimension-scaled RBF block.
+# Reported by ``select_methods`` for diagnostics; a fitted surrogate's
+# ``kernel_type`` wins when available.
 _DEFAULT_KERNEL_DESCRIPTION = "RBF with automatic relevance determination (ARD)"
 
 
@@ -662,7 +664,15 @@ class BoTorchBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> dict[str, Any]:
-        """Compute Pareto front and hypervolume for multi-objective."""
+        """Compute Pareto front and hypervolume for multi-objective.
+
+        ``hypervolume`` is delegated to :func:`compute_observed_hypervolume`
+        so this live diagnostics figure uses the same pinned reference
+        point as ``campaign.hypervolume_history`` (see M75) — a moving,
+        recomputed-per-call reference point would let a dominated,
+        worse-in-one-objective observation inflate this field even though
+        the Pareto front (and the history) did not improve.
+        """
         obj_names = [o.name for o in spec.objectives]
         result: dict[str, Any] = {
             "best_value": None,
@@ -676,27 +686,14 @@ class BoTorchBackend(BaseBackend):
             result["n_pareto_points"] = 0
             return result
 
-        minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
-        y_list = [
-            torch.tensor(
-                [obs.objective_values[n] for n in obj_names],
-                dtype=torch.double,
-            )
-            for obs in observations
-        ]
-        y_tensor = torch.stack(y_list)
-        y_bo = y_tensor.clone()
-        y_bo[:, ~minimize_mask] = -y_bo[:, ~minimize_mask]
+        y_bo, minimize_mask = observations_to_minimization_form(spec, observations)
 
         pareto_y, _ = compute_pareto_front(y_bo)
         pareto_display = pareto_y.clone()
         pareto_display[:, ~minimize_mask] = -pareto_display[:, ~minimize_mask]
 
-        ref_point = get_reference_point(y_bo, minimize_mask)
-        hv = compute_hypervolume(pareto_y, ref_point)
-
         result["pareto_front"] = summarize_pareto_front(pareto_display, obj_names)
-        result["hypervolume"] = hv
+        result["hypervolume"] = compute_observed_hypervolume(spec, observations)
         result["n_pareto_points"] = len(result["pareto_front"])
         return result
 
@@ -707,6 +704,14 @@ class BoTorchBackend(BaseBackend):
         is_single: bool,
     ) -> _DiagnosticModelFit | None:
         """Fit one GP on the observations for the diagnostics sections.
+
+        The model options (fixed noise, log transform, categorical kernel,
+        noise prior, warping) come from the same
+        :func:`~bo_engine.suggestions_training.resolve_model_options` block
+        the suggestion builders use, so the reported noise variance / LOO
+        metrics / kernel type describe the production surrogate rather than
+        a plain trainable-noise RBF GP. ``target_negated`` stays ``False``
+        because ``_prepare_training_data`` returns raw (un-negated) targets.
 
         Returns ``None`` when there is insufficient data to fit (the same gate
         the model and hyperparameter sections previously applied individually)
@@ -723,20 +728,32 @@ class BoTorchBackend(BaseBackend):
                 spec, observations
             )
             bounds = get_bounds_tensor(spec)
+            options = resolve_model_options(spec, observations)
 
             if is_single:
                 model: SingleTaskGP | ModelListGP = create_and_fit_single_task_model(
                     train_x,
                     train_y,
                     bounds,
-                    use_input_warping=spec.use_input_warping,
+                    use_input_warping=options.use_input_warping,
+                    train_yvar=options.train_yvar,
+                    log_transform=options.log_flags[0],
+                    categorical_blocks=options.categorical_blocks,
+                    auto_shift_for_log=options.auto_shift_for_log,
+                    noise_prior=options.noise_prior,
+                    target_negated=False,
                 )
             else:
                 model = create_and_fit_model(
                     train_x,
                     train_y,
                     bounds,
-                    use_input_warping=spec.use_input_warping,
+                    use_input_warping=options.use_input_warping,
+                    train_yvar=options.train_yvar,
+                    log_transform=options.log_flags,
+                    categorical_blocks=options.categorical_blocks,
+                    noise_prior=options.noise_prior,
+                    target_negated=False,
                 )
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Diagnostic model fit failed: %s", e)
@@ -767,6 +784,10 @@ class BoTorchBackend(BaseBackend):
 
         try:
             corr = self._model_correlation(fit.model, fit.train_x, fit.train_y, fit.is_single)
+            # "Not measurable" crosses the envelope boundary as None so
+            # transports never serialize NaN and callers keep their
+            # None-aware handling (a measured 0.0 stays 0.0).
+            model_correlation = None if math.isnan(corr) else corr
             fi = compute_feature_importance(
                 fit.model,
                 fit.train_x,
@@ -785,7 +806,7 @@ class BoTorchBackend(BaseBackend):
             logger.debug("Model diagnostics failed: %s", e)
             return empty
         return {
-            "model_correlation": corr,
+            "model_correlation": model_correlation,
             "feature_importance": fi,
             "loo_cv_metrics": loo,
         }
@@ -797,7 +818,12 @@ class BoTorchBackend(BaseBackend):
         train_y: torch.Tensor,
         is_single: bool,
     ) -> float:
-        """Compute rank correlation between model predictions and actuals."""
+        """Compute rank correlation between model predictions and actuals.
+
+        Multi-objective campaigns average the per-objective correlations over
+        the objectives where the correlation is measurable; ``NaN`` (nothing
+        measurable) means "unknown", not zero.
+        """
         model.eval()
         with torch.no_grad():
             predictions = model.posterior(train_x).mean
@@ -807,7 +833,10 @@ class BoTorchBackend(BaseBackend):
             compute_rank_correlation(predictions[:, i], train_y[:, i])
             for i in range(train_y.shape[1])
         ]
-        return sum(corrs) / len(corrs)
+        finite = [c for c in corrs if not math.isnan(c)]
+        if not finite:
+            return float("nan")
+        return sum(finite) / len(finite)
 
     def _loo_cv(
         self,

@@ -522,3 +522,85 @@ class TestTrustRegionNonUnitCube:
             f"Trust region center {center.tolist()} is not the argmin's "
             f"inputs {best_point.tolist()} — wrong incumbent selection."
         )
+
+
+class TestRestartActuallyRestarts:
+    """A triggered restart must rebuild the trust region, not linger.
+
+    Per Eriksson et al. (NeurIPS 2019) §2, when the trust region contracts
+    below ``length_min`` TuRBO restarts with a fresh region. The pipeline
+    consumes the ``restart_triggered`` flag in ``_initialize_turbo_state``:
+    the stale state is discarded and a new one is built (fresh length and
+    counters, incumbent re-anchored), so provenance keeps reporting
+    ``"turbo"`` only while a live trust region actually constrains the
+    search — and a later success streak cannot re-expand a collapsed
+    sub-minimum region.
+    """
+
+    def test_restart_triggered_state_is_rebuilt_fresh(self) -> None:
+        import torch
+
+        from bo_engine.suggestions_single_objective import _initialize_turbo_state
+        from bo_engine.types import (
+            ObjectiveSpec,
+            OptimizationSpec,
+            ParameterSpec,
+            ParameterType,
+            TurboConfig,
+        )
+
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name=f"x{i}", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))
+                for i in range(3)
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            turbo_config=TurboConfig(),
+        )
+        collapsed = create_turbo_state(dim=3, batch_size=2, initial_best_value=0.4)
+        collapsed = TurboState(
+            dim=collapsed.dim,
+            batch_size=collapsed.batch_size,
+            length=collapsed.length_min / 2,
+            length_min=collapsed.length_min,
+            length_max=collapsed.length_max,
+            failure_counter=7,
+            failure_tolerance=collapsed.failure_tolerance,
+            success_counter=0,
+            success_tolerance=collapsed.success_tolerance,
+            best_value=0.4,
+            restart_triggered=True,
+        )
+        train_y_bo = torch.tensor([0.1, 0.3, 0.4], dtype=torch.double)
+
+        fresh = _initialize_turbo_state(spec, train_y_bo, batch_size=2, turbo_state=collapsed)
+
+        assert fresh is not None
+        assert fresh.restart_triggered is False
+        assert fresh.length > fresh.length_min, "Restart must reopen the trust region."
+        assert fresh.failure_counter == 0
+        assert fresh.best_value == pytest.approx(0.4)  # re-anchored to current data
+
+    def test_live_state_passes_through_unchanged(self) -> None:
+        import torch
+
+        from bo_engine.suggestions_single_objective import _initialize_turbo_state
+        from bo_engine.types import (
+            ObjectiveSpec,
+            OptimizationSpec,
+            ParameterSpec,
+            ParameterType,
+            TurboConfig,
+        )
+
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            turbo_config=TurboConfig(),
+        )
+        live = create_turbo_state(dim=1, batch_size=1, initial_best_value=0.5)
+        train_y_bo = torch.tensor([0.2, 0.5], dtype=torch.double)
+
+        result = _initialize_turbo_state(spec, train_y_bo, batch_size=1, turbo_state=live)
+
+        assert result is live

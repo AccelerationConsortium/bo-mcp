@@ -41,17 +41,36 @@ MIN_COMPARE_CAMPAIGNS = 2
 MAX_COMPARE_CAMPAIGNS = 10
 
 
+# Labels for the per-campaign ``sample_efficiency_basis`` field. The two
+# metrics live in different units (a dimensionless improvement ratio vs a
+# hypervolume rate in objective units), so cross-basis ranking is
+# meaningless — the comparison section only ranks campaigns sharing a basis
+# (and, for multi-objective, the same objective structure).
+_EFFICIENCY_BASIS_SINGLE = "relative_improvement_per_result"
+_EFFICIENCY_BASIS_MULTI = "hypervolume_per_result"
+
+
+def _objective_signature(spec: CampaignSpec) -> list[str]:
+    """Order-independent objective identity used to group comparable campaigns."""
+    return sorted(f"{objective.name}:{objective.direction}" for objective in spec.objectives)
+
+
 async def _compute_campaign_metrics(
     spec: CampaignSpec,
     results: list[Result],
     iteration: int,
 ) -> dict[str, Any]:
+    is_multi_objective = len(spec.objectives) > 1
     metrics: dict[str, Any] = {
         "n_results": len(results),
         "iteration": iteration,
         "n_parameters": len(spec.parameters),
         "n_objectives": len(spec.objectives),
-        "is_multi_objective": len(spec.objectives) > 1,
+        "is_multi_objective": is_multi_objective,
+        "objective_signature": _objective_signature(spec),
+        "sample_efficiency_basis": (
+            _EFFICIENCY_BASIS_MULTI if is_multi_objective else _EFFICIENCY_BASIS_SINGLE
+        ),
     }
 
     if not results:
@@ -107,9 +126,29 @@ async def _compute_campaign_metrics(
     return metrics
 
 
+def _sample_efficiency_groups(metrics_list: list[dict[str, Any]]) -> dict[str, list[int]]:
+    """Group campaign indices into sample-efficiency comparability classes.
+
+    Single-objective campaigns share one class — their metric is a
+    dimensionless improvement ratio. Multi-objective campaigns are grouped
+    by objective signature, because a raw hypervolume rate is only
+    meaningful against campaigns optimizing the same objectives.
+    """
+    groups: dict[str, list[int]] = {}
+    for index, metrics in enumerate(metrics_list):
+        if metrics["is_multi_objective"]:
+            signature = "|".join(metrics.get("objective_signature", []))
+            key = f"multi_objective[{signature}]"
+        else:
+            key = "single_objective"
+        groups.setdefault(key, []).append(index)
+    return groups
+
+
 def _generate_comparison_recommendation(
     metrics_list: list[dict[str, Any]],
     campaign_names: list[str],
+    most_efficient_campaign: str | None,
 ) -> str:
     if len(metrics_list) < 2:
         return "Need at least 2 campaigns to generate meaningful comparison."
@@ -120,13 +159,15 @@ def _generate_comparison_recommendation(
     )
     most_data_campaign = campaign_names[most_data_idx]
 
-    most_efficient_idx = max(
-        range(len(metrics_list)),
-        key=lambda index: metrics_list[index].get("sample_efficiency", 0) or 0,
-    )
-    most_efficient_campaign = campaign_names[most_efficient_idx]
+    if most_efficient_campaign is None:
+        return (
+            f"Campaign '{most_data_campaign}' has the most data. The compared campaigns "
+            "differ in objective structure, so their sample-efficiency values are in "
+            "different units and cannot be ranked against each other — see "
+            "best_sample_efficiency_by_group for the per-group leaders."
+        )
 
-    if most_data_idx == most_efficient_idx:
+    if most_data_campaign == most_efficient_campaign:
         return (
             f"Campaign '{most_data_campaign}' has both the most data and best sample "
             "efficiency. Consider using its configuration as a baseline for future campaigns."
@@ -143,9 +184,21 @@ def _compare_metrics(
     metrics_list: list[dict[str, Any]],
     campaign_names: list[str],
 ) -> dict[str, Any]:
-    best_sample_efficiency_idx = max(
-        range(len(metrics_list)),
-        key=lambda index: metrics_list[index].get("sample_efficiency", 0) or 0,
+    # Sample efficiency is ranked only within comparability groups: the
+    # single-objective ratio and the multi-objective hypervolume rate are
+    # incommensurable (the raw HV rate carries the objectives' units, so a
+    # global max() would let multi-objective campaigns win on magnitude
+    # alone). The flat best_sample_efficiency is only populated when every
+    # compared campaign falls into one group.
+    groups = _sample_efficiency_groups(metrics_list)
+    efficiency_by_group = {
+        key: campaign_names[
+            max(indices, key=lambda index: metrics_list[index].get("sample_efficiency", 0) or 0)
+        ]
+        for key, indices in groups.items()
+    }
+    best_sample_efficiency = (
+        next(iter(efficiency_by_group.values())) if len(efficiency_by_group) == 1 else None
     )
 
     # Determine best single-objective performer (lowest best_value).
@@ -163,14 +216,20 @@ def _compare_metrics(
         )
         best_single_objective = campaign_names[best_single_objective_idx]
 
-    # Determine best multi-objective performer (highest hypervolume).
+    # Determine best multi-objective performer (highest hypervolume) — only
+    # when every multi-objective campaign optimizes the same objectives; a
+    # raw hypervolume carries the objectives' units, so ranking across
+    # different objective structures would be a pure magnitude artifact.
     best_multi_objective = None
     multi_with_hv = [
         (index, metrics)
         for index, metrics in enumerate(metrics_list)
         if metrics["is_multi_objective"] and metrics.get("hypervolume") is not None
     ]
-    if multi_with_hv:
+    multi_signatures = {
+        tuple(metrics.get("objective_signature", [])) for _, metrics in multi_with_hv
+    }
+    if multi_with_hv and len(multi_signatures) == 1:
         best_multi_objective_idx = max(
             (index for index, _ in multi_with_hv),
             key=lambda index: metrics_list[index]["hypervolume"],
@@ -178,11 +237,20 @@ def _compare_metrics(
         best_multi_objective = campaign_names[best_multi_objective_idx]
 
     return {
-        "best_sample_efficiency": campaign_names[best_sample_efficiency_idx],
+        "best_sample_efficiency": best_sample_efficiency,
+        "best_sample_efficiency_by_group": efficiency_by_group,
+        "sample_efficiency_note": (
+            "Sample efficiency is comparable only between campaigns sharing a basis: "
+            f"single-objective campaigns use {_EFFICIENCY_BASIS_SINGLE} (dimensionless), "
+            f"multi-objective campaigns use {_EFFICIENCY_BASIS_MULTI} (objective units, "
+            "grouped by objective signature)."
+        ),
         "best_single_objective": best_single_objective,
         "best_multi_objective": best_multi_objective,
         "total_campaigns_compared": len(metrics_list),
-        "recommendation": _generate_comparison_recommendation(metrics_list, campaign_names),
+        "recommendation": _generate_comparison_recommendation(
+            metrics_list, campaign_names, best_sample_efficiency
+        ),
     }
 
 

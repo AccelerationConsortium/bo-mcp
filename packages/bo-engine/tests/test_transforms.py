@@ -276,3 +276,63 @@ class TestTransforms:
 
         recovered = unnormalize_inputs(normalized, bounds)
         assert torch.allclose(x, recovered)
+
+
+class TestUnknownCategoryRejected:
+    """A typo'd category value must fail loudly, not zero-encode.
+
+    An unknown value silently produced an all-zero one-hot block, which
+    argmax-decodes back to the *first* category — silent training-data
+    corruption for direct engine callers that bypass the MCP intake
+    validation (``bo_engine`` is documented standalone, and the pending-
+    point encoder feeds this path too).
+    """
+
+    def test_unknown_category_raises_value_error_naming_parameter(self) -> None:
+        import pytest
+
+        from bo_engine.transforms import encode_categorical
+        from bo_engine.types import (
+            ObjectiveSpec,
+            OptimizationSpec,
+            ParameterSpec,
+            ParameterType,
+        )
+
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="solvent",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["etoh", "meoh"],
+                )
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+
+        with pytest.raises(ValueError, match="solvent") as excinfo:
+            encode_categorical({"solvent": "EtOH"}, spec)
+        assert "EtOH" in str(excinfo.value)
+
+    def test_known_category_still_one_hot_encodes(self) -> None:
+        from bo_engine.transforms import encode_categorical
+        from bo_engine.types import (
+            ObjectiveSpec,
+            OptimizationSpec,
+            ParameterSpec,
+            ParameterType,
+        )
+
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="solvent",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["etoh", "meoh"],
+                )
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+
+        encoded = encode_categorical({"solvent": "meoh"}, spec)
+        assert encoded.tolist() == [0.0, 1.0]

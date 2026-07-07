@@ -37,7 +37,8 @@ from bo_engine.constants import (
 from bo_engine.device import get_device, get_dtype
 from bo_engine.diagnostics import compute_hypervolume
 from bo_engine.models import create_and_fit_single_task_model
-from bo_engine.reproducibility import derive_seed
+from bo_engine.reference_point import get_reference_point
+from bo_engine.reproducibility import derive_seed, draw_fallback_seed
 from bo_engine.suggestions import generate_next_batch
 from bo_engine.types import (
     ObjectiveSpec,
@@ -67,15 +68,32 @@ class HypotheticalResult:
 class ModelImpact:
     """Impact of hypothetical result on the model.
 
+    Multi-objective campaigns fit one GP per objective (before and after
+    the hypothetical) and aggregate across all of them, so a hypothetical
+    that is informative only for a later objective is valued the same as
+    one informative for the first.
+
     Attributes:
-        lengthscale_changes: Change in lengthscales per parameter.
-        noise_variance_change: Change in noise variance.
-        prediction_changes: Changes in predictions at key points.
-        uncertainty_reduction: Average reduction in posterior variance
-            (in squared objective units).
-        prior_mean_variance: Average posterior variance before adding the
-            hypothetical; the denominator that turns ``uncertainty_reduction``
-            into a dimensionless fraction.
+        lengthscale_changes: Change in lengthscales per parameter, averaged
+            across objectives (lengthscales share the parameter's units).
+        noise_variance_change: Change in the likelihood noise, averaged
+            across objectives. The GPs standardize their targets, so the
+            noise lives on the standardized scale and is comparable across
+            objectives.
+        prediction_changes: Changes in predictions at key points. Keys are
+            ``point_<i>`` for single-objective campaigns and
+            ``<objective>:point_<i>`` for multi-objective ones.
+        uncertainty_reduction: Single-objective: average reduction in
+            posterior variance (in squared objective units).
+            Multi-objective: mean *fractional* posterior-variance reduction
+            across objectives (dimensionless; each objective's reduction is
+            normalized by its own prior variance first, so no objective's
+            units dominate).
+        prior_mean_variance: The denominator that turns
+            ``uncertainty_reduction`` into a dimensionless fraction —
+            the average prior posterior variance for single-objective
+            campaigns, ``1.0`` for multi-objective ones (the fraction is
+            already folded into ``uncertainty_reduction``).
     """
 
     lengthscale_changes: dict[str, float]
@@ -291,6 +309,7 @@ def simulate_result(
         bounds=bounds,
         use_input_warping=use_input_warping,
         seed=seed,
+        objective_names=objective_names,
     )
 
     # Compute suggestion impact
@@ -391,6 +410,7 @@ def find_most_informative_point(
     bounds: Tensor,
     n_candidates: int = 100,
     parameter_names: list[str] | None = None,
+    seed: int | None = None,
 ) -> tuple[dict[str, float], float]:
     """Find the most informative point to evaluate next.
 
@@ -402,6 +422,12 @@ def find_most_informative_point(
         bounds: Parameter bounds.
         n_candidates: Number of candidates to consider.
         parameter_names: Names of parameters.
+        seed: Master seed for the scrambled-Sobol candidate cloud; the same
+            seed reproduces the same candidates (and hence the same answer
+            on the same model). ``None`` draws fresh entropy via
+            :func:`bo_engine.reproducibility.draw_fallback_seed` so the
+            draw never consumes from the process-global RNG streams that
+            seeded scopes snapshot and restore.
 
     Returns:
         Tuple of (best_parameters, information_value).
@@ -415,8 +441,12 @@ def find_most_informative_point(
     if parameter_names is None:
         parameter_names = [f"param_{i}" for i in range(n_dims)]
 
-    # Generate candidates
-    sobol = torch.quasirandom.SobolEngine(dimension=n_dims, scramble=True)
+    # Generate candidates. An explicitly seeded SobolEngine keeps its own
+    # generator state, so this never touches the global torch RNG.
+    sobol_seed = (
+        derive_seed(seed, "whatif:informative_sobol") if seed is not None else draw_fallback_seed()
+    )
+    sobol = torch.quasirandom.SobolEngine(dimension=n_dims, scramble=True, seed=sobol_seed)
     candidates = sobol.draw(n_candidates).to(device=device, dtype=dtype)
     candidates = bounds[0] + candidates * (bounds[1] - bounds[0])
 
@@ -523,28 +553,36 @@ def _kernel_lengthscale(model: SingleTaskGP) -> Tensor:
     return cast("Tensor", kernel.lengthscale)
 
 
-def _compute_model_impact(
+@dataclass
+class _ObjectiveModelImpact:
+    """Before/after fit comparison for one objective column."""
+
+    lengthscale_delta: Tensor
+    noise_change: float
+    prediction_changes: dict[str, float]
+    prior_mean_variance: float
+    uncertainty_reduction: float
+
+
+def _compute_objective_model_impact(
     train_x: Tensor,
-    train_y: Tensor,
+    train_y_col: Tensor,
     aug_x: Tensor,
-    aug_y: Tensor,
+    aug_y_col: Tensor,
     bounds: Tensor,
     use_input_warping: bool,
-    seed: int | None = None,
-) -> ModelImpact:
-    """Compute impact on model parameters."""
-    # Fit original model
+    test_x: Tensor,
+) -> _ObjectiveModelImpact:
+    """Fit before/after GPs for one objective and compare them at ``test_x``."""
     orig_model = create_and_fit_single_task_model(
         train_x=train_x,
-        train_y=train_y.squeeze(-1) if train_y.shape[1] == 1 else train_y[:, 0],
+        train_y=train_y_col,
         bounds=bounds,
         use_input_warping=use_input_warping,
     )
-
-    # Fit augmented model
     aug_model = create_and_fit_single_task_model(
         train_x=aug_x,
-        train_y=aug_y.squeeze(-1) if aug_y.shape[1] == 1 else aug_y[:, 0],
+        train_y=aug_y_col,
         bounds=bounds,
         use_input_warping=use_input_warping,
     )
@@ -554,17 +592,52 @@ def _compute_model_impact(
     # when there is no ``base_kernel``.
     orig_ls = _kernel_lengthscale(orig_model).detach().squeeze()
     aug_ls = _kernel_lengthscale(aug_model).detach().squeeze()
-
     if orig_ls.dim() == 0:
         orig_ls = orig_ls.unsqueeze(0)
         aug_ls = aug_ls.unsqueeze(0)
 
-    ls_changes = {f"param_{i}": (aug_ls[i] - orig_ls[i]).item() for i in range(len(orig_ls))}
-
-    # Noise variance
     orig_noise = orig_model.likelihood.noise.item()  # ty: ignore[call-non-callable]
     aug_noise = aug_model.likelihood.noise.item()  # ty: ignore[call-non-callable]
-    noise_change = aug_noise - orig_noise
+
+    with torch.no_grad():
+        orig_pred = orig_model.posterior(test_x).mean.squeeze()
+        aug_pred = aug_model.posterior(test_x).mean.squeeze()
+        orig_var = orig_model.posterior(test_x).variance.squeeze()
+        aug_var = aug_model.posterior(test_x).variance.squeeze()
+
+    n_test = test_x.shape[0]
+    prior_mean_variance = orig_var.mean().item()
+    return _ObjectiveModelImpact(
+        lengthscale_delta=aug_ls - orig_ls,
+        noise_change=aug_noise - orig_noise,
+        prediction_changes={
+            f"point_{i}": (aug_pred[i] - orig_pred[i]).item() for i in range(n_test)
+        },
+        prior_mean_variance=prior_mean_variance,
+        uncertainty_reduction=prior_mean_variance - aug_var.mean().item(),
+    )
+
+
+def _compute_model_impact(
+    train_x: Tensor,
+    train_y: Tensor,
+    aug_x: Tensor,
+    aug_y: Tensor,
+    bounds: Tensor,
+    use_input_warping: bool,
+    seed: int | None = None,
+    objective_names: list[str] | None = None,
+) -> ModelImpact:
+    """Compute impact on model parameters, aggregated over all objectives.
+
+    Every objective column gets its own before/after GP pair; see
+    :class:`ModelImpact` for the per-field aggregation rules. Anchoring to
+    the first objective only would systematically under-value hypotheticals
+    informative for the other objectives.
+    """
+    n_objectives = train_y.shape[1]
+    if objective_names is None or len(objective_names) != n_objectives:
+        objective_names = [f"obj_{k}" for k in range(n_objectives)]
 
     # Prediction changes sampled at a fixed Sobol grid. Seeding keeps the test
     # points identical across before/after fits (and across rescaled re-runs),
@@ -577,24 +650,50 @@ def _compute_model_impact(
     test_x = sobol.draw(n_test).to(device=train_x.device, dtype=train_x.dtype)
     test_x = bounds[0] + test_x * (bounds[1] - bounds[0])
 
-    with torch.no_grad():
-        orig_pred = orig_model.posterior(test_x).mean.squeeze()
-        aug_pred = aug_model.posterior(test_x).mean.squeeze()
-        orig_var = orig_model.posterior(test_x).variance.squeeze()
-        aug_var = aug_model.posterior(test_x).variance.squeeze()
+    per_objective = [
+        _compute_objective_model_impact(
+            train_x=train_x,
+            train_y_col=train_y[:, k],
+            aug_x=aug_x,
+            aug_y_col=aug_y[:, k],
+            bounds=bounds,
+            use_input_warping=use_input_warping,
+            test_x=test_x,
+        )
+        for k in range(n_objectives)
+    ]
 
-    pred_changes = {f"point_{i}": (aug_pred[i] - orig_pred[i]).item() for i in range(n_test)}
+    mean_ls_delta = torch.stack([impact.lengthscale_delta for impact in per_objective]).mean(dim=0)
+    ls_changes = {f"param_{i}": mean_ls_delta[i].item() for i in range(len(mean_ls_delta))}
+    noise_change = sum(impact.noise_change for impact in per_objective) / n_objectives
 
-    # Average uncertainty reduction, plus the prior variance it is relative to.
-    prior_mean_variance = orig_var.mean().item()
-    uncertainty_reduction = prior_mean_variance - aug_var.mean().item()
+    if n_objectives == 1:
+        single = per_objective[0]
+        return ModelImpact(
+            lengthscale_changes=ls_changes,
+            noise_variance_change=noise_change,
+            prediction_changes=single.prediction_changes,
+            uncertainty_reduction=single.uncertainty_reduction,
+            prior_mean_variance=single.prior_mean_variance,
+        )
 
+    pred_changes = {
+        f"{name}:{point}": delta
+        for name, impact in zip(objective_names, per_objective, strict=True)
+        for point, delta in impact.prediction_changes.items()
+    }
+    # Mean fractional reduction: each objective normalized by its own prior
+    # variance first, so no objective's units dominate the aggregate.
+    fractional_reductions = [
+        impact.uncertainty_reduction / (abs(impact.prior_mean_variance) + NUMERICAL_EPSILON)
+        for impact in per_objective
+    ]
     return ModelImpact(
         lengthscale_changes=ls_changes,
         noise_variance_change=noise_change,
         prediction_changes=pred_changes,
-        uncertainty_reduction=uncertainty_reduction,
-        prior_mean_variance=prior_mean_variance,
+        uncertainty_reduction=sum(fractional_reductions) / n_objectives,
+        prior_mean_variance=1.0,
     )
 
 
@@ -761,9 +860,12 @@ def _compute_pareto_impact(
         i for i in range(train_min.shape[0]) if orig_pareto_mask[i] and not aug_pareto_mask[i]
     ]
 
-    # Hypervolume in minimization form (ref point = worst + margin).
-    ref_point = train_min.max(dim=0).values + 0.1 * (
-        train_min.max(dim=0).values - train_min.min(dim=0).values
+    # Hypervolume in minimization form, using the shared reference-point
+    # helper (worst + margin·window with per-objective floors) so whatif's
+    # HV deltas agree with campaign diagnostics in the small-spread regime.
+    # ``train_min`` is already fully canonicalized, so the mask is all-True.
+    ref_point = get_reference_point(
+        train_min, torch.ones(n_objectives, dtype=torch.bool, device=train_min.device)
     )
     orig_hv = compute_hypervolume(train_min[orig_pareto_mask], ref_point)
     aug_hv = compute_hypervolume(aug_min[aug_pareto_mask], ref_point)

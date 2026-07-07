@@ -18,6 +18,8 @@ References:
 
 from __future__ import annotations
 
+import pytest
+
 from bo_engine.convergence import detect_convergence, estimate_remaining_iterations
 
 
@@ -109,3 +111,66 @@ class TestEstimateRemainingScaleInvariance:
         # can be estimated (returns None rather than the capped maximum).
         history = [5.0, 5.0, 5.0, 5.0, 5.0]
         assert estimate_remaining_iterations(history, target_improvement=0.5) is None
+
+
+class TestProgressAndStagnationScaleInvariance:
+    """Progress rate and stagnation counter share the convergence detector's scale.
+
+    ``compute_single_objective_improvement_rate`` divides by the
+    scale-invariant step denominator and ``_count_stagnant_iterations``
+    compares deltas against a tolerance proportional to the trajectory's
+    robust scale, so a units change (dollars vs cents, mol vs µmol) cannot
+    flip ``progress_status`` or turn an actively-improving micro-scale
+    objective into a "critically stagnant" one while the (already
+    scale-invariant) convergence verdict next to it disagrees.
+    """
+
+    def test_improvement_rate_invariant_under_rescaling(self) -> None:
+        from bo_engine.diagnostics import compute_single_objective_progress_status
+        from bo_engine.diagnostics_single import compute_single_objective_improvement_rate
+
+        history = [5.0, 4.0, 3.0, 2.5, 2.4, 2.35]
+        baseline = compute_single_objective_improvement_rate(history)
+        rescaled = compute_single_objective_improvement_rate([v * 1000.0 for v in history])
+        micro = compute_single_objective_improvement_rate([v * 1e-7 for v in history])
+
+        # Pure rescaling above the absolute floor keeps the exact rate.
+        assert rescaled == pytest.approx(baseline)
+        # Below the absolute floor the shared helpers switch to the
+        # trajectory-scale denominator (their documented convention), so the
+        # exact number differs — but the *classification* must agree: an
+        # actively improving micro-scale objective must still read improving.
+        assert compute_single_objective_progress_status(micro) == (
+            compute_single_objective_progress_status(baseline)
+        )
+        assert compute_single_objective_progress_status(micro) == "improving"
+
+    def test_stagnation_count_invariant_under_rescaling_and_shift(self) -> None:
+        from bo_engine.diagnostics_single import _count_stagnant_iterations
+
+        improving = [1.0, 0.8, 0.6, 0.5, 0.45, 0.42]
+        stagnant = [1.0, 0.8, 0.6, 0.6, 0.6, 0.6]
+
+        for scale in (1.0, 1000.0, 1e-7):
+            scaled_improving = [v * scale for v in improving]
+            scaled_stagnant = [v * scale for v in stagnant]
+            assert _count_stagnant_iterations(scaled_improving, 5) == 0, (
+                f"An actively improving trajectory at scale {scale} must not count as stagnant."
+            )
+            assert _count_stagnant_iterations(scaled_stagnant, 5) == 3
+
+        shifted_stagnant = [v + 100.0 for v in stagnant]
+        assert _count_stagnant_iterations(shifted_stagnant, 5) == 3
+
+    def test_micro_scale_objective_health_matches_unit_scale(self) -> None:
+        """The review's headline case: ~1e-7 objective actively improving."""
+        from bo_engine.diagnostics_single import determine_single_objective_health_status
+
+        improving = [10.0, 8.0, 6.0, 5.0, 4.5, 4.2, 4.0, 3.9, 3.7, 3.6]
+        status_unit, _ = determine_single_objective_health_status(
+            improvement_history=improving, model_correlation=0.9
+        )
+        status_micro, _ = determine_single_objective_health_status(
+            improvement_history=[v * 1e-7 for v in improving], model_correlation=0.9
+        )
+        assert status_micro == status_unit == "healthy"

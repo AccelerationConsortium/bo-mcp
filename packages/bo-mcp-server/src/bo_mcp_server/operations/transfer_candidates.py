@@ -17,6 +17,7 @@ from bo_mcp_server.constants import (
     TRANSFER_SIMILARITY_STRONG,
 )
 from bo_mcp_server.domain import CampaignSpec, CampaignStatus
+from bo_mcp_server.domain.campaign_spec import InputParameter
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import parse_campaign_id, parse_verbosity
 from bo_mcp_server.response_formatter import VerbosityLevel, format_transfer_candidates_response
@@ -84,11 +85,51 @@ def _compute_objective_similarity(source_spec: CampaignSpec, target_spec: Campai
     return len(source_objectives & target_objectives) / len(source_objectives | target_objectives)
 
 
+def _parameter_pair_overlap(
+    source_param: InputParameter, target_param: InputParameter
+) -> float | None:
+    """Search-space overlap for one common parameter, or ``None`` if unscorable.
+
+    Numeric parameters score interval-overlap / interval-union; categorical
+    parameters score the Jaccard similarity of their category sets — the
+    natural analogue of bounds overlap for a discrete label space.
+    """
+    if source_param.bounds is not None and target_param.bounds is not None:
+        source_lower, source_upper = source_param.bounds.lower, source_param.bounds.upper
+        target_lower, target_upper = target_param.bounds.lower, target_param.bounds.upper
+
+        overlap_lower = max(source_lower, target_lower)
+        overlap_upper = min(source_upper, target_upper)
+        if overlap_lower >= overlap_upper:
+            return 0.0
+        overlap_length = overlap_upper - overlap_lower
+        union_length = max(source_upper, target_upper) - min(source_lower, target_lower)
+        return overlap_length / union_length if union_length > 0 else 0.0
+
+    if source_param.categories is not None and target_param.categories is not None:
+        source_categories = set(source_param.categories)
+        target_categories = set(target_param.categories)
+        union = source_categories | target_categories
+        if not union:
+            return None
+        return len(source_categories & target_categories) / len(union)
+
+    return None
+
+
 def _compute_bounds_overlap(
     source_spec: CampaignSpec,
     target_spec: CampaignSpec,
     alias_index: dict[str, str],
-) -> float:
+) -> float | None:
+    """Mean per-parameter search-space overlap over the common parameters.
+
+    Returns ``None`` when no common parameter is scorable (e.g. no common
+    parameters at all) so the caller can renormalize the component weights
+    instead of treating "not measurable" as zero overlap — which would
+    structurally cap categorical-only campaigns below the recommendation
+    thresholds even for identical specs.
+    """
     source_params = {
         _canonical_name(parameter.name, alias_index): parameter
         for parameter in source_spec.parameters
@@ -99,30 +140,13 @@ def _compute_bounds_overlap(
     }
 
     common_params = set(source_params) & set(target_params)
-    if not common_params:
-        return 0.0
-
-    overlaps: list[float] = []
-    for name in common_params:
-        source_param = source_params[name]
-        target_param = target_params[name]
-        if source_param.bounds is None or target_param.bounds is None:
-            continue
-
-        source_lower, source_upper = source_param.bounds.lower, source_param.bounds.upper
-        target_lower, target_upper = target_param.bounds.lower, target_param.bounds.upper
-
-        overlap_lower = max(source_lower, target_lower)
-        overlap_upper = min(source_upper, target_upper)
-        if overlap_lower >= overlap_upper:
-            overlaps.append(0.0)
-            continue
-
-        overlap_length = overlap_upper - overlap_lower
-        union_length = max(source_upper, target_upper) - min(source_lower, target_lower)
-        overlaps.append(overlap_length / union_length if union_length > 0 else 0.0)
-
-    return sum(overlaps) / len(overlaps) if overlaps else 0.0
+    overlaps = [
+        overlap
+        for name in common_params
+        if (overlap := _parameter_pair_overlap(source_params[name], target_params[name]))
+        is not None
+    ]
+    return sum(overlaps) / len(overlaps) if overlaps else None
 
 
 def _compute_overall_similarity(
@@ -130,7 +154,7 @@ def _compute_overall_similarity(
     target_spec: CampaignSpec,
     n_results: int,
     alias_index: dict[str, str],
-) -> tuple[float, dict[str, float]]:
+) -> tuple[float, dict[str, float | None]]:
     parameter_similarity = _compute_parameter_similarity(source_spec, target_spec, alias_index)
     objective_similarity = _compute_objective_similarity(source_spec, target_spec)
     bounds_overlap = _compute_bounds_overlap(source_spec, target_spec, alias_index)
@@ -141,17 +165,24 @@ def _compute_overall_similarity(
     richness_threshold = INITIAL_DESIGN_MULTIPLIER * n_params + 1
     data_richness = min(1.0, n_results / richness_threshold)
 
-    overall = (
-        TRANSFER_WEIGHT_PARAMETER * parameter_similarity
-        + TRANSFER_WEIGHT_OBJECTIVE * objective_similarity
-        + TRANSFER_WEIGHT_BOUNDS * bounds_overlap
-        + TRANSFER_WEIGHT_DATA_RICHNESS * data_richness
-    )
+    weighted_components = [
+        (TRANSFER_WEIGHT_PARAMETER, parameter_similarity),
+        (TRANSFER_WEIGHT_OBJECTIVE, objective_similarity),
+        (TRANSFER_WEIGHT_DATA_RICHNESS, data_richness),
+    ]
+    if bounds_overlap is not None:
+        weighted_components.append((TRANSFER_WEIGHT_BOUNDS, bounds_overlap))
+
+    # Renormalize over the available components so an unscorable overlap
+    # ("no comparable search-space information") does not act as a hidden
+    # zero: two identical specs must be able to reach similarity 1.0.
+    total_weight = sum(weight for weight, _ in weighted_components)
+    overall = sum(weight * value for weight, value in weighted_components) / total_weight
 
     return overall, {
         "parameter_similarity": round(parameter_similarity, 4),
         "objective_similarity": round(objective_similarity, 4),
-        "bounds_overlap": round(bounds_overlap, 4),
+        "bounds_overlap": round(bounds_overlap, 4) if bounds_overlap is not None else None,
         "data_richness": round(data_richness, 4),
     }
 

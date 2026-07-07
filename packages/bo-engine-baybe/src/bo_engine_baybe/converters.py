@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 from baybe.constraints import (
     ContinuousLinearConstraint,
-    DiscreteProductConstraint,
     DiscreteSumConstraint,
 )
 from baybe.constraints.conditions import ThresholdCondition
@@ -70,7 +69,7 @@ _CONTINUOUS_OPERATOR_MAP: dict[ConstraintType, str] = {
 }
 
 # Maps neutral ConstraintType to the BayBE ThresholdCondition operator used
-# inside DiscreteSumConstraint / DiscreteProductConstraint.
+# inside DiscreteSumConstraint.
 _DISCRETE_OPERATOR_MAP: dict[ConstraintType, str] = {
     ConstraintType.SUM_EQUALS: "=",
     ConstraintType.SUM_LESS_THAN: "<=",
@@ -448,15 +447,14 @@ def spec_to_constraints(
       for direct callers.
 
     Continuous linear constraints (over only continuous parameters) map to
-    :class:`ContinuousLinearConstraint`. Numerical-discrete sum/product
-    constraints map to BayBE :class:`DiscreteSumConstraint` /
-    :class:`DiscreteProductConstraint` so finite mixture grids and
-    integer-sum constraints are expressed natively instead of being
-    forced through the continuous mapping. Hybrid, categorical, and
-    discrete-LINEAR constraints raise ``ValueError`` — BayBE has no
-    matching native construct and silently dropping the constraint
-    would let an "auto" selection produce a SearchSpace BayBE cannot
-    construct.
+    :class:`ContinuousLinearConstraint`. Numerical-discrete sum
+    constraints map to BayBE :class:`DiscreteSumConstraint` so finite
+    mixture grids and integer-sum constraints are expressed natively
+    instead of being forced through the continuous mapping. Hybrid,
+    categorical, and discrete-LINEAR constraints raise ``ValueError`` —
+    BayBE has no matching native construct and silently dropping the
+    constraint would let an "auto" selection produce a SearchSpace BayBE
+    cannot construct.
     """
     normalized_pairs, declared_params = _resolve_normalized(constraints, parameters)
     if not normalized_pairs:
@@ -532,8 +530,13 @@ def _build_continuous_constraint(c: ConstraintSpec) -> ContinuousLinearConstrain
 
 def _build_discrete_constraint(
     c: ConstraintSpec,
-) -> DiscreteSumConstraint | DiscreteProductConstraint:
-    """Build a BayBE discrete sum/product constraint with a ThresholdCondition.
+) -> DiscreteSumConstraint:
+    """Build a BayBE discrete sum constraint with a ThresholdCondition.
+
+    Only the three SUM-type neutral constraints can reach this builder —
+    dispatch is gated on membership in ``_DISCRETE_OPERATOR_MAP`` and the
+    neutral spec defines no product constraint type, so there is no
+    product path here.
 
     BayBE's ``ThresholdCondition`` requires an explicit ``tolerance`` for
     equality-style operators (``=``/``==``/``!=``); for ordering operators
@@ -548,13 +551,7 @@ def _build_discrete_constraint(
         operator=operator,
         tolerance=tolerance,
     )
-    if (
-        c.type == ConstraintType.SUM_EQUALS
-        or c.type == ConstraintType.SUM_LESS_THAN
-        or c.type == ConstraintType.SUM_GREATER_THAN
-    ):
-        return DiscreteSumConstraint(parameters=list(c.parameters), condition=threshold)
-    return DiscreteProductConstraint(parameters=list(c.parameters), condition=threshold)
+    return DiscreteSumConstraint(parameters=list(c.parameters), condition=threshold)
 
 
 def _assert_log_transform_targets_valid(

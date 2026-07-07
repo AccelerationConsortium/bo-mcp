@@ -58,11 +58,14 @@ _CHEMISTRY_AVAILABLE, _CHEMISTRY_UNAVAILABLE_REASON = _detect_chemistry_extras()
 # ``_task_parameter_feature_report`` continue to flip TRANSFER_LEARNING
 # to ``SUPPORTED`` when a TaskParameter is actually present, so a spec
 # that exercises the feature still resolves correctly through
-# :meth:`validate_capabilities`.
+# :meth:`validate_capabilities`. ``Feature.CONSTRAINTS`` is likewise
+# absent: BayBE cannot honor hybrid, categorical-arithmetic, or
+# discrete-LINEAR constraints (its per-spec reports say so), and the
+# base-class rule restricts this set to features honorable for *any*
+# well-formed spec.
 _SUPPORTED_FEATURES = frozenset(
     {
         Feature.MULTI_OBJECTIVE,
-        Feature.CONSTRAINTS,
         Feature.CATEGORICAL,
         Feature.MIXED_SEARCH_SPACE,
     }
@@ -76,6 +79,15 @@ _CONDITIONAL_FEATURES: dict[Feature, str] = {
     Feature.TRANSFER_LEARNING: (
         "Requires a parameter with parameter_options['baybe'].role == 'task' "
         "(BayBE-native TaskParameter)."
+    ),
+    Feature.CONSTRAINTS: (
+        "Supported for sum_equals/sum_less_than/sum_greater_than/linear "
+        "constraints over continuous parameters and for "
+        "sum_equals/sum_less_than/sum_greater_than constraints over "
+        "numerical-discrete parameters. Hybrid (mixed continuous/discrete), "
+        "categorical-arithmetic, and linear-over-discrete constraints are "
+        "not supported; validate_capabilities reports each constraint "
+        "individually."
     ),
 }
 

@@ -81,6 +81,28 @@ def compute_exploration_exploitation(
         )
 
 
+def _observed_objective_scale(results: list[Result], spec: CampaignSpec) -> float | None:
+    """Average observed spread across objectives, or ``None`` when unknown.
+
+    Suggestion-provenance ``model_uncertainty`` is a raw-scale posterior
+    std (averaged across objectives for multi-objective campaigns), so the
+    matching dimensionless divisor is the mean of the per-objective
+    observed spreads. ``None`` (no results, or all spreads degenerate)
+    tells the engine to fall back to its neutral exploration ratio instead
+    of comparing raw units against dimensionless thresholds.
+    """
+    spreads: list[float] = []
+    for obj in spec.objectives:
+        values = [r.objective_values[obj.name] for r in results if obj.name in r.objective_values]
+        if len(values) >= 2:
+            spread = max(values) - min(values)
+            if spread > 0:
+                spreads.append(spread)
+    if not spreads:
+        return None
+    return sum(spreads) / len(spreads)
+
+
 def _compute_exploration_exploitation_inner(
     suggestions: list[Suggestion],
     results: list[Result],
@@ -109,8 +131,12 @@ def _compute_exploration_exploitation_inner(
 
     suggestions_tensor = stack_encoded_values(param_dicts, opt_spec)
 
+    # A single "best point" only exists for single-objective campaigns; for
+    # Pareto problems anchoring to one objective would make the distance
+    # metric (and the balance verdict built on it) arbitrary, so the
+    # analysis stays exploration-only there.
     best_point = None
-    if results:
+    if results and len(spec.objectives) == 1:
         obj = spec.objectives[0]
         values = [r.objective_values[obj.name] for r in results]
         if values:
@@ -125,12 +151,17 @@ def _compute_exploration_exploitation_inner(
         best_point=best_point,
         uncertainties=uncertainties,
         bounds=bounds,
+        objective_scale=_observed_objective_scale(results, spec),
     )
 
     diagnostics["exploration_exploitation"] = {
         "exploration_ratio": round(metrics.exploration_ratio, 4),
         "diversity_score": round(metrics.diversity_score, 4),
-        "average_distance_to_best": round(metrics.average_distance_to_best, 4),
+        "average_distance_to_best": (
+            round(metrics.average_distance_to_best, 4)
+            if metrics.average_distance_to_best is not None
+            else None
+        ),
         "balance_assessment": metrics.balance_assessment,
         "recommendation": metrics.recommendation,
     }
@@ -150,7 +181,9 @@ def compute_suggestion_diversity_metrics(
     try:
         param_dicts = [s.parameter_values for s in pending]
         suggestions_tensor = stack_encoded_values(param_dicts, opt_spec)
-        diversity = compute_suggestion_diversity(suggestions_tensor)
+        diversity = compute_suggestion_diversity(
+            suggestions_tensor, bounds=get_bounds_tensor(opt_spec)
+        )
 
         diagnostics["suggestion_diversity"] = {
             "diversity_score": round(diversity, 4),

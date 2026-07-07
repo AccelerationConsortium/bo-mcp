@@ -1,4 +1,4 @@
-"""Training-data assembly and pending-point conditioning.
+"""Training-data assembly, model-option resolution and pending-point conditioning.
 
 Split from :mod:`bo_engine.suggestions` so the helpers that translate a
 list of :class:`~bo_engine.types.ObservationData` into tensors (parameter
@@ -8,18 +8,31 @@ acquisition pipelines in
 :mod:`bo_engine.suggestions_single_objective` /
 :mod:`bo_engine.suggestions_multi_objective` consume these helpers
 verbatim — no behavior change.
+
+:func:`resolve_model_options` is the single source of truth for turning a
+spec + observations into the model-factory options (fixed noise, log
+transform, categorical kernel, noise prior, warping). Both the suggestion
+builders and the backend's diagnostics fit consume it, so the GP the
+diagnostics sections describe is configured identically to the GP that
+generates suggestions.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import torch
+from gpytorch.priors import GammaPrior
 from torch import Tensor
 
 from bo_engine.device import get_device, get_dtype
-from bo_engine.transforms import encode_categorical, stack_encoded_values
+from bo_engine.transforms import (
+    encode_categorical,
+    get_categorical_blocks,
+    stack_encoded_values,
+)
 from bo_engine.types import ObservationData, OptimizationSpec
 
 logger = logging.getLogger(__name__)
@@ -88,6 +101,79 @@ def _prepare_train_yvar(
             row.append(stddev * stddev)
         rows.append(row)
     return torch.tensor(rows, dtype=get_dtype(), device=get_device())
+
+
+def _resolve_noise_prior(spec: OptimizationSpec) -> GammaPrior | None:
+    """Build a :class:`GammaPrior` from ``spec.noise_prior_params`` when set.
+
+    Returns ``None`` when the spec does not override the prior so the
+    model factory falls back to its ``_default_noise_prior`` (calibrated
+    for unit-standardized targets). The override is only consulted on the
+    trainable-noise path; the ``FixedNoiseGaussianLikelihood`` path bypasses
+    the prior entirely.
+    """
+    if spec.noise_prior_params is None:
+        return None
+
+    concentration, rate = spec.noise_prior_params
+    if concentration <= 0 or rate <= 0:
+        msg = (
+            "noise_prior_params must be positive (concentration, rate); "
+            f"got {(concentration, rate)}."
+        )
+        raise ValueError(msg)
+    return GammaPrior(float(concentration), float(rate))
+
+
+def categorical_blocks_for_model(spec: OptimizationSpec) -> list[list[int]] | None:
+    """Return the one-hot blocks for the mixed kernel, or ``None`` when unused.
+
+    ``None`` (spec did not opt into ``use_categorical_kernel``, or the spec
+    has no categorical parameters) keeps the model factory on its default
+    kernel.
+    """
+    if not spec.use_categorical_kernel:
+        return None
+    return get_categorical_blocks(spec) or None
+
+
+@dataclass(frozen=True)
+class ResolvedModelOptions:
+    """Model-factory options resolved from a spec + observations.
+
+    Mirrors exactly what the suggestion builders pass to
+    :func:`bo_engine.models.create_and_fit_single_task_model` /
+    :func:`bo_engine.models.create_and_fit_model`, so any consumer fitting
+    a "same as production" GP (e.g. backend diagnostics) describes the
+    model that actually generates suggestions.
+
+    ``log_flags`` is per-objective; single-objective consumers read
+    ``log_flags[0]``. ``target_negated`` is deliberately *not* resolved
+    here — it depends on whether the consumer feeds maximization-form or
+    raw targets.
+    """
+
+    use_input_warping: bool
+    train_yvar: Tensor | None
+    log_flags: list[bool]
+    categorical_blocks: list[list[int]] | None
+    noise_prior: GammaPrior | None
+    auto_shift_for_log: bool
+
+
+def resolve_model_options(
+    spec: OptimizationSpec,
+    observations: list[ObservationData],
+) -> ResolvedModelOptions:
+    """Resolve every model-factory option the suggestion pipeline uses."""
+    return ResolvedModelOptions(
+        use_input_warping=spec.use_input_warping,
+        train_yvar=_prepare_train_yvar(observations, spec),
+        log_flags=[obj.log_transform for obj in spec.objectives],
+        categorical_blocks=categorical_blocks_for_model(spec),
+        noise_prior=_resolve_noise_prior(spec),
+        auto_shift_for_log=spec.auto_shift_for_log,
+    )
 
 
 def _prepare_cost_data(

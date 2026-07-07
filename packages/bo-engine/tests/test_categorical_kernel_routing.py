@@ -19,10 +19,16 @@ References:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import pytest
 import torch
 from botorch.models.kernels import CategoricalKernel
-from gpytorch.kernels import RBFKernel, ScaleKernel
+from gpytorch.kernels import AdditiveKernel, RBFKernel, ScaleKernel
+
+if TYPE_CHECKING:
+    from gpytorch.constraints import GreaterThan
+    from gpytorch.priors.torch_priors import LogNormalPrior
 
 from bo_engine.models import (
     build_mixed_kernel,
@@ -212,3 +218,58 @@ class TestModelFactoryRouting:
         # specifically don't have a CategoricalKernel anywhere in the chain.
         for module in model.modules():
             assert not isinstance(module, CategoricalKernel)
+
+
+class TestMixedKernelRegularizationParity:
+    """The continuous block must carry the stock dimension-scaled regularization.
+
+    ``SingleTaskGP``'s default kernel (BoTorch >= 0.12,
+    ``get_covar_module_with_dim_scaled_prior``) installs a Hvarfner
+    dimension-scaled ``LogNormal`` lengthscale prior plus a
+    ``GreaterThan(2.5e-2)`` stability floor — the load-bearing small-n /
+    high-d regularization. Opting into ``use_categorical_kernel`` must not
+    silently drop it, and the Hamming blocks need the same floor so their
+    lengthscales cannot collapse either.
+
+    References:
+        - Hvarfner et al., "Vanilla Bayesian Optimization Performs Great in
+          High Dimensions" (ICML 2024) — the dimension-scaled LogNormal
+          lengthscale prior BoTorch adopted as the SingleTaskGP default.
+    """
+
+    @staticmethod
+    def _sub_kernels(kernel: ScaleKernel) -> tuple[RBFKernel, CategoricalKernel]:
+        """Unpack ScaleKernel(AdditiveKernel(RBF, Hamming)) with precise types."""
+        additive = cast("AdditiveKernel", kernel.base_kernel)
+        rbf = additive.kernels[0]
+        hamming = additive.kernels[1]
+        assert isinstance(rbf, RBFKernel)
+        assert isinstance(hamming, CategoricalKernel)
+        return rbf, hamming
+
+    def test_continuous_block_matches_stock_prior_and_floor(self) -> None:
+        from botorch.models.utils.gpytorch_modules import (
+            get_covar_module_with_dim_scaled_prior,
+        )
+
+        kernel = build_mixed_kernel(n_total_dims=5, categorical_blocks=[[3, 4]])
+        assert isinstance(kernel, ScaleKernel)
+        rbf, _ = self._sub_kernels(kernel)
+        stock = get_covar_module_with_dim_scaled_prior(ard_num_dims=3)
+
+        prior = cast("LogNormalPrior", rbf.lengthscale_prior)
+        stock_prior = cast("LogNormalPrior", stock.lengthscale_prior)
+        assert prior.loc.item() == pytest.approx(stock_prior.loc.item())
+        assert prior.scale.item() == pytest.approx(stock_prior.scale.item())
+        constraint = cast("GreaterThan", rbf.raw_lengthscale_constraint)
+        stock_constraint = cast("GreaterThan", stock.raw_lengthscale_constraint)
+        assert constraint.lower_bound.item() == pytest.approx(stock_constraint.lower_bound.item())
+
+    def test_hamming_block_carries_lengthscale_floor_and_prior(self) -> None:
+        kernel = build_mixed_kernel(n_total_dims=5, categorical_blocks=[[3, 4]])
+        assert isinstance(kernel, ScaleKernel)
+        _, hamming = self._sub_kernels(kernel)
+
+        constraint = cast("GreaterThan", hamming.raw_lengthscale_constraint)
+        assert constraint.lower_bound.item() == pytest.approx(2.5e-2)
+        assert hamming.lengthscale_prior is not None

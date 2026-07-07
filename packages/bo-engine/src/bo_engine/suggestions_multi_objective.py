@@ -40,9 +40,9 @@ from bo_engine.suggestions_common import (
 from bo_engine.suggestions_outcome_constraints import (
     _build_outcome_constraint_models,
 )
+from bo_engine.suggestions_training import categorical_blocks_for_model
 from bo_engine.transforms import (
     decode_categorical,
-    get_categorical_blocks,
 )
 from bo_engine.types import (
     AcquisitionMethod,
@@ -257,7 +257,7 @@ def _generate_multi_objective_batch(
     # every observation supplied it for every objective. ``target_negated``
     # tells the factory which columns arrive negated so a ``Log`` outcome
     # stage can undo (and redo on the posterior) the negation.
-    cat_blocks = get_categorical_blocks(spec) if spec.use_categorical_kernel else None
+    cat_blocks = categorical_blocks_for_model(spec)
     model = create_and_fit_model(
         train_x,
         train_y_bo,

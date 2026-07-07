@@ -42,7 +42,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from gpytorch.priors import GammaPrior
 
 from bo_engine.constants import (
     MAX_RANDOM_SEED,
@@ -88,6 +87,7 @@ from bo_engine.suggestions_training import (
     _prepare_cost_data,
     _prepare_train_yvar,
     _prepare_training_data,
+    _resolve_noise_prior,
 )
 from bo_engine.transforms import get_bounds_tensor
 from bo_engine.turbo import (
@@ -181,28 +181,6 @@ class TransferLearningNotSupportedError(ValueError):
     ``TaskParameter`` mechanism remains the supported campaign-level
     transfer path.)
     """
-
-
-def _resolve_noise_prior(spec: OptimizationSpec) -> GammaPrior | None:
-    """Build a :class:`GammaPrior` from ``spec.noise_prior_params`` when set.
-
-    Returns ``None`` when the spec does not override the prior so the
-    model factory falls back to its ``_default_noise_prior`` (calibrated
-    for unit-standardized targets). The override is only consulted on the
-    trainable-noise path; the ``FixedNoiseGaussianLikelihood`` path bypasses
-    the prior entirely.
-    """
-    if spec.noise_prior_params is None:
-        return None
-
-    concentration, rate = spec.noise_prior_params
-    if concentration <= 0 or rate <= 0:
-        msg = (
-            "noise_prior_params must be positive (concentration, rate); "
-            f"got {(concentration, rate)}."
-        )
-        raise ValueError(msg)
-    return GammaPrior(float(concentration), float(rate))
 
 
 def _resolve_acquisition_seed(

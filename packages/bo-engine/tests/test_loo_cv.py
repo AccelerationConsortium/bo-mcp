@@ -2,6 +2,7 @@
 
 import math
 
+import pytest
 import torch
 
 from bo_engine import (
@@ -11,6 +12,32 @@ from bo_engine import (
     create_and_fit_model,
     create_and_fit_single_task_model,
 )
+
+# Lab-typical, non-unit bounds. BoTorch's dim-scaled lengthscale prior is
+# unit-cube-calibrated, so only non-unit bounds can distinguish fold models
+# that normalize their inputs from fold models that fit the raw scale.
+NON_UNIT_BOUNDS_2D = torch.tensor([[0.0, 0.0], [1000.0, 500.0]], dtype=torch.double)
+
+# The downdate reuses the full fit's hyperparameters while the per-fold
+# refit oracle re-estimates them; at n=20 on the smooth 5%-noise synthetic
+# below the measured R² gap is <= 0.03 across seeds, so 0.1 detects a
+# dishonest surface (the raw-scale refit misses by ~1.07) with a wide margin.
+R_SQUARED_ORACLE_TOLERANCE = 0.1
+
+# A well-fit GP on the smooth 5%-noise synthetic scores R² ~ 0.96-0.98;
+# 0.8 cleanly separates honest scores from the raw-scale misfit regime
+# (R² ~ -0.1) without being brittle to fit jitter.
+MIN_HONEST_R_SQUARED = 0.8
+
+
+def _non_unit_dataset(n: int = 20, seed: int = 42) -> tuple[torch.Tensor, torch.Tensor]:
+    """Smooth signal plus 5% noise on lab-scale (non-unit-cube) bounds."""
+    torch.manual_seed(seed)
+    span = NON_UNIT_BOUNDS_2D[1] - NON_UNIT_BOUNDS_2D[0]
+    train_x = NON_UNIT_BOUNDS_2D[0] + span * torch.rand(n, 2, dtype=torch.double)
+    signal = torch.sin(train_x[:, 0] / 300.0) + (train_x[:, 1] / 500.0) ** 2
+    noise = 0.05 * signal.std() * torch.randn(n, dtype=torch.double)
+    return train_x, (signal + noise).unsqueeze(-1)
 
 
 class TestLOOCVMetricsComputation:
@@ -111,41 +138,100 @@ class TestLOOCVCoverage:
         assert metrics.coverage_95 >= 0.6
 
 
-class TestCVMetricEquivalenceAcrossModules:
-    """The diagnostics LOO surface and the CV surface must agree.
+class TestDiagnosticsLOOAgainstHonestOracles:
+    """The wired diagnostics LOO must describe the fitted model honestly.
 
-    Both modules now route their RMSE/MAE/R²/standardized-error/coverage
-    computation through the single ``compute_cv_score_fields`` helper, so the
-    same batched LOO predictions must yield identical metrics regardless of
-    which entry point produced them. This pins the de-duplication: a future
-    edit that re-forks one block (or drifts a constant) breaks this test.
+    Historically the diagnostics surface and the CV surface both refit
+    transform-less default fold models, so pinning them to each other
+    passed while both understated model quality on every non-unit-cube
+    campaign. These tests pin the surfaces against honest oracles instead:
+    the fitted model's exact LOO downdate (GPML §5.4.2, Eqs. 5.10-5.12,
+    Rasmussen & Williams 2006) and a per-fold refit whose fold models carry
+    the same ``Normalize`` input transform as the diagnostic model
+    (``batch_cross_validation`` supports this via ``model_init_kwargs`` —
+    its own docstring example passes an input transform).
     """
 
-    def test_diagnostics_and_cv_modules_agree(self) -> None:
-        from bo_engine.cross_validation import CVConfig, compute_loo_cv_optimized
+    def test_diagnostics_surface_matches_downdate_oracle(self) -> None:
+        """Mechanism pin: the diagnostics metrics equal the fitted model's
+        own downdate moments, untransformed to original units and scored by
+        the shared metric block.
+        """
+        from bo_engine.cross_validation import (
+            compute_cv_score_fields,
+            compute_exact_loo_moments,
+        )
 
-        torch.manual_seed(42)
-        train_x = torch.rand(12, 2, dtype=torch.double)
-        train_y = train_x[:, 0:1] ** 2 + train_x[:, 1:2]
-        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.double)
+        train_x, train_y = _non_unit_dataset()
+        model = create_and_fit_single_task_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
 
-        model = create_and_fit_single_task_model(train_x, train_y, bounds)
-
-        # Reset the RNG before each batched fit so both paths start the
-        # fold-model optimization from identical state — any metric
-        # difference then comes from the computation block, not the fit.
-        torch.manual_seed(0)
-        diag = compute_loo_cv_for_model(model, train_x, train_y)
+        diag = compute_loo_cv_for_model(model, train_x, train_y, NON_UNIT_BOUNDS_2D)
         assert isinstance(diag, LOOCVMetrics)
 
-        torch.manual_seed(0)
-        cv = compute_loo_cv_optimized(train_x, train_y, bounds, CVConfig(method="batch_loo"))
+        loo_mean, loo_var = compute_exact_loo_moments(model)
+        loo_mean_col, loo_var_col = model.outcome_transform.untransform(  # ty: ignore[unresolved-attribute]
+            loo_mean.unsqueeze(-1), loo_var.unsqueeze(-1)
+        )
+        assert loo_var_col is not None
+        expected = compute_cv_score_fields(
+            loo_mean_col.squeeze(-1), loo_var_col.squeeze(-1), train_y.squeeze(-1)
+        )
 
-        assert diag.rmse == cv.rmse
-        assert diag.mae == cv.mae
-        assert diag.r_squared == cv.r_squared
-        assert diag.mean_standardized_error == cv.mean_standardized_error
-        assert diag.coverage_95 == cv.coverage_95
+        assert diag.rmse == pytest.approx(expected.rmse, rel=1e-9)
+        assert diag.mae == pytest.approx(expected.mae, rel=1e-9)
+        assert diag.r_squared == pytest.approx(expected.r_squared, rel=1e-9)
+        assert diag.mean_standardized_error == pytest.approx(
+            expected.mean_standardized_error, rel=1e-9
+        )
+        assert diag.coverage_95 == pytest.approx(expected.coverage_95, rel=1e-9)
+
+    def test_diagnostics_r_squared_matches_normalize_refit_oracle(self) -> None:
+        """On non-unit bounds the diagnostics R² must track the honest
+        per-fold refit with ``Normalize``-equipped fold models. A surface
+        that refits transform-less fold models reports R² ≈ -0.1 here while
+        the honest LOO R² is ≈ 0.96 — an internally inconsistent payload
+        next to correlation/importance sections computed from the actual
+        (good) model.
+        """
+        train_x, train_y = _non_unit_dataset()
+        model = create_and_fit_single_task_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
+
+        diag = compute_loo_cv_for_model(model, train_x, train_y, NON_UNIT_BOUNDS_2D)
+        oracle = compute_loo_cv_metrics(train_x, train_y, NON_UNIT_BOUNDS_2D)
+
+        assert diag.r_squared == pytest.approx(oracle.r_squared, abs=R_SQUARED_ORACLE_TOLERANCE)
+        assert diag.r_squared > MIN_HONEST_R_SQUARED
+
+    def test_tensor_form_batch_cv_normalizes_fold_models(self) -> None:
+        """The CV surface's no-factory batched path shares the defect class:
+        without ``Normalize`` fold models, ``method="batch_loo"`` understates
+        model quality on non-unit bounds in exactly the same way.
+        """
+        from bo_engine.cross_validation import CVConfig, compute_loo_cv_optimized
+
+        train_x, train_y = _non_unit_dataset()
+
+        metrics = compute_loo_cv_optimized(
+            train_x, train_y, NON_UNIT_BOUNDS_2D, CVConfig(method="batch_loo")
+        )
+
+        assert metrics.method == "batch_loo"
+        assert metrics.r_squared > MIN_HONEST_R_SQUARED
+
+    def test_refit_fallback_normalizes_fold_models(self) -> None:
+        """When the downdate cannot serve (here: the passed data is not the
+        model's training set), the batched refit fallback must still fit
+        ``Normalize``-equipped fold models and report honest metrics.
+        """
+        train_x, train_y = _non_unit_dataset()
+        other_x, other_y = _non_unit_dataset(seed=7)
+        model = create_and_fit_single_task_model(other_x, other_y, NON_UNIT_BOUNDS_2D)
+
+        metrics = compute_loo_cv_for_model(model, train_x, train_y, NON_UNIT_BOUNDS_2D)
+
+        assert isinstance(metrics, LOOCVMetrics)
+        assert not math.isnan(metrics.rmse)
+        assert metrics.r_squared > MIN_HONEST_R_SQUARED
 
 
 class TestLOOCVForModel:

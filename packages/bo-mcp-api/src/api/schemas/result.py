@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_RESULTS
 from api.schemas.common import ResponseEnvelope, VerbosityLevel
-from bo_mcp_server.client import ResultMetadata
+from bo_mcp_server.client import FiniteFloat, ResultMetadata
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
@@ -24,12 +24,17 @@ class ResultCreate(BaseModel):
     can supply per-objective noise estimates (one stddev per declared
     objective). When omitted, the engine falls back to learned noise as
     if the field had been left out at MCP intake.
+
+    ``objective_values`` uses the shared :data:`FiniteFloat` value type:
+    NaN/±inf measurements would fail every subsequent model fit and
+    cannot be deleted once persisted, so they are rejected with a 422
+    at the schema boundary — same contract as MCP intake.
     """
 
     model_config = _FORBID_EXTRA
 
     parameter_values: dict[str, Any]
-    objective_values: dict[str, float]
+    objective_values: dict[str, FiniteFloat]
     suggestion_id: str | None = None
     measurement_uncertainty: dict[str, float] | None = None
     metadata: ResultMetadata = Field(default_factory=ResultMetadata)

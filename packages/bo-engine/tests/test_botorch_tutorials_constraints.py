@@ -48,6 +48,20 @@ from bo_engine.outcome_constraints import (
 # - Greater than: g(x) >= bound
 # - Sum constraint: sum(x) = value
 
+# Feasibility slack for asserting on optimizer output: scipy's SLSQP /
+# L-BFGS-B enforce linear constraints to solver precision, so model-guided
+# suggestions may sit on the boundary within this tolerance but not beyond.
+NATIVE_CONSTRAINT_FEASIBILITY_TOL = 1e-4
+
+# Mixed-space test geometry: continuous parameters use non-unit bounds so a
+# normalization slip would surface, and the constraint levels sit strictly
+# inside the box while the objective optimum lies outside the feasible set.
+MIXED_CONTINUOUS_UPPER_BOUND = 2.0
+MIXED_SUM_CAP = 1.5
+MIXED_SUM_TARGET = 1.5
+MIXED_OBJECTIVE_OPTIMUM = 1.2
+MIXED_CATEGORY_PENALTY = 0.3
+
 
 # =============================================================================
 # Test Classes
@@ -455,3 +469,119 @@ class TestNativeLinearConstraintFeasibility:
         )
         for x1, x2 in points:
             assert x1 + x2 >= 1.2 - 1e-4, f"Suggestion violates sum floor: {x1 + x2:.4f} < 1.2"
+
+
+@pytest.mark.tutorial
+class TestMixedSpaceNativeLinearConstraints:
+    """Mixed continuous + categorical campaigns must honor native linear constraints.
+
+    BoTorch's ``optimize_acqf_mixed`` accepts the same
+    ``inequality_constraints`` / ``equality_constraints`` tuples as
+    ``optimize_acqf`` and enforces them within each fixed-categorical
+    L-BFGS-B run — see
+    https://botorch.readthedocs.io/en/latest/optim.html#botorch.optim.optimize.optimize_acqf_mixed.
+    The categorical parameter is deliberately declared *first* so the
+    constraint's parameter indices must survive the one-hot column offset,
+    and the continuous parameters use non-unit bounds. As in the continuous
+    cases above, the unconstrained objective optimum lies outside the
+    feasible region, so the optimizer is actively pulled across the
+    boundary if the constraints are dropped.
+    """
+
+    @staticmethod
+    def _run_constrained_mixed_bo(
+        constraint: ConstraintSpec,
+        objective: Callable[[str, float, float], float],
+        seed: int,
+    ) -> list[tuple[float, float]]:
+        """Run a short mixed-space BO loop; return model-guided ``(x1, x2)`` points.
+
+        Initial-design points are excluded for the same reason as in the
+        continuous cases: the native constraint tuples act on the
+        acquisition optimizer, while the space-filling design uses a
+        separate best-effort projection.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="solvent",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["dmso", "water"],
+                ),
+                ParameterSpec(
+                    name="x1",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, MIXED_CONTINUOUS_UPPER_BOUND),
+                ),
+                ParameterSpec(
+                    name="x2",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, MIXED_CONTINUOUS_UPPER_BOUND),
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            constraints=[constraint],
+            batch_size=1,
+            initial_design_size=5,
+        )
+        torch.manual_seed(seed)
+        rng = np.random.default_rng(seed)
+        observations: list[ObservationData] = []
+        model_guided: list[tuple[float, float]] = []
+        for iteration in range(8):
+            suggestions, _ = generate_next_batch(spec, observations, iteration=iteration, rng=rng)
+            for suggestion in suggestions:
+                solvent = suggestion.parameter_values["solvent"]
+                x1 = suggestion.parameter_values["x1"]
+                x2 = suggestion.parameter_values["x2"]
+                if suggestion.generation_method in ("bo", "turbo"):
+                    model_guided.append((x1, x2))
+                observations.append(
+                    ObservationData(
+                        parameter_values={"solvent": solvent, "x1": x1, "x2": x2},
+                        objective_values={"y": objective(solvent, x1, x2)},
+                    )
+                )
+        assert model_guided, "BO loop never reached the model-guided phase"
+        return model_guided
+
+    @staticmethod
+    def _mixed_objective(solvent: str, x1: float, x2: float) -> float:
+        """Quadratic bowl at (1.2, 1.2) — outside the feasible set — plus a
+        small categorical offset so the choice of solvent matters."""
+        penalty = MIXED_CATEGORY_PENALTY if solvent == "water" else 0.0
+        return (x1 - MIXED_OBJECTIVE_OPTIMUM) ** 2 + (x2 - MIXED_OBJECTIVE_OPTIMUM) ** 2 + penalty
+
+    @pytest.mark.smoke
+    def test_mixed_sum_cap_suggestions_feasible(self) -> None:
+        """Every model-guided point satisfies ``x1 + x2 <= 1.5`` alongside a categorical.
+
+        The objective minimum at (1.2, 1.2) has sum 2.4 > 1.5, so the
+        optimizer is pulled toward the cap — a mixed-space path that drops
+        the inequality tuples produces infeasible suggestions here.
+        """
+        constraint = ConstraintSpec(
+            type=ConstraintType.SUM_LESS_THAN, parameters=["x1", "x2"], value=MIXED_SUM_CAP
+        )
+        points = self._run_constrained_mixed_bo(constraint, self._mixed_objective, seed=7)
+        for x1, x2 in points:
+            assert x1 + x2 <= MIXED_SUM_CAP + NATIVE_CONSTRAINT_FEASIBILITY_TOL, (
+                f"Suggestion violates sum cap: {x1 + x2:.4f} > {MIXED_SUM_CAP}"
+            )
+
+    @pytest.mark.smoke
+    def test_mixed_sum_equality_suggestions_feasible(self) -> None:
+        """Every model-guided point keeps ``x1 + x2 = 1.5`` alongside a categorical.
+
+        Equality tuples take the ``equality_constraints`` path through
+        ``optimize_acqf_mixed``; the objective again pulls toward
+        (1.2, 1.2) with sum 2.4, off the constraint hyperplane.
+        """
+        constraint = ConstraintSpec(
+            type=ConstraintType.SUM_EQUALS, parameters=["x1", "x2"], value=MIXED_SUM_TARGET
+        )
+        points = self._run_constrained_mixed_bo(constraint, self._mixed_objective, seed=11)
+        for x1, x2 in points:
+            assert abs(x1 + x2 - MIXED_SUM_TARGET) <= NATIVE_CONSTRAINT_FEASIBILITY_TOL, (
+                f"Suggestion violates sum equality: {x1 + x2:.4f} != {MIXED_SUM_TARGET}"
+            )

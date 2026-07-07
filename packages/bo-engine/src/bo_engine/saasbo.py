@@ -16,12 +16,14 @@ import torch
 from botorch.acquisition.logei import qLogExpectedImprovement
 from botorch.fit import fit_fully_bayesian_model_nuts
 from botorch.models.fully_bayesian import SaasFullyBayesianSingleTaskGP
+from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.optim import optimize_acqf
 from torch import Tensor
 
 from bo_engine.constants import (
     SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD,
+    SAASBO_MIN_DIMENSIONS,
     SAASBO_WIDE_INTERVAL_LOG10_THRESHOLD,
 )
 from bo_engine.device import ensure_device
@@ -46,16 +48,30 @@ def create_saasbo_model(
     train_x: Tensor,
     train_y: Tensor,
     train_yvar: Tensor | None = None,
+    bounds: Tensor | None = None,
 ) -> SaasFullyBayesianSingleTaskGP:
     """Create a SAASBO model.
 
     The SAAS model uses sparsity-inducing priors on inverse lengthscales
     to identify the most important parameters.
 
+    Inputs are normalized to the unit cube before the kernel sees them:
+    BoTorch's SAAS model assumes inputs in ``[0, 1]^d``, and both the
+    half-Cauchy SAAS prior and the inactive-dimension lengthscale
+    calibration (Eriksson & Jankowiak, UAI 2021 -- inactive dimensions
+    converge to lengthscales >= 1e2) hold in unit-cube units only. Fitting
+    raw inputs mis-regularizes the prior and makes per-dimension
+    lengthscales incomparable across differently-scaled parameters.
+
     Args:
         train_x: Training inputs of shape (n_samples, n_dims)
         train_y: Training outputs of shape (n_samples, 1)
         train_yvar: Optional known noise variance of shape (n_samples, 1)
+        bounds: Parameter bounds of shape (2, n_dims) used to build the
+            ``Normalize`` input transform. When ``None`` the bounds are
+            learned from ``train_x`` (min/max per column), which is adequate
+            for data already on the unit cube but less robust than explicit
+            bounds.
 
     Returns:
         SaasFullyBayesianSingleTaskGP model (unfitted)
@@ -68,9 +84,17 @@ def create_saasbo_model(
     if train_y.dim() == 1:
         train_y = train_y.unsqueeze(-1)
 
+    n_dims = train_x.shape[-1]
+    if bounds is not None:
+        (bounds,) = ensure_device(bounds)
+        input_transform = Normalize(d=n_dims, bounds=bounds)
+    else:
+        input_transform = Normalize(d=n_dims)
+
     kwargs: dict[str, Any] = {
         "train_X": train_x,
         "train_Y": train_y,
+        "input_transform": input_transform,
         "outcome_transform": Standardize(m=1),
     }
 
@@ -115,6 +139,7 @@ def create_and_fit_saasbo_model(
     train_y: Tensor,
     train_yvar: Tensor | None = None,
     config: SAASBOConfig | None = None,
+    bounds: Tensor | None = None,
 ) -> SaasFullyBayesianSingleTaskGP:
     """Create and fit SAASBO model.
 
@@ -123,11 +148,14 @@ def create_and_fit_saasbo_model(
         train_y: Training outputs
         train_yvar: Optional known noise variance
         config: SAASBO configuration
+        bounds: Parameter bounds of shape (2, n_dims) for the ``Normalize``
+            input transform; learned from the data when ``None``. See
+            :func:`create_saasbo_model` for why normalization is required.
 
     Returns:
         Fitted SaasFullyBayesianSingleTaskGP
     """
-    model = create_saasbo_model(train_x, train_y, train_yvar)
+    model = create_saasbo_model(train_x, train_y, train_yvar, bounds)
     return fit_saasbo_model(model, config)
 
 
@@ -139,6 +167,11 @@ def get_saasbo_lengthscales(
     The lengthscales indicate parameter importance:
     - Small lengthscale = important parameter (sensitive)
     - Large lengthscale = less important parameter (SAAS prior pushes these large)
+
+    Lengthscales live in the normalized unit-cube input space (the model
+    factory attaches a ``Normalize`` input transform), so they are directly
+    comparable across parameters and against
+    :data:`bo_engine.constants.SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD`.
 
     Args:
         model: Fitted SAASBO model
@@ -363,7 +396,7 @@ def _try_extract_quantile_band(
 def should_use_saasbo(
     n_parameters: int,
     n_observations: int,
-    threshold: int = 50,
+    threshold: int = SAASBO_MIN_DIMENSIONS,
 ) -> bool:
     """Determine if SAASBO should be used.
 
@@ -374,7 +407,8 @@ def should_use_saasbo(
     Args:
         n_parameters: Number of parameters
         n_observations: Number of observations
-        threshold: Parameter count threshold (default: 50)
+        threshold: Parameter count threshold (defaults to
+            :data:`bo_engine.constants.SAASBO_MIN_DIMENSIONS`)
 
     Returns:
         True if SAASBO is recommended
@@ -428,8 +462,10 @@ def generate_saasbo_suggestions(
     # boundary -- BoTorch's qLog* acquisition family has no direction flag.
     train_y_bo = -train_y if minimize else train_y
 
-    # Create and fit model
-    model = create_and_fit_saasbo_model(train_x, train_y_bo, config=config)
+    # Create and fit model. ``bounds`` are threaded through so the SAAS
+    # prior (and the inactive-lengthscale calibration) operate on the
+    # normalized unit cube rather than raw parameter scales.
+    model = create_and_fit_saasbo_model(train_x, train_y_bo, config=config, bounds=bounds)
 
     # Compute parameter importance (full report includes raw lengthscale
     # and boolean active mask alongside the normalized score).

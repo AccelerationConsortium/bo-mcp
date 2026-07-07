@@ -1,20 +1,23 @@
 """Leave-One-Out cross-validation diagnostics for BO surrogate models.
 
 Split from :mod:`bo_engine.diagnostics` to keep that module focused on
-campaign-level health and progress reporting. LOO-CV computes an unbiased
-estimate of the surrogate model's generalization error by leaving out
-each training point in turn, refitting the GP on the remaining ``n-1``
-points, and recording the predictive error on the held-out sample. The
-aggregate RMSE / MAE / R² and per-fold errors are the model-quality
-signals consumed by :func:`bo_engine.diagnostics.assess_model_health`
-and the diagnostics tool surface.
+campaign-level health and progress reporting. LOO-CV estimates the
+surrogate model's generalization error from held-out predictions: for a
+fitted model this is the exact LOO posterior downdate at its fitted
+hyperparameters (one O(n³) solve instead of ``n`` refits), otherwise each
+training point is left out in turn and the GP refit on the remaining
+``n-1`` points. The aggregate RMSE / MAE / R² and per-fold errors are the
+model-quality signals consumed by
+:func:`bo_engine.diagnostics.assess_model_health` and the diagnostics
+tool surface.
 
 Held-out targets are noisy measurements, so standardized errors and
 coverage are computed against the posterior predictive (latent function
 plus observation noise) rather than the latent-only posterior.
 
 Reference: Rasmussen & Williams, *Gaussian Processes for Machine
-Learning* (2006), §5.4.2 ("Leave-one-out cross-validation").
+Learning* (2006), §5.4.2 ("Leave-one-out cross-validation",
+Eqs. 5.10-5.12 for the exact downdate).
 """
 
 from __future__ import annotations
@@ -31,8 +34,13 @@ from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
+from torch.nn import Module
 
-from bo_engine.cross_validation import compute_cv_score_fields
+from bo_engine.cross_validation import (
+    CVMetrics,
+    compute_cv_score_fields,
+    compute_loo_cv_optimized,
+)
 from bo_engine.device import ensure_device
 
 if TYPE_CHECKING:
@@ -152,6 +160,7 @@ def compute_loo_cv_for_model(
     model: SingleTaskGP,
     train_x: Tensor,
     train_y: Tensor,
+    bounds: Tensor | None = None,
 ) -> LOOCVMetrics: ...
 
 
@@ -160,6 +169,7 @@ def compute_loo_cv_for_model(
     model: ModelListGP,
     train_x: Tensor,
     train_y: Tensor,
+    bounds: Tensor | None = None,
 ) -> dict[int, LOOCVMetrics]: ...
 
 
@@ -167,48 +177,118 @@ def compute_loo_cv_for_model(
     model: SingleTaskGP | ModelListGP,
     train_x: Tensor,
     train_y: Tensor,
+    bounds: Tensor | None = None,
 ) -> LOOCVMetrics | dict[int, LOOCVMetrics]:
     """Compute LOO-CV metrics for a fitted model.
 
-    Uses BoTorch's batch_cross_validation for efficiency.
+    Validates the passed model via its exact LOO posterior downdate at the
+    fitted hyperparameters (GPML §5.4.2, Eqs. 5.10-5.12) — one O(n³) solve
+    with the model's own transforms (input normalization, warping, outcome
+    transform) intact, instead of ``n`` refits of a differently-configured
+    default model. When the downdate cannot serve (the passed data is not
+    the model's training set, a batched fully Bayesian model, a
+    non-Gaussian likelihood), falls back to BoTorch's batched refit CV with
+    ``Normalize``-equipped fold models.
 
     Args:
         model: Fitted GP model
         train_x: Training inputs
         train_y: Training outputs (n_samples, n_objectives)
+        bounds: Optional parameter bounds of shape (2, n_dims), used to
+            normalize the fold models' inputs on the refit fallback path.
+            When None, the fallback normalizes to the fold data's range.
 
     Returns:
         LOOCVMetrics for single-objective models, or
         Dictionary mapping objective index to LOOCVMetrics for multi-objective
     """
     if isinstance(model, SingleTaskGP):
-        return _batched_loo_metrics(train_x, train_y, label="single-objective model")
+        return _model_loo_metrics(
+            model, train_x, train_y, bounds=bounds, label="single-objective model"
+        )
 
     results: dict[int, LOOCVMetrics] = {}
-    for i, _m in enumerate(model.models):
+    for i, sub_model in enumerate(model.models):
         train_y_i = train_y[:, i : i + 1]
-        results[i] = _batched_loo_metrics(train_x, train_y_i, label=f"objective {i}")
+        results[i] = _model_loo_metrics(
+            sub_model, train_x, train_y_i, bounds=bounds, label=f"objective {i}"
+        )
 
     return results
 
 
-def _batched_loo_metrics(train_x: Tensor, train_y: Tensor, *, label: str) -> LOOCVMetrics:
+def _model_loo_metrics(
+    model: Module,
+    train_x: Tensor,
+    train_y: Tensor,
+    *,
+    bounds: Tensor | None,
+    label: str,
+) -> LOOCVMetrics:
+    """LOO metrics for one fitted single-output model, downdate first.
+
+    The exact downdate honors the fitted model's configuration; the batched
+    refit fallback engages when the downdate cannot serve (see
+    :func:`compute_loo_cv_for_model`), including for sub-models that are not
+    ``SingleTaskGP`` instances — ``compute_loo_cv_optimized``'s polymorphic
+    first argument dispatches on that exact type.
+    """
+    if isinstance(model, SingleTaskGP):
+        try:
+            return _to_loo_cv_metrics(compute_loo_cv_optimized(model, train_x, train_y))
+        except (RuntimeError, TypeError, ValueError) as e:
+            logger.debug(
+                "Exact LOO downdate for %s unavailable, falling back to batched refit CV: %s: %s",
+                label,
+                type(e).__name__,
+                e,
+            )
+    return _batched_loo_metrics(train_x, train_y, bounds=bounds, label=label)
+
+
+def _to_loo_cv_metrics(metrics: CVMetrics) -> LOOCVMetrics:
+    """Convert the CV surface's metrics record to the diagnostics record."""
+    from bo_engine.diagnostics import LOOCVMetrics
+
+    return LOOCVMetrics(
+        rmse=metrics.rmse,
+        mae=metrics.mae,
+        r_squared=metrics.r_squared,
+        mean_standardized_error=metrics.mean_standardized_error,
+        per_fold_errors=metrics.per_fold_errors,
+        coverage_95=metrics.coverage_95,
+    )
+
+
+def _batched_loo_metrics(
+    train_x: Tensor,
+    train_y: Tensor,
+    *,
+    bounds: Tensor | None,
+    label: str,
+) -> LOOCVMetrics:
     """Batched LOO-CV metrics for one output, scored via the shared helper.
 
-    Refits default ``SingleTaskGP`` folds with BoTorch's batch CV and routes
-    the held-out predictions through :func:`compute_cv_score_fields`, the same
+    Refits ``SingleTaskGP`` folds with BoTorch's batch CV and routes the
+    held-out predictions through :func:`compute_cv_score_fields`, the same
     metric block the optimized CV surface uses, so the diagnostics and CV
-    surfaces report identical numbers for identical inputs.
+    surfaces report identical numbers for identical inputs. Fold models
+    carry a ``Normalize`` input transform (BoTorch's dim-scaled lengthscale
+    prior is unit-cube-calibrated; raw-scale fits misreport model quality
+    on non-unit-cube problems) and BoTorch's default batch-shaped
+    ``Standardize`` outcome transform.
     """
     from bo_engine.diagnostics import LOOCVMetrics
 
     cv_folds = gen_loo_cv_folds(train_X=train_x, train_Y=train_y)
+    input_transform = Normalize(d=train_x.shape[-1], bounds=bounds)
     try:
         cv_results = batch_cross_validation(
             model_cls=SingleTaskGP,
             mll_cls=ExactMarginalLogLikelihood,
             cv_folds=cv_folds,
             observation_noise=True,
+            model_init_kwargs={"input_transform": input_transform},
         )
     except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Cross-validation for %s failed: %s: %s", label, type(e).__name__, e)

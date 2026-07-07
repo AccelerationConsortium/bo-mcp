@@ -1,6 +1,6 @@
 """Pydantic input models for MCP tool payloads."""
 
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -17,6 +17,13 @@ from bo_mcp_server.domain.campaign_spec import (
     TurboConfig,
 )
 from bo_mcp_server.domain.result import ResultMetadata
+
+# Objective measurements feed the surrogate's training targets. Pydantic's
+# plain ``float`` accepts NaN/±inf (``json.loads`` admits the ``NaN``
+# literal and ``1e999`` coerces to ``inf``); once such a value persists it
+# fails every subsequent model fit and results cannot be deleted, so the
+# schema rejects non-finite values at intake.
+FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 
 
 class CampaignIntakeInput(BaseModel):
@@ -215,7 +222,7 @@ class ResultSubmissionInput(BaseModel):
     """
 
     parameter_values: dict[str, Any]
-    objective_values: dict[str, float]
+    objective_values: dict[str, FiniteFloat]
     suggestion_id: str | None = None
     measurement_uncertainty: dict[str, float] | None = None  # Per-objective noise std
     # Runtime type is dict[str, Any] for backward-compat with persisted

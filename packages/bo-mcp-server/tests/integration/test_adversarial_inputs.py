@@ -26,148 +26,167 @@ def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
     return [ResultSubmissionInput.model_validate(r) for r in results]
 
 
+# Every IEEE 754 non-finite value a JSON/tool payload can carry.
+_NON_FINITE_VALUES = [float("nan"), float("inf"), float("-inf")]
+_NON_FINITE_IDS = ["nan", "inf", "-inf"]
+
+
 @pytest.mark.usefixtures("setup_database")
 class TestNaNAndInfInputs:
-    """Tests for handling NaN and Inf values in various inputs.
+    """Non-finite result values must be rejected before they persist.
 
-    Reference: IEEE 754 Special Values
-    https://en.wikipedia.org/wiki/IEEE_754
+    A persisted NaN/inf measurement fails every subsequent surrogate
+    fit (BoTorch raises ``InputDataError`` on NaN training data) and
+    there is no result-deletion tool, so a single bad cell would block
+    suggestion generation for the whole campaign.
+
+    References:
+    - IEEE 754 Special Values: https://en.wikipedia.org/wiki/IEEE_754
+    - BoTorch input validation (``validate_input_scaling`` /
+      ``InputDataError``): https://botorch.readthedocs.io/en/stable/
     """
 
-    @pytest.mark.asyncio
-    async def test_submit_results_with_nan_objective(self):
-        """NaN objective values should be rejected or handled gracefully."""
+    async def _create_campaign(self) -> tuple[str, str]:
         from bo_mcp_server.tools.create_campaign import create_campaign
-        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-        from bo_mcp_server.tools.submit_results import submit_results
 
         owner_id = str(uuid4())
-
         intake_data = {
-            "name": "NaN Objective Test",
+            "name": "Non-Finite Rejection Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
             "objectives": [{"name": "f", "direction": "minimize"}],
         }
+        created = await create_campaign(intake_data, owner_id)
+        assert created["success"] is True
+        return created["campaign_id"], owner_id
 
-        create_result = await create_campaign(intake_data, owner_id)
-        campaign_id = create_result["campaign_id"]
-        await generate_suggestions(campaign_id)
+    async def _assert_nothing_stored(self, campaign_id: str) -> None:
+        from bo_mcp_server.operations.list_results import list_results_operation
 
-        # Submit result with NaN objective
+        stored = await list_results_operation(campaign_id=campaign_id)
+        assert stored["total_count"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_value", _NON_FINITE_VALUES, ids=_NON_FINITE_IDS)
+    async def test_non_finite_objective_rejected_at_schema_boundary(self, bad_value: float):
+        """Raw payloads with a non-finite objective fail schema validation.
+
+        The tool boundary validates each row against
+        ``ResultSubmissionInput``, whose objective map rejects
+        non-finite floats, and reports the offending entry by dotted
+        path in ``field_errors``.
+        """
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        campaign_id, owner_id = await self._create_campaign()
+
         result = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs(
-                [{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("nan")}}]
-            ),
+            results=[{"parameter_values": {"x": 0.5}, "objective_values": {"f": bad_value}}],
             submitted_by=owner_id,
         )
 
-        # Should either reject or warn about NaN values
-        # Accepting NaN could corrupt the model
-        if result["success"]:
-            assert "warnings" in result or "nan" in str(result).lower()
-        else:
-            assert any("nan" in e.lower() or "invalid" in e.lower() for e in result["errors"])
+        assert result["success"] is False
+        assert "results[0].objective_values.f" in result["field_errors"]
+        assert any(
+            "finite" in msg.lower()
+            for msg in result["field_errors"]["results[0].objective_values.f"]
+        )
+        await self._assert_nothing_stored(campaign_id)
 
     @pytest.mark.asyncio
-    async def test_submit_results_with_inf_objective(self):
-        """Inf objective values should be rejected or handled gracefully."""
-        from bo_mcp_server.tools.create_campaign import create_campaign
+    @pytest.mark.parametrize("bad_value", _NON_FINITE_VALUES, ids=_NON_FINITE_IDS)
+    async def test_non_finite_objective_rejected_by_operation_layer(self, bad_value: float):
+        """The shared operation layer rejects non-finite objectives on its own.
+
+        ``model_construct`` bypasses Pydantic validation entirely, so
+        this exercises the second line of defense that covers callers
+        reaching the operation layer with unvalidated rows.
+        """
+        from bo_mcp_server.operations.submit_results import submit_results_operation
+
+        campaign_id, owner_id = await self._create_campaign()
+        row = ResultSubmissionInput.model_construct(
+            parameter_values={"x": 0.5},
+            objective_values={"f": bad_value},
+        )
+
+        result = await submit_results_operation(
+            campaign_id=campaign_id,
+            results=[row],
+            submitted_by=owner_id,
+            atomic=True,
+        )
+
+        assert result["success"] is False
+        assert "results[0].objective_values['f']" in result["field_errors"]
+        assert any("finite" in e.lower() for e in result["errors"])
+        await self._assert_nothing_stored(campaign_id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_value", _NON_FINITE_VALUES, ids=_NON_FINITE_IDS)
+    async def test_non_finite_parameter_rejected(self, bad_value: float):
+        """Non-finite parameter values are hard errors, not silent passes.
+
+        ``parameter_values`` is typed ``dict[str, Any]`` (categorical
+        parameters carry strings), so the schema cannot catch this; the
+        operation layer must. A NaN coordinate would otherwise skip the
+        bounds warning entirely because every comparison against NaN is
+        False.
+        """
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        campaign_id, owner_id = await self._create_campaign()
+
+        result = await submit_results(
+            campaign_id=campaign_id,
+            results=[{"parameter_values": {"x": bad_value}, "objective_values": {"f": 1.0}}],
+            submitted_by=owner_id,
+        )
+
+        assert result["success"] is False
+        assert "results[0].parameter_values['x']" in result["field_errors"]
+        assert any("finite" in e.lower() for e in result["errors"])
+        await self._assert_nothing_stored(campaign_id)
+
+    @pytest.mark.asyncio
+    async def test_campaign_remains_generable_after_rejected_non_finite_submit(self):
+        """A rejected non-finite batch must not wedge the campaign.
+
+        Submits a NaN objective (rejected, nothing persisted), then
+        enough valid observations to cross the initial-design floor for
+        one parameter, so the follow-up generate fits a surrogate on
+        the stored rows. If the NaN row had leaked into storage this
+        fit would fail and the campaign would be stuck.
+        """
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        campaign_id, owner_id = await self._create_campaign()
 
-        intake_data = {
-            "name": "Inf Objective Test",
-            "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
-            "objectives": [{"name": "f", "direction": "minimize"}],
-        }
-
-        create_result = await create_campaign(intake_data, owner_id)
-        campaign_id = create_result["campaign_id"]
-        await generate_suggestions(campaign_id)
-
-        # Submit result with Inf objective
-        result = await submit_results(
+        rejected = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs(
-                [{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("inf")}}]
-            ),
+            results=[{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("nan")}}],
             submitted_by=owner_id,
         )
+        assert rejected["success"] is False
+        await self._assert_nothing_stored(campaign_id)
 
-        # Should either reject or warn about Inf values
-        if result["success"]:
-            assert "warnings" in result or "inf" in str(result).lower()
-        else:
-            assert any("inf" in e.lower() or "invalid" in e.lower() for e in result["errors"])
-
-    @pytest.mark.asyncio
-    async def test_submit_results_with_negative_inf(self):
-        """Negative Inf objective values should be handled."""
-        from bo_mcp_server.tools.create_campaign import create_campaign
-        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-        from bo_mcp_server.tools.submit_results import submit_results
-
-        owner_id = str(uuid4())
-
-        intake_data = {
-            "name": "Negative Inf Test",
-            "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
-            "objectives": [{"name": "f", "direction": "minimize"}],
-        }
-
-        create_result = await create_campaign(intake_data, owner_id)
-        campaign_id = create_result["campaign_id"]
-        await generate_suggestions(campaign_id)
-
-        result = await submit_results(
+        valid_rows = [
+            {"parameter_values": {"x": x}, "objective_values": {"f": (x - 0.3) ** 2}}
+            for x in (0.1, 0.5, 0.9)
+        ]
+        accepted = await submit_results(
             campaign_id=campaign_id,
-            results=_to_result_inputs(
-                [{"parameter_values": {"x": 0.5}, "objective_values": {"f": float("-inf")}}]
-            ),
+            results=valid_rows,
             submitted_by=owner_id,
         )
+        assert accepted["success"] is True
 
-        if result["success"]:
-            assert "warnings" in result or "inf" in str(result).lower()
-        else:
-            assert any("inf" in e.lower() or "invalid" in e.lower() for e in result["errors"])
-
-    @pytest.mark.asyncio
-    async def test_submit_results_with_nan_parameter(self):
-        """NaN parameter values should be rejected."""
-        from bo_mcp_server.tools.create_campaign import create_campaign
-        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
-        from bo_mcp_server.tools.submit_results import submit_results
-
-        owner_id = str(uuid4())
-
-        intake_data = {
-            "name": "NaN Parameter Test",
-            "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
-            "objectives": [{"name": "f", "direction": "minimize"}],
-        }
-
-        create_result = await create_campaign(intake_data, owner_id)
-        campaign_id = create_result["campaign_id"]
-        await generate_suggestions(campaign_id)
-
-        result = await submit_results(
-            campaign_id=campaign_id,
-            results=_to_result_inputs(
-                [{"parameter_values": {"x": float("nan")}, "objective_values": {"f": 1.0}}]
-            ),
-            submitted_by=owner_id,
-        )
-
-        # NaN parameters should definitely be rejected
-        # as they cannot be used for model training
-        if result["success"]:
-            assert "warnings" in result
-        else:
-            assert len(result["errors"]) > 0
+        gen = await generate_suggestions(campaign_id)
+        assert gen["success"] is True
+        assert len(gen["suggestions"]) >= 1
+        for suggestion in gen["suggestions"]:
+            assert 0.0 <= suggestion["parameter_values"]["x"] <= 1.0
 
 
 @pytest.mark.usefixtures("setup_database")

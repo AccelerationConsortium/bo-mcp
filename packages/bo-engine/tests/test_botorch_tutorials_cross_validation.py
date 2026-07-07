@@ -184,10 +184,12 @@ class TestOptimizedCrossValidation:
     def test_optimized_cv_matches_standard(self) -> None:
         """Optimized LOO-CV should give similar results to naive implementation.
 
-        The optimized path is exercised through the tensor form, which is
-        the call that cross-validates fresh default fits like
-        ``compute_loo_cv_for_model`` does; the model form validates the
-        passed fitted model instead and is covered by its own tests.
+        The optimized path is exercised through the tensor form; the naive
+        reference is the sequential per-fold refit (``compute_loo_cv_metrics``)
+        — the same refit-based estimator, so the comparison isolates the
+        batching. ``compute_loo_cv_for_model`` is no longer a refit surface
+        (it validates the passed fitted model via its exact LOO downdate)
+        and is pinned against its own oracles elsewhere.
         """
         torch.manual_seed(42)
         bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
@@ -198,10 +200,8 @@ class TestOptimizedCrossValidation:
         train_x_scaled = train_x * (branin_bounds()[1] - branin_bounds()[0]) + branin_bounds()[0]
         train_y = branin(train_x_scaled).unsqueeze(-1)
 
-        model = create_and_fit_single_task_model(train_x, train_y, bounds)
-
-        # Standard CV
-        metrics_std = compute_loo_cv_for_model(model, train_x, train_y)
+        # Standard CV: naive sequential per-fold refits
+        metrics_std = compute_loo_cv_metrics(train_x, train_y, bounds)
 
         # Optimized CV
         config = CVConfig(method="batch_loo")

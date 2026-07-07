@@ -8,15 +8,34 @@ and the chained-transform pattern in
 https://botorch.readthedocs.io/en/stable/models.html#botorch.models.transforms.outcome.ChainedOutcomeTransform.
 """
 
+from typing import cast
+
 import pytest
 import torch
+from botorch.models import SingleTaskGP
 from botorch.models.transforms.outcome import (
     ChainedOutcomeTransform,
     Log,
     Standardize,
 )
+from gpytorch.likelihoods import FixedNoiseGaussianLikelihood
 
-from bo_engine.models import create_model, create_single_task_model
+from bo_engine.models import (
+    DeltaMethodLog,
+    create_and_fit_single_task_model,
+    create_model,
+    create_single_task_model,
+    inspect_standardize_stdvs,
+)
+
+
+def _fixed_noise_vector(model: SingleTaskGP) -> torch.Tensor:
+    """Flat fixed observation-noise vector recorded on the model's likelihood."""
+    likelihood = model.likelihood
+    assert isinstance(likelihood, FixedNoiseGaussianLikelihood)
+    noise = likelihood.noise
+    assert isinstance(noise, torch.Tensor)
+    return noise.detach().reshape(-1)
 
 
 def test_default_outcome_transform_is_pure_standardize() -> None:
@@ -235,6 +254,165 @@ def test_log_transform_negated_targets_chain_negate_before_log() -> None:
     # And the dominant observation is recovered on the right decade.
     largest = float(recovered.max().item())
     assert raw_y.max().item() / 2 < largest < raw_y.max().item() * 2
+
+
+class TestLogTransformWithKnownMeasurementUncertainty:
+    """``log_transform`` + ``train_yvar`` builds a fixed-noise GP via the delta method.
+
+    BoTorch's stock ``Log`` outcome transform raises ``NotImplementedError``
+    when observation noise is supplied, so a campaign that combined
+    ``log_transform=True`` with full measurement-uncertainty coverage used
+    to crash at GP construction. The engine's ``DeltaMethodLog`` closes the
+    gap by propagating the variance into log space with the first-order
+    Taylor (delta method) approximation ``Var[log Y] ~= Var[Y] / y**2``.
+
+    References:
+        - Casella & Berger, *Statistical Inference*, 2nd ed. (2002),
+          §5.5.4 "The Delta Method": ``Var[g(Y)] ~= g'(mu)**2 Var[Y]``;
+          with ``g = log`` this is the standard error-propagation rule
+          ``Var[log Y] ~= Var[Y] / y**2``.
+        - BoTorch ``Log`` outcome transform (raises on ``Yvar``):
+          https://botorch.readthedocs.io/en/stable/models.html#botorch.models.transforms.outcome.Log
+    """
+
+    @staticmethod
+    def _problem() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Multi-decade positive targets on deliberately non-unit bounds."""
+        torch.manual_seed(11)
+        n = 10
+        bounds = torch.tensor([[0.0, 0.0], [100.0, 5.0]], dtype=torch.double)
+        train_x = torch.rand(n, 2, dtype=torch.double) * (bounds[1] - bounds[0]) + bounds[0]
+        raw_y = torch.exp(torch.linspace(-2.0, 2.0, n, dtype=torch.double)).unsqueeze(-1)
+        yvar = (0.05 * raw_y) ** 2  # 5% relative stddev, in variance units
+        return train_x, raw_y, yvar, bounds
+
+    def test_fixed_noise_log_model_builds_and_predicts_finite(self) -> None:
+        """The combination that used to raise ``NotImplementedError`` now fits.
+
+        Uses the engine's maximization-form convention for a minimize
+        objective (negated targets + ``target_negated=True``) and non-unit
+        parameter bounds. The posterior must be finite and stay on the
+        negated input scale.
+        """
+        train_x, raw_y, yvar, bounds = self._problem()
+
+        model = create_and_fit_single_task_model(
+            train_x,
+            -raw_y,
+            bounds,
+            train_yvar=yvar,
+            log_transform=True,
+            target_negated=True,
+        )
+
+        assert isinstance(model.likelihood, FixedNoiseGaussianLikelihood)
+        model.eval()
+        with torch.no_grad():
+            posterior = model.posterior(train_x)
+        assert torch.isfinite(posterior.mean).all()
+        assert torch.isfinite(posterior.variance).all()
+        assert (posterior.variance > 0).all()
+        # Direction contract: posterior lives on the supplied (negated)
+        # scale, and un-negating recovers the raw multi-decade ordering.
+        assert (posterior.mean < 0).all()
+        recovered = -posterior.mean.squeeze(-1)
+        assert torch.equal(recovered.argsort(), raw_y.squeeze(-1).argsort())
+
+    def test_likelihood_noise_is_delta_method_variance(self) -> None:
+        """The fixed noise equals ``(yvar / y**2) / stdvs**2`` exactly.
+
+        The outcome chain is ``Negate -> DeltaMethodLog -> Standardize``:
+        ``Negate`` passes the (sign-invariant) variance through,
+        ``DeltaMethodLog`` divides by the raw positive ``y**2`` (delta
+        method, Casella & Berger 2002, §5.5.4), and ``Standardize``
+        rescales by its stored ``stdvs**2``. A model that silently dropped
+        or mis-scaled the variance would fail this equality.
+        """
+        train_x, raw_y, yvar, bounds = self._problem()
+
+        model = create_single_task_model(
+            train_x,
+            -raw_y,
+            bounds,
+            train_yvar=yvar,
+            log_transform=True,
+            target_negated=True,
+        )
+
+        stddev = inspect_standardize_stdvs(model)[0]
+        expected = (yvar / raw_y.pow(2)) / stddev**2
+        assert torch.allclose(_fixed_noise_vector(model), expected.reshape(-1), rtol=1e-9)
+
+    def test_multi_objective_mixed_log_flags_route_yvar_per_objective(self) -> None:
+        """Only the log-transformed column gets the delta-method mapping."""
+        torch.manual_seed(11)
+        n = 8
+        bounds = torch.tensor([[0.0, 0.0], [100.0, 5.0]], dtype=torch.double)
+        train_x = torch.rand(n, 2, dtype=torch.double) * (bounds[1] - bounds[0]) + bounds[0]
+        raw_log_obj = torch.exp(torch.linspace(-2.0, 2.0, n, dtype=torch.double))
+        plain_obj = torch.linspace(0.0, 1.0, n, dtype=torch.double)
+        # Column 0: minimize + log_transform (arrives negated); column 1: maximize.
+        train_y = torch.stack([-raw_log_obj, plain_obj], dim=-1)
+        yvar = torch.stack(
+            [(0.1 * raw_log_obj) ** 2, torch.full((n,), 0.01, dtype=torch.double)],
+            dim=-1,
+        )
+
+        model_list = create_model(
+            train_x,
+            train_y,
+            bounds,
+            train_yvar=yvar,
+            log_transform=[True, False],
+            target_negated=[True, False],
+        )
+
+        log_model, plain_model = cast(list[SingleTaskGP], list(model_list.models))
+        assert isinstance(log_model.likelihood, FixedNoiseGaussianLikelihood)
+        assert isinstance(plain_model.likelihood, FixedNoiseGaussianLikelihood)
+
+        log_stddev, plain_stddev = inspect_standardize_stdvs(model_list)
+        expected_log = (yvar[:, 0:1] / raw_log_obj.unsqueeze(-1).pow(2)) / log_stddev**2
+        assert torch.allclose(_fixed_noise_vector(log_model), expected_log.reshape(-1), rtol=1e-9)
+
+        expected_plain = yvar[:, 1:2] / plain_stddev**2
+        assert torch.allclose(
+            _fixed_noise_vector(plain_model), expected_plain.reshape(-1), rtol=1e-9
+        )
+
+    def test_delta_method_transform_round_trips_noise(self) -> None:
+        """``forward`` then ``untransform`` recovers targets and noise.
+
+        The inverse map is ``Var[Y] ~= exp(z)**2 * Var[Z]`` for
+        ``z = log(y)`` — the delta method applied to ``g = exp``.
+        """
+        transform = DeltaMethodLog()
+        y = torch.tensor([[0.5], [2.0], [40.0]], dtype=torch.double)
+        yvar = torch.tensor([[0.01], [0.04], [4.0]], dtype=torch.double)
+
+        y_tf, yvar_tf = transform(y, yvar)
+        assert torch.allclose(y_tf, torch.log(y))
+        assert yvar_tf is not None
+        assert torch.allclose(yvar_tf, yvar / y.pow(2))
+
+        y_rt, yvar_rt = transform.untransform(y_tf, yvar_tf)
+        assert torch.allclose(y_rt, y)
+        assert yvar_rt is not None
+        assert torch.allclose(yvar_rt, yvar)
+
+    def test_delta_method_requires_strictly_positive_targets(self) -> None:
+        """Non-positive pre-log targets with noise raise an actionable error.
+
+        The delta method divides by ``y**2`` and the log itself needs
+        ``y > 0``; the transform re-validates so standalone use cannot emit
+        non-finite noise silently.
+        """
+        transform = DeltaMethodLog()
+        y = torch.tensor([[1.0], [0.0], [2.0]], dtype=torch.double)
+        yvar = torch.full_like(y, 0.01)
+
+        with pytest.raises(ValueError, match="strictly positive"):
+            transform(y, yvar)
 
 
 def test_negate_outcome_transform_is_involution() -> None:

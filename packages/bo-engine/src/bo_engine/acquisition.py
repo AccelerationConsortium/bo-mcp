@@ -25,7 +25,6 @@ from typing import Any, cast
 
 import torch
 from botorch.acquisition import AcquisitionFunction
-from botorch.acquisition.analytic import ExpectedImprovement
 from botorch.acquisition.cost_aware import InverseCostWeightedUtility
 from botorch.acquisition.logei import qLogExpectedImprovement, qLogNoisyExpectedImprovement
 from botorch.acquisition.multi_objective.logei import qLogNoisyExpectedHypervolumeImprovement
@@ -457,37 +456,31 @@ def _create_single_objective_dispatch(
         msg = "Single-objective requires SingleTaskGP model"
         raise ValueError(msg)
 
-    if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
-        # EIpu path keeps its own constraint handling — it does not benefit
-        # from the ModelListGP bundle because EIpuAcquisition consumes
-        # constraint callables in a different way (see ``EIpuAcquisition``).
-        return create_cost_aware_acquisition(
-            model=objective_gp,
-            train_y=train_y,
-            maximize=maximize,
-            cost_model=cost_model,
-            outcome_constraint_models=outcome_constraint_models,
-        )
-
     if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is None:
         logger.warning(
             "COST_WEIGHTED_EI requested but no cost model available. "
             "Falling back to standard Noisy Expected Improvement."
         )
 
+    acq_model, all_constraints = _bundle_outcome_constraint_models(
+        objective_gp, constraints, outcome_constraint_models
+    )
+
+    if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
+        # The cost-aware path shares the constrained qLogNEI core with the
+        # standard path; ``EIpuAcquisition`` only adds the log expected-cost
+        # term on top (see ``create_cost_aware_acquisition``).
+        return create_cost_aware_acquisition(
+            model=acq_model,
+            train_x=train_x,
+            train_y=train_y,
+            cost_model=cost_model,
+            maximize=maximize,
+            constraints=all_constraints if all_constraints else None,
+        )
+
     use_noisy = method != AcquisitionMethod.EXPECTED_IMPROVEMENT
-    acq_model: SingleTaskGP | ModelListGP = objective_gp
-    all_constraints = list(constraints) if constraints else []
-    if outcome_constraint_models:
-        constraint_gps = [m for m, _ in outcome_constraint_models]
-        acq_model = ModelListGP(objective_gp, *constraint_gps)
-        for idx, (_constraint_gp, threshold) in enumerate(outcome_constraint_models):
-            all_constraints.append(
-                _make_outcome_constraint_callable(
-                    output_index=idx + 1,
-                    threshold=threshold,
-                )
-            )
+    if outcome_constraint_models and not use_noisy:
         # ``qLogExpectedImprovement`` (the analytic EI path) does not
         # support multi-output models without an explicit objective /
         # posterior transform, so a constrained run with
@@ -496,14 +489,13 @@ def _create_single_objective_dispatch(
         # accepts ``constraints=`` and a ``GenericMCObjective`` channel
         # selector; we transparently upgrade and log a warning so the
         # caller knows the analytic path was unavailable.
-        if not use_noisy:
-            logger.warning(
-                "AcquisitionMethod.EXPECTED_IMPROVEMENT does not support "
-                "outcome constraints. Routing through NOISY_EI so BoTorch "
-                "can apply the feasibility weighting; set "
-                "acquisition_method=NOISY_EI to suppress this warning."
-            )
-            use_noisy = True
+        logger.warning(
+            "AcquisitionMethod.EXPECTED_IMPROVEMENT does not support "
+            "outcome constraints. Routing through NOISY_EI so BoTorch "
+            "can apply the feasibility weighting; set "
+            "acquisition_method=NOISY_EI to suppress this warning."
+        )
+        use_noisy = True
     return create_single_objective_acquisition(
         model=acq_model,
         train_x=train_x,
@@ -512,6 +504,38 @@ def _create_single_objective_dispatch(
         use_noisy=use_noisy,
         constraints=all_constraints if all_constraints else None,
     )
+
+
+def _bundle_outcome_constraint_models(
+    objective_gp: SingleTaskGP,
+    constraints: list | None,
+    outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None,
+) -> tuple[SingleTaskGP | ModelListGP, list]:
+    """Bundle the objective GP with outcome-constraint GPs for MC feasibility.
+
+    Returns the acquisition model together with the combined list of
+    constraint callables. Without outcome constraints the objective GP and
+    the caller-supplied callables pass through untouched. With them, the
+    objective GP (channel 0) and every constraint GP (channels 1..k) are
+    wrapped in a single :class:`ModelListGP` and one channel-indexing
+    callable per constraint is appended (see
+    :func:`_make_outcome_constraint_callable`), so BoTorch's feasibility
+    weighting reads each constraint GP's posterior rather than the
+    objective's samples (Gardner et al. ICML 2014).
+    """
+    all_constraints = list(constraints) if constraints else []
+    if not outcome_constraint_models:
+        return objective_gp, all_constraints
+    constraint_gps = [m for m, _ in outcome_constraint_models]
+    acq_model = ModelListGP(objective_gp, *constraint_gps)
+    for idx, (_constraint_gp, threshold) in enumerate(outcome_constraint_models):
+        all_constraints.append(
+            _make_outcome_constraint_callable(
+                output_index=idx + 1,
+                threshold=threshold,
+            )
+        )
+    return acq_model, all_constraints
 
 
 def _create_multi_objective_dispatch(
@@ -657,50 +681,65 @@ def _make_outcome_constraint_callable(
 
 
 def create_cost_aware_acquisition(
-    model: SingleTaskGP,
+    model: SingleTaskGP | ModelListGP,
+    train_x: Tensor,
     train_y: Tensor,
     cost_model: SingleTaskGP,
     *,
     maximize: bool,
-    outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None = None,
+    constraints: list | None = None,
 ) -> AcquisitionFunction:
-    """Create EIpu (Expected Improvement per Unit cost) acquisition.
+    """Create the cost-aware EIpu (Expected Improvement per Unit cost) acquisition.
 
-    EIpu = EI(x) / E[cost(x)]
+    Builds the same Monte-Carlo improvement core the standard
+    single-objective path uses (``qLogNoisyExpectedImprovement``, including
+    any outcome-constraint feasibility weighting carried by ``model`` /
+    ``constraints``) and wraps it in :class:`EIpuAcquisition`, which
+    subtracts the log expected cost. Maximizing the result is equivalent to
+    maximizing ``qNEI(x) / E[cost(x)]`` — Snoek et al. (2012)'s
+    "EI per second" generalized to the noisy, batched setting.
 
     ``train_y`` must be in the canonical maximization form; see
     :mod:`bo_engine.types`.
 
     Args:
-        model: Fitted objective model
+        model: Fitted objective model, or a ``ModelListGP`` bundle whose
+            channel 0 is the objective and channels 1..k are outcome
+            constraint GPs (see :func:`_bundle_outcome_constraint_models`)
+        train_x: Training inputs for the noisy-EI baseline
         train_y: Training outputs in maximization form
         cost_model: Fitted cost model
         maximize: Direction of the data handed to the factory (required
             keyword so the caller cannot silently mismatch the sign
             convention)
-        outcome_constraint_models: Optional outcome constraint models
+        constraints: Optional constraint callables consumed by the inner
+            qLogNEI's feasibility weighting (negative return = feasible)
 
     Returns:
         EIpuAcquisition function
     """
     _assert_maximization_form(maximize)
-    # train_y is in maximization form (higher = better); max() is best.
-    best_f = train_y.max().item()
-
-    return EIpuAcquisition(
-        model=model,
-        cost_model=cost_model,
-        best_f=best_f,
-        outcome_constraint_models=outcome_constraint_models,
+    improvement = cast(
+        qLogNoisyExpectedImprovement,
+        create_single_objective_acquisition(
+            model=model,
+            train_x=train_x,
+            train_y=train_y,
+            maximize=maximize,
+            use_noisy=True,
+            constraints=constraints,
+        ),
     )
+    return EIpuAcquisition(improvement=improvement, cost_model=cost_model)
 
 
 def _positive_cost_objective() -> GenericMCObjective:
     """Cost objective that squeezes the single output and floors it positive.
 
-    ``InverseCostWeightedUtility`` requires strictly positive costs; a GP cost
-    posterior can dip to (near-)zero or slightly negative in extrapolation, so
-    we clamp to ``COST_AWARE_MIN_EXPECTED_COST`` before the inverse weighting.
+    ``InverseCostWeightedUtility`` requires strictly positive costs (here it
+    takes their logarithm); a GP cost posterior can dip to (near-)zero or
+    slightly negative in extrapolation, so we clamp to
+    ``COST_AWARE_MIN_EXPECTED_COST`` before the weighting.
     """
     return GenericMCObjective(
         lambda samples, X=None: samples.squeeze(-1).clamp_min(COST_AWARE_MIN_EXPECTED_COST)  # noqa: ARG005, N803
@@ -708,59 +747,75 @@ def _positive_cost_objective() -> GenericMCObjective:
 
 
 class EIpuAcquisition(AcquisitionFunction):
-    """Expected Improvement per Unit cost acquisition function.
+    """Expected Improvement per Unit cost acquisition function, in log space.
 
-    Computes ``EI(x) / E[cost(x)]`` to optimize for efficiency. The
-    inverse-cost weighting is delegated to BoTorch's
-    :class:`~botorch.acquisition.cost_aware.InverseCostWeightedUtility`, which
-    evaluates the cost posterior *with* gradients (the previous hand-rolled
-    quotient detached the cost under ``torch.no_grad``, so L-BFGS-B ascended a
-    surface whose gradient treated ``cost(x)`` as locally constant — missing the
-    quotient-rule term). The utility also handles non-positive improvements by
-    scaling rather than dividing, so the ranking stays sensible there.
+    Computes ``log qNEI(X) - log E[cost(X)]``, whose maximizer coincides
+    with that of ``qNEI(X) / E[cost(X)]`` (Snoek et al. 2012). Two design
+    points matter here:
+
+    * The improvement term is a Monte-Carlo
+      :class:`~botorch.acquisition.logei.qLogNoisyExpectedImprovement`, so
+      :meth:`set_X_pending` genuinely conditions the surface on pending
+      points — BoTorch's sequential-greedy batch loop relies on that
+      conditioning to produce distinct batch members, and in-flight
+      experiments passed as ``X_pending`` are honored. An analytic EI core
+      cannot do either (its ``set_X_pending`` is unsupported).
+    * The inverse-cost weighting is delegated to BoTorch's
+      :class:`~botorch.acquisition.cost_aware.InverseCostWeightedUtility` in
+      log mode, which evaluates the cost posterior *with* gradients so
+      L-BFGS-B sees the full quotient-rule gradient of ``EI/cost``. Staying
+      in log space turns the numerically sensitive division into a
+      subtraction and matches the log-scale output of the improvement term.
+
+    Outcome constraints are handled inside the wrapped improvement term via
+    BoTorch's smoothed feasibility weighting (the same path the standard
+    non-cost acquisition uses), not by this wrapper.
     """
 
     def __init__(
         self,
-        model: SingleTaskGP,
+        improvement: qLogNoisyExpectedImprovement,
         cost_model: SingleTaskGP,
-        best_f: float,
-        outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None = None,
     ) -> None:
         """Initialize EIpu acquisition.
 
         Args:
-            model: Fitted objective model
+            improvement: Fitted MC improvement acquisition (already carrying
+                any outcome-constraint feasibility weighting)
             cost_model: Fitted cost model
-            best_f: Best observed value in maximization form
-            outcome_constraint_models: Optional outcome constraint models
         """
-        super().__init__(model)
-        self.ei = ExpectedImprovement(model=model, best_f=best_f, maximize=True)
+        super().__init__(improvement.model)
+        self.improvement = improvement
         self.cost_model = cost_model
         self.cost_utility = InverseCostWeightedUtility(
             cost_model=cost_model,
             use_mean=True,
             cost_objective=_positive_cost_objective(),
+            log=True,
         )
-        self.outcome_constraint_models = outcome_constraint_models
-        # X_pending is required for sequential optimization
-        self._X_pending: Tensor | None = None
 
     @property
     def X_pending(self) -> Tensor | None:  # noqa: N802
-        """Get pending candidates."""
-        return self._X_pending
+        """Pending candidates, as tracked by the inner improvement term."""
+        return self.improvement.X_pending
 
     @X_pending.setter
     def X_pending(self, value: Tensor | None) -> None:  # noqa: N802
-        """Set pending candidates."""
-        self._X_pending = value
-        # Also set on the inner EI
-        self.ei.X_pending = value
+        """Set pending candidates by delegating to :meth:`set_X_pending`."""
+        self.set_X_pending(value)
+
+    def set_X_pending(self, X_pending: Tensor | None = None) -> None:  # noqa: N802, N803
+        """Condition the improvement term on pending points.
+
+        qLogNEI folds pending points into its incumbent baseline (its
+        incremental mode), so subsequent evaluations measure improvement
+        *beyond* the pending picks — the mechanism BoTorch's sequential
+        greedy optimizer uses to diversify batch members.
+        """
+        self.improvement.set_X_pending(X_pending)
 
     def forward(self, X: Tensor) -> Tensor:  # noqa: N803
-        """Compute EIpu acquisition value.
+        """Compute the log EI-per-unit-cost acquisition value.
 
         Args:
             X: Candidate points of shape (..., q, d) where:
@@ -769,37 +824,18 @@ class EIpuAcquisition(AcquisitionFunction):
                - d is the input dimension
 
         Returns:
-            Acquisition values of shape (...) matching EI output
+            Log-space acquisition values of shape (...) matching the
+            improvement term's output
         """
-        # Compute EI - returns shape (...) = batch_shape
-        ei_val = self.ei(X)
+        # Log-space improvement - returns shape (...) = batch_shape
+        log_improvement = self.improvement(X)
 
-        # Inverse-cost weight EI/E[cost]. The utility differentiates through the
-        # cost posterior (no ``no_grad``), so the optimizer sees the full
-        # quotient gradient. ``deltas`` is ``num_fantasies x batch_shape``; EI is
-        # not fantasized, so we add a singleton leading dim and drop it after.
-        eipu = self.cost_utility(X=X, deltas=ei_val.unsqueeze(0)).squeeze(0)
-
-        # Apply outcome constraints if any
-        if self.outcome_constraint_models:
-            constraint_prob = torch.ones_like(eipu)
-            for constraint_model, threshold in self.outcome_constraint_models:
-                constraint_model.eval()
-                with torch.no_grad():
-                    prob_posterior = constraint_model.posterior(X)
-                    prob_feasible = prob_posterior.mean.squeeze(-1)
-                    if prob_feasible.dim() > eipu.dim():
-                        prob_feasible = prob_feasible.mean(dim=-1)
-                    # Binary thresholding: zero out infeasible points rather than
-                    # smooth weighting (prob * acq).  This is a deliberate stability
-                    # choice — BoTorch's smooth ConstrainedMCObjective can cause
-                    # gradient vanishing near the threshold, making L-BFGS-B stall.
-                    # The hard cutoff is more robust for the EIpu case where the
-                    # cost denominator already introduces numerical sensitivity.
-                    constraint_prob = constraint_prob * (prob_feasible > threshold).float()
-            eipu = eipu * constraint_prob
-
-        return eipu
+        # In log mode the utility subtracts ``log(sum_q E[cost])`` from the
+        # log improvement, differentiating through the cost posterior so the
+        # optimizer sees the full quotient gradient. ``deltas`` is
+        # ``num_fantasies x batch_shape``; the improvement is not fantasized,
+        # so we add a singleton leading dim and drop it after.
+        return self.cost_utility(X=X, deltas=log_improvement.unsqueeze(0)).squeeze(0)
 
 
 def _validate_linear_constraint_entry(
@@ -943,9 +979,13 @@ def optimize_acquisition(
             tuple is (indices, coefficients, rhs) enforcing
             ``sum_i X[indices[i]] * coefficients[i] >= rhs`` (BoTorch's
             documented convention; see ``build_botorch_linear_constraints``).
+            Enforced on the CONTINUOUS and MIXED branches; constraints that
+            touch categorical parameters never reach this function — they
+            are classified for post-hoc projection upstream.
         equality_constraints: BoTorch linear equality constraints. Each
             tuple is (indices, coefficients, rhs) enforcing
-            ``sum_i X[indices[i]] * coefficients[i] = rhs``.
+            ``sum_i X[indices[i]] * coefficients[i] = rhs``. Same branch
+            coverage as ``inequality_constraints``.
         X_pending: In-flight candidates (shape ``(n_pending, n_dims)``) that
             should condition the acquisition so new suggestions are diverse
             from pending experiments.  For continuous and mixed spaces this
@@ -1009,7 +1049,14 @@ def optimize_acquisition(
             raise NotImplementedError(msg)
         _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_mixed(
-            acqf, bounds, spec, batch_size, effective_restarts, effective_samples
+            acqf,
+            bounds,
+            spec,
+            batch_size,
+            effective_restarts,
+            effective_samples,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
         )
     _apply_pending_to_acqf(acqf, X_pending)
     return _optimize_continuous(
@@ -1041,8 +1088,8 @@ def _apply_pending_to_acqf(
     if callable(set_pending):
         set_pending(X_pending)
     else:
-        # Fall back to the attribute for custom acquisitions (e.g. EIpu)
-        # that expose a property setter but no ``set_X_pending`` method.
+        # Fall back to the attribute for custom acquisitions that expose a
+        # property setter but no ``set_X_pending`` method.
         acqf.X_pending = X_pending
 
 
@@ -1237,11 +1284,16 @@ def _optimize_mixed(
     batch_size: int,
     num_restarts: int,
     raw_samples: int,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Optimize acquisition over a mixed continuous + categorical space.
 
     For each categorical combination, runs L-BFGS-B optimization over the
-    continuous dimensions, then returns the best result.
+    continuous dimensions, then returns the best result. Native linear
+    constraints (which by construction reference only non-categorical
+    dimensions — see ``build_botorch_linear_constraints``) are enforced
+    inside each per-combination run by ``optimize_acqf_mixed``.
 
     Reference:
         https://botorch.readthedocs.io/en/latest/optim.html#botorch.optim.optimize.optimize_acqf_mixed
@@ -1253,6 +1305,10 @@ def _optimize_mixed(
         batch_size: Number of candidates to generate
         num_restarts: Number of optimization restarts
         raw_samples: Number of raw samples for initialization
+        inequality_constraints: BoTorch linear inequality constraints
+            (``coefficients @ X[indices] >= rhs``)
+        equality_constraints: BoTorch linear equality constraints
+            (``coefficients @ X[indices] = rhs``)
 
     Returns:
         Tuple of (candidates, acquisition_values)
@@ -1266,6 +1322,8 @@ def _optimize_mixed(
         raw_samples=raw_samples,
         fixed_features_list=fixed_features,
         options=_lbfgs_options(),
+        inequality_constraints=inequality_constraints,
+        equality_constraints=equality_constraints,
     )
     return candidates, acq_values
 

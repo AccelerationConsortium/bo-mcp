@@ -154,13 +154,22 @@ def _parse_objective_values(
 
 
 def _try_parse_float(value: object) -> float | None:
-    """Try to convert *value* to float, returning None on failure."""
+    """Try to convert *value* to a finite float, returning None on failure.
+
+    Non-finite cells (``nan``/``inf``/``-inf``, however spelled) count as
+    parse failures: objective columns feed the surrogate's training
+    targets, where a single non-finite value would block every
+    subsequent model fit once persisted.
+    """
     if not isinstance(value, (int, float, str, bytes)):
         return None
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
 
 
 def _parse_scalar(value: object) -> object:

@@ -2,9 +2,10 @@
 
 Split from :mod:`bo_mcp_server.operations.submit_results` so per-row
 shape checks (parameter presence, spec-bound enforcement, finite
-measurement uncertainty) plus the mutable bookkeeping (``_RowError``,
-``_SubmitTracking``, ``_record_row_error``) live in a single module
-keyed by responsibility.
+parameter/objective values, finite measurement uncertainty) plus the
+mutable bookkeeping (``_RowError``, ``_SubmitTracking``,
+``_record_row_error``) live in a single module keyed by
+responsibility.
 
 The companion module :mod:`.submit_results_pipeline` consumes these
 helpers from the per-row Phase 1 loop and the duplicate / budget
@@ -174,6 +175,56 @@ def _validate_measurement_uncertainty(
     return None
 
 
+def _validate_parameter_finiteness(
+    parameter_values: dict[str, Any],
+    index: int,
+) -> _RowError | None:
+    """Reject non-finite numeric parameter values.
+
+    A NaN coordinate silently bypasses the spec-bounds warning (every
+    comparison against NaN is False) and, once persisted, poisons the
+    surrogate's training inputs on every subsequent fit. Results cannot
+    be deleted after submission, so the row must be stopped here.
+    Non-numeric values are left to the spec validators: categorical
+    parameters legitimately carry strings.
+    """
+    for pname, pvalue in parameter_values.items():
+        if isinstance(pvalue, float) and not math.isfinite(pvalue):
+            return _RowError(
+                field_path=f"parameter_values['{pname}']",
+                message=(
+                    f"Result {index}: parameter_values['{pname}'] is not a finite number: {pvalue}"
+                ),
+            )
+    return None
+
+
+def _validate_objective_finiteness(
+    objective_values: dict[str, Any],
+    index: int,
+) -> _RowError | None:
+    """Reject non-numeric or non-finite objective values.
+
+    Objective values become the surrogate's training targets, so a
+    single NaN/inf entry would make every subsequent model fit fail
+    (and thereby block suggestion generation for the whole campaign,
+    since persisted results cannot be deleted). The Pydantic intake
+    models already reject non-finite floats; this check re-runs at the
+    shared operation layer so every transport is covered even when a
+    caller bypasses model validation.
+    """
+    for obj_name, obj_val in objective_values.items():
+        if not isinstance(obj_val, (int, float)) or math.isnan(obj_val) or math.isinf(obj_val):
+            return _RowError(
+                field_path=f"objective_values['{obj_name}']",
+                message=(
+                    f"Result {index}: objective_values['{obj_name}'] "
+                    f"is not a finite number: {obj_val}"
+                ),
+            )
+    return None
+
+
 def _validate_single_result(
     index: int,
     r: ResultSubmissionInput,
@@ -184,20 +235,24 @@ def _validate_single_result(
 ) -> _RowError | None:
     """Validate a single result's parameter and objective *shape*.
 
-    Shape-only checks: parameter presence, parameter spec validation
-    (bounds/categories), objective presence, measurement-uncertainty
-    finiteness. Cross-row checks (duplicate parameters, duplicate or
-    stale ``suggestion_id``) live in the per-row loop in
-    :func:`_validate_and_create_results` so they can see the running
-    state of accepted rows; running them here would let a later row be
-    rejected as the duplicate of an earlier row that was itself dropped
-    by some other validator.
+    Shape-only checks: parameter presence, parameter/objective value
+    finiteness, parameter spec validation (bounds/categories),
+    objective presence, measurement-uncertainty finiteness. Cross-row
+    checks (duplicate parameters, duplicate or stale ``suggestion_id``)
+    live in the per-row loop in :func:`_validate_and_create_results` so
+    they can see the running state of accepted rows; running them here
+    would let a later row be rejected as the duplicate of an earlier
+    row that was itself dropped by some other validator.
     """
     if missing_params := (param_names - set(r.parameter_values.keys())):
         return _RowError(
             field_path="parameter_values",
             message=f"Result {index} missing parameters: {missing_params}",
         )
+
+    param_error = _validate_parameter_finiteness(r.parameter_values, index)
+    if param_error is not None:
+        return param_error
 
     # Validate parameter values against spec bounds/categories
     if parameters is not None:
@@ -211,6 +266,10 @@ def _validate_single_result(
             field_path="objective_values",
             message=f"Result {index} missing objectives: {missing_objectives}",
         )
+
+    objective_error = _validate_objective_finiteness(r.objective_values, index)
+    if objective_error is not None:
+        return objective_error
 
     if r.measurement_uncertainty is not None:
         unc_error = _validate_measurement_uncertainty(

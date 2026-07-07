@@ -64,7 +64,7 @@ def test_approximate_loo_matches_exact_within_tolerance(n_samples: int) -> None:
     """
     train_x, train_y, bounds = _synthetic_dataset(n_samples, seed=11)
 
-    exact = _compute_batch_loo_cv(train_x, train_y)
+    exact = _compute_batch_loo_cv(train_x, train_y, bounds)
     approx = _compute_approximate_loo(train_x, train_y, bounds)
 
     # Both methods must return numeric (non-NaN) RMSE on the smoothly-noisy

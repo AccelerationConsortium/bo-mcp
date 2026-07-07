@@ -13,10 +13,19 @@ These tests verify:
 
 import pytest
 import torch
+from botorch.models import SingleTaskGP
+from botorch.models.transforms.input import Normalize
 
+import bo_engine.saasbo as saasbo_module
+from bo_engine.constants import (
+    SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD,
+    SAASBO_MIN_DIMENSIONS,
+)
+from bo_engine.models import create_and_fit_single_task_model
 from bo_engine.saasbo import (
     SAASBOConfig,
     compute_saasbo_importance,
+    compute_saasbo_importance_report,
     create_and_fit_saasbo_model,
     create_saasbo_model,
     estimate_saasbo_runtime,
@@ -75,6 +84,17 @@ class TestShouldUseSAASBO:
         """Custom threshold is respected."""
         assert should_use_saasbo(n_parameters=30, n_observations=50, threshold=30) is True
         assert should_use_saasbo(n_parameters=30, n_observations=50, threshold=40) is False
+
+    def test_default_threshold_tracks_min_dimensions_constant(self) -> None:
+        """The default boundary is ``SAASBO_MIN_DIMENSIONS``, not a local literal.
+
+        Pinning the default to the shared constant keeps the recommendation
+        in sync with every other consumer of the SAASBO dimensionality
+        threshold when the constant is retuned.
+        """
+        n_obs = 2 * SAASBO_MIN_DIMENSIONS
+        assert should_use_saasbo(SAASBO_MIN_DIMENSIONS, n_obs) is True
+        assert should_use_saasbo(SAASBO_MIN_DIMENSIONS - 1, n_obs) is False
 
 
 class TestSAASBORuntimeEstimate:
@@ -294,6 +314,143 @@ class TestSAASBOSuggestionGeneration:
         assert "parameter_importance" in metadata
         assert "top_important_parameters" in metadata
         assert set(metadata["parameter_importance"].keys()) == set(param_names)
+
+
+@pytest.mark.usefixtures("torch_rng")
+class TestSAASBONormalization:
+    """Inputs must be normalized to the unit cube before the SAAS prior.
+
+    BoTorch's SAAS model assumes inputs normalized to ``[0, 1]^d``, and
+    both the half-Cauchy SAAS prior and the inactive-dimension lengthscale
+    calibration (``SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD``, inactive =>
+    lengthscale >= 1e2) are stated in unit-cube units — see Eriksson &
+    Jankowiak, "High-Dimensional Bayesian Optimization with Sparse
+    Axis-Aligned Subspaces", UAI 2021 (https://arxiv.org/abs/2103.00349).
+    A fit on raw lab-typical bounds (e.g. temperature 0-100) puts the
+    lengthscales on the raw scale, so a genuinely driving dimension reads
+    as inactive against the unit-calibrated threshold. Mirrors
+    ``TestMultiFidelityNormalization``, which pinned the same contract for
+    the multi-fidelity GP.
+    """
+
+    @staticmethod
+    def _non_unit_problem() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """x0 on a 0-100 scale drives the objective; x1/x2 live on [0, 1]."""
+        bounds = torch.tensor([[0.0, 0.0, 0.0], [100.0, 1.0, 1.0]], dtype=torch.double)
+        x = torch.rand(20, 3, dtype=torch.double)
+        x[:, 0] *= 100.0  # temperature-like scale
+        y = (x[:, 0:1] / 100.0) ** 2
+        return x, y, bounds
+
+    def test_create_model_attaches_normalize_with_bounds(self) -> None:
+        """The factory builds a ``Normalize`` transform from the given bounds."""
+        x, y, bounds = self._non_unit_problem()
+
+        model = create_saasbo_model(x, y, bounds=bounds)
+
+        assert isinstance(model.input_transform, Normalize)
+        assert torch.equal(model.input_transform.bounds, bounds)
+
+    def test_normalized_inputs_reach_the_pyro_model(self) -> None:
+        """NUTS samples against unit-cube inputs, not raw parameter scales.
+
+        ``SaasFullyBayesianSingleTaskGP`` hands ``pyro_model`` the
+        *transformed* training inputs, so this is exactly the space the
+        SAAS prior (and therefore the Eriksson & Jankowiak 2021 lengthscale
+        calibration) sees during fitting.
+        """
+        x, y, bounds = self._non_unit_problem()
+
+        model = create_saasbo_model(x, y, bounds=bounds)
+
+        pyro_x = model.pyro_model.train_X
+        assert (pyro_x >= 0.0).all()
+        assert (pyro_x <= 1.0).all()
+
+    def test_bounds_learned_from_data_when_omitted(self) -> None:
+        """Without explicit bounds the transform still normalizes from data."""
+        x = torch.rand(15, 4, dtype=torch.double)
+
+        model = create_saasbo_model(x, torch.rand(15, 1, dtype=torch.double))
+
+        assert isinstance(model.input_transform, Normalize)
+
+    def test_generate_suggestions_threads_bounds_into_model_factory(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The suggestion entry point passes its bounds to the model factory.
+
+        Fast variant: the NUTS-fitted SAAS model is swapped for a plain
+        fitted GP (the ``test_saasbo_direction`` pattern) so only the
+        bounds plumbing is under test.
+        """
+        captured: dict[str, torch.Tensor | None] = {}
+
+        def fake_create_and_fit(
+            train_x: torch.Tensor,
+            train_y: torch.Tensor,
+            config: object = None,  # noqa: ARG001
+            bounds: torch.Tensor | None = None,
+        ) -> SingleTaskGP:
+            captured["bounds"] = bounds
+            assert bounds is not None
+            return create_and_fit_single_task_model(train_x, train_y, bounds)
+
+        monkeypatch.setattr(saasbo_module, "create_and_fit_saasbo_model", fake_create_and_fit)
+        monkeypatch.setattr(
+            saasbo_module, "compute_saasbo_importance_report", lambda _model, _names=None: []
+        )
+
+        bounds = torch.tensor([[0.0, 0.0], [100.0, 1.0]], dtype=torch.double)
+        train_x = torch.rand(12, 2, dtype=torch.double) * (bounds[1] - bounds[0])
+        train_y = (train_x[:, 0:1] / 100.0 - 0.3) ** 2
+
+        candidates, _acq, _meta = generate_saasbo_suggestions(
+            train_x, train_y, bounds, batch_size=1
+        )
+
+        assert captured["bounds"] is not None
+        assert torch.equal(captured["bounds"], bounds)
+        assert (candidates >= bounds[0]).all()
+        assert (candidates <= bounds[1]).all()
+
+    @pytest.mark.slow
+    def test_planted_active_dimension_survives_non_unit_bounds(self) -> None:
+        """A driving 0-100-scale dimension stays ``active=True`` after NUTS.
+
+        On a raw-input fit the driving dimension's lengthscale tracks the
+        0-100 magnitude and crosses the unit-cube-calibrated
+        ``SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD``; with normalization it
+        stays O(1). Calibration reference: Eriksson & Jankowiak,
+        "High-Dimensional Bayesian Optimization with Sparse Axis-Aligned
+        Subspaces", UAI 2021, §3.3 & Appendix B — active dimensions keep
+        lengthscales O(1) in ``[0, 1]^d`` while inactive ones diverge to
+        >= 1e2.
+        """
+        config = SAASBOConfig(warmup_steps=16, num_samples=8, thinning=1)
+        n_dims = 6
+        torch.manual_seed(42)
+        bounds = torch.ones(2, n_dims, dtype=torch.double)
+        bounds[0] = 0.0
+        bounds[1, 0] = 100.0  # x0 is the non-unit, driving dimension
+        x = torch.rand(30, n_dims, dtype=torch.double)
+        x[:, 0] *= 100.0
+        y = (x[:, 0:1] / 100.0) ** 2
+
+        model = create_and_fit_saasbo_model(x, y, config=config, bounds=bounds)
+        report = compute_saasbo_importance_report(
+            model, parameter_names=[f"x{i}" for i in range(n_dims)]
+        )
+
+        planted = report[0]
+        assert planted.active is True, (
+            f"driving dimension x0 flagged inactive (lengthscale="
+            f"{planted.lengthscale:.3g}); inputs were not normalized before "
+            "the SAAS prior."
+        )
+        assert planted.lengthscale <= SAASBO_INACTIVE_LENGTHSCALE_THRESHOLD
+        # Normalized-space lengthscales must not track the raw 0-100 scale.
+        assert planted.lengthscale < 100.0 / 2
 
 
 @pytest.mark.usefixtures("torch_rng")

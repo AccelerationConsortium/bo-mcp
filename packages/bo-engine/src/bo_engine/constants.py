@@ -220,8 +220,9 @@ NUM_RESTARTS = NUM_RESTARTS_BASE
 RAW_SAMPLES = RAW_SAMPLES_MIN
 
 # Floor applied to the cost model's predicted expected cost before inverse-cost
-# weighting (EIpu = EI / cost). A GP cost posterior can dip to (near-)zero or
-# slightly negative in extrapolation; clamping keeps the division well-defined
+# weighting (EIpu maximizes EI / cost, computed in log space as
+# ``log EI - log cost``). A GP cost posterior can dip to (near-)zero or
+# slightly negative in extrapolation; clamping keeps the log-cost term finite
 # and satisfies BoTorch's strictly-positive-cost requirement for
 # ``InverseCostWeightedUtility``.
 COST_AWARE_MIN_EXPECTED_COST = 1e-6

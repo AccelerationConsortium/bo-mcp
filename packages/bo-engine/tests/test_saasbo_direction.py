@@ -34,14 +34,17 @@ N_TRAIN = 12
 @pytest.fixture
 def plain_gp_saasbo(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the NUTS-fitted SAAS model with a plain fitted GP."""
-    bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double)
+    default_bounds = torch.tensor([[0.0], [1.0]], dtype=torch.double)
 
     def fake_create_and_fit(
         train_x: torch.Tensor,
         train_y: torch.Tensor,
         config: object = None,  # noqa: ARG001
+        bounds: torch.Tensor | None = None,
     ) -> SingleTaskGP:
-        return create_and_fit_single_task_model(train_x, train_y, bounds)
+        return create_and_fit_single_task_model(
+            train_x, train_y, default_bounds if bounds is None else bounds
+        )
 
     monkeypatch.setattr(saasbo_module, "create_and_fit_saasbo_model", fake_create_and_fit)
     monkeypatch.setattr(

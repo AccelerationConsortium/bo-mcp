@@ -25,6 +25,7 @@ import math
 import torch
 from gpytorch.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood
 
+from bo_engine import suggestions_single_objective
 from bo_engine.suggestions import _prepare_train_yvar, generate_next_batch
 from bo_engine.types import (
     ObjectiveSpec,
@@ -223,3 +224,64 @@ class TestGenerateNextBatchUsesFixedNoise:
         assert captured["train_yvar"] is None
         assert isinstance(captured["likelihood"], GaussianLikelihood)
         assert not isinstance(captured["likelihood"], FixedNoiseGaussianLikelihood)
+
+
+class TestLogTransformCampaignWithFullUncertainty:
+    """A ``log_transform`` campaign with full uncertainty coverage must generate.
+
+    BoTorch's stock ``Log`` outcome transform raises ``NotImplementedError``
+    when observation noise is supplied, so this exact combination used to
+    hard-crash at GP construction the moment every observation carried
+    measurement uncertainty. The model factory now routes the variance into
+    log space via the first-order delta method
+    (``Var[log Y] ~= Var[Y] / y**2``; Casella & Berger, *Statistical
+    Inference*, 2nd ed., 2002, §5.5.4) so both features compose.
+    """
+
+    @staticmethod
+    def _log_campaign() -> tuple[OptimizationSpec, list[ObservationData]]:
+        """Minimize + log_transform campaign on non-unit bounds, full coverage."""
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 100.0)),
+            ],
+            objectives=[ObjectiveSpec(name="rate", minimize=True, log_transform=True)],
+            random_seed=0,
+            initial_design_size=2,
+        )
+        # Multi-decade positive targets with 10% relative stddev everywhere.
+        xs = [5.0, 25.0, 60.0, 95.0]
+        ys = [0.01, 0.1, 1.0, 10.0]
+        observations = [
+            ObservationData(
+                parameter_values={"x": x},
+                objective_values={"rate": y},
+                measurement_uncertainty={"rate": 0.1 * y},
+            )
+            for x, y in zip(xs, ys, strict=True)
+        ]
+        return spec, observations
+
+    def test_full_uncertainty_log_campaign_generates_suggestions(self, monkeypatch) -> None:
+        """End-to-end: suggestions generate and the GP is fixed-noise."""
+        spec, observations = self._log_campaign()
+        captured: dict[str, object] = {}
+        real_factory = suggestions_single_objective.create_and_fit_single_task_model
+
+        def spy(train_x, train_y, bounds, **kwargs):
+            captured["train_yvar"] = kwargs.get("train_yvar")
+            captured["log_transform"] = kwargs.get("log_transform")
+            model = real_factory(train_x, train_y, bounds, **kwargs)
+            captured["likelihood"] = model.likelihood
+            return model
+
+        monkeypatch.setattr(suggestions_single_objective, "create_and_fit_single_task_model", spy)
+
+        suggestions, _ = generate_next_batch(spec, observations, batch_size=1, iteration=1)
+
+        assert suggestions, "log_transform + full uncertainty must still generate"
+        assert torch.is_tensor(captured["train_yvar"])
+        assert captured["log_transform"] is True
+        assert isinstance(captured["likelihood"], FixedNoiseGaussianLikelihood)
+        for suggestion in suggestions:
+            assert 0.0 <= suggestion.parameter_values["x"] <= 100.0

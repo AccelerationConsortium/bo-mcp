@@ -43,6 +43,7 @@ from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
+from gpytorch.distributions import MultivariateNormal
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch import Tensor
 
@@ -169,7 +170,7 @@ def _dispatch_cv_method(
         return _compute_kfold_cv(train_x, train_y, bounds, k, model_factory)
     if method == "approximate_loo":
         return _compute_approximate_loo(train_x, train_y, bounds, model_factory)
-    return _compute_batch_loo_cv(train_x, train_y, model_factory=model_factory)
+    return _compute_batch_loo_cv(train_x, train_y, bounds, model_factory=model_factory)
 
 
 def _check_cv_cache(
@@ -209,6 +210,10 @@ def compute_loo_cv_optimized(
     1. ``compute_loo_cv_optimized(model, train_x, train_y, config)`` —
        validates the **passed fitted model** via the exact LOO downdate at
        its fitted hyperparameters (reported as method ``"model_loo"``).
+       For models whose outcome transform cannot map a predictive variance
+       back to original units (e.g. ``Log``), the metrics are computed in
+       the transformed target space (see
+       :func:`_loo_metrics_from_fitted_model`).
        The tensors must be the model's own training data, and only the
        ``"auto"``/``"approximate_loo"`` methods apply: refit-based methods
        (``"batch_loo"``, ``"kfold"``, including a K-fold request made via
@@ -352,6 +357,7 @@ def _make_default_model_factory(bounds: Tensor) -> ModelFactory:
 def _compute_batch_loo_cv(
     train_x: Tensor,
     train_y: Tensor,
+    bounds: Tensor,
     model_factory: ModelFactory | None = None,
 ) -> CVMetrics:
     """Compute LOO-CV using BoTorch's batch_cross_validation.
@@ -361,12 +367,22 @@ def _compute_batch_loo_cv(
     builds the fold models itself), so each fold is refit sequentially with
     the factory instead.
 
+    The batched fold models mirror the default model construction
+    (:func:`_make_default_model_factory`): ``Normalize(bounds)`` is passed via
+    ``model_init_kwargs`` so BoTorch's unit-cube-calibrated lengthscale prior
+    sees normalized inputs. Without it, fold models fit raw-scale inputs and
+    the reported metrics understate the model quality on any non-unit-cube
+    problem. The outcome transform is left at BoTorch's default (a
+    ``Standardize`` sized to the fold batch shape).
+
     Predictive moments include observation noise: the held-out target is a
     noisy measurement, not the latent function value.
 
     Args:
         train_x: Training inputs
         train_y: Training outputs
+        bounds: Parameter bounds of shape (2, n_dims) for the fold models'
+            input normalization
         model_factory: Optional custom model builder, applied per fold (any
             context such as bounds arrives via the factory's closure)
 
@@ -386,6 +402,9 @@ def _compute_batch_loo_cv(
             mll_cls=ExactMarginalLogLikelihood,
             cv_folds=cv_folds,
             observation_noise=True,
+            model_init_kwargs={
+                "input_transform": Normalize(d=train_x.shape[-1], bounds=bounds),
+            },
         )
 
         # Extract predictions
@@ -479,6 +498,8 @@ def compute_exact_loo_moments(model: SingleTaskGP) -> tuple[Tensor, Tensor]:
 
     Raises:
         ValueError: If the model is batched or multi-output.
+        TypeError: If the likelihood does not marginalize the prior into a
+            MultivariateNormal (non-Gaussian likelihoods).
         RuntimeError: If the train covariance is not positive definite.
     """
     targets = model.train_targets
@@ -506,7 +527,14 @@ def compute_exact_loo_moments(model: SingleTaskGP) -> tuple[Tensor, Tensor]:
             # A Gaussian(-family) likelihood marginalizes the prior into a
             # MultivariateNormal with the noise added to the covariance.
             mvn = model.likelihood(prior)
-            covar = mvn.covariance_matrix  # ty: ignore[unresolved-attribute]
+            if not isinstance(mvn, MultivariateNormal):
+                message = (
+                    "Exact LOO downdate requires a Gaussian(-family) likelihood "
+                    "whose marginal is a MultivariateNormal; got "
+                    f"{type(mvn).__name__}."
+                )
+                raise TypeError(message)
+            covar = mvn.covariance_matrix
             chol = torch.linalg.cholesky(covar)
             covar_inv = torch.cholesky_inverse(chol)
             covar_inv_diag = covar_inv.diagonal()
@@ -544,7 +572,9 @@ def _compute_approximate_loo(
         model_factory: Optional custom model builder for the full-data fit
 
     Returns:
-        CVMetrics in original target units
+        CVMetrics in original target units (in transformed target units when
+        the fitted outcome transform cannot untransform a predictive
+        variance; see :func:`_loo_metrics_from_fitted_model`)
     """
     factory = model_factory if model_factory is not None else _make_default_model_factory(bounds)
     model = factory(train_x, train_y)
@@ -557,23 +587,39 @@ def _loo_metrics_from_fitted_model(
     train_y: Tensor,
     method: str,
 ) -> CVMetrics:
-    """CV metrics from a fitted model's exact LOO downdate, in original units.
+    """CV metrics from a fitted model's exact LOO downdate.
 
     The downdate moments live in the model's transformed target space; they
-    are untransformed through the fitted outcome transform before being
-    scored against ``train_y``.
+    are untransformed through the fitted outcome transform and scored against
+    ``train_y`` in original units. Non-affine outcome transforms (e.g.
+    BoTorch's ``Log``) cannot map a Gaussian predictive variance back to
+    original units in closed form — their ``untransform`` raises
+    ``NotImplementedError`` when given a variance — so for those models the
+    metrics are computed in the transformed target space instead, scored
+    against the model's stored (transformed) targets. That is the space in
+    which the GP's Gaussian predictive distribution actually lives, so the
+    standardized errors and coverage remain exact; RMSE/MAE/R² are then in
+    transformed units.
     """
     loo_mean, loo_var = compute_exact_loo_moments(model)
 
+    actuals = train_y.squeeze(-1)
     outcome_transform = getattr(model, "outcome_transform", None)
     if outcome_transform is not None:
-        loo_mean, loo_var = outcome_transform.untransform(
-            loo_mean.unsqueeze(-1), loo_var.unsqueeze(-1)
-        )
-        loo_mean = loo_mean.squeeze(-1)
-        loo_var = loo_var.squeeze(-1)
+        try:
+            loo_mean_col, loo_var_col = outcome_transform.untransform(
+                loo_mean.unsqueeze(-1), loo_var.unsqueeze(-1)
+            )
+            loo_mean = loo_mean_col.squeeze(-1)
+            loo_var = loo_var_col.squeeze(-1)
+        except NotImplementedError:
+            logger.debug(
+                "Outcome transform %s cannot untransform a predictive variance; "
+                "scoring LOO metrics in the transformed target space.",
+                type(outcome_transform).__name__,
+            )
+            actuals = model.train_targets
 
-    actuals = train_y.squeeze(-1)
     errors = (loo_mean - actuals).abs()
 
     return _compute_cv_metrics_from_predictions(
@@ -585,21 +631,42 @@ def _loo_metrics_from_fitted_model(
     )
 
 
+def _raw_train_inputs(model: SingleTaskGP) -> Tensor:
+    """The model's stored training inputs in raw (untransformed) space.
+
+    BoTorch swaps ``train_inputs`` to the transformed representation when a
+    model with an input transform enters eval mode (``Model.eval()`` calls
+    ``_set_transformed_inputs``, which stashes the raw tensor on
+    ``_original_train_inputs`` and flags the swap via
+    ``_has_transformed_inputs``); ``Model.train()`` reverts it. Reading the
+    stashed original keeps this a pure lookup — no mode flip, so no
+    invalidation of the model's prediction caches.
+    """
+    if getattr(model, "_has_transformed_inputs", False):
+        original = model._original_train_inputs
+        if original is not None:
+            return original
+    return model.train_inputs[0]
+
+
 def matches_model_training_data(model: SingleTaskGP, train_x: Tensor, train_y: Tensor) -> bool:
     """Whether the passed data is, by value, the model's own training data.
 
     The LOO downdate produces results for the model's stored training set,
     so it may only stand in for the caller's data when that data *is* the
     stored set — same points, same order. Inputs are compared in raw
-    (untransformed) space; targets are compared by untransforming the
-    model's stored (transformed) targets back to the caller's units. Any
-    failure to compare (shape mismatch, batched targets, a transform that
-    cannot untransform) counts as a mismatch.
+    (untransformed) space regardless of the model's train/eval mode (see
+    :func:`_raw_train_inputs`); targets are compared by untransforming the
+    model's stored (transformed) targets back to the caller's units —
+    outcome transforms are applied to ``train_Y`` once at construction, so
+    the stored targets are mode-independent. Any failure to compare (shape
+    mismatch, batched targets, a transform that cannot untransform) counts
+    as a mismatch.
     """
     if train_y.dim() > 1:
         train_y = train_y.squeeze(-1)
 
-    inputs = model.train_inputs[0]
+    inputs = _raw_train_inputs(model)
     targets = model.train_targets
     if targets.dim() != 1 or inputs.shape != train_x.shape or targets.shape != train_y.shape:
         return False
@@ -612,7 +679,8 @@ def matches_model_training_data(model: SingleTaskGP, train_x: Tensor, train_y: T
         raw_targets = targets
     else:
         try:
-            # NotImplementedError (e.g. Log transforms) is a RuntimeError subclass.
+            # NotImplementedError (a RuntimeError subclass) covers transforms
+            # without a mean-only untransform.
             raw_targets, _ = outcome_transform.untransform(targets.unsqueeze(-1))
         except (RuntimeError, ValueError):
             return False

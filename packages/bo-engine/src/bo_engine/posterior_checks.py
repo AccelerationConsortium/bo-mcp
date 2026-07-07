@@ -170,7 +170,7 @@ def compute_standardized_residuals(
             loo_mean, loo_var = compute_exact_loo_moments(sub_model)
             loo_std = loo_var.sqrt().clamp(min=SAFE_DIVISION_EPSILON)
             return (sub_model.train_targets - loo_mean) / loo_std
-        except (RuntimeError, ValueError) as e:
+        except (RuntimeError, TypeError, ValueError) as e:
             logger.debug(
                 "Exact LOO downdate failed, falling back to in-sample predictive residuals: %s: %s",
                 type(e).__name__,

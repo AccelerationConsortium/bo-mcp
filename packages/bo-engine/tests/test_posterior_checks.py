@@ -34,6 +34,11 @@ from bo_engine.posterior_checks import (
 
 BOUNDS_1D = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
 
+# Lab-typical, non-unit bounds. ``Normalize`` is the identity on the unit
+# cube, so only non-unit bounds exercise the transformed-vs-raw distinction
+# in the model's stored training inputs.
+NON_UNIT_BOUNDS_2D = torch.tensor([[0.0, 0.0], [1000.0, 500.0]], dtype=torch.float64)
+
 
 def _well_specified_dataset(
     n: int = 40, seed: int = 11, noise_std: float = 0.3
@@ -43,6 +48,17 @@ def _well_specified_dataset(
     train_x = torch.rand(n, 1, dtype=torch.float64)
     train_y = torch.sin(4 * train_x) + noise_std * torch.randn(n, 1, dtype=torch.float64)
     return train_x, train_y
+
+
+def _well_specified_non_unit_dataset(
+    n: int = 40, seed: int = 11, noise_std: float = 0.3
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Smooth signal plus Gaussian noise on lab-scale (non-unit) bounds."""
+    torch.manual_seed(seed)
+    span = NON_UNIT_BOUNDS_2D[1] - NON_UNIT_BOUNDS_2D[0]
+    train_x = NON_UNIT_BOUNDS_2D[0] + span * torch.rand(n, 2, dtype=torch.float64)
+    signal = torch.sin(train_x[:, 0:1] / 250.0) + train_x[:, 1:2] / 500.0
+    return train_x, signal + noise_std * torch.randn(n, 1, dtype=torch.float64)
 
 
 class TestStandardizedResiduals:
@@ -161,6 +177,49 @@ class TestStandardizedResiduals:
             ) / posterior.variance.sqrt().squeeze(-1)
 
         assert torch.allclose(residuals, expected_fallback, atol=1e-8)
+
+
+class TestLOOResidualsOnNonUnitBounds:
+    """The LOO path must engage for production models on lab-scale bounds.
+
+    BoTorch swaps ``train_inputs`` to the transformed (normalized)
+    representation when a model enters eval mode (``Model.eval`` →
+    ``_set_transformed_inputs``; ``botorch/models/model.py``), so a
+    training-data check comparing them against raw caller inputs silently
+    demotes every ``Normalize``-equipped model to in-sample residuals. In
+    that regime the residual std collapses well below 1 (the posterior
+    mean interpolates its own training data), corrupting the normality and
+    outlier checks downstream — GPML §5.4.2's LOO z-scores are the
+    construction with the N(0, 1) guarantee. Unit-cube fixtures cannot
+    detect the demotion because ``Normalize`` is the identity there.
+    """
+
+    @pytest.mark.parametrize("mode", ["train", "eval"])
+    def test_residuals_equal_downdate_z_scores(self, mode: str) -> None:
+        train_x, train_y = _well_specified_non_unit_dataset()
+        model = create_and_fit_single_task_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
+        if mode == "train":
+            model.train()
+        else:
+            model.eval()
+
+        residuals = compute_standardized_residuals(model, train_x, train_y)
+
+        loo_mean, loo_var = compute_exact_loo_moments(model)
+        expected = (model.train_targets - loo_mean) / loo_var.sqrt()
+        assert torch.allclose(residuals, expected, atol=1e-8)
+
+    def test_residual_std_near_one_on_non_unit_bounds(self) -> None:
+        """The N(0, 1) contract must hold off the unit cube as well; the
+        in-sample fallback would report a visibly shrunken std here.
+        """
+        train_x, train_y = _well_specified_non_unit_dataset()
+        model = create_and_fit_single_task_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
+
+        residuals = compute_standardized_residuals(model, train_x, train_y)
+
+        assert 0.7 <= residuals.std().item() <= 1.3
+        assert abs(residuals.mean().item()) <= 0.2
 
 
 class TestResidualAnalysis:

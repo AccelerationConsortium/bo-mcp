@@ -269,6 +269,7 @@ class _DiagnosticModelFit:
     model: SingleTaskGP | ModelListGP
     train_x: torch.Tensor
     train_y: torch.Tensor
+    bounds: torch.Tensor
     param_names: list[str]
     obj_names: list[str]
     is_single: bool
@@ -745,6 +746,7 @@ class BoTorchBackend(BaseBackend):
             model=model,
             train_x=train_x,
             train_y=train_y,
+            bounds=bounds,
             param_names=param_names,
             obj_names=obj_names,
             is_single=is_single,
@@ -772,7 +774,12 @@ class BoTorchBackend(BaseBackend):
                 include_shap=False,
             )
             loo = self._loo_cv(
-                fit.model, fit.train_x, fit.train_y, fit.obj_names, fit.train_x.shape[0]
+                fit.model,
+                fit.train_x,
+                fit.train_y,
+                fit.bounds,
+                fit.obj_names,
+                fit.train_x.shape[0],
             )
         except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Model diagnostics failed: %s", e)
@@ -807,6 +814,7 @@ class BoTorchBackend(BaseBackend):
         model: SingleTaskGP | ModelListGP,
         train_x: torch.Tensor,
         train_y: torch.Tensor,
+        bounds: torch.Tensor,
         obj_names: list[str],
         n_obs: int,
     ) -> dict[str, dict[str, float]] | None:
@@ -814,7 +822,7 @@ class BoTorchBackend(BaseBackend):
         if n_obs < MIN_OBSERVATIONS_FOR_LOO_CV:
             return None
         try:
-            loo = compute_loo_cv_for_model(model, train_x, train_y)
+            loo = compute_loo_cv_for_model(model, train_x, train_y, bounds)
             loo_by_obj: dict[str, dict[str, float]] = {}
             if isinstance(loo, dict):
                 loo_dict = cast("dict[int, LOOCVMetrics]", loo)

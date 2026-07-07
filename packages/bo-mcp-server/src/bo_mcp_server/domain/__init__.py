@@ -18,7 +18,11 @@ from bo_mcp_server.domain.campaign_spec import (
     TurboConfig,
 )
 from bo_mcp_server.domain.event import Event, EventType
-from bo_mcp_server.domain.intake_models import CampaignIntakeInput, ResultSubmissionInput
+from bo_mcp_server.domain.intake_models import (
+    CampaignIntakeInput,
+    FiniteFloat,
+    ResultSubmissionInput,
+)
 from bo_mcp_server.domain.result import (
     ExternalRef,
     Result,
@@ -45,6 +49,7 @@ __all__ = [
     "EventType",
     "ExternalRef",
     "FidelityParameter",
+    "FiniteFloat",
     "InputParameter",
     "Objective",
     "OutcomeConstraint",

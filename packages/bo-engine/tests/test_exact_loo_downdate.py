@@ -36,7 +36,7 @@ import torch
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize
-from botorch.models.transforms.outcome import Standardize
+from botorch.models.transforms.outcome import ChainedOutcomeTransform, Log, Standardize
 from gpytorch.kernels import MaternKernel, ScaleKernel
 from gpytorch.mlls import ExactMarginalLogLikelihood
 
@@ -49,10 +49,22 @@ from bo_engine.cross_validation import (
     compute_cv_for_model_list,
     compute_exact_loo_moments,
     compute_loo_cv_optimized,
+    matches_model_training_data,
 )
-from bo_engine.models import create_and_fit_model
+from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
 
 BOUNDS_1D = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
+
+# Lab-typical, non-unit bounds. On the unit cube ``Normalize`` is the
+# identity, so only non-unit bounds can distinguish raw-space from
+# transformed-space comparisons of a model's stored training inputs.
+NON_UNIT_BOUNDS_2D = torch.tensor([[0.0, 0.0], [1000.0, 500.0]], dtype=torch.float64)
+
+# The model-form CV on a well-fit production model must report a high R²;
+# on this smooth low-noise synthetic the measured value is ~0.98, so 0.8
+# separates an honest score from the raw-scale misfit regime (R² ≈ -0.1)
+# with a wide margin.
+MIN_HONEST_R_SQUARED = 0.8
 
 
 def _toy_data(n: int = 14, seed: int = 7) -> tuple[torch.Tensor, torch.Tensor]:
@@ -60,6 +72,24 @@ def _toy_data(n: int = 14, seed: int = 7) -> tuple[torch.Tensor, torch.Tensor]:
     train_x = torch.rand(n, 1, dtype=torch.float64)
     train_y = torch.sin(3 * train_x) + 0.05 * torch.randn(n, 1, dtype=torch.float64)
     return train_x, train_y
+
+
+def _non_unit_data(n: int = 18, seed: int = 42) -> tuple[torch.Tensor, torch.Tensor]:
+    """Smooth signal plus 5% noise on lab-scale (non-unit-cube) bounds."""
+    torch.manual_seed(seed)
+    span = NON_UNIT_BOUNDS_2D[1] - NON_UNIT_BOUNDS_2D[0]
+    train_x = NON_UNIT_BOUNDS_2D[0] + span * torch.rand(n, 2, dtype=torch.float64)
+    signal = torch.sin(train_x[:, 0] / 300.0) + (train_x[:, 1] / 500.0) ** 2
+    noise = 0.05 * signal.std() * torch.randn(n, dtype=torch.float64)
+    return train_x, (signal + noise).unsqueeze(-1)
+
+
+def _set_mode(model: SingleTaskGP, mode: str) -> None:
+    """Put the model in the requested torch module mode ("train"/"eval")."""
+    if mode == "train":
+        model.train()
+    else:
+        model.eval()
 
 
 def _fit_default_gp(train_x: torch.Tensor, train_y: torch.Tensor) -> SingleTaskGP:
@@ -519,3 +549,152 @@ class TestFittedModelOverload:
 
         assert calls["count"] > 0
         assert metrics.method == "4fold"
+
+
+class TestTrainingDataGuardWithInputTransforms:
+    """The guard must compare raw-space inputs in train AND eval mode.
+
+    BoTorch swaps ``train_inputs`` to the transformed representation when a
+    model with an input transform enters eval mode (``Model.eval`` calls
+    ``_set_transformed_inputs``, which stashes the raw tensor on
+    ``_original_train_inputs``; ``botorch/models/model.py``). Production
+    factory models carry ``Normalize(bounds)`` and are typically consumed
+    in eval mode, so a guard reading ``train_inputs`` directly would
+    compare normalized stored inputs against raw caller inputs and reject
+    exactly the models it serves. On the unit cube ``Normalize`` is the
+    identity, so these tests must use non-unit bounds to see the swap.
+    """
+
+    @pytest.mark.parametrize("mode", ["train", "eval"])
+    def test_production_model_matches_its_training_data(self, mode: str) -> None:
+        train_x, train_y = _non_unit_data()
+        model = create_and_fit_single_task_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
+        _set_mode(model, mode)
+
+        assert matches_model_training_data(model, train_x, train_y)
+
+    @pytest.mark.parametrize("mode", ["train", "eval"])
+    def test_model_form_cv_uses_downdate_on_non_unit_bounds(self, mode: str) -> None:
+        """The model-form call must reach the downdate (``model_loo``), not
+        reject its own training data with a mismatch error.
+        """
+        train_x, train_y = _non_unit_data()
+        model = create_and_fit_single_task_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
+        _set_mode(model, mode)
+
+        metrics = compute_loo_cv_optimized(model, train_x, train_y, CVConfig())
+
+        assert metrics.method == "model_loo"
+        assert not math.isnan(metrics.rmse)
+        assert metrics.r_squared > MIN_HONEST_R_SQUARED
+
+    def test_transformed_representation_is_not_the_training_data(self) -> None:
+        """Passing the normalized inputs must NOT match: the guard's raw-space
+        contract cuts both ways, and in eval mode the stored (transformed)
+        ``train_inputs`` happen to equal the normalized representation.
+        """
+        train_x, train_y = _non_unit_data()
+        model = create_and_fit_single_task_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
+        model.eval()
+
+        span = NON_UNIT_BOUNDS_2D[1] - NON_UNIT_BOUNDS_2D[0]
+        normalized_x = (train_x - NON_UNIT_BOUNDS_2D[0]) / span
+
+        assert not matches_model_training_data(model, normalized_x, train_y)
+
+    @pytest.mark.parametrize("mode", ["train", "eval"])
+    def test_perturbed_targets_still_rejected(self, mode: str) -> None:
+        train_x, train_y = _non_unit_data()
+        model = create_and_fit_single_task_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
+        _set_mode(model, mode)
+
+        assert not matches_model_training_data(model, train_x, train_y + 1.0)
+
+    def test_model_list_cv_on_non_unit_bounds_reports_model_loo(self) -> None:
+        """Per-objective sub-models carry ``Normalize(bounds)`` too; the
+        model-list CV must validate them via the downdate, not fail the
+        training-data check.
+        """
+        torch.manual_seed(2)
+        n = 14
+        span = NON_UNIT_BOUNDS_2D[1] - NON_UNIT_BOUNDS_2D[0]
+        train_x = NON_UNIT_BOUNDS_2D[0] + span * torch.rand(n, 2, dtype=torch.float64)
+        train_y = torch.stack(
+            [
+                torch.sin(train_x[:, 0] / 300.0) + 0.02 * torch.randn(n, dtype=torch.float64),
+                train_x[:, 1] / 500.0 + 0.02 * torch.randn(n, dtype=torch.float64),
+            ],
+            dim=-1,
+        )
+        model_list = create_and_fit_model(train_x, train_y, NON_UNIT_BOUNDS_2D)
+
+        results = compute_cv_for_model_list(model_list, train_x, train_y, NON_UNIT_BOUNDS_2D)
+
+        assert set(results) == {0, 1}
+        for metrics in results.values():
+            assert metrics.method == "model_loo"
+            assert not math.isnan(metrics.rmse)
+
+
+class TestModelFormLOOWithLogTransformedTargets:
+    """Log-transformed models must not crash the model-form LOO.
+
+    BoTorch's stock ``Log.untransform`` raises ``NotImplementedError`` when
+    given a variance (no closed-form Gaussian-variance inverse for a
+    non-affine map). The factory's ``DeltaMethodLog`` closes that gap with
+    the first-order delta method, so factory log models score in original
+    units; for models carrying the stock transform the LOO scores in the
+    transformed target space instead of crashing — the space where the
+    GP's Gaussian predictive distribution actually lives (GPML §5.4.2), so
+    standardized errors and coverage stay exact there.
+    """
+
+    def test_factory_log_model_scores_in_original_units(self) -> None:
+        train_x, train_y = _non_unit_data()
+        positive_y = train_y - train_y.min() + 1.0
+        model = create_and_fit_single_task_model(
+            train_x, positive_y, NON_UNIT_BOUNDS_2D, log_transform=True
+        )
+
+        metrics = compute_loo_cv_optimized(model, train_x, positive_y, CVConfig())
+
+        assert metrics.method == "model_loo"
+        assert not math.isnan(metrics.rmse)
+        assert not math.isnan(metrics.coverage_95)
+
+        # Mechanism pin: downdate moments untransformed through the fitted
+        # chain (delta method for the variance), scored against the raw y.
+        loo_mean, loo_var = compute_exact_loo_moments(model)
+        raw_mean, _ = model.outcome_transform.untransform(  # ty: ignore[unresolved-attribute]
+            loo_mean.unsqueeze(-1), loo_var.unsqueeze(-1)
+        )
+        expected_rmse = ((raw_mean.squeeze(-1) - positive_y.squeeze(-1)) ** 2).mean().sqrt().item()
+        assert metrics.rmse == pytest.approx(expected_rmse, rel=1e-9)
+
+    def test_stock_log_model_scores_in_transformed_space(self) -> None:
+        """A model built with BoTorch's stock ``Log`` (standalone-user shape)
+        must produce finite metrics via transformed-space scoring, not raise
+        ``NotImplementedError`` from the variance untransform.
+        """
+        train_x, train_y = _non_unit_data()
+        positive_y = train_y - train_y.min() + 1.0
+
+        model = SingleTaskGP(
+            train_x,
+            positive_y,
+            input_transform=Normalize(d=train_x.shape[-1], bounds=NON_UNIT_BOUNDS_2D),
+            outcome_transform=ChainedOutcomeTransform(log=Log(), standardize=Standardize(m=1)),
+        )
+        fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))
+
+        metrics = compute_loo_cv_optimized(model, train_x, positive_y, CVConfig())
+
+        assert metrics.method == "model_loo"
+        assert not math.isnan(metrics.rmse)
+        assert not math.isnan(metrics.coverage_95)
+
+        # Mechanism pin: the downdate moments scored against the model's
+        # stored (log-standardized) targets.
+        loo_mean, _ = compute_exact_loo_moments(model)
+        expected_rmse = ((loo_mean - model.train_targets) ** 2).mean().sqrt().item()
+        assert metrics.rmse == pytest.approx(expected_rmse, rel=1e-9)

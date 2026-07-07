@@ -1,4 +1,4 @@
-"""Tests that REST request schemas reject unknown fields.
+"""Tests that REST request schemas reject unknown fields and non-finite values.
 
 Reference: FastAPI / Pydantic recommend ``extra='forbid'`` so unknown
 fields raise ``ValidationError`` at the transport boundary instead of
@@ -6,6 +6,12 @@ being silently dropped. See
 https://docs.pydantic.dev/latest/api/config/#pydantic.ConfigDict.extra
 and the FastAPI extra-data tutorial:
 https://fastapi.tiangolo.com/tutorial/body/.
+
+Objective values additionally reject NaN/±inf (Pydantic
+``allow_inf_nan=False``,
+https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field):
+non-finite measurements would fail every subsequent model fit and
+cannot be deleted once persisted.
 """
 
 import pytest
@@ -73,6 +79,37 @@ def test_request_schemas_reject_unknown_fields(schema: type[BaseModel], payload:
         schema(**payload)
     types = {err["type"] for err in exc_info.value.errors()}
     assert "extra_forbidden" in types
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "inf", "-inf"],
+)
+def test_result_create_rejects_non_finite_objective_values(bad_value: float) -> None:
+    """Non-finite measurements fail with 422 semantics at the schema boundary."""
+    with pytest.raises(ValidationError) as exc_info:
+        ResultCreate(parameter_values={"x": 1.0}, objective_values={"y": bad_value})
+    error = exc_info.value.errors()[0]
+    assert error["type"] == "finite_number"
+    assert error["loc"] == ("objective_values", "y")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"parameter_values": {"x": 1.0}, "objective_values": {"y": NaN}}',
+        '{"parameter_values": {"x": 1.0}, "objective_values": {"y": 1e999}}',
+    ],
+    ids=["nan-literal", "overflow-to-inf"],
+)
+def test_result_create_rejects_non_finite_json_payloads(payload: str) -> None:
+    """The JSON parse path (``NaN`` literal, ``1e999`` overflow) is closed too."""
+    with pytest.raises(ValidationError) as exc_info:
+        ResultCreate.model_validate_json(payload)
+    error = exc_info.value.errors()[0]
+    assert error["type"] == "finite_number"
+    assert error["loc"] == ("objective_values", "y")
 
 
 def test_lifecycle_action_schema_advertises_allowed_workflow() -> None:

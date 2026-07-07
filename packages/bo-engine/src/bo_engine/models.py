@@ -155,6 +155,88 @@ class Negate(OutcomeTransform):
         )
 
 
+class DeltaMethodLog(Log):
+    """``Log`` outcome transform that also propagates observation noise.
+
+    BoTorch's stock :class:`~botorch.models.transforms.outcome.Log` raises
+    ``NotImplementedError`` whenever observation noise (``Yvar``) is
+    supplied, which makes the fixed-noise (known measurement-uncertainty)
+    GP path incompatible with a log outcome stage. This subclass closes
+    the gap with the first-order Taylor (delta method) approximation for
+    the variance of a transformed random variable: for ``g(y) = log(y)``,
+
+        ``Var[log Y] ~= g'(y)^2 * Var[Y] = Var[Y] / y^2``
+
+    evaluated at the observed value ``y`` (Casella & Berger, *Statistical
+    Inference*, 2nd ed., 2002, §5.5.4 "The Delta Method" -- the standard
+    error-propagation rule). ``untransform`` applies the inverse map
+    ``Var[Y] ~= exp(z)^2 * Var[Z]`` for ``z = log(y)``, so the pair
+    round-trips.
+
+    The approximation is only defined for strictly positive pre-log
+    targets. The model factories enforce positivity for ``log_transform``
+    objectives before construction (see
+    :func:`_assert_positive_for_log_transform`); the transform
+    re-validates whenever noise is supplied so standalone use fails with
+    an actionable ``ValueError`` instead of emitting non-finite noise.
+
+    ``Yvar`` propagation is implemented for the all-outputs case only
+    (the engine chains one transform per single-output sub-model). The
+    partial ``outputs`` subset with noise keeps the base class's
+    ``NotImplementedError`` behavior.
+    """
+
+    def forward(
+        self,
+        Y: Tensor,  # noqa: N803
+        Yvar: Tensor | None = None,  # noqa: N803
+        X: Tensor | None = None,  # noqa: N803
+    ) -> tuple[Tensor, Tensor | None]:
+        """Log-transform targets; delta-method the observation noise."""
+        y_tf, _ = super().forward(Y, None, X)
+        if Yvar is None:
+            return y_tf, None
+        self._validate_yvar_supported()
+        self._assert_positive_pre_log(Y)
+        return y_tf, Yvar / Y.pow(2)
+
+    def untransform(
+        self,
+        Y: Tensor,  # noqa: N803
+        Yvar: Tensor | None = None,  # noqa: N803
+        X: Tensor | None = None,  # noqa: N803
+    ) -> tuple[Tensor, Tensor | None]:
+        """Exponentiate targets; delta-method the noise back to the raw scale."""
+        y_utf, _ = super().untransform(Y, None, X)
+        if Yvar is None:
+            return y_utf, None
+        self._validate_yvar_supported()
+        return y_utf, Yvar * y_utf.pow(2)
+
+    def _validate_yvar_supported(self) -> None:
+        """Reject the partial-``outputs`` + noise corner the base class rejects."""
+        if self._outputs is not None:
+            msg = (
+                "DeltaMethodLog only propagates observation noise when all "
+                "outputs are log-transformed; drop the `outputs` subset or "
+                "the observation noise."
+            )
+            raise NotImplementedError(msg)
+
+    @staticmethod
+    def _assert_positive_pre_log(Y: Tensor) -> None:  # noqa: N803
+        """Raise ``ValueError`` when the delta method's ``y > 0`` premise fails."""
+        if not bool((Y > 0).all()):
+            min_value = float(Y.min().item())
+            msg = (
+                "Delta-method noise propagation through the Log outcome "
+                f"transform requires strictly positive targets; got "
+                f"min={min_value}. Drop or shift non-positive observations "
+                "before fitting."
+            )
+            raise ValueError(msg)
+
+
 def _build_outcome_transform(
     log_transform: bool,
     *,
@@ -163,13 +245,14 @@ def _build_outcome_transform(
     """Build the outcome transform stack for a single objective.
 
     By default the GP only standardizes targets (mean 0, unit variance).
-    When ``log_transform`` is enabled a :class:`~botorch.models.transforms.outcome.Log`
-    transform is applied first via :class:`ChainedOutcomeTransform`, which
-    makes the model behave reasonably on multi-decade objectives whose
-    raw scale spans several orders of magnitude (e.g. reaction rates or
-    contaminant concentrations). BoTorch un-applies both stages on the
-    posterior so callers still see results in the scale of the targets
-    they passed in.
+    When ``log_transform`` is enabled a :class:`DeltaMethodLog` transform
+    (a :class:`~botorch.models.transforms.outcome.Log` that additionally
+    propagates observation noise via the delta method) is applied first
+    via :class:`ChainedOutcomeTransform`, which makes the model behave
+    reasonably on multi-decade objectives whose raw scale spans several
+    orders of magnitude (e.g. reaction rates or contaminant
+    concentrations). BoTorch un-applies both stages on the posterior so
+    callers still see results in the scale of the targets they passed in.
 
     ``negate_before_log`` supports targets supplied in negated
     (maximization-form) shape: a :class:`Negate` stage is chained in front
@@ -186,11 +269,21 @@ def _build_outcome_transform(
     (:func:`create_single_task_model`, :func:`create_model`) enforce
     this at construction time so the failure mode is a clear
     ``ValueError`` instead of a numerical NaN cascade.
+
+    **Known measurement uncertainty composes with the log stage.** When a
+    fixed-noise GP is requested (``train_Yvar`` supplied), ``Negate``
+    passes the variance through sign-unchanged, :class:`DeltaMethodLog`
+    maps it into log space (``Var[log Y] ~= Var[Y] / y^2``), and
+    ``Standardize`` rescales it by its stored ``stdvs**2`` -- so the
+    likelihood receives noise in the same standardized-log space as the
+    targets.
     """
     if log_transform:
         if negate_before_log:
-            return ChainedOutcomeTransform(negate=Negate(), log=Log(), standardize=Standardize(m=1))
-        return ChainedOutcomeTransform(log=Log(), standardize=Standardize(m=1))
+            return ChainedOutcomeTransform(
+                negate=Negate(), log=DeltaMethodLog(), standardize=Standardize(m=1)
+            )
+        return ChainedOutcomeTransform(log=DeltaMethodLog(), standardize=Standardize(m=1))
     return Standardize(m=1)
 
 
@@ -554,7 +647,12 @@ def create_single_task_model(
             (n_samples, 1) or (n_samples,). When supplied, BoTorch builds a
             ``FixedNoiseGaussianLikelihood`` internally and the noise
             hyperparameter is no longer trainable -- ``noise_prior`` is
-            therefore ignored in this branch.
+            therefore ignored in this branch. Composes with
+            ``log_transform=True``: the outcome chain's
+            :class:`DeltaMethodLog` stage maps the variance into log space
+            via the first-order delta method (``Var[log Y] ~= Var[Y] /
+            y^2``), so known measurement uncertainty and log outcomes can
+            be used together.
         noise_prior: Optional explicit GPyTorch ``Prior`` on the trainable
             noise hyperparameter. Defaults to a mildly informative
             ``GammaPrior`` calibrated for standardized targets (see
@@ -675,7 +773,9 @@ def create_model(
         train_yvar: Optional per-objective noise variance of shape
             (n_samples, n_objectives). When supplied, every sub-model is
             built with a ``FixedNoiseGaussianLikelihood`` and ``noise_prior``
-            is ignored.
+            is ignored. Sub-models with ``log_transform`` enabled map their
+            variance column into log space via :class:`DeltaMethodLog`
+            (first-order delta method).
         noise_prior: Optional GPyTorch ``Prior`` shared across sub-models.
             Defaults to a mildly informative ``GammaPrior`` for standardized
             targets. Only used when ``train_yvar`` is None.

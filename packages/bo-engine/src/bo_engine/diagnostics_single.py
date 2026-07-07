@@ -12,6 +12,7 @@ These helpers are consumed by the diagnostics tool surface and by
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -24,9 +25,9 @@ from bo_engine.constants import (
     DIAGNOSTICS_MODEL_CORRELATION_WARNING,
     DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS,
     DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS,
-    IMPROVEMENT_TOLERANCE_ABSOLUTE,
-    is_zero,
+    STAGNATION_TOLERANCE_RELATIVE,
 )
+from bo_engine.convergence import _history_scale, _step_denominator
 
 
 @dataclass
@@ -103,6 +104,14 @@ def compute_single_objective_improvement_rate(
 ) -> float:
     """Compute recent improvement rate for single-objective optimization.
 
+    The delta over the window is divided by the scale-invariant step
+    denominator shared with :func:`bo_engine.convergence.detect_convergence`
+    (``|initial|`` when meaningfully non-zero, otherwise the trajectory's
+    robust IQR/std scale). Dividing by a bare ``|initial|`` is the audited
+    scale-dependence bug: a micro-scale or zero-crossing objective would
+    report a rate that flips classification with the objective's units or
+    offset while the convergence verdict next to it stays invariant.
+
     Args:
         improvement_history: Running best values over iterations
         window: Window size for rate computation
@@ -120,22 +129,29 @@ def compute_single_objective_improvement_rate(
         initial = improvement_history[-window]
         final = improvement_history[-1]
 
-    if is_zero(initial):
-        return 0.0
-
-    return abs(final - initial) / abs(initial)
+    denominator = _step_denominator(initial, _history_scale(improvement_history))
+    return abs(final - initial) / denominator
 
 
 def _count_stagnant_iterations(
     improvement_history: list[float],
     max_lookback: int,
 ) -> int:
-    """Count consecutive iterations without improvement from the end of history."""
+    """Count consecutive iterations without improvement from the end of history.
+
+    The "no improvement" tolerance is proportional to the trajectory's
+    robust scale (shared IQR/std chain from :mod:`bo_engine.convergence`)
+    rather than an absolute constant, so the stagnation verdict survives a
+    units change: a ~1e-7-scale objective that is actively improving must
+    not read as "critically stagnant" while the scale-invariant convergence
+    verdict next to it disagrees.
+    """
     count = 0
     n = len(improvement_history)
+    tolerance = STAGNATION_TOLERANCE_RELATIVE * _history_scale(improvement_history)
     for i in range(1, min(max_lookback + 1, n)):
         diff = abs(improvement_history[-1] - improvement_history[-i - 1])
-        if diff < IMPROVEMENT_TOLERANCE_ABSOLUTE:
+        if diff < tolerance:
             count += 1
         else:
             break
@@ -148,7 +164,12 @@ def _collect_health_warnings(
     model_correlation: float,
     n_results: int,
 ) -> list[str]:
-    """Build the warnings list for single-objective health."""
+    """Build the warnings list for single-objective health.
+
+    A ``NaN`` ``model_correlation`` means "not measurable" (see
+    :func:`bo_engine.diagnostics.compute_rank_correlation`) and emits no
+    low-correlation warning.
+    """
     warnings: list[str] = []
     if stagnant >= stagnation_threshold:
         warnings.append(
@@ -156,7 +177,8 @@ def _collect_health_warnings(
             "Consider: reviewing constraints, expanding search space, or stopping."
         )
     if (
-        model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
+        not math.isnan(model_correlation)
+        and model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CORRELATION_WARNING
     ):
         warnings.append(
@@ -173,6 +195,9 @@ def determine_single_objective_health_status(
 ) -> tuple[str, list[str]]:
     """Determine health status for single-objective optimization.
 
+    ``model_correlation=NaN`` is treated as "unknown" — it never downgrades
+    the status, mirroring :func:`bo_engine.diagnostics.determine_health_status`.
+
     Returns:
         Tuple of (status, warnings)
     """
@@ -184,15 +209,16 @@ def determine_single_objective_health_status(
     warnings = _collect_health_warnings(
         stagnant, stagnation_threshold, model_correlation, n_results
     )
+    correlation_known = not math.isnan(model_correlation)
 
     if stagnant >= stagnation_threshold or (
-        model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
+        correlation_known
+        and model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CRITICAL
     ):
         return "critical", warnings
-    if (
-        stagnant >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
-        or model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
+    if stagnant >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS or (
+        correlation_known and model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
     ):
         return "warning", warnings
     return "healthy", warnings

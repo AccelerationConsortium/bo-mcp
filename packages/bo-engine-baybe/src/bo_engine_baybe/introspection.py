@@ -11,6 +11,7 @@ payloads and diagnostic envelopes.
 from __future__ import annotations
 
 import logging
+import math
 from typing import cast
 
 import pandas as pd
@@ -19,7 +20,6 @@ from baybe import Campaign
 from botorch.models import ModelListGP, SingleTaskGP
 
 from bo_engine.device import get_device, get_dtype
-from bo_engine.diagnostics import observations_to_minimization_form
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.types import ObservationData, OptimizationSpec
 from bo_engine_baybe.converters import observations_to_dataframe
@@ -37,22 +37,6 @@ _FALLBACK_ACQ_MULTI = "qLogNoisyExpectedHypervolumeImprovement"
 # priors. Reported by ``select_methods`` when no fitted surrogate is
 # available to introspect; a fitted surrogate's ``kernel_type`` wins.
 _DEFAULT_KERNEL_DESCRIPTION = "Matern 5/2 (BayBE default GP surrogate)"
-
-
-def _observations_to_minimization_tensor(
-    spec: OptimizationSpec,
-    observations: list[ObservationData],
-) -> torch.Tensor:
-    """Convert observations to a tensor in BoTorch minimization convention.
-
-    Thin wrapper over the shared
-    :func:`bo_engine.diagnostics.observations_to_minimization_form` so the
-    BayBE diagnostics surface and the engine backends build the
-    minimization-form tensor identically (this helper drops the mask the
-    shared function also returns).
-    """
-    y_bo, _ = observations_to_minimization_form(spec, observations)
-    return y_bo
 
 
 def _extract_posterior_stats(
@@ -309,8 +293,15 @@ def _baybe_model_correlation(
     campaign: Campaign,
     obs_df: pd.DataFrame,
     spec: OptimizationSpec,
-) -> float:
-    """Compute rank correlation between BayBE posterior mean and actuals."""
+) -> float | None:
+    """Compute rank correlation between BayBE posterior mean and actuals.
+
+    Returns ``None`` when the correlation cannot be extracted (posterior
+    stats unavailable, undefined Spearman, or any BayBE-side failure).
+    ``None`` means "metric unavailable" and must stay distinguishable from
+    a measured ``0.0`` ("model is uninformative") — downstream health
+    scoring treats only the latter as a warning signal.
+    """
     from scipy import stats as scipy_stats
 
     try:
@@ -322,7 +313,7 @@ def _baybe_model_correlation(
         if mean_col not in stats_df.columns:
             mean_cols = [c for c in stats_df.columns if "mean" in str(c).lower()]
             if not mean_cols:
-                return 0.0
+                return None
             mean_col = mean_cols[0]
 
         predicted = stats_df[mean_col].to_numpy()
@@ -330,9 +321,9 @@ def _baybe_model_correlation(
         result = scipy_stats.spearmanr(predicted, actual)
         corr = float(result.statistic)
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
-        logger.debug("BayBE model correlation failed: %s", e)
-        return 0.0
-    return corr if corr == corr else 0.0  # Handle NaN
+        logger.warning("BayBE model correlation unavailable: %s", e)
+        return None
+    return corr if not math.isnan(corr) else None
 
 
 def _prepare_tensors(

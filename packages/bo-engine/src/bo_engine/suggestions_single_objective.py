@@ -35,9 +35,9 @@ from bo_engine.suggestions_common import (
 from bo_engine.suggestions_outcome_constraints import (
     _build_outcome_constraint_models,
 )
+from bo_engine.suggestions_training import categorical_blocks_for_model
 from bo_engine.transforms import (
     decode_categorical,
-    get_categorical_blocks,
 )
 from bo_engine.turbo import (
     TurboState,
@@ -70,6 +70,14 @@ def _initialize_turbo_state(
     training targets sit close to unit scale before construction — see
     :class:`bo_engine.turbo.TurboState` for the scale assumption.
 
+    A state carrying ``restart_triggered=True`` (the trust region contracted
+    below ``length_min``) is discarded and rebuilt from scratch, so a
+    triggered restart actually restarts the trust region as in Eriksson et
+    al. (NeurIPS 2019) — fresh length and counters, incumbent re-anchored to
+    the current data. Keeping the stale state would silently revert to
+    global search while provenance keeps reporting ``"turbo"``, and a later
+    success streak could re-expand the collapsed sub-minimum region.
+
     Args:
         spec: Optimization specification
         train_y_bo: Training outputs in maximization form (higher = better;
@@ -81,28 +89,32 @@ def _initialize_turbo_state(
         Initialized TuRBO state or None if not using TuRBO
     """
     use_turbo = spec.use_turbo or (turbo_state is not None) or should_use_turbo(spec.n_parameters)
-    if use_turbo and turbo_state is None:
-        assert_unit_scale_targets(train_y_bo)
-        best_y = train_y_bo.max().item()
-        config = spec.turbo_config
-        if config is None:
-            turbo_state = create_turbo_state(
-                dim=spec.n_parameters,
-                batch_size=batch_size,
-                initial_best_value=best_y,
-            )
-        else:
-            turbo_state = create_turbo_state(
-                dim=spec.n_parameters,
-                batch_size=batch_size,
-                initial_best_value=best_y,
-                initial_length=config.initial_length,
-                length_min=config.length_min,
-                length_max=config.length_max,
-                success_tolerance=config.success_tolerance,
-                failure_tolerance=config.failure_tolerance,
-            )
-    return turbo_state
+    if not use_turbo:
+        return None
+    if turbo_state is not None and turbo_state.restart_triggered:
+        turbo_state = None
+    if turbo_state is not None:
+        return turbo_state
+
+    assert_unit_scale_targets(train_y_bo)
+    best_y = train_y_bo.max().item()
+    config = spec.turbo_config
+    if config is None:
+        return create_turbo_state(
+            dim=spec.n_parameters,
+            batch_size=batch_size,
+            initial_best_value=best_y,
+        )
+    return create_turbo_state(
+        dim=spec.n_parameters,
+        batch_size=batch_size,
+        initial_best_value=best_y,
+        initial_length=config.initial_length,
+        length_min=config.length_min,
+        length_max=config.length_max,
+        success_tolerance=config.success_tolerance,
+        failure_tolerance=config.failure_tolerance,
+    )
 
 
 def _compute_turbo_bounds(
@@ -355,7 +367,7 @@ def _generate_single_objective_batch(
     # known noise instead of re-estimating it from MLL. ``target_negated``
     # tells the factory that a minimize objective arrives negated, which
     # the ``Log`` outcome stage must undo (and redo on the posterior).
-    cat_blocks = get_categorical_blocks(spec) if spec.use_categorical_kernel else None
+    cat_blocks = categorical_blocks_for_model(spec)
     model = create_and_fit_single_task_model(
         train_x,
         train_y_bo,

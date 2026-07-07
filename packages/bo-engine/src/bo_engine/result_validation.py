@@ -11,6 +11,7 @@ References:
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 from botorch.cross_validation import gen_loo_cv_folds
@@ -67,8 +68,8 @@ class OutlierResult:
 
 
 def detect_duplicates(
-    new_params: dict[str, float],
-    existing_params: list[dict[str, float]],
+    new_params: dict[str, Any],
+    existing_params: list[dict[str, Any]],
     tolerance: float = DUPLICATE_DETECTION_TOLERANCE,
 ) -> list[DuplicateResult]:
     """Detect near-duplicate results based on parameter values.
@@ -102,33 +103,10 @@ def detect_duplicates(
         if not all(p in existing_names for p in param_names):
             continue
 
-        # Compute distance for each parameter
-        is_exact = True
-        max_diff = 0.0
-        total_distance_sq = 0.0
-
-        for param_name in param_names:
-            new_val = new_params[param_name]
-            existing_val = existing.get(param_name)
-
-            if existing_val is None:
-                is_exact = False
-                continue
-
-            # Handle numeric comparison
-            try:
-                diff = abs(float(new_val) - float(existing_val))
-                if diff > tolerance:
-                    is_exact = False
-                max_diff = max(max_diff, diff)
-                total_distance_sq += diff**2
-            except (TypeError, ValueError):
-                # For non-numeric (categorical) parameters
-                if new_val != existing_val:
-                    is_exact = False
-
-        # Normalized distance (Euclidean)
-        distance = total_distance_sq**0.5
+        comparison = _compare_parameter_rows(new_params, existing, param_names, tolerance)
+        if comparison is None:
+            continue
+        is_exact, distance = comparison
 
         if is_exact or distance < tolerance * len(param_names) ** 0.5:
             duplicates.append(
@@ -140,6 +118,47 @@ def detect_duplicates(
             )
 
     return duplicates
+
+
+def _compare_parameter_rows(
+    new_params: dict[str, Any],
+    existing: dict[str, Any],
+    param_names: list[str],
+    tolerance: float,
+) -> tuple[bool, float] | None:
+    """Compare one candidate row against one existing row.
+
+    Returns ``(is_exact, euclidean_distance)`` over the numeric parameters,
+    or ``None`` when any categorical parameter differs: a different category
+    is a different experiment, never a near-duplicate — identical numerics
+    with a different solvent is the normal shape of categorical DOE, and the
+    categorical mismatch contributes no numeric distance that could keep the
+    row under the near-duplicate threshold.
+    """
+    is_exact = True
+    total_distance_sq = 0.0
+
+    for param_name in param_names:
+        new_val = new_params[param_name]
+        existing_val = existing.get(param_name)
+
+        if existing_val is None:
+            is_exact = False
+            continue
+
+        try:
+            diff = abs(float(new_val) - float(existing_val))
+        except (TypeError, ValueError):
+            # Non-numeric (categorical) parameter.
+            if new_val != existing_val:
+                return None
+            continue
+
+        if diff > tolerance:
+            is_exact = False
+        total_distance_sq += diff**2
+
+    return is_exact, total_distance_sq**0.5
 
 
 def detect_duplicates_batch(

@@ -203,3 +203,46 @@ class TestLocalPenalizationSignSafety:
 
         penalized = apply_local_penalization(acq_values, candidates, empty, bounds)
         assert torch.equal(penalized, acq_values)
+
+
+class TestBackendBatchDiversityMixedSpec:
+    """The backend-level helper must produce metrics for categorical/mixed batches.
+
+    Candidates are one-hot encoded before the distance computation; a raw
+    ``float()`` over category strings raised (and was swallowed to ``None``),
+    silently disabling the diversity report for exactly the chemistry
+    campaigns it targets.
+    """
+
+    def test_mixed_spec_batch_yields_metrics(self) -> None:
+        from bo_engine.botorch_backend import BoTorchBackend
+        from bo_engine.types import (
+            ObjectiveSpec,
+            OptimizationSpec,
+            ParameterSpec,
+            ParameterType,
+        )
+
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="t", type=ParameterType.CONTINUOUS, bounds=(0.0, 100.0)),
+                ParameterSpec(
+                    name="solv",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["etoh", "meoh", "h2o"],
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        candidates = [
+            {"t": 20.0, "solv": "etoh"},
+            {"t": 80.0, "solv": "h2o"},
+            {"t": 50.0, "solv": "meoh"},
+        ]
+
+        metrics = BoTorchBackend().compute_batch_diversity(spec, candidates)
+
+        assert metrics is not None, (
+            "Categorical/mixed batches must produce diversity metrics, not a silent None."
+        )
+        assert metrics.min_pairwise_distance > 0.0

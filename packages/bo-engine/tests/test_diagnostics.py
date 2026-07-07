@@ -1,5 +1,7 @@
 """Tests for BO engine diagnostics."""
 
+import math
+
 import pytest
 import torch
 
@@ -13,7 +15,10 @@ from bo_engine.diagnostics import (
     compute_convergence_metric,
     compute_hypervolume,
     compute_hypervolume_improvement,
+    compute_observed_hypervolume,
     compute_pareto_front,
+    compute_rank_correlation,
+    determine_health_status,
     determine_progress_status,
     summarize_pareto_front,
 )
@@ -116,11 +121,19 @@ class TestNumericalSafety:
         # ``is_zero`` helper instead of bare ``!= 0``.
         assert determine_progress_status([0.0, 0.5]) in {"improving", "stagnant", "regressing"}
 
-    def test_single_objective_improvement_rate_zero_initial_returns_zero(self) -> None:
-        """A zero initial best must short-circuit to a 0.0 rate."""
+    def test_single_objective_improvement_rate_zero_initial_uses_history_scale(self) -> None:
+        """A zero initial best must not divide by zero — nor hide real progress.
+
+        The rate falls back to the trajectory's robust scale as denominator
+        (the shared ``_step_denominator``/``_history_scale`` convention from
+        ``bo_engine.convergence``), so a genuinely improving run that starts
+        at 0.0 reports a finite positive rate instead of the old hardcoded
+        0.0 that made zero-crossing objectives read as "no progress".
+        """
         history = [0.0, 0.1, 0.2, 0.3, 0.4]
-        # The branch ``is_zero(initial)`` must fire here.
-        assert compute_single_objective_improvement_rate(history, window=10) == pytest.approx(0.0)
+        rate = compute_single_objective_improvement_rate(history, window=10)
+        assert math.isfinite(rate)
+        assert rate > 0.0
 
 
 class TestOutlierDiagnosticsUserScale:
@@ -433,3 +446,158 @@ class TestDiagnosticGatesReadConstants:
         # Eight observations reach the patched threshold: the detector runs.
         backend._compute_outlier_diagnostics(spec, _spread_observations(2, 8))
         assert detect_calls["n"] == 1
+
+
+class TestRankCorrelationUnknownIsNaN:
+    """Unmeasurable correlation is NaN ("unknown"), never a fabricated 0.0.
+
+    A numerical hiccup (constant predictions → undefined Spearman) must not
+    manufacture a "model not matching results" warning: 0.0 is a *measured*
+    "model is uninformative" signal, while NaN means "could not measure".
+
+    References:
+        - scipy.stats.spearmanr — returns NaN for constant input by design
+          (correlation undefined), the exact case a sentinel 0.0 conflates.
+    """
+
+    def test_constant_predictions_yield_nan(self) -> None:
+        corr = compute_rank_correlation(
+            torch.tensor([1.0, 1.0, 1.0]), torch.tensor([1.0, 2.0, 3.0])
+        )
+        assert math.isnan(corr)
+
+    def test_too_few_samples_yield_nan(self) -> None:
+        corr = compute_rank_correlation(torch.tensor([1.0, 2.0]), torch.tensor([1.0, 2.0]))
+        assert math.isnan(corr)
+
+    def test_nan_correlation_emits_no_warning_or_downgrade(self) -> None:
+        status, warnings = determine_health_status(
+            n_results=20,
+            hypervolume_improvement=0.1,
+            model_correlation=float("nan"),
+            iterations_without_improvement=0,
+        )
+        assert status == "healthy"
+        assert not any("correlation" in w.lower() for w in warnings)
+
+    def test_measured_zero_correlation_still_downgrades(self) -> None:
+        """A genuine 0.0 is the worst-model signal and must keep firing."""
+        status, warnings = determine_health_status(
+            n_results=20,
+            hypervolume_improvement=0.1,
+            model_correlation=0.0,
+            iterations_without_improvement=0,
+        )
+        assert status == "critical"
+        assert any("correlation" in w.lower() for w in warnings)
+
+
+class TestPinnedHypervolumeReference:
+    """History hypervolume uses a pinned reference point — no phantom progress.
+
+    ``compute_observed_hypervolume`` derives its reference point from the
+    first ``MIN_OBSERVATIONS_FOR_HYPERVOLUME`` observations of the
+    (append-only) list, so submitting a strictly dominated result that is
+    *worse in one objective* cannot expand the reference box and inflate
+    the hypervolume of an unchanged Pareto front.
+
+    References:
+        - Ishibuchi et al., "How to Specify a Reference Point in
+          Hypervolume Calculation for Fair Performance Comparison" (2018) —
+          hypervolume comparisons are only meaningful against a fixed
+          reference point.
+    """
+
+    @staticmethod
+    def _spec() -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[
+                ObjectiveSpec(name="a", minimize=True),
+                ObjectiveSpec(name="b", minimize=True),
+            ],
+        )
+
+    def test_dominated_worse_point_does_not_increase_hv(self) -> None:
+        spec = self._spec()
+        observations = [
+            ObservationData(
+                parameter_values={"x": 0.1 * i},
+                objective_values={"a": 1.0 + 0.1 * i, "b": 2.0 - 0.1 * i},
+            )
+            for i in range(4)
+        ]
+        hv_before = compute_observed_hypervolume(spec, observations)
+
+        dominated_worse = ObservationData(
+            parameter_values={"x": 0.9},
+            objective_values={"a": 50.0, "b": 50.0},
+        )
+        hv_after = compute_observed_hypervolume(spec, [*observations, dominated_worse])
+
+        assert hv_after is not None
+        assert hv_before is not None
+        assert hv_after <= hv_before + 1e-12, (
+            "A dominated, worse-in-one-objective observation expanded the "
+            "reference box and inflated the hypervolume — phantom progress."
+        )
+
+    def test_reference_point_is_stable_across_appends(self) -> None:
+        """The same prefix pins the same reference: HV is append-consistent."""
+        spec = self._spec()
+        observations = [
+            ObservationData(
+                parameter_values={"x": 0.1 * i},
+                objective_values={"a": 2.0 - 0.2 * i, "b": 1.0 + 0.1 * i},
+            )
+            for i in range(3)
+        ]
+        improving = ObservationData(
+            parameter_values={"x": 0.8}, objective_values={"a": 0.5, "b": 0.5}
+        )
+
+        hv_before = compute_observed_hypervolume(spec, observations)
+        hv_after = compute_observed_hypervolume(spec, [*observations, improving])
+
+        assert hv_after is not None
+        assert hv_before is not None
+        assert hv_after >= hv_before  # genuine improvement still registers
+
+    def test_backend_diagnostics_objectives_hypervolume_uses_pinned_reference(self) -> None:
+        """The live ``objectives.hypervolume`` diagnostics field, not just the
+        shared helper, must be pinned.
+
+        ``_compute_multi_objective`` used to reimplement the Pareto+HV
+        computation inline with a reference point recomputed from *all*
+        current observations, so it could disagree with (and rise faster
+        than) ``campaign.hypervolume_history`` — which is fed by the pinned
+        ``compute_hypervolume`` delegate. Both must now agree exactly.
+        """
+        spec = self._spec()
+        observations = [
+            ObservationData(
+                parameter_values={"x": 0.1 * i},
+                objective_values={"a": 1.0 + 0.1 * i, "b": 2.0 - 0.1 * i},
+            )
+            for i in range(4)
+        ]
+        backend = BoTorchBackend()
+        result_before = backend._compute_multi_objective(spec, observations)
+
+        dominated_worse = ObservationData(
+            parameter_values={"x": 0.9},
+            objective_values={"a": 50.0, "b": 50.0},
+        )
+        augmented = [*observations, dominated_worse]
+        result_after = backend._compute_multi_objective(spec, augmented)
+
+        assert result_after["hypervolume"] <= result_before["hypervolume"] + 1e-12, (
+            "The diagnostics 'objectives' section's live hypervolume must not "
+            "rise when a dominated, worse-in-one-objective point is appended."
+        )
+        assert result_before["hypervolume"] == pytest.approx(
+            compute_observed_hypervolume(spec, observations)
+        )
+        assert result_after["hypervolume"] == pytest.approx(
+            compute_observed_hypervolume(spec, augmented)
+        )

@@ -380,10 +380,24 @@ def _encode_param_value(param: ParameterSpec, value: int | float | str) -> list[
 
     Returns:
         List of floats representing this parameter's encoded dimensions
+
+    Raises:
+        ValueError: If a categorical value is not one of the declared
+            categories. Silently emitting an all-zero one-hot block would
+            corrupt the training data (and argmax-decode back to the *first*
+            category), so a typo'd value (``'EtOH'`` vs ``'etoh'``) must
+            fail loudly here — direct engine callers bypass the MCP intake
+            validation.
     """
     if param.type == ParameterType.CATEGORICAL:
         if param.categories is None:
             msg = f"Categorical parameter '{param.name}' has no categories defined"
+            raise ValueError(msg)
+        if value not in param.categories:
+            msg = (
+                f"Unknown category {value!r} for parameter '{param.name}'; "
+                f"expected one of {list(param.categories)}."
+            )
             raise ValueError(msg)
         return [1.0 if value == cat else 0.0 for cat in param.categories]
     return [float(value)]

@@ -595,3 +595,36 @@ class TestDataframeToSuggestions:
         assert len(suggestions) == 1
         assert math.isclose(suggestions[0]["x1"], 0.5)
         assert math.isclose(suggestions[0]["x2"], 0.3)
+
+
+class TestDiscreteConstraintConstruction:
+    """Only the three SUM-type neutral constraints reach the discrete builder.
+
+    The neutral spec defines no product constraint type, so the discrete
+    dispatch map must contain exactly the SUM types and the builder must
+    always construct a ``DiscreteSumConstraint`` — a product branch would
+    be dead code implying support the spec cannot express.
+    """
+
+    def test_dispatch_map_contains_exactly_the_sum_types(self) -> None:
+        from bo_engine_baybe.converters import _DISCRETE_OPERATOR_MAP
+
+        assert set(_DISCRETE_OPERATOR_MAP) == {
+            ConstraintType.SUM_EQUALS,
+            ConstraintType.SUM_LESS_THAN,
+            ConstraintType.SUM_GREATER_THAN,
+        }
+
+    def test_sum_types_build_discrete_sum_constraints(self) -> None:
+        from baybe.constraints import DiscreteSumConstraint
+
+        from bo_engine_baybe.converters import _build_discrete_constraint
+
+        for constraint_type in (
+            ConstraintType.SUM_EQUALS,
+            ConstraintType.SUM_LESS_THAN,
+            ConstraintType.SUM_GREATER_THAN,
+        ):
+            constraint = ConstraintSpec(type=constraint_type, parameters=["c1", "c2"], value=1.0)
+            built = _build_discrete_constraint(constraint)
+            assert isinstance(built, DiscreteSumConstraint)

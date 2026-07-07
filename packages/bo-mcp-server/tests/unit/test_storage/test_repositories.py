@@ -378,3 +378,88 @@ class TestResultRepository:
         all_results = await repo.list_all()
 
         assert len(all_results) == 5
+
+
+class TestListByCampaignsOrdering:
+    """The plural ``list_by_campaigns`` shares the singular's load-bearing ordering.
+
+    Order-sensitive compare metrics (``improvement_rate``,
+    ``sample_efficiency``, ``values[0]``) are computed from these lists;
+    without an ORDER BY they would depend on the database's heap order and
+    change across calls after vacuums/updates. The contract is
+    ``(created_at, id)`` ascending — submission order — matching
+    ``list_by_campaign``.
+    """
+
+    @pytest.fixture
+    async def campaign_and_user(self, session: AsyncSession) -> tuple:
+        from bo_mcp_server.storage.models import (
+            CampaignModel,
+            CampaignSpecModel,
+            UserModel,
+        )
+
+        user_id = uuid4()
+        session.add(
+            UserModel(
+                id=str(user_id),
+                name="Test",
+                email="ordering@example.com",
+                api_key_hash="hash-ordering",
+            )
+        )
+        spec_id = uuid4()
+        session.add(
+            CampaignSpecModel(
+                id=str(spec_id),
+                name="Ordering Spec",
+                parameters_json='[{"name":"x","type":"continuous","bounds":[0,1]}]',
+                objectives_json='[{"name":"y","direction":"minimize"}]',
+            )
+        )
+        campaign_id = uuid4()
+        session.add(
+            CampaignModel(
+                id=str(campaign_id),
+                spec_id=str(spec_id),
+                owner_id=str(user_id),
+                status=CampaignStatus.RUNNING,
+            )
+        )
+        await session.commit()
+        return campaign_id, user_id
+
+    @pytest.mark.asyncio
+    async def test_results_returned_in_submission_order(
+        self, session: AsyncSession, campaign_and_user: tuple
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        campaign_id, user_id = campaign_and_user
+        repo = ResultRepository(session)
+
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        # Insert deliberately out of chronological order.
+        for offset_minutes in (30, 10, 50, 20, 40):
+            await repo.save(
+                Result(
+                    campaign_id=campaign_id,
+                    parameter_values={"x": offset_minutes / 100.0},
+                    objective_values={"y": float(offset_minutes)},
+                    source=ResultSource.API,
+                    submitted_by=user_id,
+                    created_at=base + timedelta(minutes=offset_minutes),
+                )
+            )
+        await session.commit()
+
+        by_campaign = await repo.list_by_campaigns([campaign_id])
+        results = by_campaign[campaign_id]
+
+        created = [r.created_at for r in results]
+        assert created == sorted(created), (
+            "list_by_campaigns must return each campaign's results in "
+            "(created_at, id) ascending order — compare metrics are "
+            "order-sensitive."
+        )
+        assert [r.objective_values["y"] for r in results] == [10.0, 20.0, 30.0, 40.0, 50.0]

@@ -42,8 +42,13 @@ class TestProtocolCompliance:
         features = backend.supported_features
         assert Feature.CATEGORICAL in features
         assert Feature.MIXED_SEARCH_SPACE in features
-        assert Feature.CONSTRAINTS in features
         assert Feature.MULTI_OBJECTIVE in features
+        # CONSTRAINTS is conditional (BayBE cannot honor hybrid /
+        # categorical-arithmetic / discrete-LINEAR shapes), so it must not
+        # be advertised unconditionally — see the conditional_features
+        # surface and TestConstraintsAreConditional.
+        assert Feature.CONSTRAINTS not in features
+        assert Feature.CONSTRAINTS in backend.conditional_features
         assert Feature.MULTI_FIDELITY not in features
         assert Feature.HIGH_DIMENSIONAL not in features
         assert Feature.INPUT_WARPING not in features
@@ -561,16 +566,17 @@ class TestDetectDuplicates:
         )
         assert len(dups) == 0
 
-    def test_near_duplicate_with_categorical_mismatch(self) -> None:
+    def test_categorical_mismatch_is_not_a_duplicate(self) -> None:
         backend = BayBEBackend()
         dups = backend.detect_duplicates(
             new_params={"x1": 0.5, "cat": "A"},
             existing_params=[{"x1": 0.5, "cat": "B"}],
             tolerance=1.5,
         )
-        # Categorical mismatch -> not exact, but distance=1.0 within tolerance
-        assert len(dups) == 1
-        assert not dups[0].is_exact
+        # A different category is a different experiment: identical numerics
+        # with a different categorical value are the normal shape of
+        # categorical DOE, never a near-duplicate.
+        assert len(dups) == 0
 
 
 class TestBatchDiversity:
@@ -747,6 +753,60 @@ class TestHypervolumeCrossBackendParity:
 
         assert BayBEBackend().compute_hypervolume(spec, observations) is None
         assert BoTorchBackend().compute_hypervolume(spec, observations) is None
+
+
+class TestMultiObjectiveDiagnosticsHypervolumePinned:
+    """The live ``objectives.hypervolume`` diagnostics field must use the
+    same pinned reference point as ``compute_hypervolume`` / history.
+
+    ``_multi_objective_diagnostics`` used to reimplement the Pareto+HV
+    computation inline with a reference point recomputed from *all* current
+    observations, so it could disagree with (and rise faster than)
+    ``campaign.hypervolume_history``. Both now delegate to
+    ``compute_observed_hypervolume`` and must agree exactly.
+    """
+
+    @staticmethod
+    def _spec() -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[
+                ObjectiveSpec(name="a", minimize=True),
+                ObjectiveSpec(name="b", minimize=True),
+            ],
+        )
+
+    def test_dominated_worse_point_does_not_increase_diagnostics_hv(self) -> None:
+        from bo_engine_baybe.backend import BayBEBackend
+
+        spec = self._spec()
+        observations = [
+            ObservationData(
+                parameter_values={"x": 0.1 * i},
+                objective_values={"a": 1.0 + 0.1 * i, "b": 2.0 - 0.1 * i},
+            )
+            for i in range(4)
+        ]
+        backend = BayBEBackend()
+        result_before = backend._multi_objective_diagnostics(spec, observations)
+
+        dominated_worse = ObservationData(
+            parameter_values={"x": 0.9},
+            objective_values={"a": 50.0, "b": 50.0},
+        )
+        augmented = [*observations, dominated_worse]
+        result_after = backend._multi_objective_diagnostics(spec, augmented)
+
+        assert result_after["hypervolume"] <= result_before["hypervolume"] + 1e-12, (
+            "The diagnostics 'objectives' section's live hypervolume must not "
+            "rise when a dominated, worse-in-one-objective point is appended."
+        )
+        assert result_before["hypervolume"] == pytest.approx(
+            backend.compute_hypervolume(spec, observations)
+        )
+        assert result_after["hypervolume"] == pytest.approx(
+            backend.compute_hypervolume(spec, augmented)
+        )
 
 
 class TestValidateSpec:

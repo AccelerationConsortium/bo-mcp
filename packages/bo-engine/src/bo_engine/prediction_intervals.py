@@ -50,12 +50,25 @@ class PredictionInterval:
 class SuggestionPrediction:
     """Complete prediction information for a single suggestion.
 
+    Two posterior conventions coexist here, deliberately: the ``objectives``
+    intervals include observation noise ("what range of *measured* outcomes
+    should I expect?"), while ``expected_improvement`` /
+    ``probability_of_improvement`` / ``risk_assessment`` are computed from
+    the **latent** (noise-free) posterior — the same convention the
+    acquisition function that produced the suggestion optimizes, so the
+    explanation describes the quantity the suggestion was actually chosen
+    to maximize rather than a noise-inflated variant of it.
+
     Attributes:
         parameters: The suggested parameter values.
-        objectives: Dict mapping objective name to prediction intervals.
-        expected_improvement: Expected improvement over current best.
-        probability_of_improvement: Probability of improving current best.
-        risk_assessment: Categorical risk level ("low", "medium", "high").
+        objectives: Dict mapping objective name to prediction intervals
+            (observation noise included).
+        expected_improvement: Expected improvement of the latent function
+            value over the current best.
+        probability_of_improvement: Probability that the latent function
+            value improves on the current best.
+        risk_assessment: Categorical risk level ("low", "medium", "high"),
+            derived from ``probability_of_improvement``.
     """
 
     parameters: dict[str, float]
@@ -199,21 +212,37 @@ def compute_prediction_intervals(
     return results
 
 
+def _latent_moments(
+    model: SingleTaskGP | ModelListGP,
+    xi: Tensor,
+) -> tuple[float, float]:
+    """Latent (noise-free) posterior mean/std of the first objective at ``xi``."""
+    with torch.no_grad():
+        if isinstance(model, ModelListGP):
+            posterior = model.models[0].posterior(xi)  # ty: ignore[call-non-callable]
+        else:
+            posterior = model.posterior(xi)
+        return posterior.mean.item(), posterior.variance.sqrt().item()
+
+
 def _compute_improvement_metrics(
-    intervals: dict[str, list],
+    mean: float,
+    std: float,
     best_value: float | None,
     minimize: bool,
 ) -> tuple[float | None, float | None, str]:
     """Compute EI, PoI, and risk assessment for a single suggestion.
 
+    ``mean``/``std`` must be **latent** posterior moments (no observation
+    noise) so EI/PoI match the convention the acquisition function was
+    optimized under; the predictive (noise-inflated) std would strictly
+    inflate both metrics relative to the acquisition that picked the point
+    (see :class:`SuggestionPrediction`).
+
     Returns (expected_improvement, probability_of_improvement, risk_assessment).
     """
-    if best_value is None or len(intervals) == 0:
+    if best_value is None:
         return None, None, "unknown"
-
-    first_obj = next(iter(intervals.keys()))
-    mean = intervals[first_obj][0].mean
-    std = intervals[first_obj][0].std
 
     if std <= PREDICTION_INTERVAL_EPSILON:
         return None, None, "unknown"
@@ -278,7 +307,9 @@ def compute_suggestion_predictions(
 
     suggestion_preds: list[SuggestionPrediction] = []
     for i, sugg in enumerate(suggestions):
-        ei, poi, risk = _compute_improvement_metrics(all_intervals[i], best_value, minimize)
+        # Latent moments for EI/PoI — the intervals above stay predictive.
+        latent_mean, latent_std = _latent_moments(model, x[i : i + 1])
+        ei, poi, risk = _compute_improvement_metrics(latent_mean, latent_std, best_value, minimize)
         suggestion_preds.append(
             SuggestionPrediction(
                 parameters=sugg,

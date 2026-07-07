@@ -176,3 +176,28 @@ class TestListCapabilitiesExposesConditionalSurface:
         conditional = response["conditional_features"]
         assert "transfer_learning" in conditional, conditional
         assert "task" in conditional["transfer_learning"].lower()
+
+
+class TestConstraintsAreConditional:
+    """CONSTRAINTS must not be advertised unconditionally.
+
+    The base-class rule restricts the static set to features honorable for
+    *any* well-formed spec; BayBE cannot honor hybrid, categorical-
+    arithmetic, or discrete-LINEAR constraints (its own per-constraint
+    reports say so), so CONSTRAINTS lives on the conditional surface with
+    the precondition spelled out.
+    """
+
+    def test_constraints_not_in_static_set(self) -> None:
+        backend = BayBEBackend()
+        assert Feature.CONSTRAINTS not in backend.supported_features
+
+    def test_conditional_features_names_the_constraint_precondition(self) -> None:
+        backend = BayBEBackend()
+        conditional = backend.conditional_features
+        assert Feature.CONSTRAINTS in conditional
+        reason = conditional[Feature.CONSTRAINTS].lower()
+        # Must state what is and is not honorable so a planner can decide
+        # without reading source.
+        assert "hybrid" in reason
+        assert "continuous" in reason

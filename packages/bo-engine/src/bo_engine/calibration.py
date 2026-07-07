@@ -501,7 +501,7 @@ def _generate_calibration_recommendation(
     """Generate actionable recommendation based on calibration assessment."""
     prefix = "LOO-CV calibration: " if is_loo else ""
 
-    if mean_error < 0.05:
+    if mean_error < CALIBRATION_GOOD_THRESHOLD:
         return (
             f"{prefix}Model uncertainty estimates are well-calibrated. "
             "Prediction intervals can be trusted."

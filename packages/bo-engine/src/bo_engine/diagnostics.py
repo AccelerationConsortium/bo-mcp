@@ -176,12 +176,23 @@ def compute_observed_hypervolume(
     * fewer than :data:`~bo_engine.constants.MIN_OBSERVATIONS_FOR_HYPERVOLUME`
       observations → ``0.0`` (multi-objective, but no Pareto front yet).
     * otherwise → the dominated hypervolume of the observed Pareto front with
-      respect to the shared static reference point
-      (:func:`bo_engine.reference_point.get_reference_point`).
+      respect to a **pinned** reference point derived from the first
+      ``MIN_OBSERVATIONS_FOR_HYPERVOLUME`` observations via the shared static
+      strategy (:func:`bo_engine.reference_point.get_reference_point`).
+
+    The reference point is pinned to the earliest-observation prefix rather
+    than recomputed from the full data so every ``hypervolume_history``
+    entry of an (append-only, creation-ordered) observation list is measured
+    against the *same* box. A per-call moving reference point would let a
+    strictly dominated but worse-in-one-objective submission expand the
+    window and inflate the hypervolume of an unchanged Pareto front —
+    phantom convergence progress. Later observations that fall outside the
+    pinned box simply contribute no volume (BoTorch's ``Hypervolume``
+    ignores points that do not dominate the reference point).
 
     Args:
         spec: Optimization specification.
-        observations: Observed results.
+        observations: Observed results, in submission (creation) order.
 
     Returns:
         Hypervolume, ``0.0``, or ``None`` per the contract above.
@@ -193,7 +204,7 @@ def compute_observed_hypervolume(
 
     y_bo, minimize_mask = observations_to_minimization_form(spec, observations)
     pareto_y, _ = compute_pareto_front(y_bo)
-    ref_point = get_reference_point(y_bo, minimize_mask)
+    ref_point = get_reference_point(y_bo[:MIN_OBSERVATIONS_FOR_HYPERVOLUME], minimize_mask)
     return compute_hypervolume(pareto_y, ref_point)
 
 
@@ -329,10 +340,15 @@ def compute_rank_correlation(
         actuals: Actual values of shape (n_samples,)
 
     Returns:
-        Spearman rank correlation coefficient (-1 to 1)
+        Spearman rank correlation coefficient (-1 to 1), or ``NaN`` when the
+        correlation cannot be measured (fewer than 3 samples, constant
+        predictions, or a numerical failure). ``NaN`` deliberately differs
+        from ``0.0``: a measured zero means "model is uninformative", while
+        ``NaN`` means "unknown" and must not trigger low-correlation
+        warnings (see :func:`determine_health_status`).
     """
     if predictions.numel() < 3:
-        return 0.0
+        return float("nan")
 
     pred_np = predictions.detach().cpu().numpy().flatten()
     actual_np = actuals.detach().cpu().numpy().flatten()
@@ -342,8 +358,8 @@ def compute_rank_correlation(
         corr = float(result.statistic)  # type: ignore[union-attr]
     except (RuntimeError, ValueError, TypeError) as e:
         logger.debug("Rank correlation calculation failed with %d samples: %r", len(pred_np), e)
-        return 0.0
-    return corr if corr == corr else 0.0  # Handle NaN
+        return float("nan")
+    return corr
 
 
 def determine_health_status(
@@ -357,13 +373,19 @@ def determine_health_status(
     Args:
         n_results: Number of results collected
         hypervolume_improvement: Recent hypervolume improvement rate
-        model_correlation: Rank correlation between predictions and actuals
+        model_correlation: Rank correlation between predictions and actuals.
+            ``NaN`` means the correlation could not be measured (see
+            :func:`compute_rank_correlation`) and is treated as "unknown":
+            no correlation-based warning or status downgrade is emitted,
+            because a numerical hiccup must not manufacture a "model not
+            matching results" verdict.
         iterations_without_improvement: Number of iterations without improvement
 
     Returns:
         Tuple of (status, warnings) where status is 'healthy', 'warning', or 'critical'
     """
     warnings = []
+    correlation_known = not math.isnan(model_correlation)
 
     # Not enough data yet
     if n_results < DIAGNOSTICS_MIN_RESULTS:
@@ -377,7 +399,8 @@ def determine_health_status(
         )
 
     if (
-        model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
+        correlation_known
+        and model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CORRELATION_WARNING
     ):
         warnings.append(
@@ -393,13 +416,13 @@ def determine_health_status(
 
     # Determine overall status
     if iterations_without_improvement >= DIAGNOSTICS_CRITICAL_STAGNATION_ITERATIONS or (
-        model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
+        correlation_known
+        and model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING
         and n_results >= DIAGNOSTICS_MIN_RESULTS_FOR_CRITICAL
     ):
         return "critical", warnings
-    if (
-        iterations_without_improvement >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS
-        or model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
+    if iterations_without_improvement >= DIAGNOSTICS_WARNING_STAGNATION_ITERATIONS or (
+        correlation_known and model_correlation < DIAGNOSTICS_MODEL_CORRELATION_WARNING_STATUS
     ):
         return "warning", warnings
     return "healthy", warnings
@@ -605,17 +628,32 @@ def compute_exploration_exploitation_ratio(
 
 def compute_suggestion_diversity(
     suggestions: Tensor,
+    bounds: Tensor | None = None,
 ) -> float:
     """Compute diversity of suggestions (spread in parameter space).
 
+    The score compares the average pairwise distance against the expected
+    distance in the **unit hypercube**, so the inputs must live there:
+    pass ``bounds`` to normalize raw parameter values, or pre-normalize
+    the suggestions yourself. Feeding raw values with parameter ranges far
+    from 1 makes the score an artifact of the units (ranges ≫ 1 saturate
+    it at 1.0, ranges ≪ 1 pin it near 0).
+
     Args:
         suggestions: Suggestion parameter values of shape (n_suggestions, n_params)
+        bounds: Optional parameter bounds of shape (2, n_params). When given,
+            suggestions are normalized into the unit hypercube first.
 
     Returns:
         Diversity score (0 to 1, higher = more diverse)
     """
     if suggestions.shape[0] < 2:
         return 1.0
+
+    if bounds is not None:
+        from bo_engine.diagnostics_usability import _normalize_by_bounds
+
+        suggestions = _normalize_by_bounds(suggestions, bounds)
 
     # Compute pairwise distances
     n = suggestions.shape[0]

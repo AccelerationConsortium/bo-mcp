@@ -1256,6 +1256,13 @@ class ResultRepository:
     ) -> dict[UUID, list[Result]]:
         """List results for multiple campaigns in a single query.
 
+        Each campaign's list is ordered by ``(created_at, id)`` ascending —
+        the same load-bearing submission ordering as the singular
+        :meth:`list_by_campaign`. Consumers compute order-sensitive metrics
+        (improvement history, sample efficiency) from these lists; without
+        an ORDER BY they would depend on the database's heap order and
+        change across calls after vacuums/updates.
+
         Args:
             campaign_ids: List of campaign UUIDs.
             include_deleted: Include soft-deleted rows (admin / forensics only).
@@ -1267,10 +1274,12 @@ class ResultRepository:
             return {}
         str_ids = [str(cid) for cid in campaign_ids]
         result = await self.session.execute(
-            select(ResultModel).where(
+            select(ResultModel)
+            .where(
                 ResultModel.campaign_id.in_(str_ids),
                 *_active_filter(ResultModel, include_deleted),
             )
+            .order_by(ResultModel.created_at.asc(), ResultModel.id.asc())
         )
         by_campaign: dict[UUID, list[Result]] = {cid: [] for cid in campaign_ids}
         for m in result.scalars():

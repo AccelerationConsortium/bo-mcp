@@ -26,6 +26,7 @@ suite in :mod:`bo_engine.testing.backend_contract` checks both paths.
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
@@ -40,13 +41,14 @@ from bo_engine.backend import (
     SuggestionBatch,
 )
 from bo_engine.batch_diversity import compute_batch_diversity
-from bo_engine.device import get_device, get_dtype
 from bo_engine.models import ModelFittingError
 from bo_engine.progress import ProgressCallback
 from bo_engine.result_validation import detect_duplicates as engine_detect_duplicates
 from bo_engine.suggestions import generate_initial_design as engine_generate_initial_design
-from bo_engine.transforms import get_bounds_tensor
+from bo_engine.transforms import get_bounds_tensor, stack_encoded_values
 from bo_engine.types import ObservationData, OptimizationSpec
+
+logger = logging.getLogger(__name__)
 
 CURRENT_STATE_ENVELOPE_VERSION = 1
 """Schema version embedded in :class:`BackendStateEnvelope` payloads."""
@@ -669,14 +671,22 @@ class BaseBackend(ABC):
         spec: OptimizationSpec,
         candidates: list[dict[str, Any]],
     ) -> BatchDiversityMetrics | None:
-        """Reuse :func:`bo_engine.batch_diversity.compute_batch_diversity`."""
+        """Reuse :func:`bo_engine.batch_diversity.compute_batch_diversity`.
+
+        Candidates are one-hot encoded via
+        :func:`bo_engine.transforms.stack_encoded_values` so categorical and
+        mixed campaigns produce metrics too — a raw ``float()`` over the
+        parameter dict would raise on every category string (and the row
+        width would disagree with the one-hot bounds), silently degrading
+        the tool to ``None`` for exactly the chemistry campaigns it targets.
+        Genuine encoding failures (malformed candidate dicts) are logged
+        before the ``None`` fallback rather than swallowed.
+        """
         if len(candidates) < 2:
             return None
         try:
             bounds = get_bounds_tensor(spec)
-            param_names = [p.name for p in spec.parameters]
-            values = [[float(c.get(name, 0.0)) for name in param_names] for c in candidates]
-            tensor = torch.tensor(values, device=get_device(), dtype=get_dtype())
+            tensor = stack_encoded_values(candidates, spec)
             m = compute_batch_diversity(tensor, bounds)
             return BatchDiversityMetrics(
                 min_pairwise_distance=m.min_pairwise_distance,
@@ -684,7 +694,12 @@ class BaseBackend(ABC):
                 diversity_score=m.diversity_score,
                 is_diverse=m.is_diverse,
             )
-        except (RuntimeError, ValueError, TypeError):
+        except (KeyError, RuntimeError, ValueError, TypeError):
+            logger.warning(
+                "Batch-diversity computation failed for %d candidates",
+                len(candidates),
+                exc_info=True,
+            )
             return None
 
     def select_methods(

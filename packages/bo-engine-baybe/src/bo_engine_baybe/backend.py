@@ -67,17 +67,14 @@ from bo_engine.diagnostics import (
     compute_improvement_history,
     compute_observed_hypervolume,
     compute_single_objective_improvement_rate,
+    observations_to_minimization_form,
     summarize_pareto_front,
-)
-from bo_engine.diagnostics import (
-    compute_hypervolume as engine_compute_hypervolume,
 )
 from bo_engine.diagnostics import (
     compute_pareto_front as engine_compute_pareto_front,
 )
 from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
-from bo_engine.reference_point import get_reference_point
 from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 from bo_engine.result_validation import (
     detect_outliers,
@@ -120,7 +117,6 @@ from bo_engine_baybe.introspection import (
     _extract_feature_importance,
     _extract_model_info,
     _extract_posterior_stats,
-    _observations_to_minimization_tensor,
     _prepare_tensors,
     _strategy_and_model,
 )
@@ -915,9 +911,9 @@ class BayBEBackend(BaseBackend):
         Delegates to the shared :func:`compute_observed_hypervolume` so this
         backend reports the *same* ``None``/``0.0``/value contract and the
         *same* reference point as the BoTorch backend — the HV history that
-        drives convergence detection is therefore comparable across backends,
-        and consistent with this backend's own diagnostics surface (which
-        already scores HV via ``get_reference_point``).
+        drives convergence detection is therefore comparable across backends.
+        :meth:`_multi_objective_diagnostics` delegates to the same helper,
+        so the live diagnostics ``hypervolume`` field agrees with this one.
         """
         return compute_observed_hypervolume(spec, observations)
 
@@ -1036,6 +1032,15 @@ class BayBEBackend(BaseBackend):
         spec: OptimizationSpec,
         observations: list[ObservationData],
     ) -> dict[str, Any]:
+        """Compute Pareto front and hypervolume for multi-objective diagnostics.
+
+        ``hypervolume`` is delegated to :func:`compute_observed_hypervolume`
+        so this live diagnostics figure uses the same pinned reference
+        point as :meth:`compute_hypervolume` / ``campaign.hypervolume_history``
+        (see M75) — a moving, recomputed-per-call reference point would let
+        a dominated, worse-in-one-objective observation inflate this field
+        even though the Pareto front (and the history) did not improve.
+        """
         if len(observations) < 2:
             return {
                 "best_value": None,
@@ -1047,15 +1052,12 @@ class BayBEBackend(BaseBackend):
                 "n_pareto_points": 0,
             }
 
-        y_bo = _observations_to_minimization_tensor(spec, observations)
-        minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
+        y_bo, minimize_mask = observations_to_minimization_form(spec, observations)
         pareto_y, _ = engine_compute_pareto_front(y_bo)
         pareto_display = pareto_y.clone()
         pareto_display[:, ~minimize_mask] = -pareto_display[:, ~minimize_mask]
 
         obj_names = [o.name for o in spec.objectives]
-        ref_point = get_reference_point(y_bo, minimize_mask)
-        hv = engine_compute_hypervolume(pareto_y, ref_point)
 
         return {
             "best_value": None,
@@ -1063,7 +1065,7 @@ class BayBEBackend(BaseBackend):
             "improvement_history": None,
             "improvement_rate": None,
             "pareto_front": summarize_pareto_front(pareto_display, obj_names),
-            "hypervolume": hv,
+            "hypervolume": compute_observed_hypervolume(spec, observations),
             "n_pareto_points": len(pareto_y),
         }
 

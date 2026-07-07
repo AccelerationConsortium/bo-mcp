@@ -62,6 +62,19 @@ ALL_SECTIONS = frozenset(
 )
 
 
+def health_model_correlation(raw_correlation: float | None) -> float:
+    """Map the backend's ``model_correlation`` into the health functions' domain.
+
+    ``None`` means the backend could not measure the correlation; it maps
+    to NaN so the health functions treat it as "unknown" (no warning, no
+    status downgrade). A measured value — including a genuine ``0.0``,
+    which is exactly the "model is uninformative" signal — flows through
+    unchanged. A falsy-zero rewrite to a neutral prior would suppress the
+    low-correlation warning precisely when the model is worst.
+    """
+    return float("nan") if raw_correlation is None else float(raw_correlation)
+
+
 # =============================================================================
 # Input validation
 # =============================================================================
@@ -172,7 +185,7 @@ async def _compute_sections(
             enrich_diagnostics(diagnostics, spec, results, method_info)
 
     # Health (plain-Python functions + backend correlation)
-    model_correlation = diagnostics.get("model_correlation") or 0.5
+    model_correlation = health_model_correlation(diagnostics.get("model_correlation"))
     if "health" in requested:
         compute_health_and_progress(
             spec,

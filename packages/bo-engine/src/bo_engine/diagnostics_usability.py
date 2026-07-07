@@ -61,7 +61,10 @@ class ExplorationExploitationMetrics:
 
     exploration_ratio: float  # 0-1, higher = more exploration
     diversity_score: float  # 0-1, higher = more diverse suggestions
-    average_distance_to_best: float  # Normalized distance to best point
+    # Normalized distance to the best point; None when no best point is
+    # available (e.g. multi-objective campaigns, where a single "best" is
+    # undefined).
+    average_distance_to_best: float | None
     balance_assessment: str  # "exploration_heavy", "balanced", "exploitation_heavy"
     recommendation: str  # Agent-friendly recommendation
 
@@ -152,22 +155,51 @@ def compute_uncertainty_trend(
     )
 
 
+def _normalize_by_bounds(points: Tensor, bounds: Tensor) -> Tensor:
+    """Map raw parameter values into the unit hypercube defined by ``bounds``.
+
+    Degenerate (~zero-width) dimensions divide by 1 so the normalization
+    never produces inf/NaN. ``SAFE_DIVISION_EPSILON`` is the project-wide
+    "treat as zero for division" threshold.
+    """
+    ranges = bounds[1] - bounds[0]
+    ranges = torch.where(ranges < SAFE_DIVISION_EPSILON, torch.ones_like(ranges), ranges)
+    return (points - bounds[0]) / ranges
+
+
 def compute_exploration_exploitation_metrics(
     suggestions: Tensor,
     best_point: Tensor | None,
     uncertainties: list[float],
     bounds: Tensor,
+    objective_scale: float | None = None,
 ) -> ExplorationExploitationMetrics:
     """Compute exploration/exploitation balance metrics.
 
     Analyzes recent suggestions to determine the balance between
     exploring new regions and exploiting known good areas.
 
+    Every quantity feeding the dimensionless ``balance_assessment``
+    thresholds is normalized first, so the verdict is invariant to the
+    units of the parameters and of the objective: suggestions are mapped
+    into the unit hypercube before the diversity score (which compares
+    against the unit-cube expected pairwise distance), and the average
+    model uncertainty is divided by ``objective_scale`` before the
+    exploration-ratio threshold.
+
     Args:
         suggestions: Recent suggestion parameter values (n_suggestions, n_params)
+            on the raw parameter scale.
         best_point: Current best point (n_params,) or None
-        uncertainties: Model uncertainties at suggestion points
+        uncertainties: Model uncertainties at suggestion points, on the raw
+            objective scale.
         bounds: Parameter bounds (2, n_params)
+        objective_scale: Observed objective scale (e.g. spread of observed
+            values, or the model's ``Standardize`` stdv) used to make the
+            uncertainty dimensionless. ``None`` or a non-positive value
+            means the scale is unknown; the exploration ratio then falls
+            back to the neutral 0.5 rather than comparing raw-unit
+            uncertainty against dimensionless thresholds.
 
     Returns:
         ExplorationExploitationMetrics with balance assessment
@@ -176,25 +208,20 @@ def compute_exploration_exploitation_metrics(
     # cycle on the diversity helper.
     from bo_engine.diagnostics import compute_suggestion_diversity
 
-    diversity = compute_suggestion_diversity(suggestions)
+    diversity = compute_suggestion_diversity(_normalize_by_bounds(suggestions, bounds))
 
-    avg_distance_to_best = 0.0
+    avg_distance_to_best = None
     if best_point is not None and suggestions.shape[0] > 0:
-        ranges = bounds[1] - bounds[0]
-        # Replace degenerate (~zero-width) bounds with 1 so the per-dim
-        # normalization below does not produce inf/NaN. ``SAFE_DIVISION_EPSILON``
-        # is the project-wide "treat as zero for division" threshold.
-        ranges = torch.where(ranges < SAFE_DIVISION_EPSILON, torch.ones_like(ranges), ranges)
-
-        normalized_suggestions = (suggestions - bounds[0]) / ranges
-        normalized_best = (best_point - bounds[0]) / ranges
+        normalized_suggestions = _normalize_by_bounds(suggestions, bounds)
+        normalized_best = _normalize_by_bounds(best_point, bounds)
 
         distances = torch.norm(normalized_suggestions - normalized_best, dim=1)
         avg_distance_to_best = distances.mean().item()
 
-    if uncertainties:
+    if uncertainties and objective_scale is not None and objective_scale > NUMERICAL_EPSILON:
         avg_uncertainty = sum(uncertainties) / len(uncertainties)
-        exploration_ratio = min(1.0, avg_uncertainty * EXPLORATION_RATIO_MULTIPLIER)
+        relative_uncertainty = avg_uncertainty / objective_scale
+        exploration_ratio = min(1.0, relative_uncertainty * EXPLORATION_RATIO_MULTIPLIER)
     else:
         exploration_ratio = 0.5
 
@@ -231,20 +258,42 @@ def _classify_exploration_balance(
     return ("balanced", "Good balance between exploration and exploitation.")
 
 
+def _kernel_lengthscale_tensor(kernel: object) -> Tensor:
+    """Best-effort ARD lengthscales for a (possibly composite) kernel.
+
+    Composite kernels (the mixed ``RBF + Hamming`` additive kernel) have no
+    top-level ``lengthscale``; fall back to the first sub-kernel that
+    carries one (the continuous RBF block). Empty tensor when nothing does.
+    """
+    lengthscale = getattr(kernel, "lengthscale", None)
+    if lengthscale is not None:
+        return cast("Tensor", lengthscale).detach().squeeze()
+    for sub_kernel in getattr(kernel, "kernels", ()) or ():
+        sub_lengthscale = getattr(sub_kernel, "lengthscale", None)
+        if sub_lengthscale is not None:
+            return cast("Tensor", sub_lengthscale).detach().squeeze()
+    return torch.tensor([])
+
+
 def _extract_gp_kernel_info(
     gp: SingleTaskGP,
 ) -> tuple[str, Tensor, float, float]:
-    """Extract kernel type, lengthscales, noise variance, and output scale from a single GP."""
+    """Extract kernel type, lengthscales, noise variance, and output scale from a single GP.
+
+    The noise is averaged so the fixed-noise path (per-observation noise
+    vector from user-supplied measurement uncertainty) reports a scalar
+    like the trainable-noise path does. Both live on the standardized
+    target scale (the GP standardizes its outputs).
+    """
     covar = gp.covar_module
     kernel = getattr(covar, "base_kernel", covar)
     kernel_type = type(kernel).__name__
 
-    lengthscale_attr = cast("Tensor", kernel.lengthscale)
-    ls = lengthscale_attr.detach().squeeze()
+    ls = _kernel_lengthscale_tensor(kernel)
 
     noise_variance = 0.0
     if hasattr(gp, "likelihood") and hasattr(gp.likelihood, "noise"):
-        noise_variance = float(cast("Tensor", gp.likelihood.noise).item())
+        noise_variance = float(cast("Tensor", gp.likelihood.noise).mean().item())
 
     output_scale = 1.0
     if hasattr(covar, "outputscale"):

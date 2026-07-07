@@ -4,6 +4,8 @@ This module centralizes magic numbers and threshold values used throughout
 the bo-engine package, making them easy to understand, tune, and override.
 """
 
+import math
+
 # =============================================================================
 # SAASBO Active-Dimension Threshold
 # =============================================================================
@@ -50,6 +52,24 @@ NOISE_PRIOR_MIN_INFERRED = 1e-4
 # ``normalize → warp`` and the prior assumes a [0, 1] input space.
 WARP_PRIOR_LOC = 0.0
 WARP_PRIOR_SCALE = 0.75
+
+# =============================================================================
+# Kernel Lengthscale Regularization (mixed categorical kernel)
+# =============================================================================
+
+# Lower bound on kernel lengthscales, matching the ``GreaterThan(2.5e-2)``
+# constraint BoTorch installs on ``SingleTaskGP``'s stock dimension-scaled
+# kernel (``get_covar_module_with_dim_scaled_prior``); keeps lengthscales from
+# collapsing in the small-n / high-d regime.
+KERNEL_LENGTHSCALE_FLOOR = 2.5e-2
+
+# LogNormal-prior parameters for the Hamming categorical kernel's single
+# shared lengthscale. Uses the Hvarfner et al. 2024 dimension-scaled form
+# ``loc = sqrt(2) + 0.5 * log(d)`` with ``d = 1`` (a category change is
+# Hamming distance 1, so the block behaves as one effective dimension) and
+# the stock ``scale = sqrt(3)``.
+HAMMING_LENGTHSCALE_PRIOR_LOC = math.sqrt(2)
+HAMMING_LENGTHSCALE_PRIOR_SCALE = math.sqrt(3)
 
 # =============================================================================
 # High-Dimensional Optimization Thresholds
@@ -324,6 +344,14 @@ IMPROVEMENT_TOLERANCE_RELATIVE = 1e-3
 
 # Tolerance for improvement detection (absolute, for zero values)
 IMPROVEMENT_TOLERANCE_ABSOLUTE = 1e-6
+
+# Fraction of the improvement-history's robust scale (see
+# ``convergence._history_scale``) below which a step delta counts as "no
+# improvement" for the single-objective stagnation counter. Calibrated so a
+# unit-scale trajectory keeps the historical ``IMPROVEMENT_TOLERANCE_ABSOLUTE``
+# behavior while micro-/macro-scale objectives get the same verdict after a
+# units change (scale invariance; same class as the convergence-detector fix).
+STAGNATION_TOLERANCE_RELATIVE = 1e-6
 
 # =============================================================================
 # Health Status Thresholds

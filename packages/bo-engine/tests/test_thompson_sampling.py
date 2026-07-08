@@ -26,12 +26,18 @@ import pytest
 import torch
 
 from bo_engine.batch_diversity import compute_batch_diversity
+from bo_engine.constants import (
+    THOMPSON_CANDIDATES_PER_DIM,
+    THOMPSON_MAX_CANDIDATES,
+    THOMPSON_MIN_CANDIDATES,
+)
 from bo_engine.models import create_and_fit_model, create_and_fit_single_task_model
 from bo_engine.thompson_sampling import (
     ThompsonConfig,
     generate_diverse_thompson_batch,
     generate_thompson_samples,
     generate_thompson_samples_multi_objective,
+    resolve_thompson_num_candidates,
 )
 
 
@@ -44,6 +50,34 @@ def fitted_model_and_bounds() -> tuple[object, torch.Tensor]:
     train_y = (train_x - 0.3) ** 2 + 0.05 * torch.randn_like(train_x)
     model = create_and_fit_single_task_model(train_x, train_y, bounds)
     return model, bounds
+
+
+class TestDimensionAdaptiveCandidateCount:
+    """Discrete-TS candidate sizing follows the TuRBO tutorial formula.
+
+    A fixed 1000-point cloud in >=10-d is so sparse the posterior-sample
+    argmax is nearly model-independent; the TuRBO tutorial sizes its
+    discrete TS candidate set ``min(5000, max(2000, 200 * d))``
+    (https://botorch.org/tutorials/turbo_1/), which the resolver mirrors
+    via the ``THOMPSON_*`` constants.
+    """
+
+    def test_count_scales_with_dimension(self) -> None:
+        counts = [resolve_thompson_num_candidates(d) for d in (1, 10, 20, 50)]
+        assert counts == sorted(counts)
+        assert counts[0] == THOMPSON_MIN_CANDIDATES
+        # 20-d sits in the linear regime; 50-d saturates at the cap.
+        assert counts[2] == THOMPSON_CANDIDATES_PER_DIM * 20
+        assert counts[3] == THOMPSON_MAX_CANDIDATES
+
+    def test_explicit_request_overrides_the_formula(self) -> None:
+        assert resolve_thompson_num_candidates(50, requested=64) == 64
+
+    def test_method_info_reports_the_resolved_count(self, fitted_model_and_bounds: tuple) -> None:
+        model, bounds = fitted_model_and_bounds
+        batch = generate_thompson_samples(model, bounds, n_samples=1, config=ThompsonConfig(seed=5))
+        expected = resolve_thompson_num_candidates(bounds.shape[1])
+        assert f"n_candidates={expected}" in batch.method_info
 
 
 class TestPerCallRandomness:

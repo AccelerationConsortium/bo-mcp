@@ -70,6 +70,14 @@ SUBSCRIPTION_SEND_MAX_ATTEMPTS = 3
 # session is in the same process — anything longer would just stall
 # unrelated notifications behind this one.
 SUBSCRIPTION_SEND_BACKOFF_BASE_SECONDS = 0.05
+# Per-attempt delivery timeout. The SDK's SSE transport hands each
+# session a zero-buffered memory stream, so ``send_resource_updated``
+# blocks until the SSE writer consumes the item — a stalled-but-open
+# TCP connection therefore blocks the send *without raising*. Bounding
+# each attempt converts "never returns" into a failed attempt that
+# feeds the normal retry/unsubscribe budget instead of pinning the
+# notify task forever.
+SUBSCRIPTION_SEND_TIMEOUT_SECONDS = 5.0
 
 
 @runtime_checkable
@@ -240,7 +248,13 @@ async def _deliver_with_retry(
     last_exc: BaseException | None = None
     for attempt in range(1, SUBSCRIPTION_SEND_MAX_ATTEMPTS + 1):
         try:
-            await session.send_resource_updated(parsed)
+            # ``wait_for`` bounds each attempt: a stalled subscriber whose
+            # zero-buffered transport stream never accepts the item would
+            # otherwise block this coroutine forever without raising.
+            await asyncio.wait_for(
+                session.send_resource_updated(parsed),
+                timeout=SUBSCRIPTION_SEND_TIMEOUT_SECONDS,
+            )
         except Exception as exc:  # noqa: BLE001 -- transport errors are retried then escalated
             last_exc = exc
             if attempt >= SUBSCRIPTION_SEND_MAX_ATTEMPTS:
@@ -281,17 +295,24 @@ async def notify_campaign_updated(campaign_id: UUID | str) -> None:
     keeps a permanently-broken transport from re-firing on every
     notification. The function never raises -- lifecycle callers must
     not see push failures bubble up into their main flow.
+
+    Fan-out is concurrent (``asyncio.gather``): a slow or stalled
+    subscriber consumes only its own per-attempt timeout budget instead
+    of starving every subscriber sequenced after it in the snapshot.
     """
     uri = campaign_uri(campaign_id)
     sessions = await _registry.snapshot(uri)
     if not sessions:
         return
     parsed = AnyUrl(uri)
-    for session in sessions:
+
+    async def _deliver_or_drop(session: _ResourceSubscriber) -> None:
         delivered = await _deliver_with_retry(session, uri, parsed)
         if not delivered:
             SUBSCRIPTION_DROPPED.inc()
             await _registry.unsubscribe(uri, session)
+
+    await asyncio.gather(*(_deliver_or_drop(session) for session in sessions))
 
 
 def notify_campaign_updated_after_commit(

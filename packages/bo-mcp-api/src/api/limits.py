@@ -18,6 +18,25 @@ References:
 
 from __future__ import annotations
 
+# Re-exported here so the REST transport keeps a single import surface
+# for its caps; the value is owned by the shared operation layer (which
+# enforces the same bound for every transport) and reaches the API
+# through the client facade like every other server symbol.
+from bo_mcp_server.client import MAX_GENERATION_BATCH_SIZE
+
+__all__ = [
+    "MAX_BATCH_CAMPAIGN_IDS",
+    "MAX_BATCH_RESULTS",
+    "MAX_COMPARE_CAMPAIGN_IDS",
+    "MAX_GENERATION_BATCH_SIZE",
+    "MAX_INTAKE_CONSTRAINTS",
+    "MAX_INTAKE_OBJECTIVES",
+    "MAX_INTAKE_PARAMETERS",
+    "MAX_JSON_REQUEST_BODY_BYTES",
+    "MAX_UPLOAD_FILE_SIZE_BYTES",
+    "UPLOAD_READ_CHUNK_BYTES",
+]
+
 # ---------------------------------------------------------------------------
 # Transport-level caps
 # ---------------------------------------------------------------------------

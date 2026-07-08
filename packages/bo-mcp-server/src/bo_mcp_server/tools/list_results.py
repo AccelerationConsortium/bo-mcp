@@ -73,8 +73,11 @@ async def export_campaign(
         Dictionary with:
             - success: Boolean
             - format: The export format used
-            - content: CSV string with all results
-            - n_results: Number of results exported
+            - content: CSV string with the exported results
+            - n_results: Total number of results in the campaign
+            - n_results_included: Number of rows present in ``content``
+            - truncated: True when the inline-content cap cut the export;
+              page the remainder with bo_list_results (cursor pagination)
             - errors: List of error messages
     """
     return await export_campaign_operation(

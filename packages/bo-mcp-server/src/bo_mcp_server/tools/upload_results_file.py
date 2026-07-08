@@ -1,5 +1,6 @@
 """Upload results file tool for MCP."""
 
+import asyncio
 import csv
 import io
 import logging
@@ -23,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 # 10 MB — prevents memory exhaustion from arbitrarily large uploads.
 MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
+# (parsed rows, per-row parse errors) — the successful outcome of
+# ``_validate_upload_payload``, threaded through the pipeline so the
+# CSV is parsed exactly once per call.
+_ParsedUpload = tuple[list[ResultSubmissionInput], list[str]]
 
 
 def _build_upload_response(
@@ -156,7 +162,8 @@ async def _upload_results_file_tool(
         # Validate the file payload before requiring identity so a malformed
         # upload returns an actionable field error even when MCP identity is
         # unconfigured — mirrors bo_create_campaign / bo_submit_results.
-        validated = _validate_upload_payload(file_content, file_format)
+        # Offloaded: parsing a multi-MB CSV must not block the event loop.
+        validated = await asyncio.to_thread(_validate_upload_payload, file_content, file_format)
         if isinstance(validated, dict):
             return attach_response_metadata(validated)
 
@@ -172,6 +179,7 @@ async def _upload_results_file_tool(
             submitted_by=str(user.id),
             idempotency_key=idempotency_key,
             dry_run=dry_run,
+            parsed_payload=validated,
         )
 
 
@@ -182,12 +190,15 @@ async def _upload_dispatch(
     submitted_by: str | None,
     idempotency_key: str | None,
     dry_run: bool,
+    parsed_payload: _ParsedUpload | None = None,
 ) -> dict[str, Any]:
     """Pick the dry-run vs idempotent code path for the upload tool.
 
     Kept separate from ``upload_results_file`` so the public tool
     function stays under ruff's cognitive-complexity ceiling while we
-    still wrap the call in :func:`bind_trace_id`.
+    still wrap the call in :func:`bind_trace_id`. ``parsed_payload``
+    carries rows already parsed by the caller so the inner pipeline
+    does not re-parse the same CSV.
     """
     if dry_run:
         return await _upload_results_file_inner(
@@ -196,6 +207,7 @@ async def _upload_dispatch(
             file_format=file_format,
             submitted_by=submitted_by,
             dry_run=True,
+            parsed_payload=parsed_payload,
         )
 
     # Pre-digest ``file_content`` so a multi-MB CSV upload does not
@@ -217,6 +229,7 @@ async def _upload_dispatch(
             file_format=file_format,
             submitted_by=submitted_by,
             session=session,
+            parsed_payload=parsed_payload,
         )
 
     return await apply_idempotency(
@@ -295,6 +308,7 @@ async def _upload_results_file_inner(
     *,
     session: AsyncSession | None = None,
     dry_run: bool = False,
+    parsed_payload: _ParsedUpload | None = None,
 ) -> dict[str, Any]:
     """Core upload-file pipeline used by the public tool and the cache path.
 
@@ -304,6 +318,11 @@ async def _upload_results_file_inner(
     already does via the inherited submit-results envelope. Without
     this, traced uploads that failed validation were the only
     upload-tool returns missing the trace echo.
+
+    ``parsed_payload`` carries rows the caller already parsed (the MCP
+    tool validates pre-identity); when omitted the parse runs here,
+    offloaded to a worker thread. Either way the CSV is parsed exactly
+    once per call.
     """
     logger.info(
         "Uploading results file for campaign %s (format=%s, size=%d bytes)",
@@ -312,7 +331,11 @@ async def _upload_results_file_inner(
         len(file_content),
     )
 
-    validated = _validate_upload_payload(file_content, file_format)
+    validated: dict[str, Any] | _ParsedUpload = (
+        parsed_payload
+        if parsed_payload is not None
+        else await asyncio.to_thread(_validate_upload_payload, file_content, file_format)
+    )
     if isinstance(validated, dict):
         return validated
     parsed_results, parse_errors = validated

@@ -15,6 +15,7 @@ repositories handed in by the caller's ``session_scope`` block.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -352,7 +353,11 @@ async def _phase1_row_error(
         return ref_error
 
     if not ctx.force:
-        dup_error = _check_duplicates_for_result(
+        # Offloaded: the scan is O(len(existing_params)) distance
+        # computations and must not run on the event loop (see the
+        # ``asyncio.to_thread`` contract in ``submit_results``).
+        dup_error = await asyncio.to_thread(
+            _check_duplicates_for_result,
             index,
             r.parameter_values,
             ctx.existing_params,
@@ -651,8 +656,12 @@ async def _validate_and_create_results(
     #   * a duplicate row consuming free-floating slack before being
     #     filtered out (which would force-reject a later unique row that
     #     could otherwise fit).
-    # See :func:`_apply_dup_and_budget_filter`.
-    valid_submissions = _apply_dup_and_budget_filter(
+    # See :func:`_apply_dup_and_budget_filter`. The filter is pure
+    # computation (per-row duplicate scans against the in-batch
+    # baseline), so the whole pass runs in one worker thread instead
+    # of blocking the event loop once per row.
+    valid_submissions = await asyncio.to_thread(
+        _apply_dup_and_budget_filter,
         valid_submissions,
         spec,
         existing_count=len(existing_params),

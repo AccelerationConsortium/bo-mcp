@@ -29,422 +29,775 @@ For benchmarks:
     from bo_engine.benchmarks import branin, branin_currin, list_benchmarks
 """
 
-from bo_engine.acquisition import (
-    create_acquisition,
-    create_multi_objective_acquisition,
-    create_single_objective_acquisition,
-    get_best_observed_value,
-    optimize_acquisition,
-)
+from __future__ import annotations
 
-# Backend protocol (Step 8)
-from bo_engine.backend import (
-    BatchDiversityMetrics,
-    BOBackend,
-    DiagnosticSection,
-    DuplicateInfo,
-    Feature,
-    SuggestionBatch,
-)
-from bo_engine.backend_base import (
-    CURRENT_STATE_ENVELOPE_VERSION,
-    BackendError,
-    BackendIncompatibilityError,
-    BackendInputError,
-    BackendInternalError,
-    BackendStateEnvelope,
-    BackendTransientError,
-    BackendValidationResult,
-    BaseBackend,
-    CapabilityReport,
-    CapabilityStatus,
-    NormalizedObjective,
-    NormalizedParameter,
-    NormalizedProblem,
-    build_normalized_problem,
-    is_state_envelope,
-    required_features,
-    unwrap_state,
-    wrap_backend_exception,
-    wrap_state,
-)
+import importlib
+from typing import TYPE_CHECKING
 
-# New modules for critical missing functionality (v2.5)
-from bo_engine.batch_diversity import (
-    DiversityMetrics,
-    apply_local_penalization,
-    compute_batch_diversity,
-    enforce_diversity,
-    filter_diverse_candidates,
-)
-from bo_engine.botorch_backend import BoTorchBackend
+if TYPE_CHECKING:
+    from bo_engine.acquisition import (
+        create_acquisition,
+        create_multi_objective_acquisition,
+        create_single_objective_acquisition,
+        get_best_observed_value,
+        optimize_acquisition,
+    )
+    from bo_engine.backend import (
+        BatchDiversityMetrics,
+        BOBackend,
+        DiagnosticSection,
+        DuplicateInfo,
+        Feature,
+        SuggestionBatch,
+    )
+    from bo_engine.backend_base import (
+        CURRENT_STATE_ENVELOPE_VERSION,
+        BackendError,
+        BackendIncompatibilityError,
+        BackendInputError,
+        BackendInternalError,
+        BackendStateEnvelope,
+        BackendTransientError,
+        BackendValidationResult,
+        BaseBackend,
+        CapabilityReport,
+        CapabilityStatus,
+        NormalizedObjective,
+        NormalizedParameter,
+        NormalizedProblem,
+        build_normalized_problem,
+        is_state_envelope,
+        required_features,
+        unwrap_state,
+        wrap_backend_exception,
+        wrap_state,
+    )
+    from bo_engine.batch_diversity import (
+        DiversityMetrics,
+        apply_local_penalization,
+        compute_batch_diversity,
+        enforce_diversity,
+        filter_diverse_candidates,
+    )
+    from bo_engine.botorch_backend import BoTorchBackend
+    from bo_engine.calibration import (
+        CalibrationCurveData,
+        CalibrationReport,
+        CoverageResult,
+        assess_multi_objective_calibration,
+        compute_calibration_curve,
+        compute_calibration_score,
+        compute_loo_calibration,
+        get_calibration_summary,
+    )
+    from bo_engine.constants import (
+        CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD,
+        CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD,
+        CONSTRAINT_PROBABILITY_THRESHOLD,
+        CONSTRAINT_VIOLATION_WEIGHT,
+        CV_APPROXIMATE_THRESHOLD,
+        CV_CACHE_TTL,
+        CV_DEFAULT_K_FOLDS,
+        DISCRETE_ENUMERATION_MAX_POINTS,
+        HIGH_DIMENSION_WARNING_THRESHOLD,
+        INITIAL_DESIGN_MULTIPLIER,
+        MAX_RANDOM_SEED,
+        MIN_DATA_ABSOLUTE,
+        MIN_DATA_PARAM_MULTIPLIER,
+        MIN_OBSERVATIONS_FOR_LOO_CV,
+        MIN_OBSERVATIONS_FOR_MODEL,
+        MIXED_CATEGORICAL_COMBO_THRESHOLD,
+        MODEL_SELECTION_CRITERION,
+        MODEL_SELECTION_MIN_IMPROVEMENT,
+        REFERENCE_POINT_ADAPTATION_RATE,
+        REFERENCE_POINT_MIN_MARGIN,
+        RGPE_HELPFUL_WEIGHT_THRESHOLD,
+        RGPE_NUM_SAMPLES,
+        SAASBO_MIN_DIMENSIONS,
+        TURBO_MIN_DIMENSIONS,
+    )
+    from bo_engine.constraints import (
+        apply_sum_constraint,
+        create_constraint_callable,
+    )
+    from bo_engine.convergence import (
+        ConvergenceReport,
+        StoppingDecision,
+        StoppingReason,
+        detect_convergence,
+        detect_hypervolume_convergence,
+        detect_single_objective_convergence,
+        estimate_remaining_iterations,
+        evaluate_stopping_decision,
+    )
+    from bo_engine.cross_validation import (
+        CVConfig,
+        CVMetrics,
+        clear_cv_cache,
+        compute_cv_for_model_list,
+        compute_loo_cv_optimized,
+        estimate_cv_time,
+    )
+    from bo_engine.device import (
+        clear_cache,
+        get_device,
+        get_device_info,
+        get_dtype,
+    )
+    from bo_engine.diagnostics import (
+        ConstraintSatisfactionMetrics,
+        ExplorationExploitationMetrics,
+        HyperparameterInfo,
+        LOOCVMetrics,
+        SingleObjectiveDiagnostics,
+        UncertaintyTrend,
+        analyze_hypervolume_history,
+        assess_model_health,
+        compute_best_value,
+        compute_campaign_health,
+        compute_constraint_satisfaction,
+        compute_exploration_exploitation_metrics,
+        compute_hypervolume,
+        compute_improvement_history,
+        compute_loo_cv_for_model,
+        compute_loo_cv_metrics,
+        compute_observed_hypervolume,
+        compute_pareto_front,
+        compute_single_objective_improvement_rate,
+        compute_single_objective_progress_status,
+        compute_uncertainty_trend,
+        determine_single_objective_health_status,
+        extract_hyperparameters,
+    )
+    from bo_engine.interop import (
+        BAYBE_BACKEND_NAME,
+        BAYBE_CUSTOM_ROLE,
+        BAYBE_PARAMETER_ROLE_KEY,
+        BAYBE_SUBSTANCE_ROLE,
+    )
+    from bo_engine.method_selector import (
+        MethodSelection,
+        select_methods,
+    )
+    from bo_engine.model_selection import (
+        DEFAULT_CANDIDATES,
+        KernelType,
+        ModelCandidate,
+        ModelComparisonResult,
+        ModelConfiguration,
+        ModelSelectionConfig,
+        ModelSelectionResult,
+        compare_models,
+        get_model_selection_summary,
+        select_best_model,
+    )
+    from bo_engine.model_validation import (
+        ModelHealthReport,
+        compute_model_convergence_score,
+        validate_model_health,
+    )
+    from bo_engine.models import (
+        ModelFittingError,
+        create_and_fit_model,
+        create_and_fit_single_task_model,
+        create_model,
+        create_single_task_model,
+        extract_lengthscales,
+        fit_model,
+        fit_single_task_model,
+        floor_standardize_stdvs,
+        get_warping_parameters,
+        post_fit_verification,
+        verify_standardization,
+    )
+    from bo_engine.multifidelity import (
+        FidelitySpec,
+        MultiFidelityConfig,
+        create_and_fit_multifidelity_model,
+        create_cost_model,
+        create_mfkg_acquisition,
+        create_multifidelity_model,
+        fit_multifidelity_model,
+        generate_multifidelity_suggestions,
+        optimize_mfkg,
+    )
+    from bo_engine.outcome_constraints import (
+        ConstraintModelConfig,
+        ConstraintModelingMethod,
+        ConstraintModelResult,
+        assess_constraint_model_quality,
+        build_constraint_model_binary,
+        build_constraint_model_continuous,
+        build_outcome_constraint_models,
+        compute_constraint_probability,
+        compute_expected_constraint_violation,
+        compute_outcome_constraint_calibration,
+    )
+    from bo_engine.pending_points import (
+        PendingPoint,
+        PendingPointTracker,
+        compute_pending_distance,
+        encode_pending_points,
+        filter_pending_points,
+        penalize_near_pending,
+    )
+    from bo_engine.posterior_checks import (
+        NormalityTestResult,
+        PosteriorCheckReport,
+        QQPlotData,
+        ResidualAnalysis,
+        analyze_residuals,
+        check_multi_objective_posteriors,
+        check_residual_normality,
+        compute_qq_plot_data,
+        compute_standardized_residuals,
+        get_posterior_check_summary,
+        run_posterior_checks,
+    )
+    from bo_engine.prediction_intervals import (
+        BatchPredictions,
+        MultiObjectivePrediction,
+        PredictionInterval,
+        SuggestionPrediction,
+        compute_multi_objective_predictions,
+        compute_prediction_intervals,
+        compute_suggestion_predictions,
+        format_prediction_interval_string,
+    )
+    from bo_engine.progress import (
+        ProgressCallback,
+        ProgressEvent,
+    )
+    from bo_engine.progress import emit as emit_progress
+    from bo_engine.provenance import (
+        ModelSnapshot,
+        ProvenanceChain,
+        ProvenanceEvent,
+        ProvenanceEventType,
+        ProvenanceTracker,
+        ResultProvenance,
+        SuggestionProvenance,
+        compute_parameter_deviation,
+        format_provenance_report,
+    )
+    from bo_engine.reference_point import (
+        ReferencePointConfig,
+        ReferencePointState,
+        ReferencePointStrategy,
+        compute_reference_point_quality,
+        get_reference_point,
+        get_reference_point_dynamic,
+        recommend_reference_point,
+    )
+    from bo_engine.reproducibility import (
+        IterationSeeds,
+        ReproducibilityConfig,
+        ReproducibilityManager,
+        ReproducibilityReport,
+        SeedState,
+        compute_suggestions_hash,
+        create_reproducible_sobol,
+        derive_seed,
+        get_reproducibility_summary,
+        verify_reproducibility,
+    )
+    from bo_engine.result_validation import (
+        DuplicateResult,
+        OutlierResult,
+        compute_loo_standardized_errors,
+        detect_duplicates,
+        detect_duplicates_batch,
+        detect_outliers,
+    )
+    from bo_engine.saasbo import (
+        SAASBOConfig,
+        SAASBOImportance,
+        compute_saasbo_importance,
+        compute_saasbo_importance_report,
+        create_and_fit_saasbo_model,
+        create_saasbo_model,
+        estimate_saasbo_runtime,
+        fit_saasbo_model,
+        generate_saasbo_suggestions,
+        get_saasbo_lengthscales,
+        should_use_saasbo,
+    )
+    from bo_engine.sensitivity_analysis import (
+        LocalSensitivityResult,
+        ParameterSensitivity,
+        SensitivityReport,
+        compute_pareto_sensitivity,
+        compute_sensitivity,
+        compute_sensitivity_heatmap_data,
+        rank_parameters_by_sensitivity,
+    )
+    from bo_engine.spec_ir import (
+        ConstraintTargetClass,
+        NormalizedConstraint,
+        NormalizedSpec,
+        classify_constraint_target,
+        normalize_spec,
+    )
+    from bo_engine.suggestions import (
+        OutcomeConstraintConfigurationError,
+        generate_initial_design,
+        generate_next_batch,
+        update_turbo_after_evaluation,
+    )
+    from bo_engine.thompson_sampling import (
+        ThompsonBatch,
+        ThompsonConfig,
+        ThompsonSample,
+        generate_diverse_thompson_batch,
+        generate_thompson_samples,
+        generate_thompson_samples_multi_objective,
+        get_thompson_sampling_summary,
+    )
+    from bo_engine.transfer_learning import (
+        RGPE,
+        PriorTaskData,
+        RGPEAcquisition,
+        RGPEConfig,
+        RGPELogEI,
+        create_base_model,
+        create_rgpe_model,
+        generate_rgpe_suggestions,
+        generate_rgpe_suggestions_legacy,
+        get_rgpe_weights_explanation,
+    )
+    from bo_engine.transforms import (
+        SearchSpaceType,
+        build_fixed_features_list,
+        classify_search_space,
+        count_categorical_combinations,
+        encode_categorical,
+        enumerate_discrete_choices,
+        normalize_inputs,
+        standardize_outputs,
+        unnormalize_inputs,
+    )
+    from bo_engine.turbo import (
+        TurboState,
+        create_turbo_state,
+        get_turbo_bounds,
+        should_use_turbo,
+        update_turbo_state,
+    )
+    from bo_engine.types import (
+        LEGACY_ACQUISITION_VALUES,
+        AcquisitionMethod,
+        AcquisitionOptimizationConfig,
+        ConstraintSpec,
+        ConstraintType,
+        FidelityParameterSpec,
+        ObjectiveSpec,
+        ObservationData,
+        OptimizationSpec,
+        OutcomeConstraintSpec,
+        ParameterSpec,
+        ParameterType,
+        SuggestionResult,
+        TransferLearningSpec,
+        TurboConfig,
+    )
+    from bo_engine.whatif import (
+        HypotheticalResult,
+        ModelImpact,
+        ParetoImpact,
+        SuggestionImpact,
+        WhatIfReport,
+        compare_hypotheticals,
+        find_most_informative_point,
+        get_whatif_summary,
+        simulate_multiple_results,
+        simulate_result,
+    )
 
-# Model Calibration (v2.7 - Section 3.3)
-from bo_engine.calibration import (
-    CalibrationCurveData,
-    CalibrationReport,
-    CoverageResult,
-    assess_multi_objective_calibration,
-    compute_calibration_curve,
-    compute_calibration_score,
-    compute_loo_calibration,
-    get_calibration_summary,
-)
-from bo_engine.constants import (
-    CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD,
-    CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD,
-    CONSTRAINT_PROBABILITY_THRESHOLD,
-    CONSTRAINT_VIOLATION_WEIGHT,
-    CV_APPROXIMATE_THRESHOLD,
-    CV_CACHE_TTL,
-    CV_DEFAULT_K_FOLDS,
-    DISCRETE_ENUMERATION_MAX_POINTS,
-    HIGH_DIMENSION_WARNING_THRESHOLD,
-    INITIAL_DESIGN_MULTIPLIER,
-    MAX_RANDOM_SEED,
-    MIN_DATA_ABSOLUTE,
-    MIN_DATA_PARAM_MULTIPLIER,
-    MIN_OBSERVATIONS_FOR_LOO_CV,
-    MIN_OBSERVATIONS_FOR_MODEL,
-    MIXED_CATEGORICAL_COMBO_THRESHOLD,
-    MODEL_SELECTION_CRITERION,
-    MODEL_SELECTION_MIN_IMPROVEMENT,
-    REFERENCE_POINT_ADAPTATION_RATE,
-    REFERENCE_POINT_MIN_MARGIN,
-    RGPE_HELPFUL_WEIGHT_THRESHOLD,
-    RGPE_NUM_SAMPLES,
-    SAASBO_MIN_DIMENSIONS,
-    TURBO_MIN_DIMENSIONS,
-)
-from bo_engine.constraints import (
-    apply_sum_constraint,
-    create_constraint_callable,
-)
-from bo_engine.convergence import (
-    ConvergenceReport,
-    StoppingDecision,
-    StoppingReason,
-    detect_convergence,
-    detect_hypervolume_convergence,
-    detect_single_objective_convergence,
-    estimate_remaining_iterations,
-    evaluate_stopping_decision,
-)
+# Exported name -> (owning submodule, attribute name). Generated from
+# the eager import list this facade replaced; every public symbol
+# resolves on first attribute access instead of at package import.
+_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    "AcquisitionMethod": ("types", "AcquisitionMethod"),
+    "AcquisitionOptimizationConfig": ("types", "AcquisitionOptimizationConfig"),
+    "BAYBE_BACKEND_NAME": ("interop", "BAYBE_BACKEND_NAME"),
+    "BAYBE_CUSTOM_ROLE": ("interop", "BAYBE_CUSTOM_ROLE"),
+    "BAYBE_PARAMETER_ROLE_KEY": ("interop", "BAYBE_PARAMETER_ROLE_KEY"),
+    "BAYBE_SUBSTANCE_ROLE": ("interop", "BAYBE_SUBSTANCE_ROLE"),
+    "BOBackend": ("backend", "BOBackend"),
+    "BackendError": ("backend_base", "BackendError"),
+    "BackendIncompatibilityError": ("backend_base", "BackendIncompatibilityError"),
+    "BackendInputError": ("backend_base", "BackendInputError"),
+    "BackendInternalError": ("backend_base", "BackendInternalError"),
+    "BackendStateEnvelope": ("backend_base", "BackendStateEnvelope"),
+    "BackendTransientError": ("backend_base", "BackendTransientError"),
+    "BackendValidationResult": ("backend_base", "BackendValidationResult"),
+    "BaseBackend": ("backend_base", "BaseBackend"),
+    "BatchDiversityMetrics": ("backend", "BatchDiversityMetrics"),
+    "BatchPredictions": ("prediction_intervals", "BatchPredictions"),
+    "BoTorchBackend": ("botorch_backend", "BoTorchBackend"),
+    "CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD": ("constants", "CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD"),
+    "CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD": (
+        "constants",
+        "CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD",
+    ),
+    "CONSTRAINT_PROBABILITY_THRESHOLD": ("constants", "CONSTRAINT_PROBABILITY_THRESHOLD"),
+    "CONSTRAINT_VIOLATION_WEIGHT": ("constants", "CONSTRAINT_VIOLATION_WEIGHT"),
+    "CURRENT_STATE_ENVELOPE_VERSION": ("backend_base", "CURRENT_STATE_ENVELOPE_VERSION"),
+    "CVConfig": ("cross_validation", "CVConfig"),
+    "CVMetrics": ("cross_validation", "CVMetrics"),
+    "CV_APPROXIMATE_THRESHOLD": ("constants", "CV_APPROXIMATE_THRESHOLD"),
+    "CV_CACHE_TTL": ("constants", "CV_CACHE_TTL"),
+    "CV_DEFAULT_K_FOLDS": ("constants", "CV_DEFAULT_K_FOLDS"),
+    "CalibrationCurveData": ("calibration", "CalibrationCurveData"),
+    "CalibrationReport": ("calibration", "CalibrationReport"),
+    "CapabilityReport": ("backend_base", "CapabilityReport"),
+    "CapabilityStatus": ("backend_base", "CapabilityStatus"),
+    "ConstraintModelConfig": ("outcome_constraints", "ConstraintModelConfig"),
+    "ConstraintModelResult": ("outcome_constraints", "ConstraintModelResult"),
+    "ConstraintModelingMethod": ("outcome_constraints", "ConstraintModelingMethod"),
+    "ConstraintSatisfactionMetrics": ("diagnostics", "ConstraintSatisfactionMetrics"),
+    "ConstraintSpec": ("types", "ConstraintSpec"),
+    "ConstraintTargetClass": ("spec_ir", "ConstraintTargetClass"),
+    "ConstraintType": ("types", "ConstraintType"),
+    "ConvergenceReport": ("convergence", "ConvergenceReport"),
+    "CoverageResult": ("calibration", "CoverageResult"),
+    "DEFAULT_CANDIDATES": ("model_selection", "DEFAULT_CANDIDATES"),
+    "DISCRETE_ENUMERATION_MAX_POINTS": ("constants", "DISCRETE_ENUMERATION_MAX_POINTS"),
+    "DiagnosticSection": ("backend", "DiagnosticSection"),
+    "DiversityMetrics": ("batch_diversity", "DiversityMetrics"),
+    "DuplicateInfo": ("backend", "DuplicateInfo"),
+    "DuplicateResult": ("result_validation", "DuplicateResult"),
+    "ExplorationExploitationMetrics": ("diagnostics", "ExplorationExploitationMetrics"),
+    "Feature": ("backend", "Feature"),
+    "FidelityParameterSpec": ("types", "FidelityParameterSpec"),
+    "FidelitySpec": ("multifidelity", "FidelitySpec"),
+    "HIGH_DIMENSION_WARNING_THRESHOLD": ("constants", "HIGH_DIMENSION_WARNING_THRESHOLD"),
+    "HyperparameterInfo": ("diagnostics", "HyperparameterInfo"),
+    "HypotheticalResult": ("whatif", "HypotheticalResult"),
+    "INITIAL_DESIGN_MULTIPLIER": ("constants", "INITIAL_DESIGN_MULTIPLIER"),
+    "IterationSeeds": ("reproducibility", "IterationSeeds"),
+    "KernelType": ("model_selection", "KernelType"),
+    "LEGACY_ACQUISITION_VALUES": ("types", "LEGACY_ACQUISITION_VALUES"),
+    "LOOCVMetrics": ("diagnostics", "LOOCVMetrics"),
+    "LocalSensitivityResult": ("sensitivity_analysis", "LocalSensitivityResult"),
+    "MAX_RANDOM_SEED": ("constants", "MAX_RANDOM_SEED"),
+    "MIN_DATA_ABSOLUTE": ("constants", "MIN_DATA_ABSOLUTE"),
+    "MIN_DATA_PARAM_MULTIPLIER": ("constants", "MIN_DATA_PARAM_MULTIPLIER"),
+    "MIN_OBSERVATIONS_FOR_LOO_CV": ("constants", "MIN_OBSERVATIONS_FOR_LOO_CV"),
+    "MIN_OBSERVATIONS_FOR_MODEL": ("constants", "MIN_OBSERVATIONS_FOR_MODEL"),
+    "MIXED_CATEGORICAL_COMBO_THRESHOLD": ("constants", "MIXED_CATEGORICAL_COMBO_THRESHOLD"),
+    "MODEL_SELECTION_CRITERION": ("constants", "MODEL_SELECTION_CRITERION"),
+    "MODEL_SELECTION_MIN_IMPROVEMENT": ("constants", "MODEL_SELECTION_MIN_IMPROVEMENT"),
+    "MethodSelection": ("method_selector", "MethodSelection"),
+    "ModelCandidate": ("model_selection", "ModelCandidate"),
+    "ModelComparisonResult": ("model_selection", "ModelComparisonResult"),
+    "ModelConfiguration": ("model_selection", "ModelConfiguration"),
+    "ModelFittingError": ("models", "ModelFittingError"),
+    "ModelHealthReport": ("model_validation", "ModelHealthReport"),
+    "ModelImpact": ("whatif", "ModelImpact"),
+    "ModelSelectionConfig": ("model_selection", "ModelSelectionConfig"),
+    "ModelSelectionResult": ("model_selection", "ModelSelectionResult"),
+    "ModelSnapshot": ("provenance", "ModelSnapshot"),
+    "MultiFidelityConfig": ("multifidelity", "MultiFidelityConfig"),
+    "MultiObjectivePrediction": ("prediction_intervals", "MultiObjectivePrediction"),
+    "NormalityTestResult": ("posterior_checks", "NormalityTestResult"),
+    "NormalizedConstraint": ("spec_ir", "NormalizedConstraint"),
+    "NormalizedObjective": ("backend_base", "NormalizedObjective"),
+    "NormalizedParameter": ("backend_base", "NormalizedParameter"),
+    "NormalizedProblem": ("backend_base", "NormalizedProblem"),
+    "NormalizedSpec": ("spec_ir", "NormalizedSpec"),
+    "ObjectiveSpec": ("types", "ObjectiveSpec"),
+    "ObservationData": ("types", "ObservationData"),
+    "OptimizationSpec": ("types", "OptimizationSpec"),
+    "OutcomeConstraintConfigurationError": ("suggestions", "OutcomeConstraintConfigurationError"),
+    "OutcomeConstraintSpec": ("types", "OutcomeConstraintSpec"),
+    "OutlierResult": ("result_validation", "OutlierResult"),
+    "ParameterSensitivity": ("sensitivity_analysis", "ParameterSensitivity"),
+    "ParameterSpec": ("types", "ParameterSpec"),
+    "ParameterType": ("types", "ParameterType"),
+    "ParetoImpact": ("whatif", "ParetoImpact"),
+    "PendingPoint": ("pending_points", "PendingPoint"),
+    "PendingPointTracker": ("pending_points", "PendingPointTracker"),
+    "PosteriorCheckReport": ("posterior_checks", "PosteriorCheckReport"),
+    "PredictionInterval": ("prediction_intervals", "PredictionInterval"),
+    "PriorTaskData": ("transfer_learning", "PriorTaskData"),
+    "ProgressCallback": ("progress", "ProgressCallback"),
+    "ProgressEvent": ("progress", "ProgressEvent"),
+    "ProvenanceChain": ("provenance", "ProvenanceChain"),
+    "ProvenanceEvent": ("provenance", "ProvenanceEvent"),
+    "ProvenanceEventType": ("provenance", "ProvenanceEventType"),
+    "ProvenanceTracker": ("provenance", "ProvenanceTracker"),
+    "QQPlotData": ("posterior_checks", "QQPlotData"),
+    "REFERENCE_POINT_ADAPTATION_RATE": ("constants", "REFERENCE_POINT_ADAPTATION_RATE"),
+    "REFERENCE_POINT_MIN_MARGIN": ("constants", "REFERENCE_POINT_MIN_MARGIN"),
+    "RGPE": ("transfer_learning", "RGPE"),
+    "RGPEAcquisition": ("transfer_learning", "RGPEAcquisition"),
+    "RGPEConfig": ("transfer_learning", "RGPEConfig"),
+    "RGPELogEI": ("transfer_learning", "RGPELogEI"),
+    "RGPE_HELPFUL_WEIGHT_THRESHOLD": ("constants", "RGPE_HELPFUL_WEIGHT_THRESHOLD"),
+    "RGPE_NUM_SAMPLES": ("constants", "RGPE_NUM_SAMPLES"),
+    "ReferencePointConfig": ("reference_point", "ReferencePointConfig"),
+    "ReferencePointState": ("reference_point", "ReferencePointState"),
+    "ReferencePointStrategy": ("reference_point", "ReferencePointStrategy"),
+    "ReproducibilityConfig": ("reproducibility", "ReproducibilityConfig"),
+    "ReproducibilityManager": ("reproducibility", "ReproducibilityManager"),
+    "ReproducibilityReport": ("reproducibility", "ReproducibilityReport"),
+    "ResidualAnalysis": ("posterior_checks", "ResidualAnalysis"),
+    "ResultProvenance": ("provenance", "ResultProvenance"),
+    "SAASBOConfig": ("saasbo", "SAASBOConfig"),
+    "SAASBOImportance": ("saasbo", "SAASBOImportance"),
+    "SAASBO_MIN_DIMENSIONS": ("constants", "SAASBO_MIN_DIMENSIONS"),
+    "SearchSpaceType": ("transforms", "SearchSpaceType"),
+    "SeedState": ("reproducibility", "SeedState"),
+    "SensitivityReport": ("sensitivity_analysis", "SensitivityReport"),
+    "SingleObjectiveDiagnostics": ("diagnostics", "SingleObjectiveDiagnostics"),
+    "StoppingDecision": ("convergence", "StoppingDecision"),
+    "StoppingReason": ("convergence", "StoppingReason"),
+    "SuggestionBatch": ("backend", "SuggestionBatch"),
+    "SuggestionImpact": ("whatif", "SuggestionImpact"),
+    "SuggestionPrediction": ("prediction_intervals", "SuggestionPrediction"),
+    "SuggestionProvenance": ("provenance", "SuggestionProvenance"),
+    "SuggestionResult": ("types", "SuggestionResult"),
+    "TURBO_MIN_DIMENSIONS": ("constants", "TURBO_MIN_DIMENSIONS"),
+    "ThompsonBatch": ("thompson_sampling", "ThompsonBatch"),
+    "ThompsonConfig": ("thompson_sampling", "ThompsonConfig"),
+    "ThompsonSample": ("thompson_sampling", "ThompsonSample"),
+    "TransferLearningSpec": ("types", "TransferLearningSpec"),
+    "TurboConfig": ("types", "TurboConfig"),
+    "TurboState": ("turbo", "TurboState"),
+    "UncertaintyTrend": ("diagnostics", "UncertaintyTrend"),
+    "WhatIfReport": ("whatif", "WhatIfReport"),
+    "analyze_hypervolume_history": ("diagnostics", "analyze_hypervolume_history"),
+    "analyze_residuals": ("posterior_checks", "analyze_residuals"),
+    "apply_local_penalization": ("batch_diversity", "apply_local_penalization"),
+    "apply_sum_constraint": ("constraints", "apply_sum_constraint"),
+    "assess_constraint_model_quality": ("outcome_constraints", "assess_constraint_model_quality"),
+    "assess_model_health": ("diagnostics", "assess_model_health"),
+    "assess_multi_objective_calibration": ("calibration", "assess_multi_objective_calibration"),
+    "build_constraint_model_binary": ("outcome_constraints", "build_constraint_model_binary"),
+    "build_constraint_model_continuous": (
+        "outcome_constraints",
+        "build_constraint_model_continuous",
+    ),
+    "build_fixed_features_list": ("transforms", "build_fixed_features_list"),
+    "build_normalized_problem": ("backend_base", "build_normalized_problem"),
+    "build_outcome_constraint_models": ("outcome_constraints", "build_outcome_constraint_models"),
+    "check_multi_objective_posteriors": ("posterior_checks", "check_multi_objective_posteriors"),
+    "check_residual_normality": ("posterior_checks", "check_residual_normality"),
+    "classify_constraint_target": ("spec_ir", "classify_constraint_target"),
+    "classify_search_space": ("transforms", "classify_search_space"),
+    "clear_cache": ("device", "clear_cache"),
+    "clear_cv_cache": ("cross_validation", "clear_cv_cache"),
+    "compare_hypotheticals": ("whatif", "compare_hypotheticals"),
+    "compare_models": ("model_selection", "compare_models"),
+    "compute_batch_diversity": ("batch_diversity", "compute_batch_diversity"),
+    "compute_best_value": ("diagnostics", "compute_best_value"),
+    "compute_calibration_curve": ("calibration", "compute_calibration_curve"),
+    "compute_calibration_score": ("calibration", "compute_calibration_score"),
+    "compute_campaign_health": ("diagnostics", "compute_campaign_health"),
+    "compute_constraint_probability": ("outcome_constraints", "compute_constraint_probability"),
+    "compute_constraint_satisfaction": ("diagnostics", "compute_constraint_satisfaction"),
+    "compute_cv_for_model_list": ("cross_validation", "compute_cv_for_model_list"),
+    "compute_expected_constraint_violation": (
+        "outcome_constraints",
+        "compute_expected_constraint_violation",
+    ),
+    "compute_exploration_exploitation_metrics": (
+        "diagnostics",
+        "compute_exploration_exploitation_metrics",
+    ),
+    "compute_hypervolume": ("diagnostics", "compute_hypervolume"),
+    "compute_improvement_history": ("diagnostics", "compute_improvement_history"),
+    "compute_loo_calibration": ("calibration", "compute_loo_calibration"),
+    "compute_loo_cv_for_model": ("diagnostics", "compute_loo_cv_for_model"),
+    "compute_loo_cv_metrics": ("diagnostics", "compute_loo_cv_metrics"),
+    "compute_loo_cv_optimized": ("cross_validation", "compute_loo_cv_optimized"),
+    "compute_loo_standardized_errors": ("result_validation", "compute_loo_standardized_errors"),
+    "compute_model_convergence_score": ("model_validation", "compute_model_convergence_score"),
+    "compute_multi_objective_predictions": (
+        "prediction_intervals",
+        "compute_multi_objective_predictions",
+    ),
+    "compute_observed_hypervolume": ("diagnostics", "compute_observed_hypervolume"),
+    "compute_outcome_constraint_calibration": (
+        "outcome_constraints",
+        "compute_outcome_constraint_calibration",
+    ),
+    "compute_parameter_deviation": ("provenance", "compute_parameter_deviation"),
+    "compute_pareto_front": ("diagnostics", "compute_pareto_front"),
+    "compute_pareto_sensitivity": ("sensitivity_analysis", "compute_pareto_sensitivity"),
+    "compute_pending_distance": ("pending_points", "compute_pending_distance"),
+    "compute_prediction_intervals": ("prediction_intervals", "compute_prediction_intervals"),
+    "compute_qq_plot_data": ("posterior_checks", "compute_qq_plot_data"),
+    "compute_reference_point_quality": ("reference_point", "compute_reference_point_quality"),
+    "compute_saasbo_importance": ("saasbo", "compute_saasbo_importance"),
+    "compute_saasbo_importance_report": ("saasbo", "compute_saasbo_importance_report"),
+    "compute_sensitivity": ("sensitivity_analysis", "compute_sensitivity"),
+    "compute_sensitivity_heatmap_data": (
+        "sensitivity_analysis",
+        "compute_sensitivity_heatmap_data",
+    ),
+    "compute_single_objective_improvement_rate": (
+        "diagnostics",
+        "compute_single_objective_improvement_rate",
+    ),
+    "compute_single_objective_progress_status": (
+        "diagnostics",
+        "compute_single_objective_progress_status",
+    ),
+    "compute_standardized_residuals": ("posterior_checks", "compute_standardized_residuals"),
+    "compute_suggestion_predictions": ("prediction_intervals", "compute_suggestion_predictions"),
+    "compute_suggestions_hash": ("reproducibility", "compute_suggestions_hash"),
+    "compute_uncertainty_trend": ("diagnostics", "compute_uncertainty_trend"),
+    "count_categorical_combinations": ("transforms", "count_categorical_combinations"),
+    "create_acquisition": ("acquisition", "create_acquisition"),
+    "create_and_fit_model": ("models", "create_and_fit_model"),
+    "create_and_fit_multifidelity_model": ("multifidelity", "create_and_fit_multifidelity_model"),
+    "create_and_fit_saasbo_model": ("saasbo", "create_and_fit_saasbo_model"),
+    "create_and_fit_single_task_model": ("models", "create_and_fit_single_task_model"),
+    "create_base_model": ("transfer_learning", "create_base_model"),
+    "create_constraint_callable": ("constraints", "create_constraint_callable"),
+    "create_cost_model": ("multifidelity", "create_cost_model"),
+    "create_mfkg_acquisition": ("multifidelity", "create_mfkg_acquisition"),
+    "create_model": ("models", "create_model"),
+    "create_multi_objective_acquisition": ("acquisition", "create_multi_objective_acquisition"),
+    "create_multifidelity_model": ("multifidelity", "create_multifidelity_model"),
+    "create_reproducible_sobol": ("reproducibility", "create_reproducible_sobol"),
+    "create_rgpe_model": ("transfer_learning", "create_rgpe_model"),
+    "create_saasbo_model": ("saasbo", "create_saasbo_model"),
+    "create_single_objective_acquisition": ("acquisition", "create_single_objective_acquisition"),
+    "create_single_task_model": ("models", "create_single_task_model"),
+    "create_turbo_state": ("turbo", "create_turbo_state"),
+    "derive_seed": ("reproducibility", "derive_seed"),
+    "detect_convergence": ("convergence", "detect_convergence"),
+    "detect_duplicates": ("result_validation", "detect_duplicates"),
+    "detect_duplicates_batch": ("result_validation", "detect_duplicates_batch"),
+    "detect_hypervolume_convergence": ("convergence", "detect_hypervolume_convergence"),
+    "detect_outliers": ("result_validation", "detect_outliers"),
+    "detect_single_objective_convergence": ("convergence", "detect_single_objective_convergence"),
+    "determine_single_objective_health_status": (
+        "diagnostics",
+        "determine_single_objective_health_status",
+    ),
+    "emit_progress": ("progress", "emit"),
+    "encode_categorical": ("transforms", "encode_categorical"),
+    "encode_pending_points": ("pending_points", "encode_pending_points"),
+    "enforce_diversity": ("batch_diversity", "enforce_diversity"),
+    "enumerate_discrete_choices": ("transforms", "enumerate_discrete_choices"),
+    "estimate_cv_time": ("cross_validation", "estimate_cv_time"),
+    "estimate_remaining_iterations": ("convergence", "estimate_remaining_iterations"),
+    "estimate_saasbo_runtime": ("saasbo", "estimate_saasbo_runtime"),
+    "evaluate_stopping_decision": ("convergence", "evaluate_stopping_decision"),
+    "extract_hyperparameters": ("diagnostics", "extract_hyperparameters"),
+    "extract_lengthscales": ("models", "extract_lengthscales"),
+    "filter_diverse_candidates": ("batch_diversity", "filter_diverse_candidates"),
+    "filter_pending_points": ("pending_points", "filter_pending_points"),
+    "find_most_informative_point": ("whatif", "find_most_informative_point"),
+    "fit_model": ("models", "fit_model"),
+    "fit_multifidelity_model": ("multifidelity", "fit_multifidelity_model"),
+    "fit_saasbo_model": ("saasbo", "fit_saasbo_model"),
+    "fit_single_task_model": ("models", "fit_single_task_model"),
+    "floor_standardize_stdvs": ("models", "floor_standardize_stdvs"),
+    "format_prediction_interval_string": (
+        "prediction_intervals",
+        "format_prediction_interval_string",
+    ),
+    "format_provenance_report": ("provenance", "format_provenance_report"),
+    "generate_diverse_thompson_batch": ("thompson_sampling", "generate_diverse_thompson_batch"),
+    "generate_initial_design": ("suggestions", "generate_initial_design"),
+    "generate_multifidelity_suggestions": ("multifidelity", "generate_multifidelity_suggestions"),
+    "generate_next_batch": ("suggestions", "generate_next_batch"),
+    "generate_rgpe_suggestions": ("transfer_learning", "generate_rgpe_suggestions"),
+    "generate_rgpe_suggestions_legacy": ("transfer_learning", "generate_rgpe_suggestions_legacy"),
+    "generate_saasbo_suggestions": ("saasbo", "generate_saasbo_suggestions"),
+    "generate_thompson_samples": ("thompson_sampling", "generate_thompson_samples"),
+    "generate_thompson_samples_multi_objective": (
+        "thompson_sampling",
+        "generate_thompson_samples_multi_objective",
+    ),
+    "get_best_observed_value": ("acquisition", "get_best_observed_value"),
+    "get_calibration_summary": ("calibration", "get_calibration_summary"),
+    "get_device": ("device", "get_device"),
+    "get_device_info": ("device", "get_device_info"),
+    "get_dtype": ("device", "get_dtype"),
+    "get_model_selection_summary": ("model_selection", "get_model_selection_summary"),
+    "get_posterior_check_summary": ("posterior_checks", "get_posterior_check_summary"),
+    "get_reference_point": ("reference_point", "get_reference_point"),
+    "get_reference_point_dynamic": ("reference_point", "get_reference_point_dynamic"),
+    "get_reproducibility_summary": ("reproducibility", "get_reproducibility_summary"),
+    "get_rgpe_weights_explanation": ("transfer_learning", "get_rgpe_weights_explanation"),
+    "get_saasbo_lengthscales": ("saasbo", "get_saasbo_lengthscales"),
+    "get_thompson_sampling_summary": ("thompson_sampling", "get_thompson_sampling_summary"),
+    "get_turbo_bounds": ("turbo", "get_turbo_bounds"),
+    "get_warping_parameters": ("models", "get_warping_parameters"),
+    "get_whatif_summary": ("whatif", "get_whatif_summary"),
+    "is_state_envelope": ("backend_base", "is_state_envelope"),
+    "normalize_inputs": ("transforms", "normalize_inputs"),
+    "normalize_spec": ("spec_ir", "normalize_spec"),
+    "optimize_acquisition": ("acquisition", "optimize_acquisition"),
+    "optimize_mfkg": ("multifidelity", "optimize_mfkg"),
+    "penalize_near_pending": ("pending_points", "penalize_near_pending"),
+    "post_fit_verification": ("models", "post_fit_verification"),
+    "rank_parameters_by_sensitivity": ("sensitivity_analysis", "rank_parameters_by_sensitivity"),
+    "recommend_reference_point": ("reference_point", "recommend_reference_point"),
+    "required_features": ("backend_base", "required_features"),
+    "run_posterior_checks": ("posterior_checks", "run_posterior_checks"),
+    "select_best_model": ("model_selection", "select_best_model"),
+    "select_methods": ("method_selector", "select_methods"),
+    "should_use_saasbo": ("saasbo", "should_use_saasbo"),
+    "should_use_turbo": ("turbo", "should_use_turbo"),
+    "simulate_multiple_results": ("whatif", "simulate_multiple_results"),
+    "simulate_result": ("whatif", "simulate_result"),
+    "standardize_outputs": ("transforms", "standardize_outputs"),
+    "unnormalize_inputs": ("transforms", "unnormalize_inputs"),
+    "unwrap_state": ("backend_base", "unwrap_state"),
+    "update_turbo_after_evaluation": ("suggestions", "update_turbo_after_evaluation"),
+    "update_turbo_state": ("turbo", "update_turbo_state"),
+    "validate_model_health": ("model_validation", "validate_model_health"),
+    "verify_reproducibility": ("reproducibility", "verify_reproducibility"),
+    "verify_standardization": ("models", "verify_standardization"),
+    "wrap_backend_exception": ("backend_base", "wrap_backend_exception"),
+    "wrap_state": ("backend_base", "wrap_state"),
+}
 
-# Cross-validation optimization (v2.6 - Section 2.4)
-from bo_engine.cross_validation import (
-    CVConfig,
-    CVMetrics,
-    clear_cv_cache,
-    compute_cv_for_model_list,
-    compute_loo_cv_optimized,
-    estimate_cv_time,
-)
-from bo_engine.device import (
-    clear_cache,
-    get_device,
-    get_device_info,
-    get_dtype,
-)
-from bo_engine.diagnostics import (
-    ConstraintSatisfactionMetrics,
-    ExplorationExploitationMetrics,
-    HyperparameterInfo,
-    LOOCVMetrics,
-    SingleObjectiveDiagnostics,
-    UncertaintyTrend,
-    analyze_hypervolume_history,
-    assess_model_health,
-    compute_best_value,
-    compute_campaign_health,
-    compute_constraint_satisfaction,
-    compute_exploration_exploitation_metrics,
-    compute_hypervolume,
-    compute_improvement_history,
-    compute_loo_cv_for_model,
-    compute_loo_cv_metrics,
-    compute_observed_hypervolume,
-    compute_pareto_front,
-    compute_single_objective_improvement_rate,
-    compute_single_objective_progress_status,
-    compute_uncertainty_trend,
-    determine_single_objective_health_status,
-    extract_hyperparameters,
-)
-from bo_engine.interop import (
-    BAYBE_BACKEND_NAME,
-    BAYBE_CUSTOM_ROLE,
-    BAYBE_PARAMETER_ROLE_KEY,
-    BAYBE_SUBSTANCE_ROLE,
-)
-from bo_engine.method_selector import (
-    MethodSelection,
-    select_methods,
-)
 
-# Model selection and comparison (v2.6 - Section 2.5)
-from bo_engine.model_selection import (
-    DEFAULT_CANDIDATES,
-    KernelType,
-    ModelCandidate,
-    ModelComparisonResult,
-    ModelConfiguration,
-    ModelSelectionConfig,
-    ModelSelectionResult,
-    compare_models,
-    get_model_selection_summary,
-    select_best_model,
-)
-from bo_engine.model_validation import (
-    ModelHealthReport,
-    compute_model_convergence_score,
-    validate_model_health,
-)
-from bo_engine.models import (
-    ModelFittingError,
-    create_and_fit_model,
-    create_and_fit_single_task_model,
-    create_model,
-    create_single_task_model,
-    extract_lengthscales,
-    fit_model,
-    fit_single_task_model,
-    floor_standardize_stdvs,
-    get_warping_parameters,
-    post_fit_verification,
-    verify_standardization,
-)
-from bo_engine.multifidelity import (
-    FidelitySpec,
-    MultiFidelityConfig,
-    create_and_fit_multifidelity_model,
-    create_cost_model,
-    create_mfkg_acquisition,
-    create_multifidelity_model,
-    fit_multifidelity_model,
-    generate_multifidelity_suggestions,
-    optimize_mfkg,
-)
+def __getattr__(name: str) -> object:
+    """Resolve public symbols lazily (PEP 562).
 
-# Outcome constraint modeling (v2.6 - Section 2.3)
-from bo_engine.outcome_constraints import (
-    ConstraintModelConfig,
-    ConstraintModelingMethod,
-    ConstraintModelResult,
-    assess_constraint_model_quality,
-    build_constraint_model_binary,
-    build_constraint_model_continuous,
-    build_outcome_constraint_models,
-    compute_constraint_probability,
-    compute_expected_constraint_violation,
-    compute_outcome_constraint_calibration,
-)
-from bo_engine.pending_points import (
-    PendingPoint,
-    PendingPointTracker,
-    compute_pending_distance,
-    encode_pending_points,
-    filter_pending_points,
-    penalize_near_pending,
-)
+    The eager facade imported ~40 submodules -- pulling torch, botorch,
+    gpytorch and sklearn into every consumer, including ones that only
+    need ``bo_engine.types`` or ``bo_engine.constants``. Resolving on
+    first access keeps cold imports of the package (and of its light
+    submodules) cheap while preserving the full public surface.
+    """
+    target = _LAZY_IMPORTS.get(name)
+    if target is None:
+        # Plain submodule access (``bo_engine.benchmarks`` after a bare
+        # ``import bo_engine``) resolves here too.
+        try:
+            return importlib.import_module(f"{__name__}.{name}")
+        except ModuleNotFoundError as exc:
+            if exc.name == f"{__name__}.{name}":
+                msg = f"module {__name__!r} has no attribute {name!r}"
+                raise AttributeError(msg) from None
+            raise
+    module = importlib.import_module(f"{__name__}.{target[0]}")
+    value = getattr(module, target[1])
+    # Cache on the package so subsequent lookups bypass __getattr__.
+    globals()[name] = value
+    return value
 
-# Posterior Predictive Checks (v2.7 - Section 3.4)
-from bo_engine.posterior_checks import (
-    NormalityTestResult,
-    PosteriorCheckReport,
-    QQPlotData,
-    ResidualAnalysis,
-    analyze_residuals,
-    check_multi_objective_posteriors,
-    check_residual_normality,
-    compute_qq_plot_data,
-    compute_standardized_residuals,
-    get_posterior_check_summary,
-    run_posterior_checks,
-)
 
-# Prediction Intervals (v2.7 - Section 3.2)
-from bo_engine.prediction_intervals import (
-    BatchPredictions,
-    MultiObjectivePrediction,
-    PredictionInterval,
-    SuggestionPrediction,
-    compute_multi_objective_predictions,
-    compute_prediction_intervals,
-    compute_suggestion_predictions,
-    format_prediction_interval_string,
-)
-from bo_engine.progress import (
-    ProgressCallback,
-    ProgressEvent,
-)
-from bo_engine.progress import (
-    emit as emit_progress,
-)
+def __dir__() -> list[str]:
+    """Expose the lazy surface to introspection alongside real globals."""
+    return sorted(set(globals()) | set(_LAZY_IMPORTS))
 
-# Result Provenance (v2.7 - Section 3.6)
-from bo_engine.provenance import (
-    ModelSnapshot,
-    ProvenanceChain,
-    ProvenanceEvent,
-    ProvenanceEventType,
-    ProvenanceTracker,
-    ResultProvenance,
-    SuggestionProvenance,
-    compute_parameter_deviation,
-    format_provenance_report,
-)
-
-# Dynamic reference point (v2.6 - Section 2.1)
-from bo_engine.reference_point import (
-    ReferencePointConfig,
-    ReferencePointState,
-    ReferencePointStrategy,
-    compute_reference_point_quality,
-    get_reference_point,
-    get_reference_point_dynamic,
-    recommend_reference_point,
-)
-
-# Reproducibility (v2.7 - Section 3.7)
-from bo_engine.reproducibility import (
-    IterationSeeds,
-    ReproducibilityConfig,
-    ReproducibilityManager,
-    ReproducibilityReport,
-    SeedState,
-    compute_suggestions_hash,
-    create_reproducible_sobol,
-    derive_seed,
-    get_reproducibility_summary,
-    verify_reproducibility,
-)
-from bo_engine.result_validation import (
-    DuplicateResult,
-    OutlierResult,
-    compute_loo_standardized_errors,
-    detect_duplicates,
-    detect_duplicates_batch,
-    detect_outliers,
-)
-from bo_engine.saasbo import (
-    SAASBOConfig,
-    SAASBOImportance,
-    compute_saasbo_importance,
-    compute_saasbo_importance_report,
-    create_and_fit_saasbo_model,
-    create_saasbo_model,
-    estimate_saasbo_runtime,
-    fit_saasbo_model,
-    generate_saasbo_suggestions,
-    get_saasbo_lengthscales,
-    should_use_saasbo,
-)
-
-# Sensitivity Analysis (v2.7 - Section 3.1)
-from bo_engine.sensitivity_analysis import (
-    LocalSensitivityResult,
-    ParameterSensitivity,
-    SensitivityReport,
-    compute_pareto_sensitivity,
-    compute_sensitivity,
-    compute_sensitivity_heatmap_data,
-    rank_parameters_by_sensitivity,
-)
-from bo_engine.spec_ir import (
-    ConstraintTargetClass,
-    NormalizedConstraint,
-    NormalizedSpec,
-    classify_constraint_target,
-    normalize_spec,
-)
-from bo_engine.suggestions import (
-    OutcomeConstraintConfigurationError,
-    generate_initial_design,
-    generate_next_batch,
-    update_turbo_after_evaluation,
-)
-
-# Thompson Sampling (v2.7 - Section 3.5)
-from bo_engine.thompson_sampling import (
-    ThompsonBatch,
-    ThompsonConfig,
-    ThompsonSample,
-    generate_diverse_thompson_batch,
-    generate_thompson_samples,
-    generate_thompson_samples_multi_objective,
-    get_thompson_sampling_summary,
-)
-from bo_engine.transfer_learning import (
-    RGPE,
-    PriorTaskData,
-    RGPEAcquisition,
-    RGPEConfig,
-    RGPELogEI,
-    create_base_model,
-    create_rgpe_model,
-    generate_rgpe_suggestions,
-    generate_rgpe_suggestions_legacy,
-    get_rgpe_weights_explanation,
-)
-from bo_engine.transforms import (
-    SearchSpaceType,
-    build_fixed_features_list,
-    classify_search_space,
-    count_categorical_combinations,
-    encode_categorical,
-    enumerate_discrete_choices,
-    normalize_inputs,
-    standardize_outputs,
-    unnormalize_inputs,
-)
-from bo_engine.turbo import (
-    TurboState,
-    create_turbo_state,
-    get_turbo_bounds,
-    should_use_turbo,
-    update_turbo_state,
-)
-from bo_engine.types import (
-    LEGACY_ACQUISITION_VALUES,
-    AcquisitionMethod,
-    AcquisitionOptimizationConfig,
-    ConstraintSpec,
-    ConstraintType,
-    FidelityParameterSpec,
-    ObjectiveSpec,
-    ObservationData,
-    OptimizationSpec,
-    OutcomeConstraintSpec,
-    ParameterSpec,
-    ParameterType,
-    SuggestionResult,
-    TransferLearningSpec,
-    TurboConfig,
-)
-
-# What-If Analysis (v2.7 - Section 3.8)
-# What-If Analysis (v2.7 - Section 3.8)
-from bo_engine.whatif import (
-    HypotheticalResult,
-    ModelImpact,
-    ParetoImpact,
-    SuggestionImpact,
-    WhatIfReport,
-    compare_hypotheticals,
-    find_most_informative_point,
-    get_whatif_summary,
-    simulate_multiple_results,
-    simulate_result,
-)
 
 __all__ = [
-    # Cross-backend interop markers (capability routing)
     "BAYBE_BACKEND_NAME",
     "BAYBE_CUSTOM_ROLE",
     "BAYBE_PARAMETER_ROLE_KEY",
     "BAYBE_SUBSTANCE_ROLE",
-    # Constants (configurable thresholds)
     "CONFIDENCE_HIGH_UNCERTAINTY_THRESHOLD",
     "CONFIDENCE_MEDIUM_UNCERTAINTY_THRESHOLD",
     "CONSTRAINT_PROBABILITY_THRESHOLD",
@@ -453,12 +806,10 @@ __all__ = [
     "CV_APPROXIMATE_THRESHOLD",
     "CV_CACHE_TTL",
     "CV_DEFAULT_K_FOLDS",
-    # Model Selection (v2.6 - Section 2.5)
     "DEFAULT_CANDIDATES",
     "DISCRETE_ENUMERATION_MAX_POINTS",
     "HIGH_DIMENSION_WARNING_THRESHOLD",
     "INITIAL_DESIGN_MULTIPLIER",
-    # Types
     "LEGACY_ACQUISITION_VALUES",
     "MAX_RANDOM_SEED",
     "MIN_DATA_ABSOLUTE",
@@ -470,7 +821,6 @@ __all__ = [
     "MODEL_SELECTION_MIN_IMPROVEMENT",
     "REFERENCE_POINT_ADAPTATION_RATE",
     "REFERENCE_POINT_MIN_MARGIN",
-    # Transfer Learning / RGPE (v2.0, v2.6)
     "RGPE",
     "RGPE_HELPFUL_WEIGHT_THRESHOLD",
     "RGPE_NUM_SAMPLES",
@@ -478,9 +828,7 @@ __all__ = [
     "TURBO_MIN_DIMENSIONS",
     "AcquisitionMethod",
     "AcquisitionOptimizationConfig",
-    # Backend Protocol (Step 8)
     "BOBackend",
-    # Backend extensibility
     "BackendError",
     "BackendIncompatibilityError",
     "BackendInputError",
@@ -490,66 +838,49 @@ __all__ = [
     "BackendValidationResult",
     "BaseBackend",
     "BatchDiversityMetrics",
-    # Prediction Intervals (v2.7 - Section 3.2)
     "BatchPredictions",
     "BoTorchBackend",
-    # Cross-Validation Optimization (v2.6 - Section 2.4)
     "CVConfig",
     "CVMetrics",
-    # Model Calibration (v2.7 - Section 3.3)
     "CalibrationCurveData",
     "CalibrationReport",
     "CapabilityReport",
     "CapabilityStatus",
-    # Outcome Constraint Modeling (v2.6 - Section 2.3)
     "ConstraintModelConfig",
     "ConstraintModelResult",
     "ConstraintModelingMethod",
-    # Agent Usability Diagnostics (v2.4)
     "ConstraintSatisfactionMetrics",
     "ConstraintSpec",
-    # Shared spec IR
     "ConstraintTargetClass",
     "ConstraintType",
-    # Convergence Detection (v2.5 - Section 1.4)
     "ConvergenceReport",
     "CoverageResult",
     "DiagnosticSection",
-    # Batch Diversity (v2.5 - Section 1.5)
     "DiversityMetrics",
     "DuplicateInfo",
-    # Result Validation (v2.5 - Sections 1.2, 1.3)
     "DuplicateResult",
     "ExplorationExploitationMetrics",
     "Feature",
     "FidelityParameterSpec",
-    # Multi-fidelity BO (v2.0)
     "FidelitySpec",
     "HyperparameterInfo",
-    # What-If Analysis (v2.7 - Section 3.8)
     "HypotheticalResult",
-    # Reproducibility (v2.7 - Section 3.7)
     "IterationSeeds",
     "KernelType",
     "LOOCVMetrics",
-    # Sensitivity Analysis (v2.7 - Section 3.1)
     "LocalSensitivityResult",
-    # Method selection (v1.2)
     "MethodSelection",
     "ModelCandidate",
     "ModelComparisonResult",
     "ModelConfiguration",
     "ModelFittingError",
-    # Model Validation (v2.5 - Section 1.1)
     "ModelHealthReport",
     "ModelImpact",
     "ModelSelectionConfig",
     "ModelSelectionResult",
-    # Result Provenance (v2.7 - Section 3.6)
     "ModelSnapshot",
     "MultiFidelityConfig",
     "MultiObjectivePrediction",
-    # Posterior Predictive Checks (v2.7 - Section 3.4)
     "NormalityTestResult",
     "NormalizedConstraint",
     "NormalizedObjective",
@@ -566,13 +897,11 @@ __all__ = [
     "ParameterSpec",
     "ParameterType",
     "ParetoImpact",
-    # Pending Points (v2.5 - Section 1.6)
     "PendingPoint",
     "PendingPointTracker",
     "PosteriorCheckReport",
     "PredictionInterval",
     "PriorTaskData",
-    # Progress reporting hook
     "ProgressCallback",
     "ProgressEvent",
     "ProvenanceChain",
@@ -583,7 +912,6 @@ __all__ = [
     "RGPEAcquisition",
     "RGPEConfig",
     "RGPELogEI",
-    # Dynamic Reference Point (v2.6 - Section 2.1)
     "ReferencePointConfig",
     "ReferencePointState",
     "ReferencePointStrategy",
@@ -592,7 +920,6 @@ __all__ = [
     "ReproducibilityReport",
     "ResidualAnalysis",
     "ResultProvenance",
-    # SAASBO (v2.0)
     "SAASBOConfig",
     "SAASBOImportance",
     "SearchSpaceType",
@@ -606,20 +933,17 @@ __all__ = [
     "SuggestionPrediction",
     "SuggestionProvenance",
     "SuggestionResult",
-    # Thompson Sampling (v2.7 - Section 3.5)
     "ThompsonBatch",
     "ThompsonConfig",
     "ThompsonSample",
     "TransferLearningSpec",
     "TurboConfig",
-    # TuRBO (v1.2)
     "TurboState",
     "UncertaintyTrend",
     "WhatIfReport",
     "analyze_hypervolume_history",
     "analyze_residuals",
     "apply_local_penalization",
-    # Core functions
     "apply_sum_constraint",
     "assess_constraint_model_quality",
     "assess_model_health",
@@ -633,7 +957,6 @@ __all__ = [
     "check_residual_normality",
     "classify_constraint_target",
     "classify_search_space",
-    # Device management (v2.3)
     "clear_cache",
     "clear_cv_cache",
     "compare_hypotheticals",

@@ -32,7 +32,9 @@ from bo_engine.constants import (
     NUMERICAL_EPSILON,
     PAREGO_AUGMENTED_RHO,
     THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE,
-    THOMPSON_NUM_CANDIDATES,
+    THOMPSON_CANDIDATES_PER_DIM,
+    THOMPSON_MAX_CANDIDATES,
+    THOMPSON_MIN_CANDIDATES,
 )
 from bo_engine.device import fork_rng_devices, get_device, get_dtype
 from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
@@ -103,6 +105,9 @@ class ThompsonConfig:
 
     Attributes:
         num_candidates: Number of candidates to draw for optimization.
+            ``None`` (the default) sizes the candidate set adaptively for
+            the search-space dimension via
+            :func:`resolve_thompson_num_candidates`.
         batch_diversity_min_distance: Minimum distance for diverse batches.
         use_max_posterior_sampling: When True, reuse one shared Sobol
             candidate set across the whole batch (max-posterior-sampling
@@ -110,10 +115,28 @@ class ThompsonConfig:
         seed: Random seed for reproducibility.
     """
 
-    num_candidates: int = THOMPSON_NUM_CANDIDATES
+    num_candidates: int | None = None
     batch_diversity_min_distance: float = THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE
     use_max_posterior_sampling: bool = True
     seed: int | None = None
+
+
+def resolve_thompson_num_candidates(n_dims: int, requested: int | None = None) -> int:
+    """Size the discrete-TS Sobol candidate set for the search-space dimension.
+
+    An explicit ``requested`` count always wins. Otherwise the count
+    follows the TuRBO tutorial's sizing
+    ``min(THOMPSON_MAX_CANDIDATES, max(THOMPSON_MIN_CANDIDATES,
+    THOMPSON_CANDIDATES_PER_DIM * d))`` so higher-dimensional spaces get
+    a denser cloud — a fixed small set in >=10-d is so sparse that the
+    posterior-sample argmax is nearly model-independent.
+    """
+    if requested is not None:
+        return requested
+    return min(
+        THOMPSON_MAX_CANDIDATES,
+        max(THOMPSON_MIN_CANDIDATES, THOMPSON_CANDIDATES_PER_DIM * n_dims),
+    )
 
 
 def generate_thompson_samples(
@@ -172,6 +195,8 @@ def generate_thompson_samples(
     # restore cannot roll a concurrent seeded stream back. fork_rng_devices()
     # adds the active CUDA device so manual_seed's CUDA-generator mutation is
     # restored too (a bare devices=[] snapshots only the CPU generator).
+    num_candidates = resolve_thompson_num_candidates(bounds.shape[1], config.num_candidates)
+
     with GLOBAL_RNG_LOCK, torch.random.fork_rng(devices=fork_rng_devices()):
         torch.manual_seed(_resolve_call_seed(config.seed))
 
@@ -181,7 +206,7 @@ def generate_thompson_samples(
                 model=model,
                 bounds=bounds,
                 n_samples=n_samples,
-                num_candidates=config.num_candidates,
+                num_candidates=num_candidates,
                 minimize=minimize,
             )
         else:
@@ -190,7 +215,7 @@ def generate_thompson_samples(
                 model=model,
                 bounds=bounds,
                 n_samples=n_samples,
-                num_candidates=config.num_candidates,
+                num_candidates=num_candidates,
                 minimize=minimize,
             )
 
@@ -235,7 +260,7 @@ def generate_thompson_samples(
             samples=thompson_samples,
             parameters_tensor=samples,
             diversity_score=diversity_score,
-            method_info=f"Thompson Sampling (n_candidates={config.num_candidates})",
+            method_info=f"Thompson Sampling (n_candidates={num_candidates})",
         )
 
 
@@ -322,6 +347,8 @@ def generate_thompson_samples_multi_objective(
     if config is None:
         config = ThompsonConfig()
 
+    num_candidates = resolve_thompson_num_candidates(bounds.shape[1], config.num_candidates)
+
     # Isolate the global torch RNG for the same reason as the
     # single-objective variant above — see its fork_rng comment (incl.
     # the GLOBAL_RNG_LOCK serialization rationale); the per-call seed
@@ -353,7 +380,7 @@ def generate_thompson_samples_multi_objective(
 
             candidates = _generate_sobol_candidates(
                 bounds=bounds,
-                n_candidates=config.num_candidates,
+                n_candidates=num_candidates,
             )
 
             # Draw one joint posterior sample per objective and stack into an

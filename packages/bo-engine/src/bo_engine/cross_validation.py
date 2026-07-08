@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,6 +50,7 @@ from torch import Tensor
 
 from bo_engine.constants import (
     CI_95_Z_SCORE,
+    CV_CACHE_MAX_ENTRIES,
     MIN_OBSERVATIONS_FOR_LOO_CV,
     NUMERICAL_EPSILON,
     SAFE_DIVISION_EPSILON,
@@ -108,8 +110,14 @@ class CVConfig:
     cache_ttl: float = 300.0  # 5 minutes
 
 
-# Simple cache for CV results
+# Cache for CV results. Values are ``(metrics, expires_at)`` where
+# ``expires_at`` is the absolute expiry stamped at insert from the
+# inserting call's ``cache_ttl``. Access is guarded by a threading lock
+# because the server offloads CV to worker threads; expired entries are
+# evicted on insert and the size is capped at ``CV_CACHE_MAX_ENTRIES``
+# (earliest-expiry first) so long-lived processes cannot grow unbounded.
 _cv_cache: dict[str, tuple[CVMetrics, float]] = {}
+_cv_cache_lock = threading.Lock()
 
 
 def _parse_cv_arguments(
@@ -184,11 +192,32 @@ def _check_cv_cache(
     if not config.cache_results:
         return None, None
     cache_key = _compute_cache_key(train_x, train_y, bounds, config, model_factory_key)
-    if cache_key in _cv_cache:
-        cached_metrics, timestamp = _cv_cache[cache_key]
-        if time.time() - timestamp < config.cache_ttl:
-            return cache_key, cached_metrics
+    with _cv_cache_lock:
+        entry = _cv_cache.get(cache_key)
+        if entry is not None:
+            cached_metrics, expires_at = entry
+            if time.time() < expires_at:
+                return cache_key, cached_metrics
+            del _cv_cache[cache_key]
     return cache_key, None
+
+
+def _store_cv_cache(cache_key: str, metrics: CVMetrics, cache_ttl: float) -> None:
+    """Insert a CV result, evicting expired entries and enforcing the size cap.
+
+    Eviction happens on every insert (not only on hit) so a long-lived
+    process sheds stale entries even when keys never repeat; when the
+    cap is still exceeded, the entries closest to expiry go first.
+    """
+    now = time.time()
+    with _cv_cache_lock:
+        expired_keys = [key for key, (_, expires_at) in _cv_cache.items() if expires_at <= now]
+        for key in expired_keys:
+            del _cv_cache[key]
+        _cv_cache[cache_key] = (metrics, now + cache_ttl)
+        while len(_cv_cache) > CV_CACHE_MAX_ENTRIES:
+            earliest_expiry = min(_cv_cache, key=lambda key: _cv_cache[key][1])
+            del _cv_cache[earliest_expiry]
 
 
 def compute_loo_cv_optimized(
@@ -292,7 +321,7 @@ def compute_loo_cv_optimized(
     )
 
     if config.cache_results and cache_key is not None:
-        _cv_cache[cache_key] = (metrics, time.time())
+        _store_cv_cache(cache_key, metrics, config.cache_ttl)
 
     return metrics
 
@@ -923,8 +952,8 @@ def compute_cv_for_model_list(
 
 def clear_cv_cache() -> None:
     """Clear the cross-validation results cache."""
-    global _cv_cache
-    _cv_cache.clear()
+    with _cv_cache_lock:
+        _cv_cache.clear()
 
 
 def _compute_cache_key(

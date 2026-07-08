@@ -128,6 +128,12 @@ STANDARDIZATION_STD_FLOOR = 1e-4
 # Minimum observations for meaningful LOO cross-validation
 MIN_OBSERVATIONS_FOR_LOO_CV = 5
 
+# Hard size cap for the module-level CV result cache. Entries are small
+# (a CVMetrics dataclass per distinct dataset/config), but a long-lived
+# server process computes CV for many campaigns; the cap bounds memory
+# while comfortably covering the handful of campaigns active at once.
+CV_CACHE_MAX_ENTRIES = 128
+
 # Multiplier for minimum data: requires n_params * this factor
 MIN_DATA_PARAM_MULTIPLIER = 2
 
@@ -689,8 +695,15 @@ POSTERIOR_CHECK_KURTOSIS_THRESHOLD = 2.0
 # Thompson Sampling (Section 3.5)
 # =============================================================================
 
-# Number of candidates to consider
-THOMPSON_NUM_CANDIDATES = 1000
+# Discrete Thompson Sampling optimizes over a finite Sobol candidate
+# cloud, so the cloud must grow with dimension: a fixed 1000 points in
+# >=10-d is so sparse that the argmax is nearly model-independent. The
+# count follows the TuRBO tutorial's sizing
+# ``min(MAX, max(MIN, PER_DIM * d))``
+# (https://botorch.org/tutorials/turbo_1/).
+THOMPSON_CANDIDATES_PER_DIM = 200
+THOMPSON_MIN_CANDIDATES = 2000
+THOMPSON_MAX_CANDIDATES = 5000
 
 # Minimum distance for diverse batch in Thompson Sampling
 THOMPSON_BATCH_DIVERSITY_MIN_DISTANCE = 0.05

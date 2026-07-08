@@ -489,9 +489,12 @@ async def export_campaign(
     """Export all campaign results as a downloadable CSV file."""
     await get_authorized_campaign(campaign_id, current_user)
 
+    # Download semantics: the streaming response is not context-bound,
+    # so the inline-content cap used by the MCP tool does not apply.
     result = await export_campaign_operation(
         campaign_id=campaign_id,
         output_format=output_format,
+        max_content_bytes=None,
     )
 
     if not result.get("success", False):

@@ -18,7 +18,9 @@ def compute_objective_ranges(
         objective_ranges[obj.name] = {
             "min": min(values),
             "max": max(values),
-            "direction": obj.direction,
+            # Resolved goal, never the raw optional direction string —
+            # target_mode spellings would otherwise render as None.
+            "direction": obj.effective_mode.value,
         }
     return objective_ranges
 

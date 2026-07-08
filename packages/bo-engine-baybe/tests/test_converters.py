@@ -38,6 +38,7 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
 )
+from bo_engine_baybe.constants import DEFAULT_MAX_CANDIDATES
 from bo_engine_baybe.converters import (
     classify_constraint_target,
     dataframe_to_suggestions,
@@ -174,12 +175,16 @@ class TestDiscreteEnumerationLimits:
         with pytest.raises(ValueError, match="enumeration limit"):
             spec_to_searchspace(spec)
 
-    def test_two_large_grids_exceed_product_limit(self) -> None:
-        """Two per-parameter-legal grids must fail the product cap before building.
+    def test_two_large_grids_subsample_instead_of_failing(self) -> None:
+        """Two per-parameter-legal grids route through the bounded subsampler.
 
-        Each parameter spans exactly ``DISCRETE_ENUMERATION_MAX_POINTS``
-        integers (passes any per-parameter check); their product is 10^8
-        rows, which would hang/OOM ``SearchSpace.from_product``.
+        Each parameter spans ~``DISCRETE_ENUMERATION_MAX_POINTS`` integers
+        (passes the per-parameter check); their 10^8-row product previously
+        raised the enumeration-limit error. The large-categorical safeguard
+        now builds a bounded, deterministically subsampled discrete
+        subspace instead — keeping explicit ``backend='baybe'`` usable
+        while ``backend='auto'`` routes to a FULL backend via the DEGRADED
+        capability report.
         """
         big = float(DISCRETE_ENUMERATION_MAX_POINTS - 1)
         spec = self._spec(
@@ -188,10 +193,9 @@ class TestDiscreteEnumerationLimits:
                 ParameterSpec(name="b", type=ParameterType.DISCRETE, bounds=(0.0, big)),
             ]
         )
-        with pytest.raises(ValueError, match="enumeration limit") as excinfo:
-            spec_to_searchspace(spec)
-        expected_product = DISCRETE_ENUMERATION_MAX_POINTS * DISCRETE_ENUMERATION_MAX_POINTS
-        assert str(expected_product) in str(excinfo.value)
+        searchspace = spec_to_searchspace(spec)
+        n_rows = len(searchspace.discrete.exp_rep)
+        assert 0 < n_rows <= DISCRETE_ENUMERATION_MAX_POINTS
 
     def test_product_at_limit_builds_expected_grid(self) -> None:
         """A product exactly at the cap still builds, with the full grid."""
@@ -205,7 +209,11 @@ class TestDiscreteEnumerationLimits:
         assert len(searchspace.discrete.exp_rep) == 100 * 100
 
     def test_values_and_categorical_mix_counted_in_product(self) -> None:
-        """Explicit-values grids and category lists multiply into the same cap."""
+        """Explicit-values grids and category lists multiply into the same cap.
+
+        The 20 000-combination product exceeds the candidate cap, so the
+        safeguard subsamples rather than enumerating (or rejecting).
+        """
         spec = self._spec(
             [
                 ParameterSpec(
@@ -220,8 +228,8 @@ class TestDiscreteEnumerationLimits:
                 ),
             ]
         )
-        with pytest.raises(ValueError, match="enumeration limit"):
-            spec_to_searchspace(spec)
+        searchspace = spec_to_searchspace(spec)
+        assert 0 < len(searchspace.discrete.exp_rep) <= DEFAULT_MAX_CANDIDATES
 
 
 class TestSpecToObjective:
@@ -598,21 +606,24 @@ class TestDataframeToSuggestions:
 
 
 class TestDiscreteConstraintConstruction:
-    """Only the three SUM-type neutral constraints reach the discrete builder.
+    """Only the arithmetic (SUM/PRODUCT) neutral types reach the discrete builder.
 
-    The neutral spec defines no product constraint type, so the discrete
-    dispatch map must contain exactly the SUM types and the builder must
-    always construct a ``DiscreteSumConstraint`` — a product branch would
-    be dead code implying support the spec cannot express.
+    The discrete dispatch map must contain exactly the SUM and PRODUCT
+    types: SUM types build ``DiscreteSumConstraint``, PRODUCT types build
+    ``DiscreteProductConstraint``, and any other member reaching the
+    builder would be dead code implying support the spec cannot express.
     """
 
-    def test_dispatch_map_contains_exactly_the_sum_types(self) -> None:
+    def test_dispatch_map_contains_exactly_the_arithmetic_types(self) -> None:
         from bo_engine_baybe.converters import _DISCRETE_OPERATOR_MAP
 
         assert set(_DISCRETE_OPERATOR_MAP) == {
             ConstraintType.SUM_EQUALS,
             ConstraintType.SUM_LESS_THAN,
             ConstraintType.SUM_GREATER_THAN,
+            ConstraintType.PRODUCT_EQUALS,
+            ConstraintType.PRODUCT_LESS_THAN,
+            ConstraintType.PRODUCT_GREATER_THAN,
         }
 
     def test_sum_types_build_discrete_sum_constraints(self) -> None:

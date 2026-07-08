@@ -74,7 +74,11 @@ class Settings(BaseSettings):
     sql_echo: bool = Field(
         default=False,
         alias="SQL_ECHO",
-        description="If true, SQLAlchemy logs every emitted statement.",
+        description="If true, SQLAlchemy logs every emitted statement. "
+        "Payload hazard: statements include bind parameters, and the "
+        "campaign-state column can carry multi-MB serialized backend "
+        "state — enabling this on a busy deployment floods the logs and "
+        "may leak campaign data into log storage. Debug use only.",
     )
     bo_backend: str = Field(
         default="baybe",
@@ -252,6 +256,23 @@ class Settings(BaseSettings):
         ),
     )
 
+    max_backend_state_bytes: int = Field(
+        default=256 * 1024 * 1024,
+        ge=0,
+        alias="MAX_BACKEND_STATE_BYTES",
+        description=(
+            "Maximum serialized size (bytes) of a backend's persisted state "
+            "envelope, enforced before the database write. PostgreSQL rejects "
+            "any single wire-protocol message over 1 GiB by dropping the "
+            "connection (the E199 incident class); this backstop converts an "
+            "oversized state from any backend into a typed, non-retryable "
+            "BACKEND_STATE_TOO_LARGE envelope with recovery guidance instead. "
+            "The 256 MiB default sits far below the protocol limit while "
+            "leaving generous headroom over the BayBE backend's own "
+            "search-space budget. Set ``0`` to disable the check."
+        ),
+    )
+
 
 def get_settings() -> Settings:
     """Return a fresh :class:`Settings` instance.
@@ -370,3 +391,8 @@ def get_idempotency_heartbeat_max_total_extension_seconds() -> float:
 def get_bo_compute_timeout_seconds() -> float:
     """Return the per-compute wall-clock timeout (seconds; 0 = disabled)."""
     return get_settings().bo_compute_timeout_seconds
+
+
+def get_max_backend_state_bytes() -> int:
+    """Return the pre-persistence backend-state size limit (bytes; 0 = disabled)."""
+    return get_settings().max_backend_state_bytes

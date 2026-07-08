@@ -39,6 +39,7 @@ from bo_engine import (
 )
 from bo_engine.backend import BOBackend, Feature, SuggestionBatch
 from bo_engine.backend_testing import (
+    assert_backend_options_schema,
     assert_initial_design_contract,
     assert_json_serializable,
     assert_parameter_options_schema,
@@ -134,6 +135,11 @@ class _ProtocolOnlyBackend:
     def parameter_options_schema(self) -> dict[str, Any] | None:
         # Part of the protocol surface — a protocol-only plugin must still
         # answer the hook even when it has no typed parameter options.
+        return None
+
+    def backend_options_schema(self) -> dict[str, Any] | None:
+        # Per-campaign twin of parameter_options_schema — same protocol
+        # obligation for plugins without typed backend options.
         return None
 
     def generate_initial_design(
@@ -359,6 +365,10 @@ class TestBoTorchBackendContract:
         # BoTorch takes no typed parameter options, so the hook is None.
         assert assert_parameter_options_schema(BoTorchBackend()) is None
 
+    def test_backend_options_schema_contract(self) -> None:
+        # BoTorch takes no typed campaign-level options, so the hook is None.
+        assert assert_backend_options_schema(BoTorchBackend()) is None
+
     def test_suggestion_batch_contract(self) -> None:
         spec = _make_simple_spec()
         observations = [
@@ -411,6 +421,10 @@ class TestFakeBackendDefaults:
         # The BaseBackend default contributes no parameter_options fragment.
         assert assert_parameter_options_schema(_FakeBackend()) is None
 
+    def test_default_backend_options_schema_is_none(self) -> None:
+        # The BaseBackend default contributes no backend_options fragment.
+        assert assert_backend_options_schema(_FakeBackend()) is None
+
     def test_default_detect_duplicates(self) -> None:
         backend = _FakeBackend()
         dups = backend.detect_duplicates(
@@ -450,6 +464,10 @@ class TestProtocolOnlyBackend:
     def test_parameter_options_schema_contract(self) -> None:
         # A protocol-only plugin must satisfy the hook; it has none here.
         assert assert_parameter_options_schema(_ProtocolOnlyBackend()) is None
+
+    def test_backend_options_schema_contract(self) -> None:
+        # A protocol-only plugin must satisfy the hook; it has none here.
+        assert assert_backend_options_schema(_ProtocolOnlyBackend()) is None
 
     def test_json_safety(self) -> None:
         spec = _make_simple_spec()

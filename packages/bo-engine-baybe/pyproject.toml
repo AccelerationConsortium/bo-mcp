@@ -30,6 +30,15 @@ dependencies = [
 [project.optional-dependencies]
 insights = [
     "baybe[insights]==0.15.0",
+    # shap's numba dependency needs an explicit modern floor: without it
+    # the resolver satisfies numba against the workspace numpy by
+    # backtracking to the 2021-era numba 0.53 / llvmlite 0.36 (whose
+    # metadata declares no numpy upper bound), which cannot build on
+    # Python 3.13 — making this extra uninstallable from the lock and
+    # silently disabling SHAP feature importance everywhere the project
+    # provisions. The floor forces a numpy/numba pair that actually
+    # installs and imports.
+    "numba>=0.61.2",
 ]
 dev = [
     "pytest>=8.0",

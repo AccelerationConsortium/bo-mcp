@@ -46,6 +46,31 @@ class BackendOutputError(ValueError):
         self.errors: list[dict[str, Any]] = list(errors) if errors else []
 
 
+class BackendStateTooLargeError(BackendOutputError):
+    """Raised when a backend's serialized state exceeds the persistence limit.
+
+    Enforced at the adapter boundary *before* any database write —
+    PostgreSQL drops the connection on any single wire-protocol message
+    over 1 GiB, which previously surfaced as an untyped E199 after the
+    campaign UPDATE died mid-flight. Subclasses
+    :class:`BackendOutputError` so the generation loop's existing except
+    branch aborts the whole operation atomically (no iteration bump, no
+    orphaned suggestions).
+    """
+
+    def __init__(self, state_bytes: int, limit_bytes: int) -> None:
+        """Record the measured size and the configured limit."""
+        msg = (
+            f"Backend state serializes to {state_bytes} bytes, exceeding the "
+            f"configured persistence limit of {limit_bytes} bytes "
+            "(settings.max_backend_state_bytes). Reduce the enumerated search "
+            "space or raise the limit."
+        )
+        super().__init__(msg)
+        self.state_bytes = state_bytes
+        self.limit_bytes = limit_bytes
+
+
 class _ValidatedSuggestion(BaseModel):
     """Single suggestion entry returned by a backend.
 
@@ -99,28 +124,6 @@ class _ValidatedSuggestionBatch(BaseModel):
     backend_state: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
 
-    @field_validator("backend_state")
-    @classmethod
-    def _backend_state_is_json_serializable(
-        cls, value: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        """Refuse a backend_state that the storage layer cannot persist.
-
-        The server persists ``backend_state`` via ``json.dumps`` /
-        ``json.loads``. A backend that returns a torch tensor or numpy
-        array passes the dict shape check but crashes at persist time;
-        catching it here surfaces the contract violation against the
-        backend rather than against the database write.
-        """
-        if value is None:
-            return value
-        try:
-            json.dumps(value)
-        except (TypeError, ValueError) as e:
-            msg = f"backend_state is not JSON-serializable: {e}"
-            raise ValueError(msg) from e
-        return value
-
 
 _REQUIRED_BATCH_ATTRS: tuple[str, ...] = (
     "suggestions",
@@ -130,7 +133,11 @@ _REQUIRED_BATCH_ATTRS: tuple[str, ...] = (
 )
 
 
-def validate_backend_batch(batch: SuggestionBatch) -> SuggestionBatch:
+def validate_backend_batch(
+    batch: SuggestionBatch,
+    *,
+    max_backend_state_bytes: int | None = None,
+) -> SuggestionBatch:
     """Validate a backend-returned :class:`SuggestionBatch` at the adapter boundary.
 
     Returns the original ``batch`` unchanged when validation passes —
@@ -139,6 +146,13 @@ def validate_backend_batch(batch: SuggestionBatch) -> SuggestionBatch:
     any shape mismatch so the operation layer can convert to a
     structured error envelope instead of letting a downstream
     ``KeyError`` / ``AttributeError`` surface as an opaque 500.
+
+    ``backend_state`` is serialized exactly **once** here, covering both
+    the JSON-serializability contract and (when
+    ``max_backend_state_bytes`` is a positive limit) the pre-persistence
+    size backstop — a second dump of a large-but-allowed state would be
+    real latency. Oversized states raise
+    :class:`BackendStateTooLargeError` before any database write.
 
     The first check is a *type* check: a third-party backend that
     returns a plain dict, ``None``, or anything else that lacks the
@@ -181,7 +195,41 @@ def validate_backend_batch(batch: SuggestionBatch) -> SuggestionBatch:
             "implementation, not in the request."
         )
         raise BackendOutputError(msg, errors=_sanitize_errors(e.errors())) from e
+    _validate_backend_state_payload(batch.backend_state, max_backend_state_bytes)
     return batch
+
+
+def _validate_backend_state_payload(
+    backend_state: dict[str, Any] | None,
+    max_backend_state_bytes: int | None,
+) -> None:
+    """Single-dump serializability + size check for ``backend_state``.
+
+    The server persists ``backend_state`` via ``json.dumps`` /
+    ``json.loads``. A backend that returns a torch tensor or numpy array
+    passes the dict shape check but crashes at persist time; and an
+    oversized (but valid) state would kill the DB connection on
+    PostgreSQL's 1 GiB protocol limit. Both contracts are checked off a
+    single serialization pass.
+    """
+    if backend_state is None:
+        return
+    try:
+        encoded = json.dumps(backend_state)
+    except (TypeError, ValueError) as e:
+        msg = f"backend_state is not JSON-serializable: {e}"
+        raise BackendOutputError(
+            msg,
+            errors=[
+                {
+                    "type": "not_json_serializable",
+                    "loc": ["backend_state"],
+                    "msg": str(e),
+                }
+            ],
+        ) from e
+    if max_backend_state_bytes and len(encoded) > max_backend_state_bytes:
+        raise BackendStateTooLargeError(len(encoded), max_backend_state_bytes)
 
 
 def _sanitize_errors(errors: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:

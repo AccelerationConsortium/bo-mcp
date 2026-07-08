@@ -46,11 +46,15 @@ def _format_parameters_section(spec: CampaignSpec) -> list[str]:
 
 
 def _format_objectives_section(spec: CampaignSpec) -> list[str]:
-    """Format the objectives section of a campaign resource."""
+    """Format the objectives section of a campaign resource.
+
+    Renders the *resolved* goal (``effective_mode``) so ``target_mode``
+    spellings never surface as the literal string ``None``.
+    """
     lines: list[str] = []
     for obj in spec.objectives:
-        target = f" (target: {obj.target})" if obj.target else ""
-        lines.append(f"- **{obj.name}**: {obj.direction}{target}")
+        target = f" (target: {obj.target})" if obj.target is not None else ""
+        lines.append(f"- **{obj.name}**: {obj.effective_mode.value}{target}")
     return lines
 
 

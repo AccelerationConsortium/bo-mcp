@@ -12,6 +12,7 @@ from bo_engine.transforms import get_bounds_tensor, stack_encoded_values
 from bo_engine.types import OptimizationSpec
 from bo_mcp_server.constants import DIVERSITY_HIGH_THRESHOLD, DIVERSITY_MODERATE_THRESHOLD
 from bo_mcp_server.domain import CampaignSpec, Result, Suggestion, SuggestionStatus
+from bo_mcp_server.operations.helpers import objective_analysis_series
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +141,10 @@ def _compute_exploration_exploitation_inner(
         obj = spec.objectives[0]
         values = [r.objective_values[obj.name] for r in results]
         if values:
-            _, best_idx = compute_best_value(values, minimize=obj.is_minimize)
+            # MATCH objectives anchor "best" to the observation closest to
+            # the target; other goals keep their declared direction.
+            metric_values, metric_minimize = objective_analysis_series(obj, values)
+            _, best_idx = compute_best_value(metric_values, minimize=metric_minimize)
             if best_idx >= 0:
                 best_point = encode_categorical(results[best_idx].parameter_values, opt_spec)
 

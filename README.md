@@ -95,7 +95,35 @@ initial_points = backend.generate_initial_design(spec, n_points=5)
 - **Python >= 3.13**
 - [uv](https://github.com/astral-sh/uv) (recommended package manager)
 
-### Development setup
+### Large categorical search spaces on BayBE
+
+BayBE enumerates the full Cartesian product of all discrete/categorical
+parameters and persists it inside the campaign state. To keep large
+combinatorial campaigns usable, the BayBE backend budgets the enumerated
+discrete subspace before construction:
+
+- **Below budget** (default: ≈32 MiB estimated serialized state and
+  10 000 candidates), the search space builds exactly as before.
+- **Above budget**, the discrete subspace is built from a bounded,
+  **deterministically subsampled** candidate list (seeded from the spec
+  content, so rebuilds regenerate the identical set). Observed and
+  pending configurations are always included so duplicate protection
+  keeps working. The campaign runs with a prominent warning, and
+  `backend="auto"` prefers a backend that does not enumerate the space.
+
+Tuning: `backend_options["baybe"].max_searchspace_state_bytes` /
+`max_candidates` override the budget per campaign. Mitigations for very
+wide categorical spaces: `parameter_options["baybe"].encoding="INT"`
+(one column per parameter instead of one per category), fewer
+categories, or `backend="botorch"`.
+
+As defense in depth, the server also refuses to persist any backend
+state larger than `MAX_BACKEND_STATE_BYTES` (default 256 MiB — well
+below PostgreSQL's 1 GiB protocol limit), returning a typed
+`BACKEND_STATE_TOO_LARGE` (E109) envelope with recovery guidance instead
+of a dead database connection.
+
+## Development setup
 
 ```bash
 git clone https://github.com/willigott/bo-mcp && cd bo-mcp

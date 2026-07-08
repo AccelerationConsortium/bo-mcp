@@ -20,7 +20,7 @@ from bo_engine.constants import (
     ESTIMATE_REMAINING_MAX_ITERATIONS,
     IMPROVEMENT_TOLERANCE_ABSOLUTE,
 )
-from bo_engine.types import ObjectiveSpec, ObservationData, OptimizationSpec
+from bo_engine.types import ObjectiveSpec, ObservationData, OptimizationSpec, TargetMode
 
 
 @dataclass
@@ -313,24 +313,52 @@ class StoppingDecision:
     details: dict[str, object]
 
 
+def _uses_match_metric(objective: ObjectiveSpec) -> bool:
+    """True when the objective's stopping metric is distance-to-target.
+
+    ``MATCH`` objectives have no meaningful raw-value direction — "best"
+    is the observation closest to ``target_value``, and improvement is
+    measured on the distance trajectory (an overshoot-then-approach run
+    would read as stagnation on the raw values).
+    """
+    return objective.effective_mode == TargetMode.MATCH and objective.target_value is not None
+
+
+def _stopping_metric(value: float, objective: ObjectiveSpec) -> float:
+    """Per-observation metric fed to the convergence detector."""
+    if _uses_match_metric(objective):
+        return abs(value - float(objective.target_value))  # ty: ignore[invalid-argument-type]
+    return value
+
+
+def _stopping_metric_is_minimize(objective: ObjectiveSpec) -> bool:
+    """Direction of :func:`_stopping_metric` (distance-to-target minimizes)."""
+    if _uses_match_metric(objective):
+        return True
+    return objective.effective_mode == TargetMode.MINIMIZE
+
+
 def _best_value_history(
     observations: list[ObservationData], objective: ObjectiveSpec
 ) -> list[float]:
-    """Build the running-best trajectory of a single objective.
+    """Build the running-best trajectory of a single objective's stopping metric.
 
     Used only by :func:`evaluate_stopping_decision` to feed
-    ``detect_single_objective_convergence``. The full history is returned
-    (not just the last window) so the detector can decide its own
-    minimum-observation gate.
+    ``detect_single_objective_convergence``. Direction resolves via
+    ``ObjectiveSpec.effective_mode`` and ``MATCH`` objectives track the
+    running-smallest distance to ``target_value``. The full history is
+    returned (not just the last window) so the detector can decide its
+    own minimum-observation gate.
     """
+    minimize = _stopping_metric_is_minimize(objective)
     history: list[float] = []
     running_best: float | None = None
     for obs in observations:
         if objective.name not in obs.objective_values:
             continue
-        value = float(obs.objective_values[objective.name])
+        value = _stopping_metric(float(obs.objective_values[objective.name]), objective)
         is_better = running_best is None or (
-            value < running_best if objective.minimize else value > running_best
+            value < running_best if minimize else value > running_best
         )
         if is_better:
             running_best = value
@@ -358,7 +386,10 @@ def evaluate_stopping_decision(
        observations regardless of iteration grouping.
     3. ``convergence_tolerance`` — forwarded to the existing
        :func:`detect_single_objective_convergence` detector for the first
-       objective. Multi-objective campaigns are out of scope here because
+       objective. Direction resolves via ``ObjectiveSpec.effective_mode``,
+       and ``MATCH`` objectives converge on the running-smallest
+       distance-to-target trajectory (see :func:`_stopping_metric`).
+       Multi-objective campaigns are out of scope here because
        hypervolume tracking lives in the diagnostics layer.
 
     When no budget field is configured the decision is a no-op
@@ -400,10 +431,11 @@ def evaluate_stopping_decision(
     # callers using the engine directly might bypass that validation. Treat
     # multi-objective specs as a silent no-op rather than picking objective 0.
     if spec.convergence_tolerance is not None and len(spec.objectives) == 1:
-        history = _best_value_history(observations, spec.objectives[0])
+        objective = spec.objectives[0]
+        history = _best_value_history(observations, objective)
         report = detect_single_objective_convergence(
             best_value_history=history,
-            minimize=spec.objectives[0].minimize,
+            minimize=_stopping_metric_is_minimize(objective),
             improvement_threshold=float(spec.convergence_tolerance),
         )
         if report.converged:

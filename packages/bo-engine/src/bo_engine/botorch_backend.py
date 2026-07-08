@@ -16,6 +16,11 @@ import torch
 from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
 
+# ``_SIMPLE_MC_METHODS`` is the acquisition module's own curation of the
+# plain Monte-Carlo family; the capability reports below must mirror its
+# constrained-run reroute exactly, so the set is shared rather than
+# re-derived here.
+from bo_engine.acquisition import _SIMPLE_MC_METHODS, BOTORCH_UNSUPPORTED_ACQUISITION
 from bo_engine.backend import (
     Feature,
     SuggestionBatch,
@@ -27,6 +32,7 @@ from bo_engine.backend_base import (
     CapabilityStatus,
     option_is_active,
     required_features,
+    single_objective_family_acquisition_report,
     wrap_backend_exception,
 )
 from bo_engine.constants import (
@@ -67,7 +73,16 @@ from bo_engine.suggestions import (
 from bo_engine.suggestions_training import resolve_model_options
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.turbo import TurboState, should_use_turbo
-from bo_engine.types import AcquisitionMethod, ObservationData, OptimizationSpec
+from bo_engine.types import (
+    SINGLE_OBJECTIVE_ONLY_ACQUISITION,
+    UCB_FAMILY_ACQUISITION,
+    AcquisitionMethod,
+    ConstraintType,
+    ObservationData,
+    OptimizationSpec,
+    ScalarizationMode,
+    TargetMode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +196,212 @@ def _substance_parameter_reports(spec: OptimizationSpec) -> list[CapabilityRepor
                     "dropping the representation. Use backend='baybe' (or 'auto'). This "
                     "is a hard incompatibility and cannot be bypassed via "
                     "acknowledge_degradations."
+                ),
+            )
+        )
+    return reports
+
+
+# Constraint types the BoTorch suggestion pipeline can express (natively as
+# linear (in)equalities or via post-hoc projection). The extended families
+# (products, cardinality, set-based label constraints) are BayBE-only.
+_BOTORCH_SUPPORTED_CONSTRAINT_TYPES: frozenset[ConstraintType] = frozenset(
+    {
+        ConstraintType.SUM_EQUALS,
+        ConstraintType.SUM_LESS_THAN,
+        ConstraintType.SUM_GREATER_THAN,
+        ConstraintType.LINEAR,
+    }
+)
+
+
+def _constraint_surface_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
+    """Report constraint types the BoTorch engine cannot express.
+
+    Product/cardinality/set-based constraints (and interpoint semantics)
+    are honored by BayBE only; reporting them UNSUPPORTED keeps
+    ``backend="auto"`` routing to BayBE and fails a pinned
+    ``backend="botorch"`` loudly at intake — the substance-guardrail
+    routing-safety pattern applied to constraints.
+    """
+    reports: list[CapabilityReport] = []
+    for idx, constraint in enumerate(spec.constraints):
+        key = f"constraint[{idx}]({constraint.type.value})"
+        if constraint.type not in _BOTORCH_SUPPORTED_CONSTRAINT_TYPES:
+            reports.append(
+                CapabilityReport(
+                    key=key,
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        f"Constraint type '{constraint.type.value}' is not supported "
+                        "by the BoTorch engine. Use backend='baybe' (or 'auto')."
+                    ),
+                )
+            )
+        elif constraint.is_interpoint:
+            reports.append(
+                CapabilityReport(
+                    key=key,
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        "Interpoint (across-batch) constraint semantics are not "
+                        "supported by the BoTorch engine. Use backend='baybe' "
+                        "(or 'auto')."
+                    ),
+                )
+            )
+    return reports
+
+
+def _objective_surface_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
+    """Report extended-objective features the BoTorch engine cannot express.
+
+    Match-a-target objectives, the typed target-transform union, and
+    desirability scalarization are BayBE-honored neutral-spec features;
+    the BoTorch suggestion pipeline only implements the boolean
+    ``log_transform`` outcome stack. A ``target_mode`` of
+    minimize/maximize that disagrees with the boolean ``minimize`` field
+    is likewise vetoed: every direction read in this pipeline consumes
+    the boolean, so honoring the spec would optimize the opposite
+    direction from what BayBE resolves via ``effective_mode`` for the
+    identical spec. Reporting them UNSUPPORTED keeps ``backend="auto"``
+    routing to BayBE and fails a pinned ``backend="botorch"`` loudly at
+    intake instead of silently optimizing the wrong objective.
+    """
+    reports: list[CapabilityReport] = []
+    for idx, o in enumerate(spec.objectives):
+        key = f"objectives[{idx}]"
+        if o.target_mode == TargetMode.MATCH:
+            reports.append(
+                CapabilityReport(
+                    key=f"{key}.target_mode",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        f"Match-a-target objectives ('{o.name}') are not supported by "
+                        "the BoTorch engine. Use backend='baybe' (or 'auto')."
+                    ),
+                )
+            )
+        elif o.target_mode is not None and (o.target_mode == TargetMode.MINIMIZE) != o.minimize:
+            reports.append(
+                CapabilityReport(
+                    key=f"{key}.target_mode",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        f"Objective '{o.name}' sets target_mode="
+                        f"'{o.target_mode.value}' while its boolean minimize field "
+                        f"is {o.minimize}. The BoTorch engine resolves direction "
+                        "from the boolean only, so this spec would be optimized in "
+                        "the opposite direction from the target_mode intent. Set "
+                        "minimize consistently with target_mode, or use "
+                        "backend='baybe' (or 'auto')."
+                    ),
+                )
+            )
+        if o.transform is not None:
+            reports.append(
+                CapabilityReport(
+                    key=f"{key}.transform",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        f"Typed target transformations ('{o.name}') are not supported "
+                        "by the BoTorch engine; only the boolean log_transform is. "
+                        "Use backend='baybe' (or 'auto')."
+                    ),
+                )
+            )
+    if spec.scalarization == ScalarizationMode.DESIRABILITY:
+        reports.append(
+            CapabilityReport(
+                key="scalarization",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "Desirability scalarization is not supported by the BoTorch "
+                    "engine (its scalarized path is qLogNParEGO with random "
+                    "weights, which has different semantics). Use backend='baybe' "
+                    "(or 'auto')."
+                ),
+            )
+        )
+    return reports
+
+
+def _acquisition_method_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
+    """Report acquisition selections the BoTorch engine cannot express.
+
+    Members of :data:`bo_engine.acquisition.BOTORCH_UNSUPPORTED_ACQUISITION`
+    follow the standard degradable-knob policy (the BayBE
+    ``BAYBE_UNSUPPORTED_ACQUISITION`` pattern): UNSUPPORTED by default so
+    ``backend="auto"`` routes to a backend that honors the request and a
+    pinned ``backend="botorch"`` fails loudly; IGNORED once
+    ``'acquisition_method'`` is acknowledged — the run then falls back to
+    the objective-family default acquisition. The same policy classifies
+    a single-objective-only member requested on a multi-objective spec
+    (the dispatch would silently discard the request — and any
+    ``acquisition_beta`` riding on it — in favor of the hypervolume
+    default). A simple-MC member combined with outcome constraints is
+    DEGRADED: the engine reroutes it through NOISY_EI's feasibility
+    weighting at construction, which changes the acquisition semantics
+    while still honoring the constraints. A stray ``acquisition_beta``
+    on a non-UCB method is a hard UNSUPPORTED (the engine factory raises
+    the matching ``ValueError`` at construction, so intake must agree).
+    """
+    reports: list[CapabilityReport] = []
+    method = spec.acquisition_method
+    if method in BOTORCH_UNSUPPORTED_ACQUISITION:
+        if "acquisition_method" in spec.acknowledge_degradations:
+            reports.append(
+                CapabilityReport(
+                    key="acquisition_method",
+                    status=CapabilityStatus.IGNORED,
+                    reason=(
+                        f"Acquisition method '{method.value}' is not supported by the "
+                        "BoTorch engine; the objective-family default acquisition is "
+                        "used instead (degradation acknowledged)."
+                    ),
+                )
+            )
+        else:
+            reports.append(
+                CapabilityReport(
+                    key="acquisition_method",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        f"Acquisition method '{method.value}' is not supported by the "
+                        "BoTorch engine. Pin backend='baybe' (or 'auto'), or list "
+                        "'acquisition_method' in 'acknowledge_degradations' to run "
+                        "with the objective-family default acquisition instead."
+                    ),
+                )
+            )
+    elif len(spec.objectives) > 1 and method in SINGLE_OBJECTIVE_ONLY_ACQUISITION:
+        reports.append(
+            single_objective_family_acquisition_report(method, spec.acknowledge_degradations)
+        )
+    if len(spec.objectives) == 1 and spec.outcome_constraints and method in _SIMPLE_MC_METHODS:
+        reports.append(
+            CapabilityReport(
+                key="acquisition_method",
+                status=CapabilityStatus.DEGRADED,
+                reason=(
+                    f"Acquisition method '{method.value}' has no "
+                    "feasibility-weighted wiring in the BoTorch engine; with "
+                    "outcome constraints active it is rerouted through NOISY_EI "
+                    "so the constraints are honored, which changes the "
+                    "acquisition semantics. Remove the outcome constraints or "
+                    "select noisy_expected_improvement to silence this report."
+                ),
+            )
+        )
+    if spec.acquisition_beta is not None and method not in UCB_FAMILY_ACQUISITION:
+        reports.append(
+            CapabilityReport(
+                key="acquisition_beta",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "acquisition_beta is only valid for the UCB acquisition family; "
+                    f"got acquisition_method='{method.value}'. Remove beta or select "
+                    "upper_confidence_bound."
                 ),
             )
         )
@@ -381,6 +602,9 @@ class BoTorchBackend(BaseBackend):
                     reason=_UNROUTED_FEATURES[Feature.MULTI_FIDELITY],
                 )
             )
+        option_reports.extend(_acquisition_method_reports(spec))
+        option_reports.extend(_objective_surface_reports(spec))
+        option_reports.extend(_constraint_surface_reports(spec))
         option_reports.extend(_log_transform_direction_reports(spec))
         option_reports.extend(_substance_parameter_reports(spec))
         return BackendValidationResult(

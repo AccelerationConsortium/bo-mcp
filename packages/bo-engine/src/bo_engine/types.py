@@ -76,12 +76,74 @@ class ParameterType(StrEnum):
 
 
 class ConstraintType(StrEnum):
-    """Type of constraint."""
+    """Type of constraint.
+
+    Arithmetic families (``SUM_*`` / ``PRODUCT_*`` / ``LINEAR``) compare an
+    aggregate of the referenced parameters against
+    :attr:`ConstraintSpec.value`. ``CARDINALITY`` bounds the number of
+    *nonzero* parameters (sparsity; ``min_cardinality`` /
+    ``max_cardinality``). The set-based members constrain relationships
+    between the referenced parameters' assigned values: distinct values
+    within a batch row (``NO_LABEL_DUPLICATES``), identical values
+    (``LINKED_PARAMETERS``), or order-invariance of the parameter group
+    (``PERMUTATION_INVARIANCE``). Note that ``PERMUTATION_INVARIANCE``
+    (as implemented by BayBE) additionally drops candidate rows where
+    the group's slots hold *equal* values — the constraint keeps one
+    canonical representative per multiset of values, so "two slots, same
+    value" configurations are excluded by design, not only reordered
+    duplicates.
+    """
 
     SUM_EQUALS = "sum_equals"
     SUM_LESS_THAN = "sum_less_than"
     SUM_GREATER_THAN = "sum_greater_than"
     LINEAR = "linear"
+    PRODUCT_EQUALS = "product_equals"
+    PRODUCT_LESS_THAN = "product_less_than"
+    PRODUCT_GREATER_THAN = "product_greater_than"
+    CARDINALITY = "cardinality"
+    NO_LABEL_DUPLICATES = "no_label_duplicates"
+    LINKED_PARAMETERS = "linked_parameters"
+    PERMUTATION_INVARIANCE = "permutation_invariance"
+
+
+# Constraint families grouped by shared field requirements. Kept next to the
+# enum so intake validation, capability reports, and converters share one
+# curation instead of re-deriving membership.
+PRODUCT_CONSTRAINT_TYPES: frozenset[ConstraintType] = frozenset(
+    {
+        ConstraintType.PRODUCT_EQUALS,
+        ConstraintType.PRODUCT_LESS_THAN,
+        ConstraintType.PRODUCT_GREATER_THAN,
+    }
+)
+SET_BASED_CONSTRAINT_TYPES: frozenset[ConstraintType] = frozenset(
+    {
+        ConstraintType.NO_LABEL_DUPLICATES,
+        ConstraintType.LINKED_PARAMETERS,
+        ConstraintType.PERMUTATION_INVARIANCE,
+    }
+)
+ARITHMETIC_CONSTRAINT_TYPES: frozenset[ConstraintType] = frozenset(
+    {
+        ConstraintType.SUM_EQUALS,
+        ConstraintType.SUM_LESS_THAN,
+        ConstraintType.SUM_GREATER_THAN,
+        ConstraintType.LINEAR,
+        *PRODUCT_CONSTRAINT_TYPES,
+    }
+)
+# Constraint types eligible for the interpoint (across-batch) flag: the
+# continuous linear/sum family that maps to BayBE's
+# ``ContinuousLinearConstraint(interpoint=True)``.
+INTERPOINT_CONSTRAINT_TYPES: frozenset[ConstraintType] = frozenset(
+    {
+        ConstraintType.SUM_EQUALS,
+        ConstraintType.SUM_LESS_THAN,
+        ConstraintType.SUM_GREATER_THAN,
+        ConstraintType.LINEAR,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -100,6 +162,84 @@ class ParameterSpec:
     values: list[float] | None = None  # For discrete (explicit values; fractional ok)
     categories: list[str] | None = None  # For categorical
     parameter_options: dict[str, dict[str, Any]] | None = None
+
+
+class TargetMode(StrEnum):
+    """Optimization direction / goal of a single objective.
+
+    ``MATCH`` targets a specific value (``ObjectiveSpec.target_value``)
+    instead of a direction — the common lab ask "hit pH 7.4" — with the
+    distance-to-target shape selected by :class:`MatchShape`.
+    """
+
+    MINIMIZE = "minimize"
+    MAXIMIZE = "maximize"
+    MATCH = "match"
+
+
+class MatchShape(StrEnum):
+    """Distance-to-target shape for ``TargetMode.MATCH`` objectives.
+
+    ``ABSOLUTE`` / ``QUADRATIC`` penalize the (squared) distance without
+    extra parameters; ``BELL`` and ``TRIANGULAR`` are normalized kernels
+    that additionally need a width (``ObjectiveSpec.match_scale``: the
+    bell's sigma / the triangle's total base width).
+    """
+
+    ABSOLUTE = "absolute"
+    QUADRATIC = "quadratic"
+    BELL = "bell"
+    TRIANGULAR = "triangular"
+
+
+class ObjectiveTransformKind(StrEnum):
+    """Typed target-transformation union (generalizes ``log_transform``)."""
+
+    LOG = "log"
+    CLAMP = "clamp"
+    POWER = "power"
+    SIGMOID = "sigmoid"
+
+
+@dataclass(frozen=True)
+class ObjectiveTransformSpec:
+    """One target transformation applied to an objective's raw values.
+
+    Field usage per :class:`ObjectiveTransformKind`:
+
+    * ``LOG`` — no parameters; identical contract to the legacy
+      ``log_transform=True`` boolean (strictly positive targets,
+      minimize-only).
+    * ``CLAMP`` — ``bounds`` required; values outside are clipped.
+    * ``POWER`` — ``exponent`` (integer) required.
+    * ``SIGMOID`` — ``center`` and ``steepness`` required; the normalized
+      logistic ``1 / (1 + exp(-steepness * (x - center)))``.
+    """
+
+    kind: ObjectiveTransformKind
+    bounds: tuple[float, float] | None = None
+    exponent: int | None = None
+    center: float | None = None
+    steepness: float | None = None
+
+
+class ScalarizationMode(StrEnum):
+    """Multi-objective combination strategy.
+
+    ``PARETO`` (default) optimizes the full front; ``DESIRABILITY``
+    scalarizes normalized targets into a single figure of merit using the
+    per-objective ``weight`` fields and the spec-level ``scalarizer``.
+    """
+
+    PARETO = "pareto"
+    DESIRABILITY = "desirability"
+
+
+class ScalarizerKind(StrEnum):
+    """Weighted-mean flavor for ``ScalarizationMode.DESIRABILITY``."""
+
+    MEAN = "mean"
+    GEOM_MEAN = "geom_mean"
 
 
 @dataclass(frozen=True)
@@ -125,28 +265,104 @@ class ObjectiveSpec:
       maximize combination stays outside the supported contract and
       suggestion generation raises a ``ValueError`` for
       ``log_transform=True`` + ``minimize=False``.
+
+    **Extended target surface** (validated at intake; currently honored
+    by the BayBE backend, reported ``UNSUPPORTED`` by BoTorch so
+    ``backend="auto"`` routes correctly):
+
+    * ``target_mode`` — optional restatement of the optimization goal.
+      ``MATCH`` mode drives the campaign toward ``target_value`` with
+      the ``match_shape`` distance kernel (``match_scale`` sets the
+      bell sigma / triangle width). For ``MINIMIZE``/``MAXIMIZE`` the
+      resolution contract is :attr:`effective_mode` (``target_mode``
+      wins over the boolean) — but note that only the BayBE converter
+      resolves direction through ``effective_mode``; the BoTorch
+      pipeline reads the boolean ``minimize`` field directly and its
+      ``validate_capabilities`` reports ``UNSUPPORTED`` whenever
+      ``target_mode`` disagrees with the boolean, so a direct-mode
+      override never silently flips direction on one backend only.
+      Callers building specs by hand should set ``minimize``
+      consistently with ``target_mode`` (the served REST/MCP converter
+      always does).
+    * ``weight`` / ``normalization_bounds`` — desirability inputs: the
+      scalarization weight and the raw-value range mapped onto [0, 1]
+      (required for minimize/maximize objectives under
+      ``ScalarizationMode.DESIRABILITY``; bell/triangular match targets
+      are already normalized).
+    * ``transform`` — typed target transformation
+      (:class:`ObjectiveTransformSpec`); mutually exclusive with the
+      legacy ``log_transform`` boolean, which remains supported and maps
+      to the ``LOG`` kind.
     """
 
     name: str
     minimize: bool = True
     log_transform: bool = False
+    target_mode: TargetMode | None = None
+    target_value: float | None = None
+    match_shape: MatchShape | None = None
+    match_scale: float | None = None
+    weight: float | None = None
+    normalization_bounds: tuple[float, float] | None = None
+    transform: ObjectiveTransformSpec | None = None
+
+    @property
+    def effective_mode(self) -> TargetMode:
+        """Resolved target mode: explicit ``target_mode`` wins over ``minimize``."""
+        if self.target_mode is not None:
+            return self.target_mode
+        return TargetMode.MINIMIZE if self.minimize else TargetMode.MAXIMIZE
 
 
 @dataclass(frozen=True)
 class ConstraintSpec:
-    """Specification for a constraint."""
+    """Specification for a constraint.
+
+    ``value`` is the arithmetic threshold (``SUM_*`` / ``PRODUCT_*`` /
+    ``LINEAR``); it is unused by the cardinality and set-based families
+    (which is why it now carries a neutral default). ``min_cardinality`` /
+    ``max_cardinality`` bound the count of nonzero parameters for
+    ``CARDINALITY`` constraints. ``is_interpoint`` switches a continuous
+    linear/sum constraint from per-point to across-the-batch semantics
+    (BayBE ``ContinuousLinearConstraint(interpoint=True)``): the aggregate
+    is taken over all points of one recommended batch instead of holding
+    for each point individually.
+    """
 
     type: ConstraintType
     parameters: list[str]  # Parameter names involved
-    value: float  # Constraint value (e.g., sum equals this value)
+    value: float = 0.0  # Constraint value (e.g., sum equals this value)
     coefficients: list[float] | None = None  # For linear constraints
+    min_cardinality: int | None = None  # CARDINALITY only
+    max_cardinality: int | None = None  # CARDINALITY only
+    is_interpoint: bool = False  # Continuous linear/sum only
 
 
 class AcquisitionMethod(StrEnum):
     """Acquisition function method.
 
     Values are backend-agnostic semantic names. The mapping to concrete
-    BoTorch classes lives inside ``bo_engine.acquisition``.
+    BoTorch classes lives inside ``bo_engine.acquisition``; the BayBE
+    mapping lives in ``bo_engine_baybe.converters``. Not every member is
+    expressible on every backend — each backend's
+    ``validate_capabilities`` classifies unmappable members as
+    ``UNSUPPORTED`` so ``backend="auto"`` routes to a backend that honors
+    the request and a pinned incompatible backend fails loudly.
+
+    Semantic families:
+
+    * Improvement-based: ``NOISY_EI`` / ``EXPECTED_IMPROVEMENT`` (log
+      variants, the defaults) and their explicit non-log siblings
+      ``*_NONLOG`` for callers that need the classic formulation.
+    * Exploration: ``UPPER_CONFIDENCE_BOUND`` (tunable ``acquisition_beta``)
+      and ``POSTERIOR_STANDARD_DEVIATION`` (pure exploration).
+    * Exploitation: ``POSTERIOR_MEAN`` and ``SIMPLE_REGRET`` (its
+      Monte-Carlo counterpart).
+    * Active learning: ``ACTIVE_LEARNING`` (negated integrated posterior
+      variance, qNIPV).
+    * Lookahead / randomized: ``KNOWLEDGE_GRADIENT``, ``THOMPSON_SAMPLING``.
+    * Multi-objective: ``HYPERVOLUME_IMPROVEMENT`` (+ ``_NONLOG``) and
+      ``SCALARIZED_MULTI_OBJ``.
     """
 
     AUTO = "auto"
@@ -156,6 +372,51 @@ class AcquisitionMethod(StrEnum):
     SCALARIZED_MULTI_OBJ = "scalarized_multi_objective"
     COST_WEIGHTED_EI = "cost_weighted_ei"
     MULTI_FIDELITY_KG = "multi_fidelity_kg"
+    UPPER_CONFIDENCE_BOUND = "upper_confidence_bound"
+    PROBABILITY_OF_IMPROVEMENT = "probability_of_improvement"
+    SIMPLE_REGRET = "simple_regret"
+    POSTERIOR_MEAN = "posterior_mean"
+    POSTERIOR_STANDARD_DEVIATION = "posterior_standard_deviation"
+    THOMPSON_SAMPLING = "thompson_sampling"
+    KNOWLEDGE_GRADIENT = "knowledge_gradient"
+    ACTIVE_LEARNING = "active_learning"
+    EXPECTED_IMPROVEMENT_NONLOG = "expected_improvement_nonlog"
+    NOISY_EI_NONLOG = "noisy_expected_improvement_nonlog"
+    HYPERVOLUME_IMPROVEMENT_NONLOG = "hypervolume_improvement_nonlog"
+
+
+# Acquisition methods that accept the ``acquisition_beta``
+# exploration-weight parameter. ``beta`` on any other member is rejected
+# at intake and at acquisition construction so the knob can never leak
+# into an acquisition function that silently ignores it.
+UCB_FAMILY_ACQUISITION: frozenset[AcquisitionMethod] = frozenset(
+    {AcquisitionMethod.UPPER_CONFIDENCE_BOUND}
+)
+
+
+# Acquisition methods with single-objective semantics only — no
+# hypervolume/scalarized counterpart exists, so a multi-objective spec
+# requesting one falls back to the objective-family default acquisition
+# on both backends. The dispatch fallback is sanctioned, but it must be
+# *classified*: each backend's ``validate_capabilities`` reports the
+# combination (UNSUPPORTED by default, IGNORED once
+# ``'acquisition_method'`` is acknowledged) so the request and any
+# attached ``acquisition_beta`` can never be discarded silently. The
+# improvement-based members (EI / noisy-EI and their non-log siblings)
+# are deliberately absent: they resolve *within* the objective family to
+# their hypervolume analogues rather than being dropped.
+SINGLE_OBJECTIVE_ONLY_ACQUISITION: frozenset[AcquisitionMethod] = frozenset(
+    {
+        AcquisitionMethod.UPPER_CONFIDENCE_BOUND,
+        AcquisitionMethod.PROBABILITY_OF_IMPROVEMENT,
+        AcquisitionMethod.SIMPLE_REGRET,
+        AcquisitionMethod.POSTERIOR_MEAN,
+        AcquisitionMethod.POSTERIOR_STANDARD_DEVIATION,
+        AcquisitionMethod.THOMPSON_SAMPLING,
+        AcquisitionMethod.KNOWLEDGE_GRADIENT,
+        AcquisitionMethod.ACTIVE_LEARNING,
+    }
+)
 
 
 # Maps legacy BoTorch class-name values to current semantic names.
@@ -333,6 +594,23 @@ class OptimizationSpec:
     random_seed: int | None = None
     # v1.0.1: Acquisition method selection
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
+    # Exploration weight for the UCB acquisition family
+    # (``alpha(x) = mu(x) + beta * sigma(x)``). Only valid together with a
+    # member of ``UCB_FAMILY_ACQUISITION``; both backends validate the
+    # combination at intake and the acquisition factories reject a stray
+    # ``beta`` at construction time. ``None`` uses the backend default
+    # (``bo_engine.constants.DEFAULT_UCB_BETA``, matching BayBE's own
+    # ``UpperConfidenceBound.beta`` default).
+    acquisition_beta: float | None = None
+    # Multi-objective combination strategy. ``PARETO`` (default) keeps the
+    # existing front-based behavior; ``DESIRABILITY`` scalarizes normalized
+    # targets using per-objective ``ObjectiveSpec.weight`` values and the
+    # ``scalarizer`` below. Honored by BayBE (``DesirabilityObjective``);
+    # BoTorch reports it UNSUPPORTED so ``auto`` routes to BayBE.
+    scalarization: ScalarizationMode = ScalarizationMode.PARETO
+    # Weighted-mean flavor for desirability scalarization. ``None`` uses
+    # the backend default (BayBE: geometric mean).
+    scalarizer: ScalarizerKind | None = None
     # v1.1: Input warping for non-stationary objectives
     use_input_warping: bool = False
     # v1.2: TuRBO for high-dimensional optimization (None = disabled)
@@ -586,4 +864,6 @@ class AcquisitionConfig:
     method: AcquisitionMethod = AcquisitionMethod.AUTO
     constraints: list[Any] | None = None
     outcome_constraint_models: list[OutcomeConstraintModel] | list[tuple[Any, float]] | None = None
-    cost_model: SingleTaskGP | Any | None = None  # SingleTaskGP
+    cost_model: SingleTaskGP | Any | None = None
+    # UCB-family exploration weight; see ``OptimizationSpec.acquisition_beta``.
+    beta: float | None = None

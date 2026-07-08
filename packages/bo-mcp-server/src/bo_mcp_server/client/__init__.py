@@ -137,7 +137,10 @@ from bo_mcp_server.response_formatter import (
     format_validate_intake_response,
 )
 from bo_mcp_server.result_upload_parser import parse_named_result_rows
-from bo_mcp_server.schema_extension import augment_parameter_options
+from bo_mcp_server.schema_extension import (
+    augment_backend_options,
+    augment_parameter_options,
+)
 from bo_mcp_server.storage.models import CorruptedJsonColumnError
 from bo_mcp_server.trace_context import bind_trace_id, get_trace_id
 
@@ -188,6 +191,7 @@ __all__ = [
     "User",
     "ValidateIntakeSpecSummary",
     "VerbosityLevel",
+    "augment_backend_options",
     "augment_parameter_options",
     "authorize_campaign",
     "authorize_suggestion",

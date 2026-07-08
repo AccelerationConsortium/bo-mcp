@@ -183,6 +183,42 @@ only how BayBE encodes them for the GP.
   silently drop the representation) and the veto cannot be acknowledged away. No
   `baybe[chem]` needed — the representation is supplied, not computed.
 
+## Large categorical search spaces
+
+`SearchSpace.from_product` materializes the full discrete product and
+`Campaign.to_json()` embeds it, so unbounded categorical campaigns blow
+up memory, recommend runtime, and the persisted state. This backend
+therefore pre-flights every build with
+`SubspaceDiscrete.estimate_product_space_size` and, above the configured
+budget (`bo_engine_baybe.constants.DEFAULT_MAX_SEARCHSPACE_STATE_BYTES`
+/ `DEFAULT_MAX_CANDIDATES`, overridable via
+`backend_options["baybe"].max_searchspace_state_bytes` /
+`max_candidates`), builds the discrete subspace from a deterministic,
+bounded candidate sample instead (`bo_engine_baybe.searchspace_budget`).
+
+Key semantics:
+
+- The sampler seed is a blake2b hash of the canonical spec content, so
+  the candidate set is identical across processes, restarts, and the
+  rebuild-from-observations fallback.
+- Discrete constraints are applied to the sampled frame via BayBE's own
+  `DiscreteConstraint.get_invalid`.
+- Observed + pending configurations are unioned into the candidates so
+  the per-candidate metadata ledger keeps
+  `allow_recommending_already_measured/_recommended=False` working.
+- The size estimate is pre-constraint (BayBE's own contract), so a
+  heavily constrained space can be flagged although its filtered product
+  would fit — an accepted v1 trade-off. The optional `baybe[polars]`
+  constraint-aware lazy construction is a possible follow-up that would
+  remove this false positive.
+- Above-budget specs are reported `DEGRADED` by `validate_capabilities`,
+  so `backend="auto"` prefers a FULL backend while an explicit
+  `backend="baybe"` proceeds with a prominent warning.
+
+For very wide categorical parameters, prefer
+`parameter_options["baybe"].encoding="INT"` over the default one-hot
+encoding, reduce the category lists, or pin `backend="botorch"`.
+
 ## Package Structure
 
 ```text

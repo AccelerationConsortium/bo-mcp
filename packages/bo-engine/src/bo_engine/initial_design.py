@@ -77,19 +77,39 @@ class SearchSpaceExhaustedError(RuntimeError):
         n_requested: int,
         n_available: int,
         n_total_combinations: int | None = None,
+        subsampled: bool = False,
+        n_full_combinations: int | None = None,
+        max_candidates: int | None = None,
     ) -> None:
-        """Build an exhaustion error referencing the requested, available and total counts."""
+        """Build an exhaustion error referencing the requested, available and total counts.
+
+        ``subsampled=True`` marks that the exhausted candidate set was a
+        bounded subsample of a larger space (the BayBE large-categorical
+        safeguard): ``n_total_combinations`` then counts the *subsample*,
+        ``n_full_combinations`` the estimated full product space, and
+        ``max_candidates`` the active row budget — so callers can
+        recommend raising the budget instead of terminating a campaign
+        whose real space is far from exhausted.
+        """
         msg = (
             f"Cannot generate {n_requested} unique initial-design points: "
             f"only {n_available} unseen combinations remain"
         )
         if n_total_combinations is not None:
             msg += f" ({n_available}/{n_total_combinations} total)"
+        if subsampled and n_full_combinations is not None:
+            msg += (
+                f"; the candidate set is a bounded subsample of a "
+                f"~{n_full_combinations}-combination space"
+            )
         msg += "."
         super().__init__(msg)
         self.n_requested = n_requested
         self.n_available = n_available
         self.n_total_combinations = n_total_combinations
+        self.subsampled = subsampled
+        self.n_full_combinations = n_full_combinations
+        self.max_candidates = max_candidates
 
 
 def _values_match(

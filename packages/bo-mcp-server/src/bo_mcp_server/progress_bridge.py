@@ -251,10 +251,15 @@ _progress_registry_lock = threading.Lock()
 def register_progress_status(token: str | None, status: ProgressStatus) -> None:
     """Register a status object so :func:`get_progress_status` can find it.
 
-    ``token`` is the long-running-operation correlation id — typically
-    the campaign id, optionally suffixed with the MCP progress token
-    when the client supplied one. Passing ``None`` is a no-op so call
-    sites that do not have a stable correlation id can skip
+    ``token`` is the long-running-operation correlation id — the
+    campaign id suffixed with a per-call unique token
+    (``"{campaign_id}:{suffix}"``). The suffix keeps two concurrent
+    operations on the same campaign from clobbering each other's
+    registration: each call owns its own key, so the first caller's
+    cleanup cannot delete the second caller's entry.
+    :func:`get_progress_status` prefix-matches on the campaign id and
+    returns the newest registration. Passing ``None`` is a no-op so
+    call sites that do not have a stable correlation id can skip
     registration without conditionals.
 
     The registry is process-local; clients polling through a different
@@ -284,9 +289,25 @@ def unregister_progress_status(token: str | None) -> None:
 
 
 def get_progress_status(token: str) -> ProgressStatus | None:
-    """Look up a registered status by correlation id."""
+    """Look up a registered status by correlation id.
+
+    An exact key match wins; otherwise ``token`` is treated as the
+    campaign-id prefix of the per-call keys written by
+    :func:`register_progress_status` and the **newest** matching
+    registration is returned (the registry preserves insertion order),
+    so a poller asking about a campaign with two in-flight operations
+    reads the most recently started one.
+    """
+    prefix = f"{token}:"
     with _progress_registry_lock:
-        return _progress_registry.get(token)
+        exact = _progress_registry.get(token)
+        if exact is not None:
+            return exact
+        newest: ProgressStatus | None = None
+        for key, status in _progress_registry.items():
+            if key.startswith(prefix):
+                newest = status
+        return newest
 
 
 __all__ = [

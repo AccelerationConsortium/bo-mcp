@@ -20,7 +20,14 @@ from prometheus_client import Counter
 from sqlalchemy.exc import SQLAlchemyError
 
 from bo_mcp_server import audit as audit_module
-from bo_mcp_server.audit import AuditPersistenceError, log_tool_call
+from bo_mcp_server.audit import (
+    MAX_SUMMARY_VALUE_LENGTH,
+    AuditPersistenceError,
+    extract_audit_campaign_id,
+    log_tool_call,
+    summarize_tool_arguments,
+    summarize_tool_result,
+)
 from bo_mcp_server.metrics import AUDIT_FAILURES
 
 pytestmark = pytest.mark.usefixtures("setup_database")
@@ -117,3 +124,77 @@ async def test_audit_unexpected_exception_propagates(
             input_summary={},
             output_summary={},
         )
+
+
+class TestSummaries:
+    """Compact-summary builders used by the tool-boundary audit hook.
+
+    The audit row records *what* was called, never the full payload:
+    the summaries must stay bounded regardless of the argument or
+    response size so an audit write is always cheap and cannot leak
+    a full intake spec into the events table.
+    """
+
+    def test_arguments_scalars_pass_through(self) -> None:
+        summary = summarize_tool_arguments(
+            {"campaign_id": "abc", "batch_size": 3, "dry_run": False, "beta": 0.5, "none": None}
+        )
+        assert summary == {
+            "campaign_id": "abc",
+            "batch_size": 3,
+            "dry_run": False,
+            "beta": 0.5,
+            "none": None,
+        }
+
+    def test_arguments_long_strings_truncated(self) -> None:
+        long_value = "x" * (MAX_SUMMARY_VALUE_LENGTH + 50)
+        summary = summarize_tool_arguments({"content": long_value})
+        assert len(summary["content"]) == MAX_SUMMARY_VALUE_LENGTH + len("...")
+        assert summary["content"].endswith("...")
+
+    def test_arguments_collections_become_shapes(self) -> None:
+        summary = summarize_tool_arguments(
+            {"intake_data": {"name": "n", "parameters": []}, "results": [1, 2, 3]}
+        )
+        assert summary["intake_data"] == {"type": "dict", "n_keys": 2}
+        assert summary["results"] == {"type": "list", "length": 3}
+
+    def test_result_summary_carries_success_error_code_and_counts(self) -> None:
+        summary = summarize_tool_result(
+            {
+                "success": False,
+                "error": {"code": "E003", "message": "nope"},
+                "errors": ["nope"],
+                "suggestions": [],
+            }
+        )
+        assert summary["success"] is False
+        assert summary["error_code"] == "E003"
+        assert summary["n_errors"] == 1
+        assert summary["n_suggestions"] == 0
+
+    def test_result_summary_handles_non_dict(self) -> None:
+        assert summarize_tool_result(["content"]) == {"type": "list"}
+
+    def test_extract_campaign_id_requires_well_formed_uuid(self) -> None:
+        valid = "0eabc2be-3ad8-4f9e-9e5a-25e5f4f1a9d0"
+        assert extract_audit_campaign_id({"campaign_id": valid}) == valid
+        assert extract_audit_campaign_id({"campaign_id": "not-a-uuid"}) is None
+        assert extract_audit_campaign_id({"campaign_id": 42}) is None
+        assert extract_audit_campaign_id({}) is None
+
+    def test_extract_campaign_id_falls_back_to_result(self) -> None:
+        """Creation tools mint the id in the response, not the arguments."""
+        minted = "3f6bb0a2-9a24-4a5f-8a63-0d1e5f9c7ab1"
+        argument = "0eabc2be-3ad8-4f9e-9e5a-25e5f4f1a9d0"
+        assert extract_audit_campaign_id({}, {"campaign_id": minted}) == minted
+        # The tool's own argument wins over the result field.
+        assert (
+            extract_audit_campaign_id({"campaign_id": argument}, {"campaign_id": minted})
+            == argument
+        )
+        # A failed create carries campaign_id=None; no attribution.
+        assert extract_audit_campaign_id({}, {"campaign_id": None}) is None
+        assert extract_audit_campaign_id({}, {"campaign_id": "not-a-uuid"}) is None
+        assert extract_audit_campaign_id({}, ["not-a-dict"]) is None

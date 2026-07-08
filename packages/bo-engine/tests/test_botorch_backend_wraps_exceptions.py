@@ -33,7 +33,13 @@ from bo_engine.backend_base import (
 from bo_engine.botorch_backend import BoTorchBackend
 from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.models import ModelFittingError
-from bo_engine.types import ObjectiveSpec, OptimizationSpec, ParameterSpec, ParameterType
+from bo_engine.types import (
+    ObjectiveSpec,
+    OptimizationSpec,
+    ParameterSpec,
+    ParameterType,
+    TurboConfig,
+)
 
 
 def _two_param_spec() -> OptimizationSpec:
@@ -161,4 +167,53 @@ def test_search_space_exhausted_propagates_unwrapped() -> None:
             observations=[],
             batch_size=10,
             iteration=0,
+        )
+
+
+def test_corrupted_turbo_state_in_generate_raises_typed_error() -> None:
+    """A corrupted persisted state envelope surfaces as ``BackendInputError``.
+
+    State restoration runs before ``generate_next_batch``, i.e. outside
+    the compute try-block — without its own boundary a valid envelope
+    with an empty payload would cross the backend boundary as a raw
+    ``KeyError('dim')``, violating the base-class contract that only
+    ``BackendError`` subclasses leak.
+    """
+    backend = BoTorchBackend()
+    spec = OptimizationSpec(
+        parameters=[
+            ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ParameterSpec(name="y", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+        ],
+        objectives=[ObjectiveSpec(name="z", minimize=True)],
+        turbo_config=TurboConfig(),
+    )
+
+    with pytest.raises(BackendInputError) as exc_info:
+        backend.generate_suggestions(
+            spec=spec,
+            observations=[],
+            batch_size=1,
+            iteration=1,
+            backend_state={"backend": "botorch", "schema_version": 1, "payload": {}},
+        )
+    assert "state" in str(exc_info.value).lower()
+    assert isinstance(exc_info.value.__cause__, KeyError)
+
+
+def test_foreign_backend_state_in_update_raises_typed_error() -> None:
+    """``update_state_after_results`` types foreign-envelope failures too.
+
+    ``unwrap_state`` raises a raw ``ValueError`` for an envelope written
+    by a different backend; the update path must convert it to the same
+    typed ``BackendInputError`` as the generate path.
+    """
+    backend = BoTorchBackend()
+    spec = _two_param_spec()
+
+    with pytest.raises(BackendInputError):
+        backend.update_state_after_results(
+            spec=spec,
+            new_observations=[],
+            backend_state={"backend": "baybe", "schema_version": 1, "payload": {}},
         )

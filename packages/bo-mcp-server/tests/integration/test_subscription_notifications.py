@@ -13,9 +13,11 @@ https://modelcontextprotocol.io/specification/2025-06-18/server/resources#subscr
 
 from collections.abc import AsyncGenerator
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
+
+from tests.factories import seed_owner
 
 
 class _FakeSession:
@@ -33,7 +35,7 @@ async def _create_running_campaign() -> tuple[str, str, UUID]:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Subscription Notify",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -118,7 +120,7 @@ class TestLifecycleNotifications:
         from bo_mcp_server.subscriptions import campaign_uri, get_registry
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         created = await create_campaign(
             {
                 "name": "No Run Yet",
@@ -223,7 +225,7 @@ class TestGenerateSuggestionsTransitionsToRunning:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Created To Running Notify",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -251,7 +253,7 @@ class TestGenerateSuggestionsTransitionsToRunning:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "No Iteration Spam",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],

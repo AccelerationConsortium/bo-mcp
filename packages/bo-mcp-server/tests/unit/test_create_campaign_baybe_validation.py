@@ -19,8 +19,7 @@ import pytest
 
 from bo_mcp_server.domain import CampaignIntakeInput
 from bo_mcp_server.operations.create_campaign import create_campaign_operation
-
-OWNER_ID = "00000000-0000-0000-0000-000000000000"
+from tests.factories import seed_owner
 
 
 def _invalid_baybe_task_intake() -> dict:
@@ -49,7 +48,7 @@ async def test_explicit_baybe_rejected_when_capabilities_incompatible(
     """Explicit ``backend="baybe"`` with invalid typed options fails at create."""
     _ = setup_database
     intake = CampaignIntakeInput.model_validate(_invalid_baybe_task_intake())
-    response = await create_campaign_operation(intake_data=intake, owner_id=OWNER_ID)
+    response = await create_campaign_operation(intake_data=intake, owner_id=await seed_owner())
     assert response["success"] is False
     assert response.get("campaign_id") is None
     # The unsupported reason mentions the offending key.
@@ -95,7 +94,7 @@ async def test_explicit_baybe_accepts_valid_substance_spec(
     """
     _ = setup_database
     intake = CampaignIntakeInput.model_validate(_valid_substance_intake())
-    response = await create_campaign_operation(intake_data=intake, owner_id=OWNER_ID)
+    response = await create_campaign_operation(intake_data=intake, owner_id=await seed_owner())
     assert response["success"] is True, response.get("errors")
     assert response.get("campaign_id") is not None
 
@@ -128,7 +127,7 @@ async def test_explicit_baybe_rejects_unacknowledged_degradable_knob(
     """
     _ = setup_database
     intake = CampaignIntakeInput.model_validate(_baybe_degradable_knob_intake())
-    response = await create_campaign_operation(intake_data=intake, owner_id=OWNER_ID)
+    response = await create_campaign_operation(intake_data=intake, owner_id=await seed_owner())
     assert response["success"] is False
     assert response.get("campaign_id") is None
     joined = " ".join(response.get("errors") or [])
@@ -146,7 +145,7 @@ async def test_explicit_baybe_accepts_acknowledged_degradable_knob(
     intake = CampaignIntakeInput.model_validate(
         _baybe_degradable_knob_intake(acknowledge=True),
     )
-    response = await create_campaign_operation(intake_data=intake, owner_id=OWNER_ID)
+    response = await create_campaign_operation(intake_data=intake, owner_id=await seed_owner())
     assert response["success"] is True
     assert response.get("campaign_id") is not None
     warnings = response.get("warnings") or []

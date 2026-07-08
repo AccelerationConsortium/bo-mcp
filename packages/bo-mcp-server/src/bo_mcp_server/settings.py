@@ -16,10 +16,92 @@ https://docs.pydantic.dev/latest/concepts/pydantic_settings/.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
+import dotenv
+import platformdirs
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# ---------------------------------------------------------------------------
+# Path anchoring
+#
+# The default SQLite location and ``.env`` discovery must be independent
+# of the process working directory: MCP clients spawn stdio servers from
+# arbitrary CWDs, so a CWD-relative default silently selects a different
+# database per launch context ("my campaigns disappeared") or fails with
+# PermissionError when the CWD is not writable. A relative
+# ``env_file=".env"`` has the same flaw — pydantic-settings resolves it
+# against ``os.getcwd()`` on every ``Settings()`` instantiation.
+#
+# Two install shapes are distinguished by whether the src-layout project
+# root (``<project>/src/bo_mcp_server/settings.py`` → ``parents[2]``)
+# holds a ``pyproject.toml``:
+#
+# * Development checkout — the database defaults to ``<project>/data``
+#   and ``.env`` files are honored at the repo root and the project root
+#   (later wins in pydantic-settings, so project-local overrides
+#   repo-wide; real environment variables override both).
+# * Installed distribution (wheel) — ``parents[2]`` would be the
+#   interpreter's ``lib`` directory: not a sensible (or reliably
+#   writable) data location. The database defaults to the OS user data
+#   directory instead, and no ambient ``.env`` is read — installed
+#   deployments configure through real environment variables.
+# ---------------------------------------------------------------------------
+
+
+def _source_project_root(settings_file: Path) -> Path | None:
+    """Return the src-layout project root, or ``None`` for installed wheels."""
+    project_root = settings_file.resolve().parents[2]
+    if (project_root / "pyproject.toml").is_file():
+        return project_root
+    return None
+
+
+def _default_data_dir(settings_file: Path) -> Path:
+    """Return the directory holding the default SQLite database file."""
+    project_root = _source_project_root(settings_file)
+    if project_root is not None:
+        return project_root / "data"
+    return Path(platformdirs.user_data_dir(appname="bo-mcp-server"))
+
+
+def _env_file_candidates(settings_file: Path) -> tuple[str, ...]:
+    """Return the anchored ``.env`` candidates (empty for installed wheels)."""
+    project_root = _source_project_root(settings_file)
+    if project_root is None:
+        return ()
+    repo_root = project_root.parents[1]
+    return (str(repo_root / ".env"), str(project_root / ".env"))
+
+
+_SETTINGS_FILE = Path(__file__)
+_DEFAULT_DATA_DIR = _default_data_dir(_SETTINGS_FILE)
+_ENV_FILE_CANDIDATES: tuple[str, ...] = _env_file_candidates(_SETTINGS_FILE)
+
+
+def load_anchored_dotenv() -> None:
+    """Populate ``os.environ`` from the anchored ``.env`` candidates.
+
+    Entry points (CLI, storage module init) call this instead of a bare
+    ``dotenv.load_dotenv()``: without an explicit path, dotenv discovery
+    falls back to the process CWD in frozen/interactive contexts, and
+    MCP clients spawn stdio servers from arbitrary CWDs where a foreign
+    ``.env`` could silently repoint the database. Candidates are loaded
+    most-specific first; ``load_dotenv`` does not override keys that are
+    already set, so the project-root file wins over the repo-root one
+    and real environment variables win over both — the same precedence
+    pydantic-settings applies to :data:`_ENV_FILE_CANDIDATES`. No-op for
+    installed wheels (no candidates).
+    """
+    for env_file in reversed(_ENV_FILE_CANDIDATES):
+        dotenv.load_dotenv(env_file)
+
+
+def _default_sqlite_url() -> str:
+    """Return the CWD-independent default SQLite ``DATABASE_URL``."""
+    return f"sqlite+aiosqlite:///{_DEFAULT_DATA_DIR / 'bo_mcp.db'}"
 
 
 class Settings(BaseSettings):
@@ -37,17 +119,19 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_CANDIDATES or None,
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
     )
 
     database_url: SecretStr = Field(
-        default=SecretStr("sqlite+aiosqlite:///./data/bo_mcp.db"),
+        default_factory=lambda: SecretStr(_default_sqlite_url()),
         alias="DATABASE_URL",
         description="SQLAlchemy async URL. SQLite is used for local + tests; "
-        "production deployments override this with a PostgreSQL URL. Wrapped "
+        "production deployments override this with a PostgreSQL URL. The "
+        "default is an absolute path anchored at the package root so stdio "
+        "launches from arbitrary CWDs resolve the same database. Wrapped "
         "in SecretStr so credentials embedded in postgresql://user:pass@... "
         "URLs are not leaked by accidental repr(settings) calls.",
     )
@@ -156,6 +240,18 @@ class Settings(BaseSettings):
             "the steady-state pool are recycled after the request returns "
             "them; the cap protects the DB from a stampede during a "
             "synchronous fan-out."
+        ),
+    )
+    sqlite_busy_timeout_ms: int = Field(
+        default=5000,
+        ge=0,
+        alias="SQLITE_BUSY_TIMEOUT_MS",
+        description=(
+            "PRAGMA busy_timeout applied to every SQLite connection. When a "
+            "second writer holds the database lock, SQLite retries for this "
+            "many milliseconds before surfacing 'database is locked' instead "
+            "of failing immediately. Only relevant for the default SQLite "
+            "deployment; PostgreSQL manages lock waits server-side."
         ),
     )
     db_pool_recycle_seconds: int = Field(
@@ -361,6 +457,11 @@ def get_db_max_overflow() -> int:
 def get_db_pool_recycle_seconds() -> int:
     """Return the idle-connection recycle horizon (seconds)."""
     return get_settings().db_pool_recycle_seconds
+
+
+def get_sqlite_busy_timeout_ms() -> int:
+    """Return the per-connection SQLite busy timeout (milliseconds)."""
+    return get_settings().sqlite_busy_timeout_ms
 
 
 def get_diagnostics_cache_max_entries() -> int:

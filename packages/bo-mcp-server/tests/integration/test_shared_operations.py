@@ -39,6 +39,7 @@ from bo_mcp_server.tools.submit_results import submit_results
 from bo_mcp_server.tools.update_suggestion_status import (
     update_suggestion_status as update_suggestion_status_tool,
 )
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(rows: list[dict]) -> list[ResultSubmissionInput]:
@@ -69,7 +70,7 @@ async def _create_single_objective_campaign(owner_id: str, name: str) -> str:
 class TestSharedOperations:
     @pytest.mark.asyncio
     async def test_lifecycle_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         operation_campaign_id = await _create_single_objective_campaign(
             owner_id,
             "Lifecycle Shared Op Test",
@@ -95,7 +96,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_reopen_returns_completed_campaign_to_running(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(
             owner_id,
             "Reopen Shared Op Test",
@@ -114,7 +115,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_reopen_rejects_campaign_that_is_not_completed(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(
             owner_id,
             "Reopen Invalid Transition Test",
@@ -128,7 +129,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_suggestion_explanation_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(
             owner_id,
             "Explanation Shared Op Test",
@@ -143,7 +144,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_batch_status_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_ids = [
             await _create_single_objective_campaign(owner_id, "Batch Shared Op Test A"),
             await _create_single_objective_campaign(owner_id, "Batch Shared Op Test B"),
@@ -156,7 +157,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_compare_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_a = await _create_single_objective_campaign(owner_id, "Compare Shared Op Test A")
         campaign_b = await _create_single_objective_campaign(owner_id, "Compare Shared Op Test B")
 
@@ -183,7 +184,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_transfer_candidates_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         source = await create_campaign(
             {
                 "name": "Shared Op Source",
@@ -244,7 +245,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_list_campaigns_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         await _create_single_objective_campaign(owner_id, "List Op Test A")
         await _create_single_objective_campaign(owner_id, "List Op Test B")
 
@@ -262,7 +263,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_list_results_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "ListResults Op Test")
         await generate_suggestions(campaign_id)
         await submit_results(
@@ -279,7 +280,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_list_suggestions_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "ListSugg Op Test")
         await generate_suggestions(campaign_id)
 
@@ -291,7 +292,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_export_campaign_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Export Op Test")
         await generate_suggestions(campaign_id)
         await submit_results(
@@ -309,7 +310,7 @@ class TestSharedOperations:
 
     @pytest.mark.asyncio
     async def test_update_suggestion_status_operation_matches_tool(self):
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         # Create two campaigns with suggestions for independent testing
         campaign_a = await _create_single_objective_campaign(owner_id, "Status Op Test A")
@@ -330,7 +331,7 @@ class TestSharedOperations:
     @pytest.mark.asyncio
     async def test_update_suggestion_status_transition_matrix(self):
         """Test all valid and invalid status transitions."""
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         async def _fresh_suggestion() -> str:
             cid = await _create_single_objective_campaign(owner_id, f"Trans {uuid4().hex[:6]}")
@@ -369,7 +370,7 @@ class TestSharedOperations:
         target state without committing the change so an automated caller can
         confirm an irreversible action.
         """
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Lifecycle")
         await generate_suggestions(campaign_id)
 
@@ -394,7 +395,7 @@ class TestSharedOperations:
     @pytest.mark.asyncio
     async def test_update_suggestion_status_dry_run_preserves_pending(self):
         """Dry-run keeps the suggestion at ``pending`` so the real call still applies."""
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Status")
         generated = await generate_suggestions(campaign_id)
         suggestion_id = generated["suggestions"][0]["id"]
@@ -418,7 +419,7 @@ class TestSharedOperations:
     @pytest.mark.asyncio
     async def test_create_campaign_dry_run_persists_nothing(self):
         """``dry_run=True`` validates the intake and emits a preview without writing."""
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Dry Run Create",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -440,7 +441,7 @@ class TestSharedOperations:
     @pytest.mark.asyncio
     async def test_generate_suggestions_dry_run_does_not_advance_state(self):
         """Dry-run reports next iteration but leaves campaign + suggestions untouched."""
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Generate")
 
         preview = await generate_suggestions_operation(campaign_id=campaign_id, dry_run=True)
@@ -466,7 +467,7 @@ class TestSharedOperations:
         ``max_observations`` budget — a caller looking at the preview
         could not tell that the real call would clamp the batch.
         """
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Pending")
         # First real call seeds an actionable PENDING suggestion.
         await generate_suggestions(campaign_id)
@@ -489,7 +490,7 @@ class TestSharedOperations:
         ``next_action_recommendation == "terminate_campaign"`` without
         triggering the (otherwise wasted) BO algorithm.
         """
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         # max_observations=1 + one submitted result -> budget exhausted.
         intake = {
             "name": "Dry Run Budget Stop",
@@ -555,7 +556,7 @@ class TestSharedOperations:
         false for pause / resume / terminate. The
         ``with_response_metadata`` wrapper closes that gap.
         """
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Lifecycle Trace")
         await generate_suggestions(campaign_id)
 
@@ -586,7 +587,7 @@ class TestSharedOperations:
             update_suggestion_status as update_suggestion_status_real_tool,
         )
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Trace Audit")
         generated = await generate_suggestions(campaign_id)
         suggestion_id = generated["suggestions"][0]["id"]
@@ -616,7 +617,7 @@ class TestSharedOperations:
         to ``completed`` before the response was assembled, defeating
         the preview contract.
         """
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Submit")
         generated = await generate_suggestions(campaign_id)
         suggestion = generated["suggestions"][0]
@@ -668,7 +669,7 @@ class TestSharedOperations:
     @pytest.mark.asyncio
     async def test_list_campaigns_pagination(self):
         """Test that pagination works correctly."""
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         for i in range(5):
             await _create_single_objective_campaign(owner_id, f"Page Test {i}")
 

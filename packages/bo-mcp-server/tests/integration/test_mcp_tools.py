@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
@@ -155,7 +156,7 @@ class TestCreateCampaign:
         """Successfully creates a campaign with valid intake data."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Test Campaign",
             "description": "A test optimization campaign",
@@ -206,7 +207,7 @@ class TestCreateCampaign:
         """Fails when intake data is invalid."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         # Missing required 'name' field
         intake_data = {
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -224,7 +225,7 @@ class TestCreateCampaign:
         """Creates campaign with constraints."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Constrained Campaign",
             "parameters": [
@@ -248,7 +249,7 @@ class TestCreateCampaign:
         """Creates multi-objective campaign."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Multi-Objective Campaign",
             "parameters": [
@@ -269,7 +270,7 @@ class TestCreateCampaign:
         """Creates campaign with categorical parameter."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Categorical Campaign",
             "parameters": [
@@ -318,7 +319,7 @@ class TestGenerateSuggestions:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
         # Create a campaign first
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Suggestion Test",
             "parameters": [
@@ -350,7 +351,7 @@ class TestGenerateSuggestions:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Custom Batch Test",
             "parameters": [
@@ -374,7 +375,7 @@ class TestGenerateSuggestions:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Multi-Param Test",
             "parameters": [
@@ -401,7 +402,7 @@ class TestGenerateSuggestions:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Method Selection Test",
             "parameters": [
@@ -494,7 +495,7 @@ class TestSubmitResults:
         from bo_mcp_server.tools.submit_results import submit_results
 
         # Setup: create campaign and generate suggestions
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Submit Results Test",
             "parameters": [
@@ -532,7 +533,7 @@ class TestSubmitResults:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Missing Params Test",
             "parameters": [
@@ -566,7 +567,7 @@ class TestSubmitResults:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Missing Objectives Test",
             "parameters": [
@@ -630,7 +631,7 @@ class TestSubmitResultsBatchOperations:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Atomic Rollback Test",
             "parameters": [
@@ -659,7 +660,7 @@ class TestSubmitResultsBatchOperations:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Partial Success Test",
             "parameters": [
@@ -718,7 +719,7 @@ class TestSubmitResultsBatchOperations:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Non-Atomic Test",
             "parameters": [
@@ -749,7 +750,7 @@ class TestSubmitResultsBatchOperations:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Partial Results IDs Test",
             "parameters": [
@@ -790,7 +791,7 @@ class TestSubmitResultsBatchOperations:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "All Fail Test",
             "parameters": [
@@ -817,7 +818,7 @@ class TestSubmitResultsBatchOperations:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Default Atomic Test",
             "parameters": [
@@ -844,7 +845,7 @@ class TestSubmitResultsBatchOperations:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Ignore Continue Test",
             "parameters": [
@@ -900,7 +901,7 @@ class TestGetDiagnostics:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Diagnostics Test",
             "parameters": [
@@ -925,7 +926,7 @@ class TestGetDiagnostics:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Single Objective Diagnostics",
             "parameters": [
@@ -968,7 +969,7 @@ class TestGetDiagnostics:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Multi Objective Diagnostics",
             "parameters": [
@@ -1010,7 +1011,7 @@ class TestGetDiagnostics:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Model Info Test",
             "parameters": [
@@ -1059,7 +1060,7 @@ class TestGetSuggestionExplanation:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.get_suggestion_explanation import get_suggestion_explanation
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Explanation Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -1138,7 +1139,7 @@ class TestUploadResultsFile:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.upload_results_file import upload_results_file
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "CSV Upload Test",
             "parameters": [
@@ -1169,7 +1170,7 @@ class TestUploadResultsFile:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.upload_results_file import upload_results_file
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Missing Param Test",
             "parameters": [
@@ -1198,7 +1199,7 @@ class TestUploadResultsFile:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.upload_results_file import upload_results_file
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Missing Obj Test",
             "parameters": [
@@ -1227,7 +1228,7 @@ class TestUploadResultsFile:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.upload_results_file import upload_results_file
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Invalid Value Test",
             "parameters": [
@@ -1273,7 +1274,7 @@ class TestEndToEndWorkflow:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Complete Workflow Test",
             "parameters": [
@@ -1327,7 +1328,7 @@ class TestEndToEndWorkflow:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Multi-Objective Workflow",
             "parameters": [
@@ -1382,7 +1383,7 @@ class TestAgentUsabilityDiagnostics:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Uncertainty Trend Test",
             "parameters": [
@@ -1423,7 +1424,7 @@ class TestAgentUsabilityDiagnostics:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "E-E Balance Test",
             "parameters": [
@@ -1463,7 +1464,7 @@ class TestAgentUsabilityDiagnostics:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Hyperparameter Visibility Test",
             "parameters": [
@@ -1506,7 +1507,7 @@ class TestAgentUsabilityDiagnostics:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Constraint Satisfaction Test",
             "parameters": [
@@ -1556,7 +1557,7 @@ class TestAgentUsabilityDiagnostics:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Diversity Test",
             "parameters": [
@@ -1626,7 +1627,7 @@ class TestCompareCampaigns:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         # Create first campaign
         intake1 = {
@@ -1708,7 +1709,7 @@ class TestDiscoverTransferCandidates:
             discover_transfer_candidates,
         )
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -1731,7 +1732,7 @@ class TestDiscoverTransferCandidates:
             discover_transfer_candidates,
         )
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Unique Campaign",
             "parameters": [{"name": "unique_param", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -1755,7 +1756,7 @@ class TestDiscoverTransferCandidates:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         # Create source campaign with results
         source_intake = {
@@ -1830,7 +1831,7 @@ class TestDiscoverTransferCandidates:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         source_intake = {
             "name": "Aliased Source",
@@ -1929,7 +1930,7 @@ class TestListCampaigns:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.list_campaigns import list_campaigns
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         # Create two campaigns
         for name in ["Campaign A", "Campaign B"]:
             intake = {
@@ -1951,8 +1952,8 @@ class TestListCampaigns:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.list_campaigns import list_campaigns
 
-        owner_a = str(uuid4())
-        owner_b = str(uuid4())
+        owner_a = await seed_owner()
+        owner_b = await seed_owner()
 
         # Create campaigns for different owners
         for owner in [owner_a, owner_a, owner_b]:
@@ -1975,7 +1976,7 @@ class TestListCampaigns:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.list_campaigns import list_campaigns
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Running Campaign",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2005,7 +2006,7 @@ class TestListCampaigns:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.list_campaigns import list_campaigns
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Verbosity Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2042,7 +2043,7 @@ class TestCampaignLifecycleTools:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Lifecycle Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2067,7 +2068,7 @@ class TestCampaignLifecycleTools:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Resume Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2092,7 +2093,7 @@ class TestCampaignLifecycleTools:
         from bo_mcp_server.tools.campaign_lifecycle import terminate_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Terminate Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2113,7 +2114,7 @@ class TestCampaignLifecycleTools:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Invalid Transition Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2147,7 +2148,7 @@ class TestBatchGetStatus:
         from bo_mcp_server.tools.batch_operations import batch_get_status
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         campaign_ids = []
 
         for i in range(3):
@@ -2171,7 +2172,7 @@ class TestBatchGetStatus:
         from bo_mcp_server.tools.batch_operations import batch_get_status
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Exists",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2193,7 +2194,7 @@ class TestBatchGetStatus:
         from bo_mcp_server.tools.batch_operations import batch_get_status
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Verbosity Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2277,7 +2278,7 @@ class TestNextActionRecommendation:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Next Action Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2299,7 +2300,7 @@ class TestNextActionRecommendation:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Next Action Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2319,7 +2320,7 @@ class TestNextActionRecommendation:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Minimal Next Action",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2345,7 +2346,7 @@ class TestVerbosityOnExistingTools:
         """Tests verbosity levels on create_campaign."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Verbosity Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],
@@ -2370,7 +2371,7 @@ class TestVerbosityOnExistingTools:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Submit Verbosity Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0, 1]}],

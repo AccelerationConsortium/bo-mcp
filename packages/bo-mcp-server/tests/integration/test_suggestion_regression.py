@@ -12,12 +12,12 @@ References:
 """
 
 import random
-from uuid import uuid4
 
 import pytest
 import torch
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
@@ -44,7 +44,7 @@ class TestSuggestionReproducibility:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Deterministic Initial Design Test",
@@ -87,7 +87,7 @@ class TestSuggestionReproducibility:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Provenance Seed Test",
@@ -143,7 +143,7 @@ class TestSuggestionReproducibility:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "1.41b seeded BO reproducibility",
@@ -224,7 +224,7 @@ class TestInitialDesignNoDuplicates:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "1.41a disjoint batches",
@@ -276,7 +276,7 @@ class TestInitialDesignNoDuplicates:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "1.41a exhaustion",
@@ -356,7 +356,7 @@ class TestPendingPointsConditioning:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "1.41 X_pending conditioning",
@@ -447,7 +447,7 @@ class TestSuggestionQualityRegression:
 
         random.seed(42)
         torch.manual_seed(42)
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Branin-Currin Regression Test",
@@ -508,7 +508,7 @@ class TestSuggestionQualityRegression:
 
         random.seed(42)
         torch.manual_seed(42)
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Quadratic Regression Test",
@@ -573,7 +573,7 @@ class TestMethodSelectionStability:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Single Objective Method Test",
@@ -619,7 +619,7 @@ class TestMethodSelectionStability:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Multi Objective Method Test",
@@ -663,7 +663,7 @@ class TestMethodSelectionStability:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Method Explanation Test",
@@ -696,7 +696,7 @@ class TestSuggestionBatchConsistency:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Batch Bounds Test",
@@ -740,7 +740,7 @@ class TestSuggestionBatchConsistency:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Provenance Index Test",
@@ -776,7 +776,7 @@ class TestSuggestionBatchConsistency:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Batch Diversity Test",
@@ -817,7 +817,7 @@ class TestIterationConsistency:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Iteration Consistency Test",

@@ -26,6 +26,7 @@ from bo_mcp_server.operations.backend_output import (
     BackendStateTooLargeError,
     validate_backend_batch,
 )
+from tests.factories import seed_owner
 
 _PROVENANCE = {
     "iteration": 1,
@@ -105,7 +106,7 @@ class TestEndToEndBackstopWiring:
     async def test_oversized_state_yields_e109_and_no_writes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from uuid import UUID, uuid4
+        from uuid import UUID
 
         from bo_mcp_server.operations import generate_suggestions as gen_mod
         from bo_mcp_server.storage import (
@@ -115,7 +116,7 @@ class TestEndToEndBackstopWiring:
         )
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         created = await create_campaign(
             {
                 "name": "Oversized State Backstop",

@@ -9,11 +9,10 @@ References:
     - PR10: Fix duplicate batch suggestions for categorical/discrete parameters
 """
 
-from uuid import uuid4
-
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
@@ -35,7 +34,7 @@ class TestCategoricalCampaignLifecycle:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         # Synthetic objective values
         strength_map = {
@@ -125,7 +124,7 @@ class TestCategoricalCampaignLifecycle:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Category Validation Test",
@@ -202,7 +201,7 @@ class TestCategoricalCampaignLifecycle:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Large Categorical Space Test",

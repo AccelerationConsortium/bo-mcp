@@ -227,6 +227,28 @@ class TestCampaignSpec:
         with pytest.raises(ValidationError):
             sample_campaign_spec.name = "New Name"
 
+    @pytest.mark.parametrize("field", ["max_iterations", "initial_design_size"])
+    @pytest.mark.parametrize("value", [0, -5])
+    def test_iteration_budget_fields_reject_non_positive(self, field: str, value: int):
+        """``max_iterations`` / ``initial_design_size`` must be >= 1 when set.
+
+        A zero or negative ``max_iterations`` creates a born-dead campaign
+        whose every generate returns BUDGET_EXCEEDED; the constraint
+        mirrors the ``ge=1`` already enforced on ``max_observations`` /
+        ``batch_size``.
+        """
+        with pytest.raises(ValidationError):
+            CampaignSpec.model_validate(
+                {
+                    "name": "Test",
+                    "parameters": [
+                        {"name": "temp", "type": "continuous", "bounds": [0.0, 100.0]},
+                    ],
+                    "objectives": [{"name": "cost", "direction": "minimize"}],
+                    field: value,
+                }
+            )
+
     def test_constraint_references_valid_parameters(self):
         """Constraint must reference valid parameters."""
         with pytest.raises(ValidationError):

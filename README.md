@@ -303,7 +303,7 @@ pre-commit run --all   # manual run
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BO_BACKEND` | `baybe` | Default backend (`baybe` or legacy `botorch`) |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./data/bo_mcp.db` | Database connection string |
+| `DATABASE_URL` | source checkout: `sqlite+aiosqlite:///<project>/data/bo_mcp.db`; installed package: SQLite file in the OS user data directory (via `platformdirs`, e.g. `~/.local/share/bo-mcp-server` on Linux, `~/Library/Application Support/bo-mcp-server` on macOS) | Database connection string; both defaults are absolute, so stdio launches from any directory use the same file |
 | `SQL_ECHO` | `false` | Log SQL queries |
 | `BO_MCP_LOG_LEVEL` | `INFO` | Logging verbosity |
 | `BO_MCP_NETWORK_NAME` | `bo-mcp-network` | External Docker network used by Compose |

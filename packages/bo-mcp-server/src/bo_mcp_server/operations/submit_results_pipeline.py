@@ -31,6 +31,7 @@ from bo_mcp_server.domain import (
     SuggestionStatus,
 )
 from bo_mcp_server.domain.campaign_spec import InputParameter
+from bo_mcp_server.operations.generate_suggestions import classify_pending_suggestions
 from bo_mcp_server.operations.submit_results_validation import (
     _record_row_error,
     _RowError,
@@ -458,7 +459,7 @@ def _reject_free_floating(
     idx: int,
     spec: CampaignSpec,
     existing_count: int,
-    n_actionable: int,
+    n_reserved_slots: int,
     atomic: bool,
     continue_on_error: bool,
     tracking: _SubmitTracking,
@@ -467,7 +468,7 @@ def _reject_free_floating(
     err = (
         f"Result {idx}: would exceed max_observations="
         f"{spec.max_observations} "
-        f"(existing={existing_count}, pending_reserved={n_actionable})."
+        f"(existing={existing_count}, pending_reserved={n_reserved_slots})."
     )
     # Budget violation is a row-level (not field-level) constraint, so
     # the path bottoms out at ``results[idx]`` itself.
@@ -482,6 +483,7 @@ def _apply_dup_and_budget_filter(
     *,
     existing_count: int,
     actionable_ids: set[str],
+    budget_reserved_ids: set[str],
     backend: BOBackend,
     force: bool,
     atomic: bool,
@@ -506,10 +508,17 @@ def _apply_dup_and_budget_filter(
     3. **Pass B — free-floating rows.** Walked in input order. Each
        row is rejected when it duplicates an already-accepted row
        (reserved or earlier free-floating) and otherwise competes for
-       the unreserved slack ``cap - existing - len(actionable_ids)``;
+       the unreserved slack ``cap - existing - n_reserved_slots``;
        overflow rows fail with the budget error. A duplicate row never
        consumes slack, so a free-floating duplicate cannot starve a
        later unique free-floating row.
+
+    ``budget_reserved_ids`` is the subset of ``actionable_ids`` that
+    still holds a budget slot under the same staleness classification
+    generate uses (aged-out PENDING rows are excluded — the next
+    generate would expire them). A stale row *claimed by this batch*
+    becomes an observation now instead of expiring, so claimed ids are
+    unioned back in before the slack is computed.
 
     Notes:
     * The stored-duplicate check happens earlier, per-row, in
@@ -522,7 +531,8 @@ def _apply_dup_and_budget_filter(
       no-op; only the duplicate check runs.
     """
     reserved, free_floating = _partition_reserved(valid_submissions, actionable_ids)
-    n_actionable = len(actionable_ids)
+    claimed_ids = {row.suggestion_id for _, row in reserved if row.suggestion_id is not None}
+    n_reserved_slots = len(budget_reserved_ids | claimed_ids)
     has_cap = spec.max_observations is not None
     state = _FilterState(accepted_params=[], kept=[])
 
@@ -541,7 +551,7 @@ def _apply_dup_and_budget_filter(
     if spec.max_observations is None:
         slack = 0
     else:
-        slack = max(int(spec.max_observations) - existing_count - n_actionable, 0)
+        slack = max(int(spec.max_observations) - existing_count - n_reserved_slots, 0)
     for idx, row in free_floating:
         if not _check_in_batch_duplicate(
             idx, row, state, backend, force, atomic, continue_on_error, tracking
@@ -549,7 +559,7 @@ def _apply_dup_and_budget_filter(
             continue
         if has_cap and slack <= 0:
             _reject_free_floating(
-                idx, spec, existing_count, n_actionable, atomic, continue_on_error, tracking
+                idx, spec, existing_count, n_reserved_slots, atomic, continue_on_error, tracking
             )
             continue
         if has_cap:
@@ -599,6 +609,13 @@ async def _validate_and_create_results(
     # inline suggestion-reference check below *and* the budget guard later.
     actionable_suggestions = await suggestion_repo.list_actionable_by_campaign(campaign_uuid)
     actionable_ids = {str(s.id) for s in actionable_suggestions}
+    # Budget slots use the same staleness classification as generate:
+    # aged-out PENDING rows would be expired by the next generate, so
+    # they must not budget-reject a free-floating submit. They stay in
+    # ``actionable_ids`` (a submit referencing a stale suggestion still
+    # completes it — and then re-enters the count inside the filter).
+    valid_pending, _stale_pending = classify_pending_suggestions(actionable_suggestions)
+    budget_reserved_ids = {str(s.id) for s in valid_pending}
 
     # Phase 1 — pure validation; no writes hit the session.
     #
@@ -666,6 +683,7 @@ async def _validate_and_create_results(
         spec,
         existing_count=len(existing_params),
         actionable_ids=actionable_ids,
+        budget_reserved_ids=budget_reserved_ids,
         backend=backend,
         force=force,
         atomic=atomic,

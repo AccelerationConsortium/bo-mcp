@@ -20,11 +20,11 @@ References:
 """
 
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(rows: list[dict]) -> list[ResultSubmissionInput]:
@@ -43,7 +43,7 @@ async def _build_campaign_with_suggestions(
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Atomic Submit Regression",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -641,7 +641,7 @@ class TestSubmitResultsAtomicPreValidation:
 
         # Build a campaign with max_observations=2, batch_size=2 so we can
         # generate two pending suggestions and seed one stored result.
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Budget Drop No Shadow",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -729,7 +729,7 @@ class TestSubmitResultsAtomicPreValidation:
         from bo_mcp_server.operations.submit_results import submit_results_operation
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Dup Does Not Eat Budget",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -788,7 +788,7 @@ class TestSubmitResultsAtomicPreValidation:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Reservation Wins Duplicate Tie",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],

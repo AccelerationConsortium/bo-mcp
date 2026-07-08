@@ -30,6 +30,9 @@ dependencies = [
     "alembic>=1.13",
     "prometheus-client>=0.20",
     "python-json-logger>=3.0",
+    # OS-appropriate user data directory for the default SQLite location
+    # when running from an installed wheel (no source tree to anchor to).
+    "platformdirs>=4.0",
 ]
 
 [project.optional-dependencies]

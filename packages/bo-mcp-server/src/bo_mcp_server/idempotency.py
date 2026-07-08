@@ -411,9 +411,10 @@ async def purge_expired_cache_rows() -> int:
     until this sweep runs.
 
     Safe to call concurrently with operation traffic: the ``DELETE``
-    uses the same primary-key predicate as a fresh reservation, so a
-    pending reservation winner can never have its row removed (its
-    ``expires_at`` is still in the future).
+    filters on ``expires_at <= now`` (served by
+    ``ix_idempotency_cache_expires_at``), so a pending reservation
+    winner can never have its row removed — its ``expires_at`` is
+    still in the future.
     """
     async with get_session() as session:
         result = await session.execute(

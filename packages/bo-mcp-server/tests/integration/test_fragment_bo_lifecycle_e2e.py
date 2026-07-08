@@ -1,7 +1,5 @@
 """E2E integration test for categorical donor/acceptor BO lifecycle."""
 
-from uuid import uuid4
-
 import pytest
 
 from bo_mcp_server.domain import (  # type: ignore[import-untyped]
@@ -17,6 +15,7 @@ from bo_mcp_server.tools.generate_suggestions import (  # type: ignore[import-un
 )
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics  # type: ignore[import-untyped]
 from bo_mcp_server.tools.submit_results import submit_results  # type: ignore[import-untyped]
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
@@ -31,7 +30,7 @@ class TestFragmentLifecycleE2E:
     async def test_fragment_campaign_should_complete_six_cycles_without_force(self):
         """Desired behavior: normal run completes 6 cycles and returns a best pair."""
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         n_cycles = 6
         batch_size = 3
 

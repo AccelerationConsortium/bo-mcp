@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import patch
-from uuid import uuid4
 
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 pytestmark = pytest.mark.usefixtures("setup_database")
 
@@ -37,7 +37,7 @@ async def test_measurement_uncertainty_drives_fixed_noise_likelihood() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Measurement Uncertainty End-to-End",
         # train_yvar / FixedNoiseGaussianLikelihood is a BoTorch-only feature.
@@ -123,7 +123,7 @@ async def test_partial_measurement_uncertainty_falls_back_to_trainable_noise() -
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Partial Measurement Uncertainty",
         # train_yvar / FixedNoiseGaussianLikelihood is a BoTorch-only feature.

@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import math
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(rows: list[dict[str, Any]]) -> list[ResultSubmissionInput]:
@@ -26,7 +26,7 @@ async def _build_campaign(batch_size: int = 2) -> tuple[str, list[dict[str, Any]
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Uncertainty Validation",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],

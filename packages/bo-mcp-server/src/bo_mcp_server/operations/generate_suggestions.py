@@ -232,7 +232,7 @@ def _status_breakdown(suggestions: list[Suggestion]) -> dict[str, int]:
     return breakdown
 
 
-def _classify_pending_suggestions(
+def classify_pending_suggestions(
     pending: list[Suggestion],
 ) -> tuple[list[Suggestion], list[Suggestion]]:
     """Read-only split of actionable suggestions into ``valid`` and ``stale``.
@@ -243,6 +243,11 @@ def _classify_pending_suggestions(
     reservation regardless of age. Pure function so dry-run callers can
     compute the actionable-vs-stale split without writing any
     ``EXPIRED`` rows.
+
+    Public because the submit path reuses the same classification for its
+    observation-budget guard — both operations must agree on which pending
+    rows still hold budget slots, or a free-floating result gets rejected
+    for slots the next generate would free.
     """
     if not pending:
         return [], []
@@ -692,7 +697,7 @@ def _compute_preflight(
     can call it before doing anything irreversible.
     """
     opt_spec = campaign_spec_to_optimization_spec(spec)
-    valid_pending, stale_pending = _classify_pending_suggestions(pending)
+    valid_pending, stale_pending = classify_pending_suggestions(pending)
     observations = results_to_observations(results)
     next_iteration = campaign.iteration + 1
 

@@ -20,11 +20,11 @@ agent loops can branch without parsing free-form messages.
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 pytestmark = pytest.mark.usefixtures("setup_database")
 
@@ -45,7 +45,7 @@ async def test_max_iterations_stops_after_budget() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Iteration Budget",
         "parameters": [
@@ -101,7 +101,7 @@ async def test_max_observations_stops_at_cap() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Observation Budget",
         "parameters": [
@@ -160,7 +160,7 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Pending Counts Toward Budget",
         "parameters": [
@@ -242,7 +242,7 @@ async def test_submit_results_rejects_overflow_in_atomic_mode() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Atomic Submit Budget",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -311,7 +311,7 @@ async def test_submit_results_keeps_in_budget_rows_in_non_atomic_mode() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Non-Atomic Submit Budget",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -379,7 +379,7 @@ async def test_submit_protects_pending_reservation_atomic() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Pending Reservation Atomic",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -459,7 +459,7 @@ async def test_submit_protects_pending_reservation_non_atomic() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Pending Reservation Non-Atomic",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -521,7 +521,7 @@ async def test_submit_pending_suggestion_consumes_its_reservation() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Pending Self-Consume",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -555,6 +555,78 @@ async def test_submit_pending_suggestion_consumes_its_reservation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_pending_suggestion_does_not_budget_reject_free_floating_submit() -> None:
+    """An aged-out PENDING row releases its budget slot for a free-floating submit.
+
+    Submit and generate must agree on which pending rows still hold
+    budget slots: generate excludes stale PENDING rows (older than
+    ``PENDING_SUGGESTION_MAX_AGE_HOURS`` — the next generate call
+    expires them), so submit must not reject a free-floating result for
+    a slot that is already logically free.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
+    from bo_mcp_server.domain.utils import utcnow
+    from bo_mcp_server.operations.list_results import list_results_operation
+    from bo_mcp_server.operations.submit_results import submit_results_operation
+    from bo_mcp_server.storage import get_session
+    from bo_mcp_server.storage.models import SuggestionModel
+    from bo_mcp_server.tools.create_campaign import create_campaign
+    from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+
+    owner_id = await seed_owner()
+    intake = {
+        "name": "Stale Pending Releases Slot",
+        "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+        "max_observations": 1,
+        "initial_design_size": 1,
+        "batch_size": 1,
+        "random_seed": 7,
+    }
+    create_result = await create_campaign(intake, owner_id)
+    campaign_id = create_result["campaign_id"]
+
+    gen = await generate_suggestions(campaign_id)
+    (suggestion,) = gen["suggestions"]
+
+    free_floating = [{"parameter_values": {"x": 0.42}, "objective_values": {"y": 0.42}}]
+
+    # Fresh PENDING row: the reservation is honored, the submit is rejected.
+    blocked = await submit_results_operation(
+        campaign_id=campaign_id,
+        results=_to_result_inputs(free_floating),
+        submitted_by=owner_id,
+        atomic=True,
+    )
+    assert blocked["success"] is False
+    assert "max_observations" in " ".join(blocked["errors"]).lower()
+
+    # Age the pending row past the staleness horizon; the next generate
+    # would expire it, so its slot must no longer block the submit.
+    aged = utcnow() - timedelta(hours=PENDING_SUGGESTION_MAX_AGE_HOURS + 1)
+    async with get_session() as session:
+        await session.execute(
+            update(SuggestionModel)
+            .where(SuggestionModel.id == suggestion["id"])
+            .values(created_at=aged)
+        )
+
+    accepted = await submit_results_operation(
+        campaign_id=campaign_id,
+        results=_to_result_inputs(free_floating),
+        submitted_by=owner_id,
+        atomic=True,
+    )
+    assert accepted["success"] is True
+    stored = await list_results_operation(campaign_id=campaign_id)
+    assert stored["total_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_submit_protects_accepted_reservation() -> None:
     """ACCEPTED suggestions reserve budget just like PENDING ones.
 
@@ -572,7 +644,7 @@ async def test_submit_protects_accepted_reservation() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Accepted Reservation Atomic",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -660,7 +732,7 @@ async def test_budget_stop_surfaces_pending_vs_accepted_breakdown() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Pending vs Accepted Breakdown",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -708,7 +780,7 @@ async def test_generate_treats_accepted_suggestions_as_reservations() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Accepted Reservation Generate",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -762,7 +834,7 @@ async def test_mixed_batch_protects_reservation_regardless_of_order_atomic() -> 
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Mixed Order Atomic",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -812,7 +884,7 @@ async def test_mixed_batch_protects_reservation_regardless_of_order_non_atomic()
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Mixed Order Non-Atomic",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -874,7 +946,7 @@ async def test_batch_size_clamps_to_remaining_observation_budget() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Clamp Batch",
         "parameters": [
@@ -925,7 +997,7 @@ async def test_no_budget_runs_indefinitely() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "No Budget",
         "parameters": [

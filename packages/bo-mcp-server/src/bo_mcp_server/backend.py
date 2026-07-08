@@ -327,9 +327,18 @@ def resolve_backend_name(name: str, spec_dict: dict[str, Any]) -> str:
     full: list[str] = []
     degraded: list[str] = []
     for backend_name in _candidate_backends(env_default):
+        # Skip backends that fail to load for either reason the health
+        # path recognizes (see get_backend_capabilities): an unknown /
+        # misregistered name (ValueError) or a broken optional
+        # dependency surfacing as ImportError at entry-point load.
         try:
             backend = get_backend(backend_name)
-        except ValueError:
+        except (ValueError, ImportError) as exc:
+            logger.warning(
+                "Skipping backend '%s' during auto-selection (failed to load: %s)",
+                backend_name,
+                exc,
+            )
             continue
         tier = _backend_compatibility_tier(backend, spec_dict)
         if tier == _CompatibilityTier.FULL:

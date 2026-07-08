@@ -26,6 +26,7 @@ import pytest
 
 from bo_mcp_server.domain import CampaignIntakeInput
 from bo_mcp_server.operations.create_campaign import create_campaign_operation
+from tests.factories import seed_owner
 
 pytestmark = pytest.mark.usefixtures("setup_database")
 
@@ -42,7 +43,7 @@ async def _make_campaign(name: str = "Test Campaign") -> str:
     intake = CampaignIntakeInput.model_validate(_spec(name=name))
     response = await create_campaign_operation(
         intake_data=intake,
-        owner_id=str(uuid4()),
+        owner_id=await seed_owner(),
         verbosity="minimal",
     )
     assert response["success"], response
@@ -170,7 +171,7 @@ class TestCursorOffsetMutualExclusion:
         from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 
         # Seed multiple campaigns and walk one page via cursor.
-        owner = UUID(int=42)
+        owner = UUID(await seed_owner())
         for i in range(3):
             intake = CampaignIntakeInput.model_validate(_spec(name=f"Cursor {i}"))
             response = await create_campaign_operation(
@@ -206,7 +207,7 @@ class TestCursorOffsetMutualExclusion:
         """
         from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 
-        owner = UUID(int=7)
+        owner = UUID(await seed_owner())
         expected_ids: list[str] = []
         for i in range(3):
             intake = CampaignIntakeInput.model_validate(_spec(name=f"Walker {i}"))
@@ -275,7 +276,7 @@ class TestCursorOffsetMutualExclusion:
         from bo_mcp_server.storage import get_session
         from bo_mcp_server.storage.models import CampaignModel
 
-        owner = UUID(int=21)
+        owner = UUID(await seed_owner())
         shared_ts = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
 
         # Create four real campaigns through the operation layer so
@@ -361,7 +362,7 @@ class TestCursorOffsetMutualExclusion:
         """
         from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 
-        owner = UUID(int=11)
+        owner = UUID(await seed_owner())
         expected_ids: list[str] = []
         for i in range(5):
             intake = CampaignIntakeInput.model_validate(_spec(name=f"Tiny {i}"))

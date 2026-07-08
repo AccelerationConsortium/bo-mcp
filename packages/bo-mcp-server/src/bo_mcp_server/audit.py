@@ -30,7 +30,7 @@ unchanged so they are not silently buried under the audit mode flag.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -41,6 +41,89 @@ from bo_mcp_server.settings import get_audit_failures_fatal
 from bo_mcp_server.storage import EventRepository, get_session
 
 logger = logging.getLogger(__name__)
+
+# Characters kept per stringified argument value in the input summary.
+# The audit row records *what* was called, not the full payload — long
+# strings (serialized specs, CSV content) are truncated so a single
+# event row stays cheap to store and render.
+MAX_SUMMARY_VALUE_LENGTH = 120
+
+
+def _summarize_value(value: object) -> object:
+    """Reduce one argument value to an audit-safe compact form."""
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, str):
+        if len(value) <= MAX_SUMMARY_VALUE_LENGTH:
+            return value
+        return value[:MAX_SUMMARY_VALUE_LENGTH] + "..."
+    if isinstance(value, dict):
+        return {"type": "dict", "n_keys": len(value)}
+    if isinstance(value, list | tuple | set):
+        return {"type": type(value).__name__, "length": len(value)}
+    return {"type": type(value).__name__}
+
+
+def summarize_tool_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Build the compact ``input_summary`` for a tool invocation.
+
+    Scalars pass through (long strings truncated); nested payloads
+    (intake specs, result batches) are reduced to shape descriptions
+    so the audit trail never stores potentially large or sensitive
+    full payloads.
+    """
+    return {key: _summarize_value(value) for key, value in arguments.items()}
+
+
+def summarize_tool_result(result: object) -> dict[str, Any]:
+    """Build the compact ``output_summary`` for a tool invocation.
+
+    Records the ``success`` flag, the structured ``error.code`` when
+    present, and the length of every list-valued top-level field
+    (``n_suggestions``, ``n_errors``, ...) — enough for the
+    ``events://`` trail to reconstruct what happened without
+    duplicating response bodies.
+    """
+    if not isinstance(result, dict):
+        return {"type": type(result).__name__}
+    result_dict = cast("dict[str, Any]", result)
+    summary: dict[str, Any] = {"success": result_dict.get("success")}
+    error = result_dict.get("error")
+    if isinstance(error, dict) and error.get("code") is not None:
+        summary["error_code"] = error["code"]
+    for key, value in result_dict.items():
+        if isinstance(value, list | tuple):
+            summary[f"n_{key}"] = len(value)
+    return summary
+
+
+def extract_audit_campaign_id(
+    arguments: dict[str, Any],
+    result: object = None,
+) -> str | None:
+    """Pull a well-formed ``campaign_id`` for event attribution.
+
+    The tool's own ``campaign_id`` argument wins; a ``campaign_id``
+    field on a dict result is the fallback so creation tools — which
+    take no campaign id and only mint one in their response — still
+    attribute their event to the new campaign and show up under
+    ``events://{campaign_id}``. Malformed ids return ``None`` instead
+    of raising so a validation failure on the tool's own path is not
+    double-counted as an audit failure; the event is then recorded
+    without campaign attribution.
+    """
+    candidates: list[object] = [arguments.get("campaign_id")]
+    if isinstance(result, dict):
+        candidates.append(cast("dict[str, Any]", result).get("campaign_id"))
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        try:
+            UUID(value)
+        except ValueError:
+            continue
+        return value
+    return None
 
 
 class AuditPersistenceError(RuntimeError):

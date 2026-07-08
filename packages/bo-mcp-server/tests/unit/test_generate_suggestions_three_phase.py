@@ -492,3 +492,59 @@ async def test_compute_timeout_disabled_awaits_to_completion(
         return {"ok": True}
 
     assert await gs._await_compute_with_timeout(quick()) == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_dry_run_preview_matches_real_batch_when_budget_clamped(
+    setup_database,
+) -> None:
+    """Dry-run and the real path share one preflight — clamps cannot diverge.
+
+    ``_load_generation_snapshot`` calls the same ``_compute_preflight``
+    the dry-run preview uses, so the ``planned_batch_size`` a budget-
+    clamped campaign reports under ``dry_run=True`` must equal the
+    number of suggestions the real call then persists. A divergence
+    here is exactly the failure class ``dry_run`` exists to prevent.
+
+    Setup: ``batch_size=3`` with ``max_observations=4`` and 2 stored
+    results leaves a remaining budget of 2, so both paths must clamp
+    3 → 2.
+    """
+    _ = setup_database
+    from bo_mcp_server.domain import ResultSubmissionInput
+    from bo_mcp_server.tools.create_campaign import create_campaign
+    from bo_mcp_server.tools.submit_results import submit_results
+
+    owner_id = str(uuid4())
+    created = await create_campaign(
+        intake_data={
+            "name": "Dry-run parity (budget clamp)",
+            "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+            "objectives": [{"name": "y", "direction": "minimize"}],
+            "batch_size": 3,
+            "max_observations": 4,
+        },
+        owner_id=owner_id,
+    )
+    assert created["success"] is True, created
+    campaign_id = created["campaign_id"]
+
+    submitted = await submit_results(
+        campaign_id,
+        [
+            ResultSubmissionInput(parameter_values={"x": 0.25}, objective_values={"y": 1.0}),
+            ResultSubmissionInput(parameter_values={"x": 0.75}, objective_values={"y": 2.0}),
+        ],
+        owner_id,
+    )
+    assert submitted["success"] is True, submitted
+
+    preview = await gs.generate_suggestions_operation(campaign_id=campaign_id, dry_run=True)
+    assert preview["success"] is True, preview
+    assert preview["preview"]["batch_clamped_by_budget"] is True
+    assert preview["preview"]["planned_batch_size"] == 2
+
+    real = await gs.generate_suggestions_operation(campaign_id=campaign_id)
+    assert real["success"] is True, real
+    assert len(real["suggestions"]) == preview["preview"]["planned_batch_size"]
+    assert real["iteration"] == preview["preview"]["next_iteration"]

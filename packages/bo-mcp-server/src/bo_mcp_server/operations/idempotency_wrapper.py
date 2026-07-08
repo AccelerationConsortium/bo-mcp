@@ -126,6 +126,27 @@ def canonical_create_campaign_payload(
     }
 
 
+def canonical_generate_suggestions_payload(
+    campaign_id: str,
+    batch_size: int | None,
+    verbosity: str = "standard",
+) -> dict[str, Any]:
+    """Build the canonical ``bo_generate_suggestions`` idempotency payload.
+
+    Mirrors :func:`canonical_create_campaign_payload`: MCP tool
+    wrappers and REST routes both call this helper so the request
+    hash — and therefore the cache row — is shared across transports
+    for semantically identical generation requests. The inputs are
+    already plain scalars, so canonicalization is just pinning the
+    key set and defaults in one place.
+    """
+    return {
+        "campaign_id": campaign_id,
+        "batch_size": batch_size,
+        "verbosity": verbosity,
+    }
+
+
 def canonical_submit_results_payload(
     campaign_id: str,
     results: Sequence[dict[str, Any] | ResultSubmissionInput],

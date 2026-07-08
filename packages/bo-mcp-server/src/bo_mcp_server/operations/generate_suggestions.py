@@ -616,6 +616,7 @@ class _GenerationPreflight:
     next_iteration: int
     planned_batch_size: int
     n_results: int
+    observations: list[ObservationData]
     valid_pending: list[Suggestion]
     stale_pending: list[Suggestion]
     budget_remaining: int | None
@@ -725,6 +726,15 @@ def _compute_preflight(
             )
             return _build_stopping_response(stop, campaign.iteration, str(campaign.id))
         if budget_remaining < planned:
+            logger.info(
+                "Clamping batch_size %d -> %d to respect max_observations=%d "
+                "(n_observations=%d, n_pending=%d)",
+                planned,
+                budget_remaining,
+                opt_spec.max_observations,
+                len(observations),
+                len(valid_pending),
+            )
             clamped = True
             planned = budget_remaining
 
@@ -732,6 +742,7 @@ def _compute_preflight(
         next_iteration=next_iteration,
         planned_batch_size=planned,
         n_results=len(results),
+        observations=observations,
         valid_pending=valid_pending,
         stale_pending=stale_pending,
         budget_remaining=budget_remaining,
@@ -753,12 +764,18 @@ async def _load_preflight_inputs(
         repos = _init_repositories(db)
         campaign = await repos.campaign.get(campaign_uuid)
         if campaign is None:
+            logger.warning("Campaign not found: %s", campaign_id)
             return make_error_response(
                 ErrorCode.CAMPAIGN_NOT_FOUND,
                 message=f"Campaign {campaign_id} not found",
                 details={"campaign_id": campaign_id},
             )
         if not campaign.can_generate_suggestions:
+            logger.warning(
+                "Cannot generate suggestions for campaign %s: status=%s",
+                campaign_id,
+                campaign.status.value,
+            )
             response = make_error_response(
                 ErrorCode.INVALID_STATE_TRANSITION,
                 message=(
@@ -886,120 +903,50 @@ async def _load_generation_snapshot(
 ) -> _GenerationSnapshot | dict[str, Any]:
     """Phase 1 — short read transaction → snapshot.
 
-    Opens its own session so the read locks are released *before* the
-    BO compute starts. Returns either a fully-populated snapshot or
-    the same structured envelope the legacy path emits for the
-    early-exit cases (campaign not found, invalid status, stopping
-    criteria fired, budget exhausted). Phase 1 is read-only; the
-    EXPIRED writes for stale pending rows are deferred to phase 3 so
-    a long compute that ultimately conflicts on OCC does not leak
-    a half-finished expiration set.
+    Opens its own session (via :func:`_load_preflight_inputs`) so the
+    read locks are released *before* the BO compute starts, then runs
+    the same :func:`_compute_preflight` the dry-run preview uses — the
+    stopping decision, observation budget, and batch clamp cannot
+    drift between the two paths. Returns either a fully-populated
+    snapshot or the structured envelope for the early-exit cases
+    (campaign not found, invalid status, stopping criteria fired,
+    budget exhausted). Phase 1 is read-only; the EXPIRED writes for
+    stale pending rows are deferred to phase 3 so a long compute that
+    ultimately conflicts on OCC does not leak a half-finished
+    expiration set.
     """
-    async with session_scope(None) as db:
-        repos = _init_repositories(db)
-        campaign = await repos.campaign.get(campaign_uuid)
-        if campaign is None:
-            logger.warning("Campaign not found: %s", campaign_id)
-            return make_error_response(
-                ErrorCode.CAMPAIGN_NOT_FOUND,
-                message=f"Campaign {campaign_id} not found",
-                details={"campaign_id": campaign_id},
-            )
+    loaded = await _load_preflight_inputs(campaign_id, campaign_uuid)
+    if isinstance(loaded, dict):
+        return loaded
+    campaign, spec, results, pending = loaded
 
-        if not campaign.can_generate_suggestions:
-            logger.warning(
-                "Cannot generate suggestions for campaign %s: status=%s",
-                campaign_id,
-                campaign.status.value,
-            )
-            response = make_error_response(
-                ErrorCode.INVALID_STATE_TRANSITION,
-                message=(
-                    f"Campaign status is {campaign.status.value}, cannot generate suggestions"
-                ),
-                details={"current_status": campaign.status.value},
-            )
-            response["iteration"] = campaign.iteration
-            return response
+    preflight = _compute_preflight(campaign, spec, results, pending, batch_size)
+    if not isinstance(preflight, _GenerationPreflight):
+        return preflight
 
-        spec = await repos.spec.get(campaign.spec_id)
-        if spec is None:
-            response = make_error_response(
-                ErrorCode.DATABASE_ERROR,
-                message="Campaign spec not found",
-                details={"spec_id": str(campaign.spec_id)},
-            )
-            response["iteration"] = campaign.iteration
-            return response
-
-        results = await repos.result.list_by_campaign(campaign_uuid)
-        pending = await repos.suggestion.list_actionable_by_campaign(campaign_uuid)
-
-    valid_pending, stale_pending = _classify_pending_suggestions(pending)
-    pending_info = _build_pending_info(pending, valid_pending, len(stale_pending))
-
-    actual_batch_size = batch_size if batch_size is not None else spec.batch_size
-    opt_spec = campaign_spec_to_optimization_spec(spec)
-    new_iteration = campaign.iteration + 1
-    observations = results_to_observations(results)
-
-    stopping = evaluate_stopping_decision(opt_spec, observations, new_iteration)
-    if stopping.should_stop:
-        return _build_stopping_response(stopping, campaign.iteration, campaign_id)
-
-    if opt_spec.max_observations is not None:
-        remaining_budget = int(opt_spec.max_observations) - len(observations) - len(valid_pending)
-        if remaining_budget <= 0:
-            actionable_breakdown = _status_breakdown(valid_pending)
-            stopping = StoppingDecision(
-                should_stop=True,
-                reason=StoppingReason.BUDGET_EXCEEDED_OBSERVATIONS,
-                message=(
-                    f"max_observations={opt_spec.max_observations} already "
-                    "covered by stored results plus actionable suggestions "
-                    f"(pending={actionable_breakdown['pending']}, "
-                    f"accepted={actionable_breakdown['accepted']})."
-                ),
-                details={
-                    "n_observations": len(observations),
-                    "n_pending": len(valid_pending),
-                    "actionable_breakdown": actionable_breakdown,
-                    "max_observations": int(opt_spec.max_observations),
-                    "next_action_recommendation": "terminate_campaign",
-                },
-            )
-            return _build_stopping_response(stopping, campaign.iteration, campaign_id)
-        if remaining_budget < actual_batch_size:
-            logger.info(
-                "Clamping batch_size %d -> %d to respect max_observations=%d "
-                "(n_observations=%d, n_pending=%d)",
-                actual_batch_size,
-                remaining_budget,
-                opt_spec.max_observations,
-                len(observations),
-                len(valid_pending),
-            )
-            actual_batch_size = remaining_budget
+    pending_info = _build_pending_info(
+        pending, preflight.valid_pending, len(preflight.stale_pending)
+    )
 
     logger.debug(
         "Generation snapshot: n_results=%d, batch_size=%d, iteration=%d, n_pending=%d",
-        len(results),
-        actual_batch_size,
-        new_iteration,
-        len(valid_pending),
+        preflight.n_results,
+        preflight.planned_batch_size,
+        preflight.next_iteration,
+        len(preflight.valid_pending),
     )
 
     return _GenerationSnapshot(
         campaign=campaign,
         campaign_version=campaign.version,
         spec=spec,
-        actual_batch_size=actual_batch_size,
-        new_iteration=new_iteration,
-        observations=observations,
-        valid_pending=valid_pending,
-        stale_pending=stale_pending,
+        actual_batch_size=preflight.planned_batch_size,
+        new_iteration=preflight.next_iteration,
+        observations=preflight.observations,
+        valid_pending=preflight.valid_pending,
+        stale_pending=preflight.stale_pending,
         pending_info=pending_info,
-        result_count=len(results),
+        result_count=preflight.n_results,
     )
 
 

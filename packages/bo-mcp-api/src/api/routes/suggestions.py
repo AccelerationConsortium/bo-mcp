@@ -3,15 +3,21 @@
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import (
     CurrentUser,
+    IdempotencyKey,
     get_authorized_campaign,
     get_authorized_suggestion,
 )
 from api.limits import MAX_GENERATION_BATCH_SIZE
 from api.schemas.common import API_RESPONSE_SCHEMA_VERSION
-from api.schemas.errors import COMMON_HTTP_ERROR_RESPONSES, operation_failure_response
+from api.schemas.errors import (
+    COMMON_HTTP_ERROR_RESPONSES,
+    IDEMPOTENCY_ERROR_RESPONSES,
+    operation_failure_response,
+)
 from api.schemas.suggestion import (
     SuggestionExplanationResponse,
     SuggestionQueryRequest,
@@ -29,10 +35,13 @@ from bo_mcp_server.client import (
     NotAuthorizedError,
     NotFoundError,
     SuggestionStatus,
+    canonical_generate_suggestions_payload,
     generate_suggestions_operation,
     get_suggestion_explanation_operation,
+    http_status_for_error,
     list_campaign_suggestions,
     list_suggestions_operation,
+    run_idempotent_operation,
     update_suggestion_status_operation,
 )
 
@@ -57,11 +66,13 @@ router = APIRouter(responses=COMMON_HTTP_ERROR_RESPONSES)
                 "errors": ["Stopping criteria have already been met."],
             },
         ),
+        **IDEMPOTENCY_ERROR_RESPONSES,
     },
 )
 async def generate_campaign_suggestions(
     campaign_id: str,
     current_user: CurrentUser,
+    idempotency_key: IdempotencyKey,
     response: Response,
     batch_size: Annotated[int | None, Query(ge=1, le=MAX_GENERATION_BATCH_SIZE)] = None,
 ) -> SuggestionsGenerateResponse:
@@ -73,13 +84,45 @@ async def generate_campaign_suggestions(
     backend failure, etc.) keep the historical ``200 OK`` shape so
     existing tests that inspect the ``success=False`` envelope still
     see it rather than a redirected HTTP error.
+
+    Honours the ``Idempotency-Key`` request header (same cache
+    namespace as the MCP ``bo_generate_suggestions`` tool) so a
+    client retry after a gateway timeout replays the cached batch
+    instead of running the model fit again — which would persist a
+    duplicate batch, burn compute, and consume ``max_observations``
+    budget.
     """
     await get_authorized_campaign(campaign_id, current_user)
 
-    result = await generate_suggestions_operation(
-        campaign_id=campaign_id,
-        batch_size=batch_size,
+    async def run(session: AsyncSession) -> dict:
+        return await generate_suggestions_operation(
+            campaign_id=campaign_id,
+            batch_size=batch_size,
+            session=session,
+        )
+
+    # Shared canonical builder so REST and MCP hash the same shape for
+    # semantically identical generation requests and replay each
+    # other's cached responses.
+    result = await run_idempotent_operation(
+        operation_name="bo_generate_suggestions",
+        idempotency_key=idempotency_key,
+        request_payload=canonical_generate_suggestions_payload(
+            campaign_id=campaign_id,
+            batch_size=batch_size,
+        ),
+        executor=run,
     )
+    # Idempotency-layer envelopes (conflict / in-progress) lack the
+    # operation's success-shape fields; promote them to a typed
+    # HTTPException rather than letting the unpacking below 500.
+    if "suggestions" not in result:
+        raise HTTPException(
+            status_code=http_status_for_error(result),
+            detail=result.get("error", {"message": "Idempotency error"}),
+        )
+
+    idempotency_replay = bool(result.get("idempotency_replay", False))
 
     if not result["success"]:
         # Operation-level rejection: no suggestions were persisted,
@@ -91,6 +134,7 @@ async def generate_campaign_suggestions(
             suggestions=[],
             iteration=result.get("iteration"),
             errors=result["errors"],
+            idempotency_replay=idempotency_replay,
         )
 
     # Convert to response format
@@ -112,6 +156,7 @@ async def generate_campaign_suggestions(
         suggestions=suggestions,
         iteration=result["iteration"],
         errors=[],
+        idempotency_replay=idempotency_replay,
     )
 
 

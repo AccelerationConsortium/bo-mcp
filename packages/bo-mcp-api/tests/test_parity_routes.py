@@ -59,6 +59,45 @@ class TestCampaignParityRoutes:
         assert data["previous_status"] == "running"
 
     @pytest.mark.asyncio
+    async def test_lifecycle_route_surfaces_structured_error_envelope(
+        self, api_client, auth_headers, persisted_user
+    ):
+        """A rejected lifecycle action returns the structured error, not a 200.
+
+        The success-shaped ``CampaignLifecycleResponse`` cannot carry
+        the operation's ``error`` dict — Pydantic silently drops the
+        unknown field — so the route must promote ``success=False``
+        envelopes to an ``HTTPException`` whose ``detail`` preserves
+        ``code`` / ``retryable`` / ``retry_after``. Pausing a
+        terminated campaign is an ``INVALID_STATE_TRANSITION``
+        (mapped to 409, mirroring RFC 9110 §15.5.10 "conflict with
+        the current state of the target resource").
+        """
+        campaign_id = await _create_campaign_for_owner(
+            str(persisted_user.id), "Lifecycle Error Envelope Test"
+        )
+        terminated = await api_client.post(
+            f"/api/campaigns/{campaign_id}/lifecycle",
+            json={"action": "terminate"},
+            headers=auth_headers,
+        )
+        assert terminated.status_code == 200, terminated.text
+        assert terminated.json()["success"] is True
+
+        response = await api_client.post(
+            f"/api/campaigns/{campaign_id}/lifecycle",
+            json={"action": "pause"},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 409, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "E003"  # INVALID_STATE_TRANSITION
+        assert detail["retryable"] is False
+        assert detail["details"]["current_status"] == "completed"
+        assert detail["details"]["action"] == "pause"
+
+    @pytest.mark.asyncio
     async def test_batch_status_route_keeps_invalid_ids_in_payload(
         self,
         api_client,

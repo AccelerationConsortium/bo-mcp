@@ -110,6 +110,7 @@ from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
 from bo_mcp_server.operations.idempotency_wrapper import (
     OperationExecutor,
     canonical_create_campaign_payload,
+    canonical_generate_suggestions_payload,
     canonical_submit_results_payload,
     run_idempotent_operation,
 )
@@ -203,6 +204,7 @@ __all__ = [
     "bind_trace_id",
     "campaign_backend_scope",
     "canonical_create_campaign_payload",
+    "canonical_generate_suggestions_payload",
     "canonical_submit_results_payload",
     "compare_campaigns_operation",
     "create_campaign_operation",

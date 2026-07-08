@@ -30,10 +30,17 @@ skipped. A startup invariant in :func:`assert_all_tools_routed_through_wrapper`
 catches accidental regressions if a future code path bypasses the
 wrapper.
 
+The wrapper is also the audit chokepoint: it is the one code path
+that sees every tool dispatch with its name, arguments, and result,
+so each call is recorded as a ``TOOL_CALL`` event via
+:func:`bo_mcp_server.audit.log_tool_call` — the trail served by the
+``events://{campaign_id}`` resource.
+
 Notes:
     * Non-validation ``ToolError`` (tool body raised, ``Unknown tool``)
       are re-raised unchanged so the rest of the MCP stack still
-      surfaces them as transport-level errors.
+      surfaces them as transport-level errors (and are not audited —
+      the transport layer owns those failures).
 
 Reference: MCP tool error semantics
 https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-call-errors
@@ -51,12 +58,25 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
-from bo_mcp_server.errors import make_corrupted_json_response
+from bo_mcp_server.audit import (
+    AuditPersistenceError,
+    extract_audit_campaign_id,
+    log_tool_call,
+    summarize_tool_arguments,
+    summarize_tool_result,
+)
+from bo_mcp_server.errors import (
+    ErrorCode,
+    make_corrupted_json_response,
+    make_error_response,
+)
 from bo_mcp_server.field_errors import validation_envelope
 from bo_mcp_server.storage.models import CorruptedJsonColumnError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+
+    from mcp.server.fastmcp.tools import ToolManager
 
 
 # Per-tool overrides merged into the boundary-failure envelope so the
@@ -102,6 +122,67 @@ _DEFAULT_EXTRA: dict[str, Any] = {}
 _WRAPPED_MARKER = "_bo_mcp_envelope_wrapped"
 
 
+def _convert_tool_result(tool_manager: ToolManager, name: str, result: object) -> object:
+    """Replay FastMCP's result conversion after the audit hook ran.
+
+    The wrapper executes every tool with ``convert_result=False`` so the
+    audit hook can read the raw response dict; when the caller requested
+    conversion (``FastMCP.call_tool`` always does), this applies the
+    exact ``fn_metadata.convert_result`` step ``Tool.run`` would have
+    applied inline. ``Tool.run`` wraps conversion failures in
+    ``ToolError``; the catch here re-creates that contract for the
+    failure types conversion actually raises — Pydantic output-model
+    validation (``ValidationError``) and content serialization
+    (``TypeError`` / ``ValueError``) — while genuine programming bugs
+    keep propagating unwrapped.
+    """
+    tool = tool_manager.get_tool(name)
+    if tool is None:
+        # Unreachable in practice: ``original`` just dispatched this
+        # tool successfully. Defend anyway so a racing deregistration
+        # cannot turn into an AttributeError.
+        return result
+    try:
+        return tool.fn_metadata.convert_result(result)
+    except (ValidationError, TypeError, ValueError) as exc:
+        msg = f"Error executing tool {name}: {exc}"
+        raise ToolError(msg) from exc
+
+
+async def _record_audit_event(
+    name: str,
+    arguments: dict[str, Any],
+    result: object,
+) -> dict[str, Any] | None:
+    """Persist the ``TOOL_CALL`` audit event for one boundary dispatch.
+
+    The wrapped ``call_tool`` is the single chokepoint that sees every
+    tool invocation with its name, arguments, and result, so this is
+    where the audit trail advertised by ``events://{campaign_id}`` is
+    recorded. Failure handling follows the :mod:`bo_mcp_server.audit`
+    contract: by default persistence failures are logged + counted and
+    the tool response is returned untouched; under
+    ``AUDIT_FAILURES_FATAL`` the raised :class:`AuditPersistenceError`
+    is converted here into a ``DATABASE_ERROR`` envelope (returned to
+    the caller in place of the tool result) so an audit gap is never
+    silently acceptable in compliance deployments.
+    """
+    try:
+        await log_tool_call(
+            tool_name=name,
+            input_summary=summarize_tool_arguments(arguments),
+            output_summary=summarize_tool_result(result),
+            campaign_id=extract_audit_campaign_id(arguments, result),
+        )
+    except AuditPersistenceError as exc:
+        return make_error_response(
+            ErrorCode.DATABASE_ERROR,
+            message=str(exc),
+            details={"tool_name": name, "audit_failure": True},
+        )
+    return None
+
+
 def install_validation_envelope_wrapper(mcp_instance: FastMCP) -> None:
     """Wrap ``mcp_instance._tool_manager.call_tool`` to convert ToolError → envelope.
 
@@ -128,12 +209,20 @@ def install_validation_envelope_wrapper(mcp_instance: FastMCP) -> None:
     ) -> object:
         extras = _TOOL_ENVELOPE_OVERRIDES.get(name, _DEFAULT_EXTRA)
         try:
-            return await original(
+            # Always run the tool UNCONVERTED, even when the caller (the
+            # production ``FastMCP.call_tool`` path) requested
+            # ``convert_result=True``: FastMCP's conversion reduces the
+            # raw response dict to content blocks before returning, which
+            # would blind the audit hook below to ``campaign_id`` /
+            # ``success`` / ``error.code``. The requested conversion is
+            # replayed after auditing via ``_convert_tool_result``.
+            result: object = await original(
                 name,
                 arguments,
                 context=context,
-                convert_result=convert_result,
+                convert_result=False,
             )
+            needs_conversion = convert_result
         except CorruptedJsonColumnError as exc:
             # Convert the typed storage-layer exception into the
             # canonical ``DATA_INTEGRITY_ERROR`` envelope (a distinct,
@@ -141,17 +230,28 @@ def install_validation_envelope_wrapper(mcp_instance: FastMCP) -> None:
             # operator repairs them, so we steer clients away from a
             # retry loop). Without this mapper the exception would
             # propagate as a raw ``RuntimeError`` through FastMCP and
-            # leak as opaque text.
-            envelope = make_corrupted_json_response(exc)
-            return {**extras, **envelope}
+            # leak as opaque text. Synthesized envelopes are returned as
+            # raw dicts regardless of ``convert_result`` (the lowlevel
+            # server serializes dicts generically) — same behavior as
+            # before the audit hook, when the exception path skipped
+            # ``Tool.run``'s conversion step anyway.
+            result = {**extras, **make_corrupted_json_response(exc)}
+            needs_conversion = False
         except ToolError as exc:
             cause = exc.__cause__
             if isinstance(cause, CorruptedJsonColumnError):
-                envelope = make_corrupted_json_response(cause)
-                return {**extras, **envelope}
-            if not isinstance(cause, ValidationError):
+                result = {**extras, **make_corrupted_json_response(cause)}
+            elif isinstance(cause, ValidationError):
+                result = validation_envelope(cause, extra=extras)
+            else:
                 raise
-            return validation_envelope(cause, extra=extras)
+            needs_conversion = False
+        audit_failure = await _record_audit_event(name, arguments, result)
+        if audit_failure is not None:
+            return {**extras, **audit_failure}
+        if not needs_conversion:
+            return result
+        return _convert_tool_result(tool_manager, name, result)
 
     # ``setattr`` keeps ty happy: the attribute is dynamic and we
     # never type-narrow against it, just probe for it on re-entry.

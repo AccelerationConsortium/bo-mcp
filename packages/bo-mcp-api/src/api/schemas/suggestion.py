@@ -45,12 +45,19 @@ class SuggestionResponse(BaseModel):
 
 
 class SuggestionsGenerateResponse(ResponseEnvelope):
-    """Response for suggestion generation."""
+    """Response for suggestion generation.
+
+    ``idempotency_replay`` is ``True`` when the response was served
+    from the idempotency cache instead of running a fresh generation —
+    same marker the MCP tool exposes, so REST clients can distinguish
+    a retry's replayed batch from newly generated suggestions.
+    """
 
     success: bool
     suggestions: list[SuggestionResponse]
     iteration: int | None = None
     errors: list[str]
+    idempotency_replay: bool = False
 
 
 class SuggestionStatusUpdateRequest(BaseModel):

@@ -71,3 +71,54 @@ async def test_check_progress_surfaces_failure_counter() -> None:
     assert result["tracked"] is True
     assert result["failures"] == 1
     assert result["last_failure_reason"] == "loop_closed"
+
+
+async def test_check_progress_prefix_matches_per_call_registrations() -> None:
+    """Polling by campaign id resolves per-call keys, newest first.
+
+    ``bo_generate_suggestions`` registers under
+    ``"{campaign_id}:{suffix}"``; the poll side queries by bare
+    campaign id, so the lookup must prefix-match and prefer the most
+    recently started operation.
+    """
+    older, newer = ProgressStatus(), ProgressStatus()
+    older.update_event(ProgressEvent(phase="gp_fit_start", message="older"))
+    newer.update_event(ProgressEvent(phase="acq_step", message="newer"))
+    register_progress_status("camp-3:aaaa", older)
+    register_progress_status("camp-3:bbbb", newer)
+    try:
+        result = await check_progress(campaign_id="camp-3")
+    finally:
+        unregister_progress_status("camp-3:aaaa")
+        unregister_progress_status("camp-3:bbbb")
+
+    assert result["tracked"] is True
+    assert result["message"] == "newer"
+
+
+async def test_concurrent_call_cleanup_does_not_clobber_survivor() -> None:
+    """The finished call's cleanup leaves the still-running call tracked.
+
+    Two concurrent generate calls for the same campaign used to share
+    the bare campaign-id key: the loser's ``finally`` deleted the
+    survivor's entry and ``bo_check_progress`` reported
+    ``tracked: False`` while a generation was still mid-flight —
+    exactly the contended scenario polling exists for. Per-call keys
+    make cleanup self-owned.
+    """
+    first, second = ProgressStatus(), ProgressStatus()
+    first.update_event(ProgressEvent(phase="gp_fit_start", message="first"))
+    second.update_event(ProgressEvent(phase="gp_fit_start", message="second"))
+    register_progress_status("camp-4:aaaa", first)
+    register_progress_status("camp-4:bbbb", second)
+    try:
+        # The first call completes and unregisters only its own key.
+        unregister_progress_status("camp-4:aaaa")
+        result = await check_progress(campaign_id="camp-4")
+        assert result["tracked"] is True
+        assert result["message"] == "second"
+    finally:
+        unregister_progress_status("camp-4:bbbb")
+
+    after_cleanup = await check_progress(campaign_id="camp-4")
+    assert after_cleanup["tracked"] is False

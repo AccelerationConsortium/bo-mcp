@@ -34,11 +34,15 @@ from typing import Any
 
 import pytest
 
-from bo_mcp_server.client import canonical_create_campaign_payload
+from bo_mcp_server.client import (
+    canonical_create_campaign_payload,
+    canonical_generate_suggestions_payload,
+)
 from bo_mcp_server.idempotency import canonical_request_hash
 from bo_mcp_server.storage import get_session
 from bo_mcp_server.storage.models import IdempotencyCacheModel
 from bo_mcp_server.tools.create_campaign import create_campaign
+from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
 
 def _intake_payload(name: str) -> dict:
@@ -467,4 +471,173 @@ async def test_create_campaign_in_progress_reservation_returns_409(
     # Backoff hint is positive so HTTP retry middleware can honour it.
     assert detail["retry_after"] is not None
     assert detail["retry_after"] > 0
+    assert detail["details"]["idempotency_in_progress"] is True
+
+
+# ---------------------------------------------------------------------------
+# Generate-suggestions route: the most expensive mutation must honour the
+# same Idempotency-Key contract as create / submit.
+# ---------------------------------------------------------------------------
+
+
+def _suggestion_ids(body: dict[str, Any]) -> list[str]:
+    return [s["id"] for s in body["suggestions"]]
+
+
+@pytest.mark.asyncio
+async def test_generate_suggestions_idempotency_key_replays_response(
+    api_client, auth_headers, persisted_user
+) -> None:
+    """Same Idempotency-Key → replayed batch, not a second model fit.
+
+    A client retry after a gateway timeout (likely: GP fit +
+    acquisition can take minutes) must not persist a duplicate batch
+    of pending suggestions, double the compute cost, or consume the
+    ``max_observations`` budget twice. The second call replays the
+    cached response (same suggestion ids, ``idempotency_replay=True``)
+    and the campaign holds exactly one batch.
+    """
+    owner_id = str(persisted_user.id)
+    campaign_id = await _create_campaign_for_owner(owner_id, "generate-replay")
+    headers = {**auth_headers, "Idempotency-Key": "test-idem-generate-1"}
+
+    first = await api_client.post(
+        f"/api/suggestions/{campaign_id}/generate",
+        headers=headers,
+    )
+    assert first.status_code == 201, first.text
+    first_body = first.json()
+    assert first_body["success"] is True, first_body
+    assert first_body["idempotency_replay"] is False
+    first_ids = _suggestion_ids(first_body)
+    assert first_ids
+
+    second = await api_client.post(
+        f"/api/suggestions/{campaign_id}/generate",
+        headers=headers,
+    )
+    assert second.status_code == 201, second.text
+    second_body = second.json()
+    assert _suggestion_ids(second_body) == first_ids
+    assert second_body["idempotency_replay"] is True
+
+    # Exactly one batch persisted: the list route sees only the
+    # original suggestions.
+    listing = await api_client.get(f"/api/suggestions/{campaign_id}", headers=auth_headers)
+    assert listing.status_code == 200
+    assert sorted(s["id"] for s in listing.json()) == sorted(first_ids)
+
+
+@pytest.mark.asyncio
+async def test_generate_suggestions_without_idempotency_key_generates_fresh_each_call(
+    api_client, auth_headers, persisted_user
+) -> None:
+    """Without the header each call runs a fresh generation (opt-in contract)."""
+    owner_id = str(persisted_user.id)
+    campaign_id = await _create_campaign_for_owner(owner_id, "generate-no-key")
+
+    first = await api_client.post(
+        f"/api/suggestions/{campaign_id}/generate",
+        headers=auth_headers,
+    )
+    second = await api_client.post(
+        f"/api/suggestions/{campaign_id}/generate",
+        headers=auth_headers,
+    )
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert set(_suggestion_ids(first.json())).isdisjoint(_suggestion_ids(second.json()))
+
+
+@pytest.mark.asyncio
+async def test_mcp_then_rest_generate_replays_across_transports(
+    api_client, auth_headers, persisted_user
+) -> None:
+    """An MCP generate followed by a REST POST with the same key replays.
+
+    Both transports build the request hash through
+    ``canonical_generate_suggestions_payload`` so the cache namespace
+    is shared in substance, not just in name: the REST retry
+    short-circuits on the MCP call's cached row.
+    """
+    owner_id = str(persisted_user.id)
+    campaign_id = await _create_campaign_for_owner(owner_id, "cross-transport-generate")
+    key = "cross-transport-generate"
+
+    mcp_result = await generate_suggestions(
+        campaign_id=campaign_id,
+        idempotency_key=key,
+    )
+    assert mcp_result["success"] is True, mcp_result
+    mcp_ids = [s["id"] for s in mcp_result["suggestions"]]
+
+    rest_response = await api_client.post(
+        f"/api/suggestions/{campaign_id}/generate",
+        headers={**auth_headers, "Idempotency-Key": key},
+    )
+    assert rest_response.status_code == 201, rest_response.text
+    body = rest_response.json()
+    assert _suggestion_ids(body) == mcp_ids
+    assert body["idempotency_replay"] is True
+
+
+@pytest.mark.asyncio
+async def test_generate_suggestions_idempotency_conflict_returns_409(
+    api_client, auth_headers, persisted_user
+) -> None:
+    """Reusing a key with a different payload (batch_size) is a 409 conflict."""
+    owner_id = str(persisted_user.id)
+    campaign_id = await _create_campaign_for_owner(owner_id, "generate-conflict")
+    headers = {**auth_headers, "Idempotency-Key": "test-idem-generate-conflict"}
+
+    first = await api_client.post(
+        f"/api/suggestions/{campaign_id}/generate",
+        headers=headers,
+    )
+    assert first.status_code == 201, first.text
+
+    conflicting = await api_client.post(
+        f"/api/suggestions/{campaign_id}/generate?batch_size=2",
+        headers=headers,
+    )
+    assert conflicting.status_code == 409, conflicting.text
+    detail = conflicting.json()["detail"]
+    assert detail["code"] == "E015", detail  # IDEMPOTENCY_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_generate_suggestions_in_progress_reservation_returns_409(
+    api_client, auth_headers, persisted_user
+) -> None:
+    """A pending generate reservation surfaces as 409 / E014.
+
+    Exercises the "missing success-shape field" branch of the generate
+    route: the in-progress envelope has no ``suggestions`` key, so the
+    route must promote it to a typed HTTPException instead of a
+    KeyError 500. Seeding the reservation row directly is
+    deterministic — same pattern as the create-route case above.
+    """
+    owner_id = str(persisted_user.id)
+    campaign_id = await _create_campaign_for_owner(owner_id, "in-progress-generate")
+    request_hash = canonical_request_hash(
+        canonical_generate_suggestions_payload(
+            campaign_id=campaign_id,
+            batch_size=None,
+        )
+    )
+    await _seed_pending_reservation(
+        tool_name="bo_generate_suggestions",
+        idempotency_key="in-progress-key-generate",
+        request_hash=request_hash,
+    )
+
+    response = await api_client.post(
+        f"/api/suggestions/{campaign_id}/generate",
+        headers={**auth_headers, "Idempotency-Key": "in-progress-key-generate"},
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "E014", detail
+    assert detail["retryable"] is True
     assert detail["details"]["idempotency_in_progress"] is True

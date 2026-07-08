@@ -445,13 +445,28 @@ async def manage_campaign(
     request: CampaignLifecycleRequest,
     current_user: CurrentUser,
 ) -> CampaignLifecycleResponse:
-    """Manage campaign lifecycle."""
+    """Manage campaign lifecycle.
+
+    Failure envelopes carry a structured ``error`` dict
+    (``INVALID_STATE_TRANSITION``, ``CONCURRENT_MODIFICATION`` with
+    ``retryable``/``retry_after``) that the success-shaped
+    :class:`CampaignLifecycleResponse` cannot represent — Pydantic
+    would silently drop the unknown ``error`` field. Mirror
+    :func:`query_campaigns`: promote the envelope to an
+    ``HTTPException`` whose ``detail`` is the original ``error`` dict
+    so clients can route on ``detail.code`` and honor the retry hints.
+    """
     await get_authorized_campaign(campaign_id, current_user)
 
     result = await manage_campaign_lifecycle_operation(
         campaign_id=campaign_id,
         action=request.action,  # pyright: ignore[reportArgumentType]
     )
+    if not result.get("success", False):
+        raise HTTPException(
+            status_code=http_status_for_error(result),
+            detail=result.get("error", {"message": "Lifecycle action failed"}),
+        )
     return CampaignLifecycleResponse(**result)
 
 

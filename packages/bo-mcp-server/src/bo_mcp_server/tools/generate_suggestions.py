@@ -1,6 +1,7 @@
 """Generate suggestions tool wrapper for MCP."""
 
 from typing import Any, Literal
+from uuid import uuid4
 
 from mcp.server.fastmcp import Context
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.generate_suggestions import (
     generate_suggestions_operation,
+)
+from bo_mcp_server.operations.idempotency_wrapper import (
+    canonical_generate_suggestions_payload,
 )
 from bo_mcp_server.progress_bridge import (
     ProgressStatus,
@@ -66,19 +70,27 @@ async def generate_suggestions(
                 dry_run=True,
             )
 
-        request_payload = {
-            "campaign_id": campaign_id,
-            "batch_size": batch_size,
-            "verbosity": verbosity,
-        }
+        # Shared canonical builder — the REST generate route hashes the
+        # same shape, so a retry on either transport replays the other's
+        # cached response.
+        request_payload = canonical_generate_suggestions_payload(
+            campaign_id=campaign_id,
+            batch_size=batch_size,
+            verbosity=verbosity,
+        )
 
         progress_status = ProgressStatus()
         progress_callback = make_progress_callback_from_context(ctx, status=progress_status)
-        # Register the snapshot under the campaign id so a polling
-        # client (``bo_check_progress``) can read the latest event even
-        # when the push channel has dropped. The entry is removed in
-        # the finally below so completed campaigns do not linger.
-        register_progress_status(campaign_id, progress_status)
+        # Register the snapshot under a per-call key (campaign id +
+        # unique suffix) so a polling client (``bo_check_progress``,
+        # which prefix-matches on the campaign id) can read the latest
+        # event even when the push channel has dropped. The unique
+        # suffix keeps two concurrent generate calls for the same
+        # campaign from clobbering each other's registration — and the
+        # finally below from deleting the other call's still-live
+        # entry.
+        registration_token = f"{campaign_id}:{uuid4().hex}"
+        register_progress_status(registration_token, progress_status)
 
         async def run(session: AsyncSession) -> dict[str, Any]:
             return await generate_suggestions_operation(
@@ -97,4 +109,4 @@ async def generate_suggestions(
                 executor=run,
             )
         finally:
-            unregister_progress_status(campaign_id)
+            unregister_progress_status(registration_token)

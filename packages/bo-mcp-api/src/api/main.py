@@ -33,6 +33,7 @@ from api.routes import campaigns, capabilities, diagnostics, results, suggestion
 from api.settings import WILDCARD_ORIGIN, ApiSettings, get_api_settings  # noqa: E402
 from bo_mcp_server.client import (  # noqa: E402
     CorruptedJsonColumnError,
+    augment_backend_options,
     augment_parameter_options,
     bind_trace_id,
     campaign_backend_scope,
@@ -261,20 +262,23 @@ def create_app() -> FastAPI:
         """Redirect root to API docs."""
         return RedirectResponse(url="/docs")
 
-    _install_parameter_options_openapi(app)
+    _install_backend_options_openapi(app)
     return app
 
 
-def _install_parameter_options_openapi(app: FastAPI) -> None:
-    """Splice typed per-backend ``parameter_options`` into the OpenAPI doc.
+def _install_backend_options_openapi(app: FastAPI) -> None:
+    """Splice typed per-backend option schemas into the OpenAPI doc.
 
-    The intake request body's ``parameters[].parameter_options`` is an
-    opaque per-backend ``dict`` in the domain model — the neutral schema
-    cannot describe a backend's options without importing that backend.
-    We post-process the generated OpenAPI so REST/OpenAPI clients discover
-    the same typed shape the MCP tool schemas advertise (e.g. BayBE's
-    ``role=substance`` recipe). Sourced from the backend-aware
-    :func:`bo_mcp_server.schema_extension.augment_parameter_options` so
+    The intake request body's ``parameters[].parameter_options`` (per
+    parameter) and ``backend_options`` (per campaign) are opaque
+    per-backend ``dict``s in the domain model — the neutral schema cannot
+    describe a backend's options without importing that backend. We
+    post-process the generated OpenAPI so REST/OpenAPI clients discover
+    the same typed shapes the MCP tool schemas advertise (e.g. BayBE's
+    ``role=substance`` recipe and the per-campaign recommender
+    configuration). Sourced from the backend-aware
+    :func:`bo_mcp_server.schema_extension.augment_parameter_options` /
+    :func:`bo_mcp_server.schema_extension.augment_backend_options` so
     ``bo-mcp-api`` never imports a backend package directly. The standard
     FastAPI ``app.openapi`` override pattern caches on ``app.openapi_schema``.
     """
@@ -289,6 +293,7 @@ def _install_parameter_options_openapi(app: FastAPI) -> None:
             routes=app.routes,
         )
         augment_parameter_options(openapi_schema)
+        augment_backend_options(openapi_schema)
         app.openapi_schema = openapi_schema
         return app.openapi_schema
 

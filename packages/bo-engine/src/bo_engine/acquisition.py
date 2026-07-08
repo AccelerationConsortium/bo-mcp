@@ -27,7 +27,17 @@ import torch
 from botorch.acquisition import AcquisitionFunction
 from botorch.acquisition.cost_aware import InverseCostWeightedUtility
 from botorch.acquisition.logei import qLogExpectedImprovement, qLogNoisyExpectedImprovement
+from botorch.acquisition.monte_carlo import (
+    qExpectedImprovement,
+    qNoisyExpectedImprovement,
+    qProbabilityOfImprovement,
+    qSimpleRegret,
+    qUpperConfidenceBound,
+)
 from botorch.acquisition.multi_objective.logei import qLogNoisyExpectedHypervolumeImprovement
+from botorch.acquisition.multi_objective.monte_carlo import (
+    qNoisyExpectedHypervolumeImprovement,
+)
 from botorch.acquisition.multi_objective.objective import IdentityMCMultiOutputObjective
 from botorch.acquisition.multi_objective.parego import qLogNParEGO
 from botorch.acquisition.objective import GenericMCObjective
@@ -41,6 +51,7 @@ from bo_engine.constants import (
     ACQF_LBFGS_BATCH_LIMIT,
     ACQF_LBFGS_MAXITER,
     COST_AWARE_MIN_EXPECTED_COST,
+    DEFAULT_UCB_BETA,
     MIXED_CATEGORICAL_COMBO_THRESHOLD,
     NUMERICAL_EPSILON,
     RESTART_WARN_TOLERANCE,
@@ -53,9 +64,47 @@ from bo_engine.transforms import (
     count_categorical_combinations,
     enumerate_discrete_choices,
 )
-from bo_engine.types import AcquisitionConfig, AcquisitionMethod, OptimizationSpec
+from bo_engine.types import (
+    SINGLE_OBJECTIVE_ONLY_ACQUISITION,
+    UCB_FAMILY_ACQUISITION,
+    AcquisitionConfig,
+    AcquisitionMethod,
+    OptimizationSpec,
+)
 
 logger = logging.getLogger(__name__)
+
+# Acquisition methods this BoTorch engine cannot express with its current
+# optimize path (Thompson sampling needs per-sample posterior draws,
+# knowledge gradient needs the one-shot fantasy optimizer, qNIPV needs an
+# integration point set, and the pure posterior-statistic methods have no
+# batch-aware constrained wiring here). The BoTorch backend's
+# ``validate_capabilities`` reports these UNSUPPORTED (acknowledgeable to
+# IGNORED — the run then falls back to the objective-family default below),
+# mirroring the ``BAYBE_UNSUPPORTED_ACQUISITION`` pattern on the BayBE side.
+BOTORCH_UNSUPPORTED_ACQUISITION: frozenset[AcquisitionMethod] = frozenset(
+    {
+        AcquisitionMethod.THOMPSON_SAMPLING,
+        AcquisitionMethod.KNOWLEDGE_GRADIENT,
+        AcquisitionMethod.ACTIVE_LEARNING,
+        AcquisitionMethod.POSTERIOR_MEAN,
+        AcquisitionMethod.POSTERIOR_STANDARD_DEVIATION,
+    }
+)
+
+# Single-objective methods built directly by ``_build_simple_mc_acquisition``.
+# They share the plain (unconstrained) MC construction path; constrained
+# runs route through NOISY_EI's feasibility weighting instead (see
+# ``_create_single_objective_dispatch``).
+_SIMPLE_MC_METHODS: frozenset[AcquisitionMethod] = frozenset(
+    {
+        AcquisitionMethod.UPPER_CONFIDENCE_BOUND,
+        AcquisitionMethod.PROBABILITY_OF_IMPROVEMENT,
+        AcquisitionMethod.SIMPLE_REGRET,
+        AcquisitionMethod.EXPECTED_IMPROVEMENT_NONLOG,
+        AcquisitionMethod.NOISY_EI_NONLOG,
+    }
+)
 
 
 def _assert_maximization_form(maximize: bool) -> None:
@@ -267,7 +316,8 @@ def create_multi_objective_acquisition(
 
         return qLogNParEGO(**acqf_kwargs)
 
-    # Default: hypervolume improvement (qLogNEHVI)
+    # Hypervolume improvement: the default log formulation (qLogNEHVI), or
+    # the explicit non-log sibling (qNEHVI) when the caller requested it.
     acqf_kwargs: dict = {
         "model": model,
         "ref_point": ref_point.tolist(),
@@ -280,6 +330,8 @@ def create_multi_objective_acquisition(
     if constraints is not None and len(constraints) > 0:
         acqf_kwargs["constraints"] = constraints
 
+    if method == AcquisitionMethod.HYPERVOLUME_IMPROVEMENT_NONLOG:
+        return qNoisyExpectedHypervolumeImprovement(**acqf_kwargs)
     return qLogNoisyExpectedHypervolumeImprovement(**acqf_kwargs)
 
 
@@ -310,6 +362,7 @@ def create_acquisition_from_config(config: AcquisitionConfig) -> AcquisitionFunc
         constraints=config.constraints,
         outcome_constraint_models=config.outcome_constraint_models,
         cost_model=config.cost_model,
+        beta=config.beta,
     )
 
 
@@ -326,6 +379,7 @@ def create_acquisition(
     constraints: list | None = None,
     outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None = None,
     cost_model: SingleTaskGP | None = None,
+    beta: float | None = None,
 ) -> AcquisitionFunction:
     """Create appropriate acquisition function based on problem type.
 
@@ -357,16 +411,43 @@ def create_acquisition(
         outcome_constraint_models: Optional list of (model, threshold) tuples
             for outcome constraints
         cost_model: Optional cost model for EIpu acquisition
+        beta: UCB-family exploration weight. Only accepted together with a
+            member of ``UCB_FAMILY_ACQUISITION``; ``None`` falls back to
+            ``DEFAULT_UCB_BETA``.
 
     Returns:
         Acquisition function appropriate for the problem
     """
+    if beta is not None and method not in UCB_FAMILY_ACQUISITION:
+        msg = (
+            f"acquisition beta={beta} is only valid for the UCB acquisition "
+            f"family; got method={method.value!r}. Remove beta or select "
+            "upper_confidence_bound."
+        )
+        raise ValueError(msg)
+
     # Determine method if AUTO
     if method == AcquisitionMethod.AUTO:
         if n_objectives == 1:
             method = AcquisitionMethod.NOISY_EI
         else:
             method = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
+
+    if method in BOTORCH_UNSUPPORTED_ACQUISITION:
+        # Reachable only when the caller acknowledged the degradation at
+        # intake (validate_capabilities reports these UNSUPPORTED); fall
+        # back to the objective-family default, mirroring the BayBE side.
+        fallback = (
+            AcquisitionMethod.NOISY_EI
+            if n_objectives == 1
+            else AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
+        )
+        logger.warning(
+            "Acquisition method %s is not supported by the BoTorch engine; falling back to %s.",
+            method.value,
+            fallback.value,
+        )
+        method = fallback
 
     if n_objectives == 1:
         if maximize is None:
@@ -385,6 +466,7 @@ def create_acquisition(
             constraints=constraints,
             outcome_constraint_models=outcome_constraint_models,
             cost_model=cost_model,
+            beta=beta,
         )
 
     if maximize_mask is None:
@@ -394,6 +476,20 @@ def create_acquisition(
             "convention."
         )
         raise ValueError(msg)
+    if method in SINGLE_OBJECTIVE_ONLY_ACQUISITION:
+        # Reachable only when the caller acknowledged the degradation at
+        # intake (validate_capabilities reports the combination); mirror
+        # the single-objective family fallback above, warning included,
+        # so the discarded request (and any acquisition_beta riding on
+        # it) is visible in the logs instead of vanishing silently.
+        fallback = AcquisitionMethod.HYPERVOLUME_IMPROVEMENT
+        logger.warning(
+            "Acquisition method %s has single-objective semantics only; "
+            "falling back to %s for this multi-objective problem.",
+            method.value,
+            fallback.value,
+        )
+        method = fallback
     return _create_multi_objective_dispatch(
         model=model,
         ref_point=ref_point,
@@ -416,6 +512,7 @@ def _create_single_objective_dispatch(
     constraints: list | None,
     outcome_constraint_models: list[tuple[SingleTaskGP, float]] | None,
     cost_model: SingleTaskGP | None,
+    beta: float | None = None,
 ) -> AcquisitionFunction:
     """Dispatch single-objective acquisition function creation.
 
@@ -443,18 +540,12 @@ def _create_single_objective_dispatch(
         constraints: Optional constraint callables
         outcome_constraint_models: Optional (model, threshold) pairs
         cost_model: Optional cost model for EIpu
+        beta: UCB-family exploration weight (``None`` = engine default)
 
     Returns:
         Single-objective acquisition function
     """
-    objective_gp: SingleTaskGP
-    if isinstance(model, SingleTaskGP):
-        objective_gp = model
-    elif isinstance(model, ModelListGP) and len(model.models) == 1:
-        objective_gp = cast(SingleTaskGP, model.models[0])
-    else:
-        msg = "Single-objective requires SingleTaskGP model"
-        raise ValueError(msg)
+    objective_gp = _extract_objective_gp(model)
 
     if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is None:
         logger.warning(
@@ -465,6 +556,21 @@ def _create_single_objective_dispatch(
     acq_model, all_constraints = _bundle_outcome_constraint_models(
         objective_gp, constraints, outcome_constraint_models
     )
+
+    if method in _SIMPLE_MC_METHODS and not all_constraints:
+        return _build_simple_mc_acquisition(method, objective_gp, train_x, train_y, beta=beta)
+    if method in _SIMPLE_MC_METHODS:
+        # The simple MC family has no feasibility-weighted wiring here;
+        # route through NOISY_EI (the same upgrade the analytic-EI path
+        # performs) so constrained runs keep BoTorch's smoothed
+        # feasibility weighting instead of silently ignoring constraints.
+        logger.warning(
+            "Acquisition method %s does not support constraint weighting in "
+            "this engine. Routing through NOISY_EI so BoTorch can apply the "
+            "feasibility weighting.",
+            method.value,
+        )
+        method = AcquisitionMethod.NOISY_EI
 
     if method == AcquisitionMethod.COST_WEIGHTED_EI and cost_model is not None:
         # The cost-aware path shares the constrained qLogNEI core with the
@@ -504,6 +610,53 @@ def _create_single_objective_dispatch(
         use_noisy=use_noisy,
         constraints=all_constraints if all_constraints else None,
     )
+
+
+def _extract_objective_gp(model: ModelListGP | SingleTaskGP) -> SingleTaskGP:
+    """Return the single-objective GP, unwrapping a one-model ``ModelListGP``."""
+    if isinstance(model, SingleTaskGP):
+        return model
+    if isinstance(model, ModelListGP) and len(model.models) == 1:
+        return cast(SingleTaskGP, model.models[0])
+    msg = "Single-objective requires SingleTaskGP model"
+    raise ValueError(msg)
+
+
+def _build_simple_mc_acquisition(
+    method: AcquisitionMethod,
+    model: SingleTaskGP,
+    train_x: Tensor,
+    train_y: Tensor,
+    *,
+    beta: float | None,
+) -> AcquisitionFunction:
+    """Build one of the plain (unconstrained) Monte-Carlo acquisition functions.
+
+    ``train_y`` is in maximization form, so ``best_f = train_y.max()`` for
+    the improvement-threshold members. ``beta`` applies only to the UCB
+    member (validated upstream by :func:`create_acquisition`); ``None``
+    falls back to :data:`~bo_engine.constants.DEFAULT_UCB_BETA`.
+    """
+    if method == AcquisitionMethod.UPPER_CONFIDENCE_BOUND:
+        return qUpperConfidenceBound(
+            model=model,
+            beta=beta if beta is not None else DEFAULT_UCB_BETA,
+        )
+    if method == AcquisitionMethod.PROBABILITY_OF_IMPROVEMENT:
+        return qProbabilityOfImprovement(model=model, best_f=train_y.max().item())
+    if method == AcquisitionMethod.SIMPLE_REGRET:
+        return qSimpleRegret(model=model)
+    if method == AcquisitionMethod.EXPECTED_IMPROVEMENT_NONLOG:
+        return qExpectedImprovement(model=model, best_f=train_y.max().item())
+    if method == AcquisitionMethod.NOISY_EI_NONLOG:
+        return qNoisyExpectedImprovement(
+            model=model,
+            X_baseline=train_x,
+            prune_baseline=True,
+            cache_root=False,
+        )
+    msg = f"{method} is not a simple MC acquisition method"
+    raise ValueError(msg)
 
 
 def _bundle_outcome_constraint_models(

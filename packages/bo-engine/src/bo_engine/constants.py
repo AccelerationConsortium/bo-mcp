@@ -247,6 +247,13 @@ RAW_SAMPLES = RAW_SAMPLES_MIN
 # ``InverseCostWeightedUtility``.
 COST_AWARE_MIN_EXPECTED_COST = 1e-6
 
+# Default exploration weight for the UCB acquisition family
+# (``alpha(x) = mu(x) + beta * sigma(x)``) when the spec leaves
+# ``acquisition_beta`` unset. Matches BayBE's own
+# ``UpperConfidenceBound.beta`` default so an unset beta produces the same
+# acquisition on both backends.
+DEFAULT_UCB_BETA = 0.2
+
 # =============================================================================
 # Multi-Fidelity Optimization (qMFKG)
 # =============================================================================

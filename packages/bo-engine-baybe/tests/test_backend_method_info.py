@@ -31,6 +31,7 @@ from bo_engine.types import (
     OptimizationSpec,
     ParameterSpec,
     ParameterType,
+    ScalarizationMode,
 )
 from bo_engine_baybe.backend import BayBEBackend
 
@@ -235,4 +236,28 @@ class TestFallbackSelectMethods:
         info = BayBEBackend().select_methods(spec, n_observations=5)
         assert info["acquisition_function"] == "qLogNoisyExpectedHypervolumeImprovement"
         assert "Multi-objective" in info["explanation"]
+        assert info["is_fallback"] is True
+
+    def test_select_methods_desirability_uses_single_output_labels(self) -> None:
+        """Desirability scalarizes to one model output; labels must say so.
+
+        A two-objective desirability campaign runs a single-output GP with
+        a single-objective acquisition function (the hypervolume family is
+        rejected by BayBE for a scalarized objective), so the fallback
+        metadata must not advertise the multi-objective labels.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[
+                ObjectiveSpec(name="y1", minimize=True, normalization_bounds=(0.0, 1.0)),
+                ObjectiveSpec(name="y2", minimize=False, normalization_bounds=(0.0, 1.0)),
+            ],
+            scalarization=ScalarizationMode.DESIRABILITY,
+        )
+        info = BayBEBackend().select_methods(spec, n_observations=5)
+        assert info["acquisition_function"] == "qLogNoisyExpectedImprovement"
+        assert "Desirability scalarization over 2 targets." in info["explanation"]
+        assert "Multi-objective" not in info["explanation"]
         assert info["is_fallback"] is True

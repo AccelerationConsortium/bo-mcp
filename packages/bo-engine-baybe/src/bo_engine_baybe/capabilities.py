@@ -9,6 +9,7 @@ class consumes these constants and helpers when building its
 
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING, Any
 
 import pydantic
@@ -22,6 +23,7 @@ from bo_engine.backend_base import (
     CapabilityStatus,
 )
 from bo_engine.types import OptimizationSpec, ParameterSpec, ParameterType
+from bo_engine_baybe.converters import _integer_grid_from_bounds
 from bo_engine_baybe.options import (
     BayBEParameterOptions,
     BayBEParameterRole,
@@ -200,6 +202,137 @@ def _validate_parameter_role(
     if opts.role == BayBEParameterRole.CUSTOM:
         return _custom_role_reports(p.name, opts, categories)
     return _substance_role_reports(p.name, opts, categories)
+
+
+def _validate_parameter_fields(
+    p: ParameterSpec,
+    opts: BayBEParameterOptions,
+) -> list[CapabilityReport]:
+    """Field-level checks that hold regardless of the requested role.
+
+    * ``tolerance`` applies to numerical-discrete parameters and must stay
+      below half the smallest gap between declared grid values (BayBE's
+      ``NumericalDiscreteParameter`` validator) — the report includes the
+      computed bound instead of deferring the crash to BayBE.
+    * ``active_values`` applies to categorical-family parameters and must
+      be a non-empty subset of the declared categories (the task-role
+      coverage rule, generalized to every role).
+    * ``kwargs_fingerprint`` / ``kwargs_conformer`` parameterize the
+      substance descriptor computation only.
+    """
+    reports: list[CapabilityReport] = []
+    reports.extend(_tolerance_reports(p, opts))
+    if opts.active_values is not None and p.type != ParameterType.CATEGORICAL:
+        reports.append(
+            CapabilityReport(
+                key=f"parameter_options[{p.name}].baybe.active_values",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "active_values applies to categorical-family parameters; "
+                    f"parameter '{p.name}' is {p.type.value}"
+                ),
+            )
+        )
+    if (
+        opts.role != BayBEParameterRole.TASK
+        and opts.active_values is not None
+        # The wrong-parameter-type report above already covers
+        # non-categorical parameters; a second "not in declared
+        # categories []" report for the same field would be noise.
+        and p.type == ParameterType.CATEGORICAL
+    ):
+        unknown = sorted(set(opts.active_values) - set(p.categories or []))
+        if unknown:
+            reports.append(
+                CapabilityReport(
+                    key=f"parameter_options[{p.name}].baybe.active_values",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        f"active_values {unknown} not in declared categories "
+                        f"{sorted(p.categories or [])}"
+                    ),
+                )
+            )
+    if opts.role != BayBEParameterRole.SUBSTANCE and (
+        opts.kwargs_fingerprint is not None or opts.kwargs_conformer is not None
+    ):
+        reports.append(
+            CapabilityReport(
+                key=f"parameter_options[{p.name}].baybe.kwargs_fingerprint",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "kwargs_fingerprint/kwargs_conformer require role='substance' "
+                    f"on parameter '{p.name}'"
+                ),
+            )
+        )
+    return reports
+
+
+def _declared_discrete_grid(p: ParameterSpec) -> list[float]:
+    """The numeric grid a discrete parameter declares, as the converter builds it.
+
+    Explicit ``values`` win; bounds-only parameters span the integer grid
+    over ``[ceil(lo), floor(hi)]`` (the converter's
+    ``_integer_grid_from_bounds`` contract). Construction failures
+    (degenerate bounds, over-limit spans) are owned by the converter's
+    own validation, so they degrade to an empty grid here.
+    """
+    # ``ParameterSpec.values`` is the neutral dataclass grid field, not a
+    # pandas accessor — the pandas lint heuristic misfires on the name.
+    if p.values is not None:  # noqa: PD011
+        return [float(v) for v in p.values]  # noqa: PD011
+    if p.bounds is None:
+        return []
+    try:
+        return list(_integer_grid_from_bounds(p))
+    except ValueError:
+        return []
+
+
+def _tolerance_reports(
+    p: ParameterSpec,
+    opts: BayBEParameterOptions,
+) -> list[CapabilityReport]:
+    """Validate the numerical-discrete measurement-matching tolerance.
+
+    The grid is derived exactly as the converter builds it — explicit
+    ``values``, or the integer grid a bounds-only discrete parameter
+    spans — so a bounds-defined grid with an over-large tolerance is an
+    intake-time report instead of a deferred BayBE constructor crash.
+    """
+    if opts.tolerance is None:
+        return []
+    key = f"parameter_options[{p.name}].baybe.tolerance"
+    if p.type != ParameterType.DISCRETE:
+        return [
+            CapabilityReport(
+                key=key,
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    "tolerance applies to numerical-discrete parameters; "
+                    f"parameter '{p.name}' is {p.type.value}"
+                ),
+            )
+        ]
+    grid = sorted(_declared_discrete_grid(p))
+    if len(grid) < 2:
+        return []
+    min_gap = min(b - a for a, b in itertools.pairwise(grid))
+    bound = min_gap / 2.0
+    if opts.tolerance >= bound:
+        return [
+            CapabilityReport(
+                key=key,
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"tolerance={opts.tolerance} must be smaller than half the "
+                    f"smallest grid gap of parameter '{p.name}' "
+                    f"(min gap {min_gap}, so tolerance < {bound})"
+                ),
+            )
+        ]
+    return []
 
 
 def _task_role_reports(

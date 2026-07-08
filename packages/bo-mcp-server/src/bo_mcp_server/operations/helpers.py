@@ -8,8 +8,9 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from bo_engine.types import ObservationData
+from bo_engine.types import ObservationData, TargetMode
 from bo_mcp_server.domain import Result
+from bo_mcp_server.domain.campaign_spec import Objective
 from bo_mcp_server.errors import ErrorCode, ValidationError, make_error_response
 from bo_mcp_server.response_formatter import VerbosityLevel
 
@@ -95,6 +96,52 @@ def parse_campaign_id(campaign_id: str) -> UUID | dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Shared conversion utilities
 # ---------------------------------------------------------------------------
+
+
+def objective_analysis_is_minimize(objective: Objective) -> bool:
+    """Direction of the analysis metric from :func:`objective_analysis_series`.
+
+    MATCH objectives are analyzed on distance-to-target, which minimizes;
+    every other goal keeps its declared direction. Directional analytics
+    (best value, improvement history, convergence) must use this instead
+    of the raw ``is_minimize`` boolean, which cannot express MATCH and
+    would silently analyze "hit pH 7.4" as maximization of the raw value.
+    """
+    if objective.effective_mode == TargetMode.MATCH and objective.target is not None:
+        return True
+    return objective.is_minimize
+
+
+def objective_analysis_series(
+    objective: Objective,
+    values: list[float],
+) -> tuple[list[float], bool]:
+    """Metric trajectory + direction for best-value/improvement analytics.
+
+    Returns ``(metric_values, minimize)``: MATCH objectives yield the
+    absolute distance to ``objective.target`` (best = smallest), matching
+    the BayBE backend's own diagnostics convention; every other goal
+    passes the raw values through with the declared direction, so
+    existing non-MATCH analytics are byte-identical.
+    """
+    if objective.effective_mode == TargetMode.MATCH and objective.target is not None:
+        return [abs(v - objective.target) for v in values], True
+    return list(values), objective.is_minimize
+
+
+def objective_identity(objective: Objective) -> str:
+    """Order-independent identity of one objective's optimization goal.
+
+    Built from the *resolved* mode (never the raw optional ``direction``
+    string, which renders as ``None`` for ``target_mode`` spellings), and
+    including the target value for MATCH — two MATCH objectives with
+    different targets are different goals, while legacy-``direction`` and
+    ``target_mode`` spellings of the same goal are identical.
+    """
+    mode = objective.effective_mode
+    if mode == TargetMode.MATCH:
+        return f"{objective.name}:{mode.value}:{objective.target}"
+    return f"{objective.name}:{mode.value}"
 
 
 def results_to_observations(results: list[Result]) -> list[ObservationData]:

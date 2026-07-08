@@ -167,6 +167,25 @@ class BOBackend(Protocol):
         """
         ...
 
+    def backend_options_schema(self) -> dict[str, Any] | None:
+        """Return a JSON-schema fragment for this backend's ``backend_options`` block.
+
+        The per-campaign twin of :meth:`parameter_options_schema`.
+        ``OptimizationSpec.backend_options`` is an opaque ``dict`` keyed
+        by backend name; a backend with typed per-campaign options (e.g.
+        BayBE's recommender configuration) returns a JSON-schema object
+        describing the value stored under
+        ``backend_options[<this backend's name>]``. The schema-extension
+        layer splices the union into the MCP tool schemas and the REST
+        OpenAPI so per-campaign backend options are discoverable on both
+        transports.
+
+        Same contract as :meth:`parameter_options_schema`: the fragment
+        MAY contain a local ``"$defs"`` section (inlined by the
+        consumer), and ``None`` means "no typed backend options".
+        """
+        ...
+
     # ----- Validation -----
 
     def validate_spec(self, spec: OptimizationSpec) -> list[str]:

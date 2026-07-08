@@ -21,6 +21,7 @@ from api.limits import (
     MAX_INTAKE_OBJECTIVES,
     MAX_INTAKE_PARAMETERS,
 )
+from bo_engine.types import ScalarizationMode, ScalarizerKind
 from bo_mcp_server.client import (
     AcquisitionMethod,
     AcquisitionOptimizationConfig,
@@ -95,6 +96,13 @@ class IntakeData(BaseModel):
     # serializes to ``"auto"``, so an omitted field behaves identically on
     # both transports.
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
+    # UCB-family exploration weight; only valid with
+    # acquisition_method='upper_confidence_bound' (enforced by CampaignSpec).
+    acquisition_beta: float | None = None
+    # Multi-objective combination strategy + desirability scalarizer flavor;
+    # cross-field rules enforced by CampaignSpec.
+    scalarization: ScalarizationMode = ScalarizationMode.PARETO
+    scalarizer: ScalarizerKind | None = None
     use_input_warping: bool = False
     use_cost_aware: bool = False
     turbo_config: TurboConfig | None = None

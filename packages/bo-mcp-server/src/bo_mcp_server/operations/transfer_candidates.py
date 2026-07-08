@@ -19,7 +19,11 @@ from bo_mcp_server.constants import (
 from bo_mcp_server.domain import CampaignSpec, CampaignStatus
 from bo_mcp_server.domain.campaign_spec import InputParameter
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.operations.helpers import parse_campaign_id, parse_verbosity
+from bo_mcp_server.operations.helpers import (
+    objective_identity,
+    parse_campaign_id,
+    parse_verbosity,
+)
 from bo_mcp_server.response_formatter import VerbosityLevel, format_transfer_candidates_response
 from bo_mcp_server.storage import (
     CampaignRepository,
@@ -74,12 +78,14 @@ def _compute_parameter_similarity(
 
 
 def _compute_objective_similarity(source_spec: CampaignSpec, target_spec: CampaignSpec) -> float:
-    source_objectives = {
-        (objective.name, objective.direction) for objective in source_spec.objectives
-    }
-    target_objectives = {
-        (objective.name, objective.direction) for objective in target_spec.objectives
-    }
+    """Jaccard similarity of the campaigns' objective-goal identity sets.
+
+    Identities come from :func:`objective_identity` (resolved mode + MATCH
+    target), so legacy-``direction`` and ``target_mode`` spellings of the
+    same goal match while MATCH objectives with different targets do not.
+    """
+    source_objectives = {objective_identity(objective) for objective in source_spec.objectives}
+    target_objectives = {objective_identity(objective) for objective in target_spec.objectives}
     if not source_objectives or not target_objectives:
         return 0.0
     return len(source_objectives & target_objectives) / len(source_objectives | target_objectives)

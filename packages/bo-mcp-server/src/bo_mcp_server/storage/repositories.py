@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 # not require another migration.
 _ADVANCED_SPEC_FIELDS: tuple[str, ...] = (
     "acquisition_method",
+    "acquisition_beta",
+    "scalarization",
+    "scalarizer",
     "use_input_warping",
     "use_cost_aware",
     "turbo_config",
@@ -290,13 +293,21 @@ class CampaignSpecRepository:
         objectives = [
             Objective(
                 name=o["name"],
-                direction=o["direction"],
+                # ``direction`` became optional with the target_mode surface;
+                # rows written before that always carry it.
+                direction=o.get("direction"),
                 unit=o.get("unit", ""),
                 target=o.get("target"),
                 # ``log_transform`` was added after some rows were
                 # already persisted; default to ``False`` for legacy
                 # JSON blobs that pre-date the field.
                 log_transform=o.get("log_transform", False),
+                target_mode=o.get("target_mode"),
+                match_shape=o.get("match_shape"),
+                match_scale=o.get("match_scale"),
+                weight=o.get("weight"),
+                normalization_bounds=o.get("normalization_bounds"),
+                transform=o.get("transform"),
             )
             for o in model.get_objectives()
         ]
@@ -305,8 +316,11 @@ class CampaignSpecRepository:
             Constraint(
                 type=ConstraintType(c["type"]),
                 parameters=c["parameters"],
-                value=c["value"],
+                value=c.get("value"),
                 coefficients=c.get("coefficients"),
+                min_cardinality=c.get("min_cardinality"),
+                max_cardinality=c.get("max_cardinality"),
+                is_interpoint=c.get("is_interpoint", False),
             )
             for c in model.get_constraints()
         ]

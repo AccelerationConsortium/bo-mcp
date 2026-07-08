@@ -14,15 +14,52 @@ from bo_engine.types import (
     ConstraintSpec,
     FidelityParameterSpec,
     ObjectiveSpec,
+    ObjectiveTransformSpec,
     OptimizationSpec,
     OutcomeConstraintSpec,
     ParameterSpec,
+    TargetMode,
     TransferLearningSpec,
 )
 from bo_engine.types import (
     TurboConfig as BOTurboConfig,
 )
 from bo_mcp_server.domain import CampaignSpec
+from bo_mcp_server.domain.campaign_spec import Objective
+
+
+def _objective_to_engine(o: Objective) -> ObjectiveSpec:
+    """Convert one domain Objective to the engine ObjectiveSpec.
+
+    ``target`` is forwarded as the engine ``target_value`` only in match
+    mode: legacy rows may carry an informational ``target`` alongside a
+    plain direction, and forwarding it there would trip the engine-side
+    "target_value requires target_mode='match'" validation.
+    """
+    is_match = o.target_mode == TargetMode.MATCH
+    transform = (
+        ObjectiveTransformSpec(
+            kind=o.transform.kind,
+            bounds=o.transform.bounds,
+            exponent=o.transform.exponent,
+            center=o.transform.center,
+            steepness=o.transform.steepness,
+        )
+        if o.transform is not None
+        else None
+    )
+    return ObjectiveSpec(
+        name=o.name,
+        minimize=o.is_minimize,
+        log_transform=o.log_transform,
+        target_mode=o.target_mode,
+        target_value=o.target if is_match else None,
+        match_shape=o.match_shape,
+        match_scale=o.match_scale,
+        weight=o.weight,
+        normalization_bounds=o.normalization_bounds,
+        transform=transform,
+    )
 
 
 def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
@@ -56,21 +93,19 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         for p in spec.parameters
     ]
 
-    objectives = [
-        ObjectiveSpec(
-            name=o.name,
-            minimize=o.is_minimize,
-            log_transform=o.log_transform,
-        )
-        for o in spec.objectives
-    ]
+    objectives = [_objective_to_engine(o) for o in spec.objectives]
 
     constraints = [
         ConstraintSpec(
             type=c.type,
             parameters=list(c.parameters),
-            value=c.value,
+            # Engine dataclass keeps a neutral 0.0 default for the families
+            # that take no arithmetic threshold (cardinality / set-based).
+            value=c.value if c.value is not None else 0.0,
             coefficients=list(c.coefficients) if c.coefficients is not None else None,
+            min_cardinality=c.min_cardinality,
+            max_cardinality=c.max_cardinality,
+            is_interpoint=c.is_interpoint,
         )
         for c in spec.constraints
     ]
@@ -153,6 +188,9 @@ def campaign_spec_to_optimization_spec(spec: CampaignSpec) -> OptimizationSpec:
         initial_design_size=spec.initial_design_size,
         random_seed=spec.random_seed,
         acquisition_method=spec.acquisition_method,
+        acquisition_beta=spec.acquisition_beta,
+        scalarization=spec.scalarization,
+        scalarizer=spec.scalarizer,
         use_input_warping=spec.use_input_warping,
         turbo_config=turbo_config,
         outcome_constraints=outcome_constraints,

@@ -8,6 +8,7 @@ from bo_engine.convergence import (
     detect_single_objective_convergence,
 )
 from bo_mcp_server.domain import CampaignSpec
+from bo_mcp_server.operations.helpers import objective_analysis_is_minimize
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,12 @@ def _compute_single_obj_convergence(
     improvement_history = diagnostics.get("improvement_history", [])
     if len(improvement_history) >= 5:
         obj = spec.objectives[0]
+        # MATCH campaigns' improvement_history is the backend's
+        # distance-to-target running best (minimizing); the raw
+        # is_minimize boolean would read it as maximization.
         report = detect_single_objective_convergence(
             best_value_history=improvement_history,
-            minimize=obj.is_minimize,
+            minimize=objective_analysis_is_minimize(obj),
         )
         diagnostics["convergence"] = {
             "converged": report.converged,

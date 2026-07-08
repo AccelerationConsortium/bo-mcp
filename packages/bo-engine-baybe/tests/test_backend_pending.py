@@ -44,12 +44,13 @@ class TestPendingExperimentsAreHonored:
     ) -> None:
         """The pending point is excluded from the next recommendation.
 
-        With ``allow_recommending_already_measured=False`` and the new
-        ``allow_recommending_pending_experiments=False`` default, BayBE's
-        own discrete filter drops the pending row from the candidate set
-        — so a 9-cell grid with one measurement and one pending point has
-        7 remaining cells, and the recommender must never return the
-        pending one.
+        With ``allow_recommending_already_measured=False`` and the
+        pending-exclusion default on purely discrete spaces
+        (``allow_recommending_pending_experiments`` unset resolves to
+        ``False`` there), BayBE's own discrete filter drops the pending
+        row from the candidate set — so a 9-cell grid with one
+        measurement and one pending point has 7 remaining cells, and the
+        recommender must never return the pending one.
         """
         backend = BayBEBackend()
         observations = [

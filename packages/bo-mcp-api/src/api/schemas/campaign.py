@@ -76,6 +76,9 @@ class CampaignConfigResponse(BaseModel):
     constraints: list[dict[str, Any]] = Field(default_factory=list)
     outcome_constraints: list[dict[str, Any]] = Field(default_factory=list)
     acquisition_method: str | None = None
+    acquisition_beta: float | None = None
+    scalarization: str | None = None
+    scalarizer: str | None = None
     acquisition_optimization: dict[str, Any] | None = None
     use_input_warping: bool
     use_cost_aware: bool

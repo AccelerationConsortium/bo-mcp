@@ -61,6 +61,12 @@ jobs:
       # developers (who have test extras installed) cannot reproduce
       # the failure with pre-commit.
       - run: uv sync --package bo-mcp-server --extra test --inexact
+      # Same lockstep rationale for the optional insights extra (shap):
+      # bo_engine.feature_importance and the BayBE insights modules type
+      # against the real shap module when it is installed, and the slow /
+      # nightly test tiers install the extra — the type-check env must
+      # match so ignores added or removed locally reproduce in CI.
+      - run: uv sync --package bo-engine-baybe --extra insights --inexact
       - run: uv run ty check
   # =============================================================================
   # Fast Tests (PR Checks) - Run on every push/PR
@@ -151,6 +157,14 @@ jobs:
           python-version: '3.13'
       - uses: ./.github/actions/setup
       - run: uv sync --all-packages
+      # The insights extra (shap + numba) powers the SHAP feature-importance
+      # tests; installing it here makes the slow-marked real-campaign
+      # positive assertion actually execute instead of skipping (the
+      # unmarked explainer pin-guard executes in the nightly tier), so
+      # BayBE insights-API drift fails CI.
+      - name: Install insights extra (bo-engine-baybe)
+        if: matrix.package == 'bo-engine-baybe'
+        run: uv sync --package bo-engine-baybe --extra insights --inexact
       - name: Run slow tests for ${{ matrix.package }}
         run: |
           cd packages/${{ matrix.package }}
@@ -181,6 +195,11 @@ jobs:
           python-version: '3.13'
       - uses: ./.github/actions/setup
       - run: uv sync --all-packages
+      # Same rationale as the slow tier: the shap-gated insights tests
+      # must execute (not skip) in at least one recurring tier.
+      - name: Install insights extra (bo-engine-baybe)
+        if: matrix.package == 'bo-engine-baybe'
+        run: uv sync --package bo-engine-baybe --extra insights --inexact
       - name: Run comprehensive tests for ${{ matrix.package }}
         run: |
           cd packages/${{ matrix.package }}

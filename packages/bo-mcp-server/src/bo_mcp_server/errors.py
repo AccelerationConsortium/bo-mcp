@@ -126,6 +126,15 @@ class ErrorCode(StrEnum):
     # an operator repairs it, so retrying the same request is a waste.
     # Mapped from CorruptedJsonColumnError at every transport boundary.
     DATA_INTEGRITY_ERROR = "E108"
+    # A backend returned a persisted-state envelope larger than the
+    # configured pre-persistence limit (settings.max_backend_state_bytes).
+    # Enforced before the database write so an oversized state (e.g. a
+    # fully-enumerated large-categorical BayBE campaign) surfaces as a
+    # typed envelope instead of killing the DB connection on PostgreSQL's
+    # 1 GiB protocol limit. Deterministic for a given campaign shape —
+    # not retryable; the campaign must shrink (fewer categories,
+    # encoding='INT', backend='botorch') or the limit must be raised.
+    BACKEND_STATE_TOO_LARGE = "E109"
     # Catch-all for unexpected transport-layer errors. The REST global
     # exception handler maps any exception not already classified by an
     # operation into this code so the client always sees the same
@@ -292,6 +301,14 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "Use the request_id from details to locate the offending row in the "
         "server log and repair it manually or restore from backup."
     ),
+    ErrorCode.BACKEND_STATE_TOO_LARGE: (
+        "Do not retry unchanged; the campaign's serialized backend state "
+        "exceeds the configured persistence limit deterministically. Reduce "
+        "the enumerated search space (fewer categories, "
+        "parameter_options['baybe'].encoding='INT', or "
+        "backend_options['baybe'].max_candidates), switch to "
+        "backend='botorch', or raise MAX_BACKEND_STATE_BYTES."
+    ),
     ErrorCode.INSUFFICIENT_DATA: (
         "Submit more results before generating suggestions. "
         "Need at least 2 observations for model fitting."
@@ -345,6 +362,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: "Acquisition optimization failed",
     ErrorCode.DATABASE_ERROR: "Database operation failed",
     ErrorCode.DATA_INTEGRITY_ERROR: "Persisted data is structurally invalid",
+    ErrorCode.BACKEND_STATE_TOO_LARGE: ("Backend state exceeds the persistence size limit"),
     ErrorCode.INSUFFICIENT_DATA: "Insufficient data for operation",
     ErrorCode.BACKEND_TRANSIENT_ERROR: "Backend reported a transient failure",
     ErrorCode.BACKEND_INCOMPATIBILITY: "Backend cannot handle this spec",
@@ -442,6 +460,7 @@ ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.ACQUISITION_OPTIMIZATION_FAILED: 500,
     ErrorCode.DATABASE_ERROR: 500,
     ErrorCode.DATA_INTEGRITY_ERROR: 500,
+    ErrorCode.BACKEND_STATE_TOO_LARGE: 422,
     ErrorCode.INSUFFICIENT_DATA: 422,
     ErrorCode.BACKEND_TRANSIENT_ERROR: 503,
     ErrorCode.BACKEND_INCOMPATIBILITY: 400,
@@ -496,6 +515,8 @@ ERROR_CODE_RETRY_HINTS: dict[ErrorCode, tuple[bool, float | None]] = {
     # Distinct from DATABASE_ERROR which covers transient connection
     # blips / deadlocks that *do* resolve on retry.
     ErrorCode.DATA_INTEGRITY_ERROR: (False, None),
+    # Deterministic for a given campaign shape; the input must change.
+    ErrorCode.BACKEND_STATE_TOO_LARGE: (False, None),
     ErrorCode.INSUFFICIENT_DATA: (False, None),
     # Backend hierarchy — only the explicit "transient" subtype is
     # retryable; the others are terminal until the spec/backend

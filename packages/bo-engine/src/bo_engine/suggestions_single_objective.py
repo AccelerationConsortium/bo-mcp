@@ -439,6 +439,7 @@ def _generate_single_objective_batch(
         constraints=None,
         outcome_constraint_models=outcome_constraints,
         cost_model=cost_model,
+        beta=spec.acquisition_beta,
     )
     # Optimize with native constraints where possible
     candidates, acq_values = optimize_acquisition(

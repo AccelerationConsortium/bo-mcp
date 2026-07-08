@@ -214,3 +214,59 @@ class TestPriority:
             next_iteration=1,
         )
         assert decision.reason == StoppingReason.BUDGET_EXCEEDED_OBSERVATIONS
+
+
+class TestMatchModeConvergence:
+    """MATCH objectives converge on the distance-to-target trajectory.
+
+    A boolean direction cannot express "best = closest to target": the
+    raw-value trajectory of an overshoot-then-approach run reads as
+    stagnation (or as maximization progress), so the stopping metric is
+    ``|value - target_value|`` with minimize semantics.
+    """
+
+    @staticmethod
+    def _match_spec(convergence_tolerance: float) -> OptimizationSpec:
+        from bo_engine.types import TargetMode
+
+        return OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", target_mode=TargetMode.MATCH, target_value=7.4)],
+            convergence_tolerance=convergence_tolerance,
+        )
+
+    def test_steadily_approaching_target_does_not_stop(self) -> None:
+        """Overshoot-then-approach keeps improving on the distance metric.
+
+        The raw values oscillate around the 7.4 target while the distance
+        shrinks every step — the pre-fix boolean read this as a maximize
+        trajectory and could stop the campaign on a wrong signal.
+        """
+        values = [10.0, 5.4, 9.0, 6.4, 8.2, 6.9, 7.8, 7.2, 7.55, 7.32]
+        decision = evaluate_stopping_decision(
+            self._match_spec(convergence_tolerance=0.01), _obs(values), next_iteration=3
+        )
+        assert not decision.should_stop
+
+    def test_distance_plateau_triggers_convergence_stop(self) -> None:
+        values = [10.0, 7.5] + [7.41] * 10
+        decision = evaluate_stopping_decision(
+            self._match_spec(convergence_tolerance=0.01), _obs(values), next_iteration=3
+        )
+        assert decision.should_stop
+        assert decision.reason == StoppingReason.CONVERGED
+
+    def test_target_mode_direction_override_is_honored(self) -> None:
+        """target_mode='maximize' with the boolean left at default resolves
+        through effective_mode: a steadily increasing trajectory keeps
+        improving instead of reading as a minimize plateau."""
+        from bo_engine.types import TargetMode
+
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", target_mode=TargetMode.MAXIMIZE)],
+            convergence_tolerance=0.01,
+        )
+        rising = [float(v) for v in range(1, 12)]
+        decision = evaluate_stopping_decision(spec, _obs(rising), next_iteration=3)
+        assert not decision.should_stop

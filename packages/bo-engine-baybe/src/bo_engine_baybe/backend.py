@@ -36,6 +36,7 @@ without modification.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import logging
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, ClassVar, cast
@@ -60,6 +61,7 @@ from bo_engine.backend_base import (
     CapabilityReport,
     CapabilityStatus,
     required_features,
+    single_objective_family_acquisition_report,
     wrap_backend_exception,
 )
 from bo_engine.diagnostics import (
@@ -80,9 +82,14 @@ from bo_engine.result_validation import (
     detect_outliers,
 )
 from bo_engine.types import (
+    SINGLE_OBJECTIVE_ONLY_ACQUISITION,
+    UCB_FAMILY_ACQUISITION,
     AcquisitionMethod,
+    ObjectiveSpec,
     ObservationData,
     OptimizationSpec,
+    ParameterType,
+    TargetMode,
 )
 from bo_engine_baybe.capabilities import (
     _BAYBE_DEGRADABLE_FEATURES,
@@ -92,15 +99,20 @@ from bo_engine_baybe.capabilities import (
     _SUPPORTED_FEATURES,
     _active_attrs_for_feature,
     _parameter_is_task,
+    _validate_parameter_fields,
     _validate_parameter_role,
 )
 from bo_engine_baybe.converters import (
     BAYBE_UNSUPPORTED_ACQUISITION,
+    acquisition_output_count,
     baybe_constraint_support,
     dataframe_to_suggestions,
+    log_transform_match_reason,
     log_transform_maximize_reason,
+    objective_support_issues,
     observations_to_dataframe,
     pending_points_to_dataframe,
+    resolve_searchspace_budget,
 )
 from bo_engine_baybe.introspection import (
     _DEFAULT_KERNEL_DESCRIPTION,
@@ -114,17 +126,21 @@ from bo_engine_baybe.introspection import (
     _build_fitted_campaign,
     _campaign_searchspace_label,
     _extract_acquisition_values,
-    _extract_feature_importance,
+    _extract_feature_importance_report,
     _extract_model_info,
     _extract_posterior_stats,
     _prepare_tensors,
     _strategy_and_model,
 )
 from bo_engine_baybe.options import (
+    BayBEBackendOptions,
+    BayBEInitialRecommender,
     BayBEParameterOptions,
+    BayBESurrogateKind,
     extract_baybe_backend_options,
     extract_baybe_parameter_options,
 )
+from bo_engine_baybe.searchspace_budget import subsample_warning
 from bo_engine_baybe.state import (
     _BAYBE_SAFE_EXCEPTIONS,
     _STATE_SCHEMA_VERSION_IDENTITY,
@@ -133,6 +149,10 @@ from bo_engine_baybe.state import (
     _reconcile_measurements,
     _restore_or_build_campaign,
     _serialize_campaign,
+)
+from bo_engine_baybe.surrogates import (
+    NOISE_PRIOR_IGNORED_REASON,
+    build_baybe_surrogate,
 )
 
 logger = logging.getLogger(__name__)
@@ -195,6 +215,9 @@ def _named_lengthscales(
 # Namespaced with "baybe:" so seeds derived for this backend can never
 # collide with the BoTorch backend's per-phase tags at the same master seed.
 _SEED_CONTEXT_INITIAL_DESIGN = "baybe:initial_design"
+
+# Capability-report key for the typed surrogate selection.
+_SURROGATE_OPTION_KEY = "backend_options.baybe.surrogate"
 _SEED_CONTEXT_ITERATION_TEMPLATE = "baybe:iter_{iteration}"
 
 # Human-readable labels for the acquisition methods BayBE cannot express,
@@ -269,6 +292,17 @@ class BayBEBackend(BaseBackend):
         before splicing.
         """
         return BayBEParameterOptions.model_json_schema()
+
+    def backend_options_schema(self) -> dict[str, Any]:
+        """Return the JSON schema for ``backend_options['baybe']``.
+
+        Surfaces the typed :class:`BayBEBackendOptions` shape — the
+        recommender configuration and campaign-level toggles — so MCP
+        and REST clients discover the per-campaign BayBE options from
+        the schema instead of reading source. Same ``$defs`` inlining
+        contract as :meth:`parameter_options_schema`.
+        """
+        return BayBEBackendOptions.model_json_schema()
 
     # -- Spec features that BayBE does NOT support --------------------------
     _UNSUPPORTED_OPTIONS: ClassVar[list[tuple[str, str]]] = [
@@ -511,9 +545,25 @@ class BayBEBackend(BaseBackend):
             )
         reports.extend(self._acquisition_method_reports(spec, acknowledged_attrs))
         reports.extend(self._log_transform_reports(spec))
+        reports.extend(self._objective_surface_reports(spec))
         reports.extend(self._parameter_option_reports(spec))
         reports.extend(self._backend_option_reports(spec))
+        reports.extend(_searchspace_budget_reports(spec))
         return reports
+
+    @staticmethod
+    def _objective_surface_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
+        """Report invalid match/transform/desirability objective configurations.
+
+        Delegates to
+        :func:`bo_engine_baybe.converters.objective_support_issues` so the
+        capability report and ``spec_to_objective`` construction agree —
+        the same symmetry contract the constraint surface uses.
+        """
+        return [
+            CapabilityReport(key=key, status=CapabilityStatus.UNSUPPORTED, reason=reason)
+            for key, reason in objective_support_issues(spec)
+        ]
 
     @staticmethod
     def _degradable_option_report(
@@ -550,20 +600,64 @@ class BayBEBackend(BaseBackend):
     ) -> list[CapabilityReport]:
         """Report ``spec.acquisition_method`` values BayBE cannot express.
 
-        Mappable methods (expected_improvement, noisy EI, hypervolume,
-        scalarized) are wired into ``BotorchRecommender`` by
+        Mappable methods are wired into ``BotorchRecommender`` by
         :func:`bo_engine_baybe.converters.spec_to_acquisition_function`
         and need no report. The unmappable subset
         (:data:`BAYBE_UNSUPPORTED_ACQUISITION`) follows the standard
         degradable-knob policy: UNSUPPORTED by default, IGNORED once
         ``'acquisition_method'`` is acknowledged — the campaign then runs
-        with BayBE's default acquisition function.
+        with BayBE's default acquisition function. A single-objective-only
+        member requested on a spec whose built objective is genuinely
+        multi-output (:func:`acquisition_output_count` — desirability
+        scalarizes to one output and *does* honor these members) follows
+        the same policy, because the dispatch falls back to the
+        hypervolume default. Two combination rules are enforced
+        alongside: ``acquisition_beta`` is only valid with a UCB-family
+        method (the converter raises the matching ``ValueError`` at
+        construction), and Thompson sampling cannot serve
+        ``batch_size > 1`` (BayBE's ``qTS.supports_batching`` is False, so
+        a batched recommend is guaranteed to fail at suggestion time).
         """
+        reports: list[CapabilityReport] = []
         method = spec.acquisition_method
-        if method not in BAYBE_UNSUPPORTED_ACQUISITION:
-            return []
-        label = _UNSUPPORTED_ACQUISITION_LABELS[method]
-        return [self._degradable_option_report("acquisition_method", label, acknowledged_attrs)]
+        if method in BAYBE_UNSUPPORTED_ACQUISITION:
+            label = _UNSUPPORTED_ACQUISITION_LABELS[method]
+            reports.append(
+                self._degradable_option_report("acquisition_method", label, acknowledged_attrs)
+            )
+        elif method in SINGLE_OBJECTIVE_ONLY_ACQUISITION and acquisition_output_count(spec) > 1:
+            reports.append(
+                single_objective_family_acquisition_report(method, spec.acknowledge_degradations)
+            )
+        if spec.acquisition_beta is not None and method not in UCB_FAMILY_ACQUISITION:
+            reports.append(
+                CapabilityReport(
+                    key="acquisition_beta",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        "acquisition_beta is only valid for the UCB acquisition "
+                        f"family; got acquisition_method='{method.value}'. Remove "
+                        "beta or select upper_confidence_bound."
+                    ),
+                )
+            )
+        if (
+            method == AcquisitionMethod.THOMPSON_SAMPLING
+            and acquisition_output_count(spec) == 1
+            and spec.batch_size > 1
+        ):
+            reports.append(
+                CapabilityReport(
+                    key="acquisition_method",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        "Thompson sampling on BayBE (qTS) does not support batched "
+                        f"recommendations; got batch_size={spec.batch_size}. Use "
+                        "batch_size=1 or a different acquisition method."
+                    ),
+                )
+            )
+        return reports
 
     @staticmethod
     def _log_transform_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
@@ -581,14 +675,20 @@ class BayBEBackend(BaseBackend):
         converter raises at construction time
         (:func:`log_transform_maximize_reason`) — otherwise
         ``is_compatible`` would accept a spec that
-        ``generate_suggestions`` is guaranteed to reject.
+        ``generate_suggestions`` is guaranteed to reject. Direction
+        resolves via ``ObjectiveSpec.effective_mode`` (the same read the
+        target builder uses), so a ``target_mode`` override can never
+        make this report and construction disagree; the
+        ``log_transform`` × ``target_mode='match'`` combination is
+        rejected by the shared ``objective_support_issues`` surface and
+        skipped here to avoid a duplicate report.
         """
         reports: list[CapabilityReport] = []
         for idx, obj in enumerate(spec.objectives):
-            if not obj.log_transform:
+            if not obj.log_transform or obj.effective_mode == TargetMode.MATCH:
                 continue
             key = f"objectives[{idx}].log_transform"
-            if not obj.minimize:
+            if obj.effective_mode == TargetMode.MAXIMIZE:
                 reports.append(
                     CapabilityReport(
                         key=key,
@@ -624,20 +724,195 @@ class BayBEBackend(BaseBackend):
                 )
                 continue
             reports.extend(_validate_parameter_role(p, opts))
+            reports.extend(_validate_parameter_fields(p, opts))
         return reports
 
     def _backend_option_reports(self, spec: OptimizationSpec) -> list[CapabilityReport]:
-        """Validate ``backend_options['baybe']`` and surface schema errors."""
+        """Validate ``backend_options['baybe']`` and surface schema/build errors.
+
+        Beyond the Pydantic schema check, this validates cross-field rules
+        that only the backend can decide: non-random initial recommenders
+        need a purely discrete search space (their BayBE ``compatibility``
+        is ``SearchSpaceType.DISCRETE``), and the configured surrogate must
+        actually construct (build-and-catch, the custom-descriptor-table
+        precedent) so a bad kernel/preset is an intake-time report instead
+        of a deferred fit crash. The neutral ``noise_prior_params`` is
+        reported IGNORED — see
+        :data:`bo_engine_baybe.surrogates.NOISE_PRIOR_IGNORED_REASON`.
+        """
+        reports: list[CapabilityReport] = []
+        if spec.noise_prior_params is not None:
+            reports.append(
+                CapabilityReport(
+                    key="noise_prior_params",
+                    status=CapabilityStatus.IGNORED,
+                    reason=NOISE_PRIOR_IGNORED_REASON,
+                )
+            )
         if not spec.backend_options or "baybe" not in spec.backend_options:
-            return []
+            return reports
         try:
-            extract_baybe_backend_options(spec.backend_options)
+            options = extract_baybe_backend_options(spec.backend_options)
         except pydantic.ValidationError as e:
-            return [
+            reports.append(
                 CapabilityReport(
                     key="backend_options.baybe",
                     status=CapabilityStatus.UNSUPPORTED,
                     reason=f"Invalid BayBE backend options: {e.errors()[0]['msg']}",
+                )
+            )
+            return reports
+        reports.extend(self._recommender_option_reports(spec, options))
+        reports.extend(self._surrogate_option_reports(spec, options))
+        reports.extend(self._campaign_toggle_reports(spec, options))
+        return reports
+
+    @staticmethod
+    def _campaign_toggle_reports(
+        spec: OptimizationSpec,
+        options: BayBEBackendOptions,
+    ) -> list[CapabilityReport]:
+        """Space-shape compatibility check for the ``allow_recommending_*`` toggles.
+
+        BayBE forbids ``allow_recommending_already_measured=False`` /
+        ``allow_recommending_already_recommended=False`` /
+        ``allow_recommending_pending_experiments=False`` on campaigns
+        whose search space has a continuous part ("for algorithmic
+        reasons" — the per-candidate metadata ledger needs an enumerable
+        space), raising ``IncompatibilityError`` at campaign build.
+        Reporting the combination here turns the deferred suggestion-time
+        crash into an intake-time report, mirroring the recommender
+        space-shape checks.
+        """
+        has_continuous = any(p.type == ParameterType.CONTINUOUS for p in spec.parameters)
+        if not has_continuous:
+            return []
+        reports: list[CapabilityReport] = []
+        toggles = (
+            ("allow_recommending_already_measured", options.allow_recommending_already_measured),
+            (
+                "allow_recommending_already_recommended",
+                options.allow_recommending_already_recommended,
+            ),
+            (
+                "allow_recommending_pending_experiments",
+                options.allow_recommending_pending_experiments,
+            ),
+        )
+        reports.extend(
+            CapabilityReport(
+                key=f"backend_options.baybe.{name}",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"{name}=False requires a purely discrete search space on "
+                    "BayBE (the per-candidate metadata ledger cannot cover a "
+                    "continuous subspace); this spec declares continuous "
+                    "parameters. Drop the toggle or discretize the parameters."
+                ),
+            )
+            for name, value in toggles
+            if value is False
+        )
+        return reports
+
+    @staticmethod
+    def _recommender_option_reports(
+        spec: OptimizationSpec,
+        options: BayBEBackendOptions,
+    ) -> list[CapabilityReport]:
+        """Space-compatibility check for the initial-recommender selection."""
+        if options.recommender is None:
+            return []
+        choice = options.recommender.initial_recommender
+        if choice == BayBEInitialRecommender.RANDOM:
+            return []
+        has_continuous = any(str(p.type) == str(ParameterType.CONTINUOUS) for p in spec.parameters)
+        if not has_continuous:
+            return []
+        return [
+            CapabilityReport(
+                key="backend_options.baybe.recommender.initial_recommender",
+                status=CapabilityStatus.UNSUPPORTED,
+                reason=(
+                    f"initial_recommender='{choice.value}' requires a purely "
+                    "discrete search space (BayBE clustering/FPS recommenders "
+                    "are SearchSpaceType.DISCRETE); this spec declares "
+                    "continuous parameters. Use initial_recommender='random'."
+                ),
+            )
+        ]
+
+    @staticmethod
+    def _surrogate_option_reports(
+        spec: OptimizationSpec,
+        options: BayBEBackendOptions,
+    ) -> list[CapabilityReport]:
+        """Space-compatibility + build-and-catch guard for the surrogate selection.
+
+        Non-GP surrogates (random forest, NGBoost, Bayesian linear, mean
+        prediction) expose a non-differentiable posterior; BayBE's
+        continuous-space acquisition optimization is gradient-based and
+        fails at recommend time ("does not require grad"). They are
+        therefore restricted to purely discrete search spaces, where the
+        acquisition is scored by enumeration. The NGBoost surrogate needs
+        an explicit module-availability probe (the chem-availability
+        precedent): BayBE imports ``ngboost`` lazily at *fit* time, so
+        the surrogate constructs successfully without the package and the
+        build-and-catch guard below would let the missing dependency
+        surface as a deferred ``Campaign.recommend`` crash.
+        """
+        if options.surrogate is None:
+            return []
+        has_continuous = any(str(p.type) == str(ParameterType.CONTINUOUS) for p in spec.parameters)
+        if options.surrogate.kind != BayBESurrogateKind.GP and has_continuous:
+            return [
+                CapabilityReport(
+                    key=_SURROGATE_OPTION_KEY,
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        f"Surrogate '{options.surrogate.kind.value}' has a "
+                        "non-differentiable posterior and requires a purely "
+                        "discrete search space on BayBE (continuous acquisition "
+                        "optimization is gradient-based). Use kind='gp' or "
+                        "declare a discrete space."
+                    ),
+                )
+            ]
+        if (
+            options.surrogate.kind == BayBESurrogateKind.NGBOOST
+            and importlib.util.find_spec("ngboost") is None
+        ):
+            return [
+                CapabilityReport(
+                    key=_SURROGATE_OPTION_KEY,
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        "Surrogate 'ngboost' needs the optional 'ngboost' "
+                        "package, which is not installed (BayBE imports it "
+                        "lazily at fit time, so the failure would otherwise "
+                        "surface at suggestion generation)."
+                    ),
+                )
+            ]
+        try:
+            build_baybe_surrogate(spec, options)
+        except ImportError as e:
+            return [
+                CapabilityReport(
+                    key=_SURROGATE_OPTION_KEY,
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=(
+                        f"Surrogate '{options.surrogate.kind.value}' needs an "
+                        f"optional dependency that is not installed: {e}"
+                    ),
+                )
+            ]
+        except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
+            return [
+                CapabilityReport(
+                    key=_SURROGATE_OPTION_KEY,
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=f"Surrogate construction failed: {e}",
                 )
             ]
         return []
@@ -660,15 +935,7 @@ class BayBEBackend(BaseBackend):
             label = _UNSUPPORTED_ACQUISITION_LABELS[spec.acquisition_method]
             warnings.append(f"{label} is not supported by BayBE and will be ignored.")
         warnings.extend(
-            log_transform_maximize_reason(obj.name)
-            if not obj.minimize
-            else (
-                f"log_transform for objective '{obj.name}' is applied at the "
-                "acquisition-objective level on BayBE; the GP surrogate still "
-                "fits the raw target scale."
-            )
-            for obj in spec.objectives
-            if obj.log_transform
+            _log_transform_spec_warning(obj) for obj in spec.objectives if obj.log_transform
         )
         return warnings
 
@@ -757,7 +1024,9 @@ class BayBEBackend(BaseBackend):
             ),
         )
         inner_state = self.unwrap_state(backend_state)
-        campaign = _restore_or_build_campaign(spec, inner_state)
+        campaign = _restore_or_build_campaign(
+            spec, inner_state, observations=observations, pending_points=pending_points
+        )
 
         # Reconcile measurements by stable identity. Run the
         # reconciliation even when observations is empty so a restored
@@ -774,7 +1043,7 @@ class BayBEBackend(BaseBackend):
             # Translate to the engine-neutral exhaustion error so the server
             # emits the same structured SEARCH_SPACE_EXHAUSTED envelope
             # (counts + terminate recommendation) as the BoTorch path.
-            raise _search_space_exhausted_error(campaign, batch_size, pending_df) from exc
+            raise _search_space_exhausted_error(spec, campaign, batch_size, pending_df) from exc
         param_dicts = dataframe_to_suggestions(rec_df, spec)
 
         predictions, posterior_warning = _extract_posterior_stats(campaign, rec_df, spec)
@@ -799,6 +1068,11 @@ class BayBEBackend(BaseBackend):
 
         warnings_out = self.validate_spec(spec)
         warnings_out.extend(pending_warnings)
+        subsample_note = _subsample_warning_for_spec(spec)
+        if subsample_note is not None:
+            warnings_out.append(subsample_note)
+            method_info["searchspace_subsampled"] = True
+            method_info["searchspace_n_candidates"] = len(campaign.searchspace.discrete.exp_rep)
         for warning in (posterior_warning, acq_warning, model_warning):
             if warning is None:
                 continue
@@ -862,13 +1136,16 @@ class BayBEBackend(BaseBackend):
         guess.
         """
         recommender = _active_recommender(campaign)
-        is_multi = spec.n_objectives > 1
+        # Desirability declares several objectives but scalarizes to one
+        # model output, so the model/acquisition labels key on the
+        # acquisition output count, not the declared objective count.
+        output_multi = acquisition_output_count(spec) > 1
         is_nonpredictive = isinstance(recommender, NonPredictiveRecommender)
         rec_name = type(recommender).__name__ if recommender is not None else None
         searchspace_str = _campaign_searchspace_label(campaign)
         objective_type = type(getattr(campaign, "objective", None)).__name__
-        strategy, model_type = _strategy_and_model(rec_name, is_nonpredictive, is_multi)
-        acq_fn, acq_inferred = _acquisition_label(recommender, is_nonpredictive, is_multi)
+        strategy, model_type = _strategy_and_model(rec_name, is_nonpredictive, output_multi)
+        acq_fn, acq_inferred = _acquisition_label(recommender, is_nonpredictive, output_multi)
 
         return {
             "model_type": model_type,
@@ -889,8 +1166,7 @@ class BayBEBackend(BaseBackend):
             "input_transforms": ["BayBE internal encoding"],
             "explanation": (
                 f"BayBE backend with {n_observations} observations. "
-                f"Using {strategy}."
-                + (f" Multi-objective with {spec.n_objectives} targets." if is_multi else "")
+                f"Using {strategy}." + _objective_shape_sentence(spec, output_multi)
             ),
             "confidence": (
                 "medium" if n_observations < _MIN_OBSERVATIONS_FOR_CONFIDENCE else "high"
@@ -934,14 +1210,17 @@ class BayBEBackend(BaseBackend):
         (UIs, LLM tools) can branch on a typed signal instead of
         string-matching a label.
         """
-        is_multi = spec.n_objectives > 1
+        # Same output-count rule as the live path: a desirability spec
+        # runs a single-output model, so the fallback labels must not
+        # advertise the hypervolume family.
+        output_multi = acquisition_output_count(spec) > 1
         if n_observations == 0:
             strategy = "RandomRecommender (space-filling initial design)"
         else:
             strategy = "BotorchRecommender (GP-based)"
-        acq_fn = _FALLBACK_ACQ_MULTI if is_multi else _FALLBACK_ACQ_SINGLE
+        acq_fn = _FALLBACK_ACQ_MULTI if output_multi else _FALLBACK_ACQ_SINGLE
         return {
-            "model_type": _MODEL_TYPE_MULTI if is_multi else _MODEL_TYPE_SINGLE,
+            "model_type": _MODEL_TYPE_MULTI if output_multi else _MODEL_TYPE_SINGLE,
             "acquisition_function": acq_fn,
             "acquisition_function_inferred": True,
             "optimization_strategy": strategy,
@@ -950,8 +1229,7 @@ class BayBEBackend(BaseBackend):
             "input_transforms": ["BayBE internal encoding"],
             "explanation": (
                 f"BayBE backend with {n_observations} observations. "
-                f"Using {strategy}."
-                + (f" Multi-objective with {spec.n_objectives} targets." if is_multi else "")
+                f"Using {strategy}." + _objective_shape_sentence(spec, output_multi)
             ),
             # The static fallback can only guess at confidence; ``low``
             # is the honest signal until a live campaign is available.
@@ -1015,8 +1293,22 @@ class BayBEBackend(BaseBackend):
                 "hypervolume": None,
                 "n_pareto_points": None,
             }
-        best_val, best_idx = compute_best_value(values, minimize=obj.minimize)
-        imp_hist = compute_improvement_history(values, minimize=obj.minimize)
+        if obj.effective_mode == TargetMode.MATCH and obj.target_value is not None:
+            # Match-a-target objectives: "best" is the observation closest
+            # to the target value, and improvement is measured on the
+            # distance-to-target trajectory (min/max of the raw values
+            # would mislabel the extremes as best).
+            distances = [abs(v - obj.target_value) for v in values]
+            _, best_idx = compute_best_value(distances, minimize=True)
+            best_val = values[best_idx]
+            imp_hist = compute_improvement_history(distances, minimize=True)
+        else:
+            # Direction resolves via effective_mode so a target_mode
+            # override wins over the raw boolean — the same read the
+            # optimization itself honors.
+            is_min = obj.effective_mode == TargetMode.MINIMIZE
+            best_val, best_idx = compute_best_value(values, minimize=is_min)
+            imp_hist = compute_improvement_history(values, minimize=is_min)
         return {
             "best_value": best_val,
             "best_parameters": observations[best_idx].parameter_values,
@@ -1091,7 +1383,7 @@ class BayBEBackend(BaseBackend):
             obs_df = observations_to_dataframe(observations, spec)
 
             model_info, _ = _extract_model_info(campaign)
-            fi = _extract_feature_importance(campaign)
+            fi_report = _extract_feature_importance_report(campaign, spec) or {}
             corr = _baybe_model_correlation(campaign, obs_df, spec)
             parameter_names = [parameter.name for parameter in spec.parameters]
 
@@ -1107,12 +1399,18 @@ class BayBEBackend(BaseBackend):
         except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
             logger.debug("BayBE model diagnostics failed: %s", e)
             return empty
-        return {
+        result: dict[str, Any] = {
             "model_correlation": corr,
-            "feature_importance": fi,
+            "feature_importance": fi_report.get("feature_importance"),
             "loo_cv_metrics": None,
             "hyperparameters": hp,
         }
+        # Optional richer insights blocks (per-target breakdown, bounded
+        # row-level attributions) — present only when computed.
+        for key in ("feature_importance_per_target", "feature_importance_rows"):
+            if key in fi_report:
+                result[key] = fi_report[key]
+        return result
 
     def _compute_outlier_diagnostics(
         self,
@@ -1125,7 +1423,10 @@ class BayBEBackend(BaseBackend):
 
         try:
             train_x, train_y, bounds = _prepare_tensors(spec, observations)
-            minimize_mask = torch.tensor([o.minimize for o in spec.objectives], dtype=torch.bool)
+            minimize_mask = torch.tensor(
+                [o.effective_mode == TargetMode.MINIMIZE for o in spec.objectives],
+                dtype=torch.bool,
+            )
             train_y_bo = train_y.clone()
             train_y_bo[:, ~minimize_mask] = -train_y_bo[:, ~minimize_mask]
             obj_names = [o.name for o in spec.objectives]
@@ -1161,6 +1462,89 @@ class BayBEBackend(BaseBackend):
             return {"outliers": None}
 
 
+def _log_transform_spec_warning(obj: ObjectiveSpec) -> str:
+    """Legacy string warning for one log-transformed objective.
+
+    The maximize and match combinations are rejected by the capability
+    layer; their warning strings reuse the shared rejection reasons so
+    this surface can never contradict ``validate_capabilities``. The
+    remaining (minimize) case keeps the historical acquisition-level
+    phrasing.
+    """
+    if obj.effective_mode == TargetMode.MAXIMIZE:
+        return log_transform_maximize_reason(obj.name)
+    if obj.effective_mode == TargetMode.MATCH:
+        return log_transform_match_reason(obj.name)
+    return (
+        f"log_transform for objective '{obj.name}' is applied at the "
+        "acquisition-objective level on BayBE; the GP surrogate still "
+        "fits the raw target scale."
+    )
+
+
+def _objective_shape_sentence(spec: OptimizationSpec, output_multi: bool) -> str:
+    """Trailing explanation fragment describing the objective shape.
+
+    Desirability declares several objectives but scalarizes them into a
+    single model output, so the two counts diverge and the sentence must
+    say which shape actually drives the model.
+    """
+    if spec.n_objectives <= 1:
+        return ""
+    if output_multi:
+        return f" Multi-objective with {spec.n_objectives} targets."
+    return f" Desirability scalarization over {spec.n_objectives} targets."
+
+
+def _subsample_warning_for_spec(spec: OptimizationSpec) -> str | None:
+    """Prominent warning when the spec's discrete space runs subsampled.
+
+    Uses the same budget resolution as the construction branch in
+    ``spec_to_searchspace`` so the warning can never disagree with what
+    was built. Estimation failures degrade to "no warning" — the
+    construction path surfaces its own error in that case.
+    """
+    try:
+        budget = resolve_searchspace_budget(spec)
+    except Exception as e:  # noqa: BLE001 — probe must never mask the real error surface
+        # Broad by design: the precise estimate constructs BayBE parameter
+        # objects, whose validators raise arbitrary library exceptions
+        # (attrs ExceptionGroup for invalid SMILES, OptionalImportError for
+        # missing chem extras, ...). Those failures are owned by the
+        # parameter-role capability validators / the construction path —
+        # the size probe only ever adds a warning on top.
+        logger.debug("Search-space budget resolution failed: %s", e)
+        return None
+    if not budget.exceeds_budget:
+        return None
+    return subsample_warning(budget)
+
+
+def _searchspace_budget_reports(spec: OptimizationSpec) -> list[CapabilityReport]:
+    """DEGRADED capability report for above-budget discrete search spaces.
+
+    DEGRADED (not UNSUPPORTED) keeps an explicit ``backend="baybe"``
+    working — the campaign runs on a deterministically subsampled
+    candidate set with a prominent warning — while ``backend="auto"``'s
+    tier logic prefers a FULL backend (BoTorch) that does not enumerate
+    the space at all.
+    """
+    try:
+        budget = resolve_searchspace_budget(spec)
+    except Exception as e:  # noqa: BLE001 — see _subsample_warning_for_spec
+        logger.debug("Search-space budget resolution failed: %s", e)
+        return []
+    if not budget.exceeds_budget:
+        return []
+    return [
+        CapabilityReport(
+            key="searchspace_size",
+            status=CapabilityStatus.DEGRADED,
+            reason=subsample_warning(budget),
+        )
+    ]
+
+
 def _excluded_candidate_mask(
     campaign: Campaign,
     pending_df: pd.DataFrame | None,
@@ -1181,15 +1565,19 @@ def _excluded_candidate_mask(
     if not campaign.allow_recommending_already_measured:
         mask |= metadata[_MEASURED]
     if pending_df is not None and not campaign.allow_recommending_pending_experiments:
-        mask |= campaign.searchspace.discrete.exp_rep.merge(
-            pending_df,
-            indicator=True,
-            how="left",
-        )["_merge"].eq("both")
+        exp_rep = campaign.searchspace.discrete.exp_rep
+        # Deduplicate before the left merge: a duplicated pending row fans
+        # the merge out to more rows than exp_rep has, and an index-aligned
+        # |= would then mark the wrong candidates. Re-anchoring the result
+        # on exp_rep's index keeps the mask aligned with the metadata
+        # ledger regardless of the merge's fresh RangeIndex.
+        merged = exp_rep.merge(pending_df.drop_duplicates(), indicator=True, how="left")
+        mask |= pd.Series(merged["_merge"].eq("both").to_numpy(), index=exp_rep.index)
     return mask
 
 
 def _search_space_exhausted_error(
+    spec: OptimizationSpec,
     campaign: Campaign,
     batch_size: int,
     pending_df: pd.DataFrame | None = None,
@@ -1197,12 +1585,17 @@ def _search_space_exhausted_error(
     """Build the engine-neutral exhaustion error from a BayBE campaign.
 
     Counts come from the campaign itself: the discrete subspace's
-    experimental representation is the full combination grid, and
+    experimental representation is the enumerated candidate grid, and
     ``n_available`` counts the rows left after the same measured /
     recommended / pending exclusions the failing ``recommend`` call
     applied (see :func:`_excluded_candidate_mask`) — deriving it from
     measurements alone would report unseen combinations while zero
-    candidates actually remain.
+    candidates actually remain. On the subsampled path the grid is a
+    bounded candidate sample, not the full space, so the error carries
+    the ``subsampled`` marker plus the full combination count and the
+    active row budget — the server's exhaustion envelope then recommends
+    raising ``backend_options['baybe'].max_candidates`` instead of
+    terminating a campaign whose real space is far from exhausted.
     """
     n_total: int | None = None
     n_available = 0
@@ -1211,10 +1604,24 @@ def _search_space_exhausted_error(
         n_available = int((~_excluded_candidate_mask(campaign, pending_df)).sum())
     except (*_BAYBE_SAFE_EXCEPTIONS,) as e:  # pragma: no cover - defensive
         logger.debug("Could not derive exhaustion counts: %s", e)
+    subsampled = False
+    n_full_combinations: int | None = None
+    max_candidates: int | None = None
+    try:
+        budget = resolve_searchspace_budget(spec)
+        if budget.exceeds_budget:
+            subsampled = True
+            n_full_combinations = budget.n_combinations
+            max_candidates = budget.max_candidates
+    except Exception as e:  # noqa: BLE001 — see _subsample_warning_for_spec
+        logger.debug("Search-space budget resolution failed: %s", e)
     return SearchSpaceExhaustedError(
         n_requested=batch_size,
         n_available=n_available,
         n_total_combinations=n_total,
+        subsampled=subsampled,
+        n_full_combinations=n_full_combinations,
+        max_candidates=max_candidates,
     )
 
 

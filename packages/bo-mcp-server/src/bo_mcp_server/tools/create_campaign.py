@@ -19,7 +19,7 @@ from bo_mcp_server.operations.idempotency_wrapper import (
 )
 from bo_mcp_server.operations.validate_intake import validate_intake_operation
 from bo_mcp_server.response_formatter import attach_response_metadata
-from bo_mcp_server.schema_extension import intake_schema_with_parameter_options
+from bo_mcp_server.schema_extension import intake_schema_with_backend_extensions
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
 from bo_mcp_server.trace_context import bind_trace_id
@@ -37,7 +37,7 @@ from bo_mcp_server.trace_context import bind_trace_id
 # ``parameter_options`` shape (e.g. BayBE's ``role=substance`` and
 # ``role=custom`` recipes) so agents discover the molecular / custom-
 # representation surface from ``tools/list`` directly.
-_INTAKE_SCHEMA = intake_schema_with_parameter_options()
+_INTAKE_SCHEMA = intake_schema_with_backend_extensions()
 IntakePayload = Annotated[
     Any,
     Field(

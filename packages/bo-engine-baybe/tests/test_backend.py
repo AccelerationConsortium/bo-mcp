@@ -24,6 +24,7 @@ from bo_engine.types import (
     OptimizationSpec,
     ParameterSpec,
     ParameterType,
+    TargetMode,
 )
 from bo_engine_baybe.backend import BayBEBackend, _named_lengthscales
 
@@ -936,6 +937,30 @@ class TestComputeDiagnostics:
         assert hyperparameters["lengthscales"].keys() == {"x1", "x2"}
         assert all(isinstance(value, float) for value in hyperparameters["lengthscales"].values())
         assert "model_correlation" in result
+
+    def test_single_objective_direction_follows_target_mode(self) -> None:
+        """A ``target_mode`` override drives "best", not the stale boolean default.
+
+        The engine dataclass leaves ``minimize=True`` when only
+        ``target_mode='maximize'`` is set; diagnostics must report the
+        maximum as best — the same direction the optimization itself
+        resolves through ``effective_mode``.
+        """
+        backend = BayBEBackend()
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="y", target_mode=TargetMode.MAXIMIZE)],
+        )
+        obs = [
+            ObservationData(parameter_values={"x1": 0.1}, objective_values={"y": 1.0}),
+            ObservationData(parameter_values={"x1": 0.5}, objective_values={"y": 3.0}),
+            ObservationData(parameter_values={"x1": 0.9}, objective_values={"y": 2.0}),
+        ]
+        result = backend._single_objective_diagnostics(spec, obs)
+        assert math.isclose(result["best_value"], 3.0, rel_tol=1e-9)
+        assert result["best_parameters"] == {"x1": 0.5}
 
     def test_diagnostics_insufficient_data(self, simple_spec: OptimizationSpec) -> None:
         backend = BayBEBackend()

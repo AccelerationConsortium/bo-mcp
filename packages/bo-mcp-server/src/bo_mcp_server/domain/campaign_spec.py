@@ -21,12 +21,29 @@ from pydantic import (
 )
 
 from bo_engine.types import (
+    ARITHMETIC_CONSTRAINT_TYPES as _ARITHMETIC_CONSTRAINT_TYPES,
+)
+from bo_engine.types import (
+    INTERPOINT_CONSTRAINT_TYPES as _INTERPOINT_CONSTRAINT_TYPES,
+)
+from bo_engine.types import (
     LEGACY_ACQUISITION_VALUES as _LEGACY_ACQUISITION_VALUES,
+)
+from bo_engine.types import (
+    SET_BASED_CONSTRAINT_TYPES as _SET_BASED_CONSTRAINT_TYPES,
+)
+from bo_engine.types import (
+    UCB_FAMILY_ACQUISITION as _UCB_FAMILY_ACQUISITION,
 )
 from bo_engine.types import (
     AcquisitionMethod,
     ConstraintType,
+    MatchShape,
+    ObjectiveTransformKind,
     ParameterType,
+    ScalarizationMode,
+    ScalarizerKind,
+    TargetMode,
 )
 
 
@@ -241,6 +258,53 @@ class InputParameter(BaseModel):
         )
 
 
+# Fields each transform kind consumes. Intake requires exactly these and
+# forbids the rest, so a missing required field fails at intake (instead of
+# deferring to the backend capability layer) and a wrong-kind extra (log
+# with bounds, clamp with exponent) fails loudly instead of being silently
+# ignored downstream.
+_TRANSFORM_KIND_FIELDS: dict[ObjectiveTransformKind, tuple[str, ...]] = {
+    ObjectiveTransformKind.LOG: (),
+    ObjectiveTransformKind.CLAMP: ("bounds",),
+    ObjectiveTransformKind.POWER: ("exponent",),
+    ObjectiveTransformKind.SIGMOID: ("center", "steepness"),
+}
+
+
+class ObjectiveTransform(BaseModel):
+    """Typed target transformation applied to an objective's raw values.
+
+    Mirrors :class:`bo_engine.types.ObjectiveTransformSpec`; field usage per
+    ``kind`` is validated at intake (``clamp`` needs ``bounds``, ``power``
+    needs ``exponent``, ``sigmoid`` needs ``center`` + ``steepness``; every
+    field outside the kind's set is rejected).
+    Honored by the BayBE backend; BoTorch reports it UNSUPPORTED.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: ObjectiveTransformKind
+    bounds: tuple[float, float] | None = None
+    exponent: int | None = None
+    center: float | None = None
+    steepness: float | None = Field(default=None, gt=0.0)
+
+    @model_validator(mode="after")
+    def validate_kind_fields(self) -> "ObjectiveTransform":
+        """Require the fields the kind consumes and forbid every other one."""
+        consumed = _TRANSFORM_KIND_FIELDS[self.kind]
+        all_kind_fields = ("bounds", "exponent", "center", "steepness")
+        for field_name in all_kind_fields:
+            value = getattr(self, field_name)
+            if field_name in consumed and value is None:
+                msg = f"transform kind='{self.kind.value}' requires {field_name}"
+                raise ValueError(msg)
+            if field_name not in consumed and value is not None:
+                msg = f"transform kind='{self.kind.value}' does not take {field_name}"
+                raise ValueError(msg)
+        return self
+
+
 class Objective(BaseModel):
     """Optimization objective definition.
 
@@ -251,20 +315,90 @@ class Objective(BaseModel):
     enabling it on a maximize objective raises at the suggestion-generation
     boundary because BoTorch's ``Log`` transform requires strictly
     positive targets and negation flips positive raw values to negative.
+
+    The goal is declared either through the legacy ``direction`` string or
+    the richer ``target_mode`` (mutually exclusive — exactly one must be
+    set). ``target_mode='match'`` drives the campaign toward ``target``
+    with the ``match_shape`` distance kernel (``match_scale``: bell sigma /
+    triangular base width). ``weight`` and ``normalization_bounds`` feed
+    the desirability scalarization (``CampaignSpec.scalarization``), and
+    ``transform`` is the typed target-transformation union.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(..., min_length=1)
-    direction: str = Field(..., pattern="^(minimize|maximize)$")
+    direction: str | None = Field(default=None, pattern="^(minimize|maximize)$")
     unit: str = ""
-    target: float | None = None  # Optional target value
+    target: float | None = None  # Match-mode target value
     log_transform: bool = False
+    target_mode: TargetMode | None = None
+    match_shape: MatchShape | None = None
+    match_scale: float | None = Field(default=None, gt=0.0)
+    weight: float | None = Field(default=None, gt=0.0)
+    normalization_bounds: tuple[float, float] | None = None
+    transform: ObjectiveTransform | None = None
 
     @property
     def is_minimize(self) -> bool:
-        """Check if objective should be minimized."""
-        return self.direction == "minimize"
+        """Check if objective should be minimized.
+
+        A two-valued collapse of the three-valued goal: ``MATCH``
+        objectives return ``False`` here because a boolean cannot express
+        "best = closest to target". Directional analytics must therefore
+        resolve through :attr:`effective_mode` (or the analysis helpers
+        built on it) instead of trusting this boolean for MATCH specs.
+        """
+        if self.direction is not None:
+            return self.direction == "minimize"
+        return self.target_mode == TargetMode.MINIMIZE
+
+    @property
+    def effective_mode(self) -> TargetMode:
+        """Resolved optimization goal, mirroring the engine ``ObjectiveSpec``.
+
+        Exactly one of ``direction`` / ``target_mode`` is set (enforced by
+        :meth:`validate_goal_declaration`); the explicit ``target_mode``
+        wins when present.
+        """
+        if self.target_mode is not None:
+            return self.target_mode
+        return TargetMode.MINIMIZE if self.direction == "minimize" else TargetMode.MAXIMIZE
+
+    @model_validator(mode="after")
+    def validate_goal_declaration(self) -> "Objective":
+        """Enforce the direction / target_mode contract at intake."""
+        if self.direction is None and self.target_mode is None:
+            msg = f"Objective '{self.name}' requires either direction or target_mode"
+            raise ValueError(msg)
+        if self.direction is not None and self.target_mode is not None:
+            msg = (
+                f"Objective '{self.name}' sets both direction and target_mode; "
+                "they are mutually exclusive — use exactly one"
+            )
+            raise ValueError(msg)
+        if self.target_mode == TargetMode.MATCH and self.target is None:
+            msg = f"Objective '{self.name}' with target_mode='match' requires target"
+            raise ValueError(msg)
+        if self.target_mode != TargetMode.MATCH and (
+            self.match_shape is not None or self.match_scale is not None
+        ):
+            msg = (
+                f"Objective '{self.name}' sets match_shape/match_scale without target_mode='match'"
+            )
+            raise ValueError(msg)
+        if self.normalization_bounds is not None and (
+            self.normalization_bounds[0] >= self.normalization_bounds[1]
+        ):
+            msg = (
+                f"Objective '{self.name}' normalization_bounds must be an "
+                "increasing (lower, upper) pair"
+            )
+            raise ValueError(msg)
+        if self.transform is not None and self.log_transform:
+            msg = f"Objective '{self.name}' sets both log_transform and transform; use exactly one"
+            raise ValueError(msg)
+        return self
 
 
 class Constraint(BaseModel):
@@ -282,18 +416,29 @@ class Constraint(BaseModel):
       constraint at the engine boundary, which produced unrelated
       semantics for a typo'd input. Reject the shape at intake so the
       failure is loud.
-    * ``SUM_*``: ``coefficients`` must not be supplied (the constraint
-      is unweighted by definition); supplying coefficients here is a
-      sign the caller meant ``LINEAR`` and would otherwise be silently
-      dropped on the SUM_* path.
+    * ``SUM_*`` / ``PRODUCT_*``: ``coefficients`` must not be supplied
+      (the aggregate is unweighted by definition); supplying coefficients
+      here is a sign the caller meant ``LINEAR`` and would otherwise be
+      silently dropped.
+    * ``CARDINALITY``: bounds the count of nonzero parameters via
+      ``min_cardinality`` / ``max_cardinality`` (at least one required);
+      ``value`` / ``coefficients`` do not apply.
+    * Set-based (``NO_LABEL_DUPLICATES`` / ``LINKED_PARAMETERS`` /
+      ``PERMUTATION_INVARIANCE``): pure parameter-set relations — at
+      least 2 parameters, no ``value`` / ``coefficients``.
+    * ``is_interpoint``: switches a continuous linear/sum constraint to
+      across-the-batch semantics; only valid for the linear/sum family.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: ConstraintType
     parameters: tuple[str, ...]  # Parameter names involved
-    value: float  # Constraint value (e.g., sum equals this value)
+    value: float | None = None  # Arithmetic threshold (SUM_*/PRODUCT_*/LINEAR)
     coefficients: tuple[float, ...] | None = None  # For linear constraints
+    min_cardinality: int | None = Field(default=None, ge=0)  # CARDINALITY only
+    max_cardinality: int | None = Field(default=None, ge=0)  # CARDINALITY only
+    is_interpoint: bool = False  # Continuous linear/sum only
 
     @model_validator(mode="after")
     def validate_constraint_shape(self) -> "Constraint":
@@ -301,7 +446,25 @@ class Constraint(BaseModel):
         if not self.parameters:
             msg = f"Constraint of type {self.type.value} must reference at least one parameter"
             raise ValueError(msg)
+        self._validate_value_and_coefficients()
+        self._validate_cardinality_fields()
+        self._validate_set_based_fields()
+        if self.is_interpoint and self.type not in _INTERPOINT_CONSTRAINT_TYPES:
+            msg = (
+                f"is_interpoint applies to continuous linear/sum constraints only; "
+                f"got type={self.type.value}"
+            )
+            raise ValueError(msg)
+        return self
 
+    def _validate_value_and_coefficients(self) -> None:
+        """Arithmetic families need ``value``; only LINEAR takes coefficients."""
+        if self.type in _ARITHMETIC_CONSTRAINT_TYPES and self.value is None:
+            msg = f"Constraint of type {self.type.value} requires a value"
+            raise ValueError(msg)
+        if self.type not in _ARITHMETIC_CONSTRAINT_TYPES and self.value is not None:
+            msg = f"Constraint of type {self.type.value} does not accept a value"
+            raise ValueError(msg)
         if self.type == ConstraintType.LINEAR:
             if self.coefficients is None:
                 msg = (
@@ -324,7 +487,33 @@ class Constraint(BaseModel):
                 f"type=linear?"
             )
             raise ValueError(msg)
-        return self
+
+    def _validate_cardinality_fields(self) -> None:
+        """CARDINALITY needs at least one bound; other types take none."""
+        has_bounds = self.min_cardinality is not None or self.max_cardinality is not None
+        if self.type == ConstraintType.CARDINALITY:
+            if not has_bounds:
+                msg = "cardinality constraint requires min_cardinality and/or max_cardinality"
+                raise ValueError(msg)
+            if (
+                self.min_cardinality is not None
+                and self.max_cardinality is not None
+                and self.min_cardinality > self.max_cardinality
+            ):
+                msg = "cardinality constraint requires min_cardinality <= max_cardinality"
+                raise ValueError(msg)
+        elif has_bounds:
+            msg = (
+                f"min_cardinality/max_cardinality apply to type=cardinality only; "
+                f"got type={self.type.value}"
+            )
+            raise ValueError(msg)
+
+    def _validate_set_based_fields(self) -> None:
+        """Set-based relations need at least two parameters to relate."""
+        if self.type in _SET_BASED_CONSTRAINT_TYPES and len(self.parameters) < 2:
+            msg = f"Constraint of type {self.type.value} requires at least 2 parameters"
+            raise ValueError(msg)
 
 
 class OutcomeConstraint(BaseModel):
@@ -516,6 +705,16 @@ class CampaignSpec(BaseModel):
     )
     # v1.0.1: Acquisition method selection
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
+    # Exploration weight for the UCB acquisition family; only valid together
+    # with acquisition_method='upper_confidence_bound' (validated below).
+    acquisition_beta: float | None = None
+    # Multi-objective combination strategy: 'pareto' (default, front-based)
+    # or 'desirability' (weighted scalarization of normalized targets via
+    # the per-objective weight / normalization_bounds fields).
+    scalarization: ScalarizationMode = ScalarizationMode.PARETO
+    # Weighted-mean flavor for desirability; None uses the backend default
+    # (geometric mean). Only valid with scalarization='desirability'.
+    scalarizer: ScalarizerKind | None = None
     # v1.1: Input warping for non-stationary objectives
     use_input_warping: bool = False
     # v1.2: TuRBO for high-dimensional optimization (None = disabled)
@@ -631,7 +830,40 @@ class CampaignSpec(BaseModel):
             )
             raise ValueError(msg)
 
+        self._validate_acquisition_beta()
+        self._validate_scalarization()
+
         return self
+
+    def _validate_acquisition_beta(self) -> None:
+        """Reject ``acquisition_beta`` outside the UCB acquisition family.
+
+        On any other method the value would be silently ignored by the
+        acquisition factories — reject at intake so the knob can never leak.
+        """
+        if (
+            self.acquisition_beta is not None
+            and self.acquisition_method not in _UCB_FAMILY_ACQUISITION
+        ):
+            msg = (
+                "acquisition_beta is only valid with "
+                "acquisition_method='upper_confidence_bound'; got "
+                f"'{self.acquisition_method.value}'."
+            )
+            raise ValueError(msg)
+
+    def _validate_scalarization(self) -> None:
+        """Reject inconsistent desirability-scalarization settings.
+
+        Desirability scalarizes >= 2 normalized targets; a single-objective
+        spec (or a stray scalarizer without the mode) is a caller mistake.
+        """
+        if self.scalarization == ScalarizationMode.DESIRABILITY and len(self.objectives) < 2:
+            msg = "scalarization='desirability' requires at least 2 objectives"
+            raise ValueError(msg)
+        if self.scalarizer is not None and self.scalarization != ScalarizationMode.DESIRABILITY:
+            msg = "scalarizer requires scalarization='desirability'"
+            raise ValueError(msg)
 
     @property
     def n_parameters(self) -> int:
@@ -683,6 +915,9 @@ class CampaignSpec(BaseModel):
                 self.initial_design_size,
                 self.random_seed,
                 self.acquisition_method,
+                self.acquisition_beta,
+                self.scalarization,
+                self.scalarizer,
                 self.use_input_warping,
                 self.turbo_config,
                 self.outcome_constraints,

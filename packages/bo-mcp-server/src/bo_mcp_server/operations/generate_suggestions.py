@@ -54,6 +54,7 @@ from bo_mcp_server.errors import (
 from bo_mcp_server.idempotency import reservation_heartbeat, session_scope
 from bo_mcp_server.operations.backend_output import (
     BackendOutputError,
+    BackendStateTooLargeError,
     validate_backend_batch,
 )
 from bo_mcp_server.operations.helpers import (
@@ -66,7 +67,10 @@ from bo_mcp_server.response_formatter import (
     format_suggestions_response,
     with_response_metadata,
 )
-from bo_mcp_server.settings import get_bo_compute_timeout_seconds
+from bo_mcp_server.settings import (
+    get_bo_compute_timeout_seconds,
+    get_max_backend_state_bytes,
+)
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -123,6 +127,51 @@ def _make_suggestions_error(
     """Create an error response with suggestion-specific fields."""
     response = make_error_response(code, message=message, details=details)
     response.update({"suggestions": [], "iteration": iteration})
+    return response
+
+
+def _make_exhaustion_response(err: SearchSpaceExhaustedError, campaign_id: str) -> dict[str, Any]:
+    """Build the SEARCH_SPACE_EXHAUSTED envelope, subsample-aware.
+
+    On the BayBE subsampled path the exhausted candidate set is a bounded
+    sample, not the full space — ``n_total_combinations`` counts the
+    subsample while the real space holds ``n_full_combinations``. The
+    default recovery text ("no unseen combinations left, terminate")
+    would then be factually wrong and close a viable campaign, so the
+    envelope recommends raising
+    ``backend_options['baybe'].max_candidates`` instead.
+    """
+    details: dict[str, Any] = {
+        "campaign_id": campaign_id,
+        "n_requested": err.n_requested,
+        "n_available": err.n_available,
+        "n_total_combinations": err.n_total_combinations,
+        "next_action_recommendation": "terminate_campaign",
+    }
+    if err.subsampled:
+        details.update(
+            {
+                "searchspace_subsampled": True,
+                "n_full_combinations": err.n_full_combinations,
+                "max_candidates": err.max_candidates,
+                "next_action_recommendation": "increase_max_candidates",
+            }
+        )
+    response = _make_suggestions_error(
+        ErrorCode.SEARCH_SPACE_EXHAUSTED,
+        message=str(err),
+        details=details,
+    )
+    if err.subsampled:
+        response["error"]["recovery_action"] = (
+            "The exhausted candidate set is a bounded subsample "
+            f"({err.n_total_combinations} candidates) of a "
+            f"~{err.n_full_combinations}-combination space, so the campaign is "
+            "not actually out of unseen combinations. Raise "
+            "backend_options['baybe'].max_candidates (and, if needed, "
+            "max_searchspace_state_bytes) or switch to backend='botorch' "
+            "before considering termination."
+        )
     return response
 
 
@@ -446,17 +495,7 @@ async def _handle_generation_failure(
             campaign_id,
             err,
         )
-        return _make_suggestions_error(
-            ErrorCode.SEARCH_SPACE_EXHAUSTED,
-            message=str(err),
-            details={
-                "campaign_id": campaign_id,
-                "n_requested": err.n_requested,
-                "n_available": err.n_available,
-                "n_total_combinations": err.n_total_combinations,
-                "next_action_recommendation": "terminate_campaign",
-            },
-        )
+        return _make_exhaustion_response(err, campaign_id)
     if isinstance(err, BackendError):
         # The backend (BoTorch / BayBE) raised one of the typed
         # :class:`BackendError` subclasses defined in
@@ -477,6 +516,32 @@ async def _handle_generation_failure(
         )
         response.update({"suggestions": [], "iteration": None})
         return response
+    # BackendStateTooLargeError: the backend produced a valid batch whose
+    # serialized state exceeds the pre-persistence limit. Raised in the
+    # compute phase, before any write — the campaign row keeps its
+    # version and no suggestions are inserted. Deterministic for the
+    # campaign shape, so not retryable; the recovery text points at the
+    # mitigations (encoding='INT', fewer categories, backend='botorch',
+    # raising the limit).
+    if isinstance(err, BackendStateTooLargeError):
+        if session is not None:
+            await session.rollback()
+        logger.error(
+            "Backend state for campaign %s serializes to %d bytes, above the "
+            "%d-byte persistence limit; aborting before the database write.",
+            campaign_id,
+            err.state_bytes,
+            err.limit_bytes,
+        )
+        return _make_suggestions_error(
+            ErrorCode.BACKEND_STATE_TOO_LARGE,
+            message=str(err),
+            details={
+                "campaign_id": campaign_id,
+                "state_bytes": err.state_bytes,
+                "limit_bytes": err.limit_bytes,
+            },
+        )
     # BackendOutputError: the backend returned a malformed
     # SuggestionBatch. The fault is in the backend, not the caller,
     # so this is not retryable — surface the structured Pydantic
@@ -1247,7 +1312,7 @@ async def _generate_via_backend(
     # surface downstream as an opaque ``KeyError`` or as a malformed
     # provenance row in storage. Convert the contract violation to a
     # typed :class:`BackendOutputError` here.
-    batch = validate_backend_batch(batch)
+    batch = validate_backend_batch(batch, max_backend_state_bytes=get_max_backend_state_bytes())
     suggestion_data = [(item["parameter_values"], item["provenance"]) for item in batch.suggestions]
     return (
         suggestion_data,

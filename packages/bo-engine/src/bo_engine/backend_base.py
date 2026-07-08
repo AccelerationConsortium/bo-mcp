@@ -46,7 +46,7 @@ from bo_engine.progress import ProgressCallback
 from bo_engine.result_validation import detect_duplicates as engine_detect_duplicates
 from bo_engine.suggestions import generate_initial_design as engine_generate_initial_design
 from bo_engine.transforms import get_bounds_tensor, stack_encoded_values
-from bo_engine.types import ObservationData, OptimizationSpec
+from bo_engine.types import AcquisitionMethod, ObservationData, OptimizationSpec
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +534,17 @@ class BaseBackend(ABC):
         """
         return None
 
+    def backend_options_schema(self) -> dict[str, Any] | None:
+        """Default: no typed ``backend_options`` fragment to advertise.
+
+        Backends with typed per-campaign options (BayBE's recommender
+        configuration and campaign toggles) override this to return a
+        JSON-schema object for the value stored under
+        ``backend_options[<name>]``. Returning ``None`` keeps backends
+        that take no campaign-level options out of the spliced schema.
+        """
+        return None
+
     # -- Capability validation --------------------------------------------
 
     def validate_capabilities(self, spec: OptimizationSpec) -> BackendValidationResult:
@@ -788,6 +799,44 @@ def option_is_active(spec: OptimizationSpec, option_name: str) -> bool:
     if isinstance(value, list):
         return len(value) > 0
     return True
+
+
+def single_objective_family_acquisition_report(
+    method: AcquisitionMethod,
+    acknowledged: tuple[str, ...],
+) -> CapabilityReport:
+    """Classify a single-objective-only acquisition request on a multi-objective spec.
+
+    Both engines' multi-objective dispatch falls back to the hypervolume
+    default for :data:`bo_engine.types.SINGLE_OBJECTIVE_ONLY_ACQUISITION`
+    members (sanctioned family-default behavior), so the request — and
+    any ``acquisition_beta`` attached to a UCB request — would otherwise
+    be discarded with only a runtime log line. Shared between the
+    BoTorch and BayBE ``validate_capabilities`` implementations so the
+    two backends classify the identical combination identically.
+    """
+    if "acquisition_method" in acknowledged:
+        return CapabilityReport(
+            key="acquisition_method",
+            status=CapabilityStatus.IGNORED,
+            reason=(
+                f"Acquisition method '{method.value}' has single-objective "
+                "semantics only; the multi-objective hypervolume default is "
+                "used instead (degradation acknowledged)."
+            ),
+        )
+    return CapabilityReport(
+        key="acquisition_method",
+        status=CapabilityStatus.UNSUPPORTED,
+        reason=(
+            f"Acquisition method '{method.value}' has single-objective "
+            "semantics only and this spec declares multiple objectives; "
+            "running it would silently fall back to the hypervolume default "
+            "(dropping any acquisition_beta). Select a multi-objective "
+            "method, or list 'acquisition_method' in "
+            "'acknowledge_degradations' to accept the fallback."
+        ),
+    )
 
 
 def required_features(spec: OptimizationSpec) -> frozenset[Feature]:

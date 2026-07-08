@@ -327,3 +327,81 @@ def test_degraded_selection_log_covers_both_semantics(monkeypatch, caplog):
     degraded_logs = [r.getMessage() for r in caplog.records if "degraded" in r.getMessage()]
     assert degraded_logs
     assert any("ignored or honored with weaker semantics" in m for m in degraded_logs)
+
+
+def test_auto_routes_baybe_only_constraint_to_baybe(monkeypatch):
+    """A BayBE-only constraint family must route ``auto`` to BayBE.
+
+    Product/cardinality/set-based constraint types are honored by BayBE
+    only; BoTorch reports them ``UNSUPPORTED``, so even with
+    ``BO_BACKEND=botorch`` the selector must pick BayBE (the
+    substance-guardrail routing-safety pattern applied to the extended
+    constraint surface). Mirrors the sparsity example of the BayBE
+    constraints userguide
+    (https://emdgroup.github.io/baybe/stable/userguide/constraints.html).
+    """
+    monkeypatch.setenv("BO_BACKEND", "botorch")
+    spec_dict = {
+        "name": "Sparse mixture",
+        "parameters": [
+            {"name": "a", "type": "continuous", "bounds": [0.0, 1.0]},
+            {"name": "b", "type": "continuous", "bounds": [0.0, 1.0]},
+        ],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+        "constraints": [
+            {"type": "cardinality", "parameters": ["a", "b"], "max_cardinality": 1},
+        ],
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "baybe"
+
+
+def test_auto_routes_thompson_sampling_to_baybe(monkeypatch):
+    """An acquisition method only BayBE can express routes ``auto`` to BayBE."""
+    monkeypatch.setenv("BO_BACKEND", "botorch")
+    spec_dict = {
+        "name": "TS",
+        "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+        "acquisition_method": "thompson_sampling",
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "baybe"
+
+
+def test_auto_routes_match_objective_to_baybe(monkeypatch):
+    """Match-a-target objectives are BayBE-only and must route there."""
+    monkeypatch.setenv("BO_BACKEND", "botorch")
+    spec_dict = {
+        "name": "Match pH",
+        "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+        "objectives": [{"name": "ph", "target_mode": "match", "target": 7.4}],
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "baybe"
+
+
+def test_auto_routes_oversized_categorical_space_away_from_baybe(monkeypatch):
+    """Above the search-space budget, ``auto`` must not select BayBE.
+
+    BayBE reports the oversized discrete product ``DEGRADED`` (it would
+    run on a subsampled candidate set), so the selector prefers a FULL
+    backend — the definition-of-done for the large-categorical
+    initiative ("auto never selects BayBE above threshold while a FULL
+    backend exists").
+    """
+    monkeypatch.setenv("BO_BACKEND", "baybe")
+    spec_dict = {
+        "name": "Huge categorical",
+        "parameters": [
+            {
+                "name": f"c{i}",
+                "type": "categorical",
+                "categories": [f"v{j}" for j in range(60)],
+            }
+            for i in range(3)
+        ],
+        "objectives": [{"name": "y", "direction": "minimize"}],
+    }
+    resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "botorch"

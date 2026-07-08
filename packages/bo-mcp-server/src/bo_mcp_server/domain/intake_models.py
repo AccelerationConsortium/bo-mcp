@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from bo_engine.types import ScalarizationMode, ScalarizerKind
 from bo_mcp_server.domain.campaign_spec import (
     AcquisitionMethod,
     AcquisitionOptimizationConfig,
@@ -96,6 +97,13 @@ class CampaignIntakeInput(BaseModel):
     # unchanged; each is honored only by backends that advertise the
     # corresponding capability via ``validate_capabilities``.
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
+    # UCB-family exploration weight; only valid with
+    # acquisition_method='upper_confidence_bound' (enforced by CampaignSpec).
+    acquisition_beta: float | None = None
+    # Multi-objective combination strategy + desirability scalarizer flavor;
+    # cross-field rules enforced by CampaignSpec.
+    scalarization: ScalarizationMode = ScalarizationMode.PARETO
+    scalarizer: ScalarizerKind | None = None
     use_input_warping: bool = False
     use_cost_aware: bool = False
     turbo_config: TurboConfig | None = None

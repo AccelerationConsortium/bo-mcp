@@ -512,11 +512,15 @@ class TestUnknownConstraintType:
     """Test error handling for unknown constraint types."""
 
     def test_all_constraint_types_are_handled(self) -> None:
-        """All ConstraintType enum values have handlers.
+        """Every ConstraintType member is either encoded or rejected loudly.
 
-        This test verifies that create_constraint_callable handles all
-        enum values. If a new type is added to ConstraintType without
-        a handler, this test will fail.
+        The BoTorch feasibility-callable encoding exists for the arithmetic
+        sum/linear family. The extended families (products, cardinality,
+        set-based label constraints) are BayBE-only: the BoTorch backend
+        vetoes them at intake via ``validate_capabilities``, and this
+        builder must raise a clear, type-naming error — never silently
+        fall through — if one reaches it anyway. A new enum member without
+        either a handler or the documented rejection fails here.
         """
         spec = OptimizationSpec(
             parameters=[
@@ -525,8 +529,13 @@ class TestUnknownConstraintType:
             ],
             objectives=[ObjectiveSpec(name="f", minimize=True)],
         )
+        botorch_callable_types = {
+            ConstraintType.SUM_EQUALS,
+            ConstraintType.SUM_LESS_THAN,
+            ConstraintType.SUM_GREATER_THAN,
+            ConstraintType.LINEAR,
+        }
 
-        # Test all known constraint types
         for constraint_type in ConstraintType:
             constraint = ConstraintSpec(
                 type=constraint_type,
@@ -534,10 +543,12 @@ class TestUnknownConstraintType:
                 value=1.0,
                 coefficients=[1.0, 1.0] if constraint_type == ConstraintType.LINEAR else None,
             )
-
-            # Should not raise - all types should be handled
-            callable_fn = create_constraint_callable(constraint, spec)
-            assert callable(callable_fn)
+            if constraint_type in botorch_callable_types:
+                callable_fn = create_constraint_callable(constraint, spec)
+                assert callable(callable_fn)
+            else:
+                with pytest.raises(ValueError, match=constraint_type.value):
+                    create_constraint_callable(constraint, spec)
 
 
 class TestConstraintWithBoTorchIntegration:
@@ -679,3 +690,60 @@ class TestBotorchLinearConstraintEncoding:
         x = torch.tensor([0.3, 0.3, 0.4], dtype=torch.double)
         value = float((x[indices] * coefficients).sum().item())
         assert value == pytest.approx(rhs)
+
+
+class TestConstraintSurfaceReports:
+    """Direct per-family reports from the BoTorch constraint capability surface.
+
+    Minor-class gap: the ``is_interpoint`` UNSUPPORTED branch (and the
+    per-family type vetoes) previously had no direct unit coverage in
+    this package — deleting the branch left the suite green.
+    """
+
+    @staticmethod
+    def _report_spec(constraint: ConstraintSpec) -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0, 1)),
+                ParameterSpec(name="y", type=ParameterType.CONTINUOUS, bounds=(0, 1)),
+            ],
+            objectives=[ObjectiveSpec(name="f", minimize=True)],
+            constraints=[constraint],
+        )
+
+    def test_interpoint_sum_equals_is_unsupported(self) -> None:
+        from bo_engine.botorch_backend import _constraint_surface_reports
+
+        reports = _constraint_surface_reports(
+            self._report_spec(
+                ConstraintSpec(
+                    type=ConstraintType.SUM_EQUALS,
+                    parameters=["x", "y"],
+                    value=1.0,
+                    is_interpoint=True,
+                )
+            )
+        )
+        assert len(reports) == 1
+        assert reports[0].key == "constraint[0](sum_equals)"
+        assert "Interpoint" in reports[0].reason
+
+    def test_every_family_classifies_as_documented(self) -> None:
+        from bo_engine.botorch_backend import (
+            _BOTORCH_SUPPORTED_CONSTRAINT_TYPES,
+            _constraint_surface_reports,
+        )
+
+        for constraint_type in ConstraintType:
+            constraint = ConstraintSpec(
+                type=constraint_type,
+                parameters=["x", "y"],
+                value=1.0,
+                coefficients=[1.0, 1.0] if constraint_type == ConstraintType.LINEAR else None,
+            )
+            reports = _constraint_surface_reports(self._report_spec(constraint))
+            if constraint_type in _BOTORCH_SUPPORTED_CONSTRAINT_TYPES:
+                assert reports == [], f"{constraint_type} wrongly reported"
+            else:
+                assert len(reports) == 1, f"{constraint_type} not reported"
+                assert constraint_type.value in reports[0].key

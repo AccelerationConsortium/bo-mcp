@@ -105,6 +105,14 @@ async def test_rest_create_campaign_persists_advanced_fields(api_client, auth_he
             "unit": "",
             "target": None,
             "log_transform": False,
+            # Extended target surface (match modes, desirability inputs,
+            # typed transforms) — unset for this plain minimize objective.
+            "target_mode": None,
+            "match_shape": None,
+            "match_scale": None,
+            "weight": None,
+            "normalization_bounds": None,
+            "transform": None,
         }
     ]
     assert config["backend_options"] == {"botorch": {"acquisition_optimizer": "lbfgsb"}}

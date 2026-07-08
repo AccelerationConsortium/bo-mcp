@@ -19,6 +19,8 @@ from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.operations.helpers import (
+    objective_analysis_series,
+    objective_identity,
     parse_campaign_id,
     parse_verbosity,
     results_to_observations,
@@ -51,8 +53,13 @@ _EFFICIENCY_BASIS_MULTI = "hypervolume_per_result"
 
 
 def _objective_signature(spec: CampaignSpec) -> list[str]:
-    """Order-independent objective identity used to group comparable campaigns."""
-    return sorted(f"{objective.name}:{objective.direction}" for objective in spec.objectives)
+    """Order-independent objective identity used to group comparable campaigns.
+
+    Built from :func:`objective_identity` (resolved mode + MATCH target),
+    so legacy-``direction`` and ``target_mode`` spellings of the same goal
+    group together while MATCH objectives with different targets do not.
+    """
+    return sorted(objective_identity(objective) for objective in spec.objectives)
 
 
 async def _compute_campaign_metrics(
@@ -89,12 +96,20 @@ async def _compute_campaign_metrics(
         objective = spec.objectives[0]
         values = [result.objective_values[objective.name] for result in results]
 
-        best_value, _ = compute_best_value(values, minimize=objective.is_minimize)
-        improvement_history = compute_improvement_history(values, minimize=objective.is_minimize)
+        # MATCH objectives are analyzed on distance-to-target (best =
+        # closest); other goals pass raw values through unchanged. The
+        # reported best_value is always the raw observed value at the
+        # best metric index.
+        metric_values, metric_minimize = objective_analysis_series(objective, values)
+        best_metric, best_idx = compute_best_value(metric_values, minimize=metric_minimize)
+        best_value = values[best_idx]
+        improvement_history = compute_improvement_history(metric_values, minimize=metric_minimize)
         improvement_rate = compute_single_objective_improvement_rate(improvement_history)
 
-        if len(values) >= 2 and abs(values[0]) > 1e-10:
-            sample_efficiency = abs(best_value - values[0]) / abs(values[0]) / len(values)
+        if len(metric_values) >= 2 and abs(metric_values[0]) > 1e-10:
+            sample_efficiency = (
+                abs(best_metric - metric_values[0]) / abs(metric_values[0]) / len(metric_values)
+            )
         else:
             sample_efficiency = 0.0
 

@@ -16,12 +16,18 @@ import logging
 from collections import Counter
 from typing import Any
 
+import pandas as pd
 from baybe import Campaign
 from baybe.recommenders import (
     BotorchRecommender,
+    FPSRecommender,
+    GaussianMixtureClusteringRecommender,
+    KMeansClusteringRecommender,
+    PAMClusteringRecommender,
     RandomRecommender,
     TwoPhaseMetaRecommender,
 )
+from baybe.recommenders.base import RecommenderProtocol
 from baybe.searchspace import SearchSpaceType
 
 from bo_engine.types import ObservationData, OptimizationSpec
@@ -31,7 +37,12 @@ from bo_engine_baybe.converters import (
     spec_to_objective,
     spec_to_searchspace,
 )
-from bo_engine_baybe.options import extract_baybe_backend_options
+from bo_engine_baybe.options import (
+    BayBEBackendOptions,
+    BayBEInitialRecommender,
+    extract_baybe_backend_options,
+)
+from bo_engine_baybe.surrogates import build_baybe_surrogate
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +77,28 @@ try:
 except ImportError:
     pass  # Older BayBE versions may not expose this
 
+try:
+    # BayBE's campaign-phase exceptions (no measurements yet, surrogate
+    # not trained, incomplete measurement table) subclass Exception
+    # directly rather than a shared BayBE base, so the tuple above misses
+    # them — they would escape the "optional, never crash diagnostics"
+    # swallows (verified on the SHAP feature-importance path against
+    # BayBE 0.15.0). Importable without the optional shap extra.
+    from baybe.exceptions import (
+        IncompleteMeasurementsError,
+        ModelNotTrainedError,
+        NoMeasurementsError,
+    )
+
+    _BAYBE_SAFE_EXCEPTIONS = (
+        *_BAYBE_SAFE_EXCEPTIONS,
+        IncompleteMeasurementsError,
+        ModelNotTrainedError,
+        NoMeasurementsError,
+    )
+except ImportError:
+    pass  # Older BayBE versions may not expose these
+
 
 def _resolve_switch_after(spec: OptimizationSpec) -> int:
     """Resolve the random → GP switch point for the TwoPhaseMetaRecommender.
@@ -85,14 +118,74 @@ def _resolve_switch_after(spec: OptimizationSpec) -> int:
     return _DEFAULT_SWITCH_AFTER
 
 
-def _build_campaign(spec: OptimizationSpec) -> Campaign:
+# Factories for the initial-design (pre-model) recommender selection.
+# Non-random members require a purely discrete search space; the capability
+# layer validates the combination at intake.
+_INITIAL_RECOMMENDER_FACTORIES: dict[BayBEInitialRecommender, type] = {
+    BayBEInitialRecommender.RANDOM: RandomRecommender,
+    BayBEInitialRecommender.FPS: FPSRecommender,
+    BayBEInitialRecommender.KMEANS: KMeansClusteringRecommender,
+    BayBEInitialRecommender.PAM: PAMClusteringRecommender,
+    BayBEInitialRecommender.GMM: GaussianMixtureClusteringRecommender,
+}
+
+
+def _build_initial_recommender(options: BayBEBackendOptions) -> RecommenderProtocol:
+    """Instantiate the configured initial-design recommender (default: random)."""
+    choice = (
+        options.recommender.initial_recommender
+        if options.recommender is not None
+        else BayBEInitialRecommender.RANDOM
+    )
+    return _INITIAL_RECOMMENDER_FACTORIES[choice]()
+
+
+def _build_bayesian_recommender(
+    spec: OptimizationSpec,
+    options: BayBEBackendOptions,
+) -> BotorchRecommender:
+    """Build the GP-phase BotorchRecommender with the configured tuning knobs.
+
+    Unset knobs keep BayBE's own defaults; the configured surrogate (if
+    any) is passed as ``surrogate_model``.
+    """
+    kwargs: dict[str, object] = {
+        "acquisition_function": spec_to_acquisition_function(spec),
+    }
+    surrogate = build_baybe_surrogate(spec, options)
+    if surrogate is not None:
+        kwargs["surrogate_model"] = surrogate
+    bayesian = options.recommender.bayesian if options.recommender is not None else None
+    if bayesian is not None:
+        if bayesian.sequential_continuous is not None:
+            kwargs["sequential_continuous"] = bayesian.sequential_continuous
+        if bayesian.hybrid_sampler is not None:
+            kwargs["hybrid_sampler"] = bayesian.hybrid_sampler.value
+        if bayesian.sampling_percentage is not None:
+            kwargs["sampling_percentage"] = bayesian.sampling_percentage
+        if bayesian.n_restarts is not None:
+            kwargs["n_restarts"] = bayesian.n_restarts
+        if bayesian.n_raw_samples is not None:
+            kwargs["n_raw_samples"] = bayesian.n_raw_samples
+    return BotorchRecommender(**kwargs)  # ty: ignore[invalid-argument-type]
+
+
+def _build_campaign(
+    spec: OptimizationSpec,
+    observations: list[ObservationData] | None = None,
+    pending_points: list[dict[str, Any]] | None = None,
+) -> Campaign:
     """Create a fresh BayBE Campaign from an OptimizationSpec.
 
     The BO-phase recommender honors ``spec.acquisition_method`` via
     :func:`spec_to_acquisition_function`; ``None`` (AUTO or a method BayBE
-    cannot express) keeps BayBE's own default acquisition function.
+    cannot express) keeps BayBE's own default acquisition function. The
+    typed ``backend_options['baybe']`` surface selects the initial-design
+    recommender, the surrogate model, and the campaign-level
+    ``allow_recommending_*`` toggles (explicit values win over the
+    historical purely-discrete defaults).
     """
-    searchspace = spec_to_searchspace(spec)
+    searchspace = spec_to_searchspace(spec, observations, pending_points)
     is_purely_discrete = searchspace.type == SearchSpaceType.DISCRETE
     options = extract_baybe_backend_options(spec.backend_options)
 
@@ -100,10 +193,8 @@ def _build_campaign(spec: OptimizationSpec) -> Campaign:
         "searchspace": searchspace,
         "objective": spec_to_objective(spec),
         "recommender": TwoPhaseMetaRecommender(
-            initial_recommender=RandomRecommender(),
-            recommender=BotorchRecommender(
-                acquisition_function=spec_to_acquisition_function(spec),
-            ),
+            initial_recommender=_build_initial_recommender(options),
+            recommender=_build_bayesian_recommender(spec, options),
             switch_after=_resolve_switch_after(spec),
         ),
     }
@@ -111,18 +202,69 @@ def _build_campaign(spec: OptimizationSpec) -> Campaign:
     if is_purely_discrete:
         kwargs["allow_recommending_already_measured"] = False
         kwargs["allow_recommending_already_recommended"] = False
+        # Historical default: pending points are excluded from the discrete
+        # candidate set (equals BayBE's AUTO resolution on purely discrete
+        # spaces, kept explicit for state-envelope continuity).
         kwargs["allow_recommending_pending_experiments"] = (
             options.allow_recommending_pending_experiments
+            if options.allow_recommending_pending_experiments is not None
+            else False
+        )
+    elif options.allow_recommending_pending_experiments is not None:
+        # On continuous/hybrid spaces only an explicit value is forwarded:
+        # BayBE forbids False there (IncompatibilityError — the capability
+        # layer pre-rejects it) and resolves AUTO to True otherwise.
+        kwargs["allow_recommending_pending_experiments"] = (
+            options.allow_recommending_pending_experiments
+        )
+    # Explicit campaign-level toggles win over the historical defaults on
+    # any space type (BayBE resolves unset values via its AUTO semantics).
+    if options.allow_recommending_already_measured is not None:
+        kwargs["allow_recommending_already_measured"] = options.allow_recommending_already_measured
+    if options.allow_recommending_already_recommended is not None:
+        kwargs["allow_recommending_already_recommended"] = (
+            options.allow_recommending_already_recommended
         )
 
     return Campaign(**kwargs)  # ty: ignore[invalid-argument-type]
 
 
+def _add_measurements(
+    campaign: Campaign,
+    obs_df: pd.DataFrame,
+    spec: OptimizationSpec,
+) -> None:
+    """Add measurements honoring the configured tolerance toggle.
+
+    ``measurements_must_be_within_tolerance`` maps to BayBE's
+    ``add_measurements(numerical_measurements_must_be_within_tolerance=...)``;
+    the default (``None``) keeps BayBE's strict ``True``.
+    """
+    options = extract_baybe_backend_options(spec.backend_options)
+    if options.measurements_must_be_within_tolerance is None:
+        campaign.add_measurements(obs_df)
+        return
+    campaign.add_measurements(
+        obs_df,
+        numerical_measurements_must_be_within_tolerance=(
+            options.measurements_must_be_within_tolerance
+        ),
+    )
+
+
 def _restore_or_build_campaign(
     spec: OptimizationSpec,
     backend_state: dict[str, Any] | None,
+    observations: list[ObservationData] | None = None,
+    pending_points: list[dict[str, Any]] | None = None,
 ) -> Campaign:
-    """Restore a Campaign from serialized state, or build a fresh one."""
+    """Restore a Campaign from serialized state, or build a fresh one.
+
+    ``observations`` / ``pending_points`` only matter on the fresh-build
+    path of an above-budget (subsampled) search space, where they are
+    unioned into the candidate frame; a successful restore carries its
+    candidate set inside ``campaign_json``.
+    """
     if backend_state and "campaign_json" in backend_state:
         try:
             return Campaign.from_json(backend_state["campaign_json"])
@@ -140,7 +282,7 @@ def _restore_or_build_campaign(
                     "error_class": type(e).__name__,
                 },
             )
-    return _build_campaign(spec)
+    return _build_campaign(spec, observations, pending_points)
 
 
 def _observation_fingerprint(
@@ -299,7 +441,7 @@ def _reconcile_measurements(
 
     if new_observations:
         obs_df = observations_to_dataframe(new_observations, spec)
-        campaign.add_measurements(obs_df)
+        _add_measurements(campaign, obs_df, spec)
 
     return campaign, incoming_ids
 
@@ -337,10 +479,10 @@ def _rebuild_from_observations(
     Used as the safe fallback whenever identity reconciliation can no
     longer trust the restored campaign (legacy payload, missing rows).
     """
-    fresh = _build_campaign(spec)
+    fresh = _build_campaign(spec, observations)
     if observations:
         obs_df = observations_to_dataframe(observations, spec)
-        fresh.add_measurements(obs_df)
+        _add_measurements(fresh, obs_df, spec)
     return fresh
 
 

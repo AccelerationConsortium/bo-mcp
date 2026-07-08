@@ -74,7 +74,13 @@ def create_constraint_callable(
 
         return linear_constraint
 
-    msg = f"Unknown constraint type: {constraint.type}"
+    msg = (
+        f"Constraint type '{constraint.type.value}' has no BoTorch feasibility-callable "
+        "encoding. The extended families (products, cardinality, set-based label "
+        "constraints) are honored by the BayBE backend only; the BoTorch backend "
+        "reports them UNSUPPORTED at intake so they cannot reach this builder "
+        "through the server."
+    )
     raise ValueError(msg)
 
 

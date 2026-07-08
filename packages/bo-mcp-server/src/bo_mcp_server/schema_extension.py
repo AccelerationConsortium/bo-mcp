@@ -1,22 +1,26 @@
-"""Splice typed per-backend ``parameter_options`` schema into intake schemas.
+"""Splice typed per-backend option schemas into intake schemas.
 
-``ParameterSpec.parameter_options`` is an opaque ``dict`` keyed by backend
-name. The neutral domain models cannot describe a backend's options without
-importing that backend package — which would invert the dependency graph and
-couple the backend-agnostic intake to BayBE. This module is the
-backend-aware boundary that resolves the tension: it queries each discovered
-backend's :meth:`bo_engine.backend.BOBackend.parameter_options_schema` hook
-through the entry-point registry (never importing a backend package directly)
+``ParameterSpec.parameter_options`` (per parameter) and
+``OptimizationSpec.backend_options`` (per campaign) are opaque ``dict``s
+keyed by backend name. The neutral domain models cannot describe a
+backend's options without importing that backend package — which would
+invert the dependency graph and couple the backend-agnostic intake to
+BayBE. This module is the backend-aware boundary that resolves the
+tension: it queries each discovered backend's
+:meth:`bo_engine.backend.BOBackend.parameter_options_schema` and
+:meth:`bo_engine.backend.BOBackend.backend_options_schema` hooks through
+the entry-point registry (never importing a backend package directly)
 and splices the union into
 
 * the **MCP** tool schemas (``bo_create_campaign`` / ``bo_validate_intake``)
-  via :func:`intake_schema_with_parameter_options`, and
-* the **REST** OpenAPI document via :func:`augment_parameter_options`,
+  via :func:`intake_schema_with_backend_extensions`, and
+* the **REST** OpenAPI document via :func:`augment_parameter_options` and
+  :func:`augment_backend_options`,
 
 so a client introspecting either transport discovers e.g. BayBE's
-``role=substance`` molecular recipe (``substance_data`` + ``substance_encoding``)
-without reading source. Both transports feed from the same once-built fragment
-map, so they cannot drift.
+``role=substance`` molecular recipe and the per-campaign recommender
+configuration without reading source. Both transports feed from the same
+once-built fragment maps, so they cannot drift.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from bo_mcp_server.domain.intake_models import INTAKE_INPUT_JSON_SCHEMA, inline_
 logger = logging.getLogger(__name__)
 
 _PARAMETER_OPTIONS_FIELD = "parameter_options"
+_BACKEND_OPTIONS_FIELD = "backend_options"
 
 _PARAMETER_OPTIONS_DESCRIPTION = (
     "Per-backend parameter options, keyed by backend name. Each backend reads "
@@ -43,30 +48,49 @@ _PARAMETER_OPTIONS_DESCRIPTION = (
     "unknown backends remain accepted via additionalProperties."
 )
 
+_BACKEND_OPTIONS_DESCRIPTION = (
+    "Per-backend campaign-level options, keyed by backend name. Each backend "
+    "reads only its own slot and silently ignores keys addressed to other "
+    "backends. Documented backends appear under 'properties' with their typed "
+    "shape (e.g. 'baybe' exposes the 'recommender' configuration and "
+    "campaign-level toggles); unknown backends remain accepted via "
+    "additionalProperties."
+)
 
-@lru_cache(maxsize=1)
-def parameter_options_fragments() -> dict[str, dict[str, Any]]:
-    """Return ``{backend_name: inlined JSON-schema fragment}`` for all backends.
+# Hook-method name on the BOBackend protocol per spliced field.
+_FIELD_HOOKS: dict[str, str] = {
+    _PARAMETER_OPTIONS_FIELD: "parameter_options_schema",
+    _BACKEND_OPTIONS_FIELD: "backend_options_schema",
+}
 
-    Each backend that declares typed per-parameter options (via the
-    ``parameter_options_schema`` hook) contributes the schema for the value
-    stored under ``parameter_options[<backend name>]``. Fragments are inlined
-    (``$defs`` resolved) so they stay self-contained when spliced into a host
-    schema. Backends that fail to load (missing optional dependency, broken
-    entry point) or return ``None`` are skipped, so the surface degrades to
-    whatever is actually installed rather than crashing schema generation.
+_FIELD_DESCRIPTIONS: dict[str, str] = {
+    _PARAMETER_OPTIONS_FIELD: _PARAMETER_OPTIONS_DESCRIPTION,
+    _BACKEND_OPTIONS_FIELD: _BACKEND_OPTIONS_DESCRIPTION,
+}
 
-    Cached: the registry is fixed after startup, so the fragment map is built
-    once and shared by both transports.
+
+def _fragments_for_field(field_name: str) -> dict[str, dict[str, Any]]:
+    """Return ``{backend_name: inlined JSON-schema fragment}`` for one field.
+
+    Each backend that declares typed options for ``field_name`` (via the
+    corresponding schema hook) contributes the schema for the value stored
+    under ``<field_name>[<backend name>]``. Fragments are inlined
+    (``$defs`` resolved) so they stay self-contained when spliced into a
+    host schema. Backends that fail to load (missing optional dependency,
+    broken entry point) or return ``None`` are skipped, so the surface
+    degrades to whatever is actually installed rather than crashing schema
+    generation.
     """
+    hook_name = _FIELD_HOOKS[field_name]
     fragments: dict[str, dict[str, Any]] = {}
     for name in list_available_backends():
         try:
-            fragment = get_backend(name).parameter_options_schema()
+            fragment = getattr(get_backend(name), hook_name)()
         except (ValueError, ImportError, AttributeError) as exc:
             logger.warning(
-                "Backend %r could not provide a parameter_options schema fragment: %s",
+                "Backend %r could not provide a %s schema fragment: %s",
                 name,
+                field_name,
                 exc,
             )
             continue
@@ -76,8 +100,28 @@ def parameter_options_fragments() -> dict[str, dict[str, Any]]:
     return fragments
 
 
+@lru_cache(maxsize=1)
+def parameter_options_fragments() -> dict[str, dict[str, Any]]:
+    """Per-backend ``parameter_options`` fragments, built once for both transports.
+
+    Cached: the registry is fixed after startup, so the fragment map is built
+    once and shared by both transports.
+    """
+    return _fragments_for_field(_PARAMETER_OPTIONS_FIELD)
+
+
+@lru_cache(maxsize=1)
+def backend_options_fragments() -> dict[str, dict[str, Any]]:
+    """Per-backend ``backend_options`` fragments, built once for both transports.
+
+    The per-campaign twin of :func:`parameter_options_fragments`, sourced
+    from the ``backend_options_schema`` hook.
+    """
+    return _fragments_for_field(_BACKEND_OPTIONS_FIELD)
+
+
 def _object_branches(node: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return the object-typed subschema(s) of a ``parameter_options`` field.
+    """Return the object-typed subschema(s) of an options field.
 
     ``Optional[Mapping[...]]`` renders as ``anyOf: [object, null]``; a bare
     map renders as a single ``type: object``. Either way we return the object
@@ -92,11 +136,12 @@ def _object_branches(node: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def _augment_parameter_options_node(
+def _augment_options_node(
     node: dict[str, Any],
     fragments: dict[str, dict[str, Any]],
+    description: str,
 ) -> None:
-    """Add typed per-backend ``properties`` to one ``parameter_options`` field schema."""
+    """Add typed per-backend ``properties`` to one options field schema."""
     if not fragments:
         return
     for obj in _object_branches(node):
@@ -107,30 +152,35 @@ def _augment_parameter_options_node(
             # injection idempotent (re-running OpenAPI generation is a no-op).
             merged.setdefault(name, copy.deepcopy(fragment))
         obj["properties"] = merged
-    node.setdefault("description", _PARAMETER_OPTIONS_DESCRIPTION)
+    node.setdefault("description", description)
 
 
-def _walk_and_augment(node: object, fragments: dict[str, dict[str, Any]]) -> None:
-    """Recursively find every ``parameter_options`` field schema and augment it.
+def _walk_and_augment(
+    node: object,
+    fragments: dict[str, dict[str, Any]],
+    field_name: str,
+) -> None:
+    """Recursively find every ``field_name`` field schema and augment it.
 
-    Handles both the fully-inlined MCP schema (the field sits under
-    ``parameters.items.properties``) and the ``$defs``/``components.schemas``
-    form FastAPI emits (the field sits under ``InputParameter.properties``).
-    ``parameter_options`` is a distinctive field name unique to the parameter
-    model, so matching it directly avoids hardcoding a fragile deep path.
+    Handles both the fully-inlined MCP schema and the
+    ``$defs``/``components.schemas`` form FastAPI emits.
+    ``parameter_options`` / ``backend_options`` are distinctive field names
+    unique to the intake models, so matching them directly avoids hardcoding
+    a fragile deep path.
     """
+    description = _FIELD_DESCRIPTIONS[field_name]
     if isinstance(node, dict):
         node_dict = cast("dict[str, Any]", node)
-        candidate = node_dict.get(_PARAMETER_OPTIONS_FIELD)
+        candidate = node_dict.get(field_name)
         if isinstance(candidate, dict):
             candidate_dict = cast("dict[str, Any]", candidate)
             if _object_branches(candidate_dict):
-                _augment_parameter_options_node(candidate_dict, fragments)
+                _augment_options_node(candidate_dict, fragments, description)
         for value in node_dict.values():
-            _walk_and_augment(value, fragments)
+            _walk_and_augment(value, fragments, field_name)
     elif isinstance(node, list):
         for item in cast("list[Any]", node):
-            _walk_and_augment(item, fragments)
+            _walk_and_augment(item, fragments, field_name)
 
 
 def augment_parameter_options(schema: dict[str, Any]) -> dict[str, Any]:
@@ -139,19 +189,43 @@ def augment_parameter_options(schema: dict[str, Any]) -> dict[str, Any]:
     Mutates and returns ``schema`` — intended for post-processing a generated
     OpenAPI document (``components/schemas/InputParameter``). Idempotent.
     """
-    _walk_and_augment(schema, parameter_options_fragments())
+    _walk_and_augment(schema, parameter_options_fragments(), _PARAMETER_OPTIONS_FIELD)
+    return schema
+
+
+def augment_backend_options(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inject the per-backend ``backend_options`` properties into ``schema`` in place.
+
+    The per-campaign twin of :func:`augment_parameter_options` — intended for
+    post-processing a generated OpenAPI document (the intake request body's
+    ``backend_options`` field). Idempotent.
+    """
+    _walk_and_augment(schema, backend_options_fragments(), _BACKEND_OPTIONS_FIELD)
     return schema
 
 
 @lru_cache(maxsize=1)
-def intake_schema_with_parameter_options() -> dict[str, Any]:
+def intake_schema_with_backend_extensions() -> dict[str, Any]:
     """Return the MCP intake JSON schema enriched with per-backend options.
 
     A deep copy of :data:`INTAKE_INPUT_JSON_SCHEMA` (so the shared module
-    global stays untouched) with the typed ``parameter_options`` properties
-    spliced in. Consumed by the ``bo_create_campaign`` / ``bo_validate_intake``
-    tool definitions so ``tools/list`` advertises the molecular recipe.
+    global stays untouched) with the typed ``parameter_options`` **and**
+    ``backend_options`` properties spliced in. Consumed by the
+    ``bo_create_campaign`` / ``bo_validate_intake`` tool definitions so
+    ``tools/list`` advertises the molecular recipe and the per-campaign
+    backend options.
     """
     enriched = copy.deepcopy(INTAKE_INPUT_JSON_SCHEMA)
-    _walk_and_augment(enriched, parameter_options_fragments())
+    _walk_and_augment(enriched, parameter_options_fragments(), _PARAMETER_OPTIONS_FIELD)
+    _walk_and_augment(enriched, backend_options_fragments(), _BACKEND_OPTIONS_FIELD)
     return enriched
+
+
+def intake_schema_with_parameter_options() -> dict[str, Any]:
+    """Backward-compatible alias for :func:`intake_schema_with_backend_extensions`.
+
+    Kept so existing importers keep receiving the fully-enriched intake
+    schema; the new name reflects that the enrichment now covers both the
+    per-parameter and the per-campaign option surfaces.
+    """
+    return intake_schema_with_backend_extensions()

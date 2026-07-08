@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import logging
+
+# Optional dependency — probed at module level; the module object is
+# re-bound through a ModuleType | None alias so environments with and
+# without the optional extra type-check identically.
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -11,13 +16,13 @@ from botorch.models import ModelListGP, SingleTaskGP
 
 from bo_engine.constants import NUMERICAL_EPSILON
 
-# Optional dependency - imported at module level for clarity
 try:
-    import shap  # ty: ignore[unresolved-import]
+    import shap as _shap_module
 
+    shap: ModuleType | None = _shap_module
     SHAP_AVAILABLE = True
 except ImportError:
-    shap = None  # type: ignore[assignment]
+    shap = None
     SHAP_AVAILABLE = False
 
 if TYPE_CHECKING:

@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import cast
+from collections.abc import Sequence
+from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 import torch
 from baybe import Campaign
@@ -21,9 +23,11 @@ from botorch.models import ModelListGP, SingleTaskGP
 
 from bo_engine.device import get_device, get_dtype
 from bo_engine.transforms import encode_categorical, get_bounds_tensor
-from bo_engine.types import ObservationData, OptimizationSpec
+from bo_engine.types import ObjectiveSpec, ObservationData, OptimizationSpec
+from bo_engine_baybe.constants import DEFAULT_MAX_ROW_LEVEL_SHAP_ROWS
 from bo_engine_baybe.converters import observations_to_dataframe
-from bo_engine_baybe.state import _BAYBE_SAFE_EXCEPTIONS, _build_campaign
+from bo_engine_baybe.options import extract_baybe_backend_options
+from bo_engine_baybe.state import _BAYBE_SAFE_EXCEPTIONS, _add_measurements, _build_campaign
 
 logger = logging.getLogger(__name__)
 
@@ -171,20 +175,165 @@ def _select_kernel_model(botorch_model: SingleTaskGP | ModelListGP) -> SingleTas
     return cast("SingleTaskGP", botorch_model)
 
 
-def _extract_feature_importance(campaign: Campaign) -> dict[str, float] | None:
-    """Extract SHAP-based feature importance from BayBE (optional)."""
+def _mean_abs_shap_per_feature(explanation: object) -> dict[str, float]:
+    """Mean absolute SHAP value per feature for one target's explanation.
+
+    Mean-|SHAP| over the background rows is the standard global feature
+    importance aggregation (the quantity behind ``shap.plots.bar``; see
+    Lundberg & Lee, NeurIPS 2017, and the BayBE insights userguide,
+    https://emdgroup.github.io/baybe/stable/userguide/insights.html).
+    The explanation is duck-typed (``values`` matrix of shape
+    ``(n_rows, n_features)`` plus ``feature_names``) so the aggregation
+    math stays testable without the heavy optional ``shap`` dependency.
+    """
+    # ``.values`` here is shap.Explanation's SHAP-value matrix, not a
+    # pandas accessor — the pandas lint heuristic misfires on the name.
+    matrix = np.abs(np.asarray(explanation.values, dtype=float))  # ty: ignore[unresolved-attribute]
+    feature_names = [str(name) for name in explanation.feature_names]  # ty: ignore[unresolved-attribute]
+    mean_abs = matrix.mean(axis=0)
+    return {name: float(value) for name, value in zip(feature_names, mean_abs, strict=True)}
+
+
+def _aggregate_shap_importance(explanations: Sequence[object]) -> dict[str, float] | None:
+    """Aggregate mean-|SHAP| feature importance across per-target explanations.
+
+    ``SHAPInsight.explain()`` returns one ``shap.Explanation`` per target:
+    single-objective campaigns contribute exactly one, Pareto campaigns one
+    per target. The diagnostics contract exposes a single scalar per
+    feature, so multi-target importances are **averaged across targets**
+    (equal weight per target) — per-target breakdowns can be added as a
+    separate diagnostics field if a consumer needs them.
+    """
+    per_target = [_mean_abs_shap_per_feature(e) for e in explanations]
+    if not per_target:
+        return None
+    names = list(per_target[0])
+    for target in per_target[1:]:
+        if set(target) != set(names):
+            msg = "Per-target SHAP explanations disagree on feature names"
+            raise ValueError(msg)
+    return {name: float(np.mean([target[name] for target in per_target])) for name in names}
+
+
+def _row_level_attributions(explanation: object, max_rows: int) -> list[dict[str, float]]:
+    """Per-observation SHAP attributions, bounded to ``max_rows`` entries.
+
+    Rows follow the explanation's background-data order (the campaign's
+    measurement order) and carry no per-row identifiers; on multi-target
+    campaigns the caller passes the *first* target's explanation only —
+    both limitations are documented on
+    :class:`~bo_engine_baybe.options.BayBEInsightsOptions.include_row_level`.
+    """
+    # ``.values`` is shap.Explanation's matrix, not a pandas accessor.
+    matrix = np.asarray(explanation.values, dtype=float)  # ty: ignore[unresolved-attribute]
+    names = [str(n) for n in explanation.feature_names]  # ty: ignore[unresolved-attribute]
+    rows = matrix[:max_rows]
+    return [{name: float(value) for name, value in zip(names, row, strict=True)} for row in rows]
+
+
+def _extract_feature_importance_report(
+    campaign: Campaign,
+    spec: OptimizationSpec,
+) -> dict[str, Any] | None:
+    """Extract the SHAP feature-importance block for diagnostics (optional).
+
+    Importance is computed by **calling** ``SHAPInsight.explain()`` (the
+    class exposes no ``explanation`` attribute) and aggregating the
+    returned ``shap.Explanation`` object(s) via
+    :func:`_aggregate_shap_importance`. The explainer backend and
+    representation are configurable via
+    ``backend_options['baybe'].insights`` (``explainer`` /
+    ``use_comp_rep`` / ``include_row_level``); multi-target campaigns
+    additionally expose the per-target breakdown.
+
+    The "optional, never crash diagnostics" contract distinguishes three
+    failure modes instead of one blanket swallow:
+
+    * ``shap`` (an optional heavy extra) is not installed → expected,
+      returns ``None`` with a *debug* log only.
+    * BayBE cannot produce an explanation for the campaign's current
+      phase (no measurements, nonpredictive recommender, incompatible
+      explainer, …) → expected, returns ``None`` with a *debug* log.
+    * ``AttributeError`` → our own SHAPInsight usage drifted from the
+      installed BayBE API (the failure mode that silently disabled this
+      feature before). Logged at *warning* so the regression is visible
+      on dashboards instead of degrading diagnostics invisibly.
+
+    A missing ``shap`` is additionally promoted to a *warning* when the
+    caller explicitly configured insights options — silence is then a
+    misconfiguration signal, not the expected optional-extra default.
+    """
+    insights = extract_baybe_backend_options(spec.backend_options).insights
     try:
         from baybe.insights.shap import SHAPInsight
-
-        insight = SHAPInsight.from_campaign(campaign)
-        values = insight.explanation.values  # noqa: PD011  # ty: ignore[unresolved-attribute]
-        feature_names = insight.explanation.feature_names  # ty: ignore[unresolved-attribute]
-        if values is not None and feature_names is not None:
-            mean_abs = [float(abs(v).mean()) for v in values.T]
-            return dict(zip(feature_names, mean_abs, strict=False))
-    except (ImportError, *_BAYBE_SAFE_EXCEPTIONS) as e:
+    except ImportError as e:
+        if insights is not None:
+            logger.warning(
+                "backend_options['baybe'].insights is configured but the "
+                "optional shap dependency is not installed; feature "
+                "importance stays unavailable: %s",
+                e,
+            )
+        else:
+            logger.debug("SHAP feature importance unavailable (optional dependency): %s", e)
+        return None
+    explainer = insights.explainer if insights is not None else None
+    use_comp_rep = insights.use_comp_rep if insights is not None else False
+    include_rows = insights.include_row_level if insights is not None else False
+    max_rows = (
+        insights.row_level_max_rows
+        if insights is not None and insights.row_level_max_rows is not None
+        else DEFAULT_MAX_ROW_LEVEL_SHAP_ROWS
+    )
+    try:
+        kwargs: dict[str, Any] = {"use_comp_rep": use_comp_rep}
+        if explainer is not None:
+            kwargs["explainer_cls"] = explainer.value
+        insight = SHAPInsight.from_campaign(campaign, **kwargs)
+        explanations = insight.explain()
+        importance = _aggregate_shap_importance(explanations)
+        if importance is None:
+            return None
+        report: dict[str, Any] = {"feature_importance": importance}
+        obj_names = [o.name for o in spec.objectives]
+        if len(explanations) > 1 and len(explanations) == len(obj_names):
+            report["feature_importance_per_target"] = {
+                name: _mean_abs_shap_per_feature(explanation)
+                for name, explanation in zip(obj_names, explanations, strict=True)
+            }
+        if include_rows:
+            report["feature_importance_rows"] = _row_level_attributions(explanations[0], max_rows)
+    except AttributeError as e:
+        logger.warning(
+            "SHAP feature importance extraction used the BayBE insights API "
+            "incorrectly (BayBE version drift?): %s",
+            e,
+        )
+        return None
+    except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
         logger.debug("SHAP feature importance extraction failed: %s", e)
-    return None
+        return None
+    else:
+        return report
+
+
+def _extract_feature_importance(campaign: Campaign) -> dict[str, float] | None:
+    """Aggregate mean-|SHAP| feature importance with default insights options.
+
+    Compatibility wrapper over :func:`_extract_feature_importance_report`
+    for callers without a spec in hand: objective names are synthesized
+    from the campaign's own targets (only needed for the per-target
+    breakdown, which this wrapper discards anyway).
+    """
+    targets = getattr(getattr(campaign, "objective", None), "targets", None) or []
+    spec = OptimizationSpec(
+        parameters=[],
+        objectives=[ObjectiveSpec(name=str(t.name)) for t in targets],
+    )
+    report = _extract_feature_importance_report(campaign, spec)
+    if report is None:
+        return None
+    return cast("dict[str, float]", report["feature_importance"])
 
 
 def _build_fitted_campaign(
@@ -198,9 +347,9 @@ def _build_fitted_campaign(
     previously in both _compute_model_diagnostics and
     _compute_hyperparameter_diagnostics.
     """
-    campaign = _build_campaign(spec)
+    campaign = _build_campaign(spec, observations)
     obs_df = observations_to_dataframe(observations, spec)
-    campaign.add_measurements(obs_df)
+    _add_measurements(campaign, obs_df, spec)
     campaign.recommend(batch_size=1)  # triggers model fitting
     return campaign
 

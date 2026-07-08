@@ -21,6 +21,7 @@ from bo_engine.types import (
     OptimizationSpec,
     ParameterSpec,
     ParameterType,
+    TargetMode,
 )
 from bo_engine_baybe.backend import BayBEBackend
 
@@ -175,6 +176,30 @@ class TestLogTransformCapability:
         )
         warnings = BayBEBackend().validate_spec(spec)
         assert any("log_transform" in w and "rate" in w for w in warnings)
+
+    def test_log_transform_match_mode_warning_reuses_capability_reason(self) -> None:
+        """The legacy warning surface must not imply log x match works.
+
+        The combination is UNSUPPORTED at the capability layer (a match
+        target has no slot for a chained log transformation), so the
+        string surface must repeat that rejection instead of the
+        applied-at-acquisition-level phrasing that describes the
+        supported minimize case.
+        """
+        spec = _make_spec(
+            parameters=_continuous_x(),
+            objectives=[
+                ObjectiveSpec(
+                    name="rate",
+                    log_transform=True,
+                    target_mode=TargetMode.MATCH,
+                    target_value=5.0,
+                )
+            ],
+        )
+        warnings = BayBEBackend().validate_spec(spec)
+        assert any("cannot be combined with target_mode='match'" in w for w in warnings)
+        assert not any("acquisition-objective level" in w for w in warnings)
 
     def test_per_objective_keys_for_multi_objective_spec(self) -> None:
         """Only the flagged objective gets a report, keyed by its index."""

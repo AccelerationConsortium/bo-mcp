@@ -22,10 +22,24 @@ __all__ = [
     "DIVERSITY_MODERATE_THRESHOLD",
     "FALLBACK_HYPERVOLUME_IMPROVEMENT",
     "HYPERVOLUME_STABILITY_THRESHOLD",
+    "MAX_GENERATION_BATCH_SIZE",
     "TRANSFER_SIMILARITY_GOOD",
     "TRANSFER_SIMILARITY_MODERATE",
     "TRANSFER_SIMILARITY_STRONG",
 ]
+
+# =============================================================================
+# Generation batch-size bounds (generate_suggestions, intake, REST)
+# =============================================================================
+
+# Upper bound for a generation request's ``batch_size``. q-batch
+# acquisition optimization is superlinear in q, so an unbounded request
+# can pin a worker for the full operation timeout. Submission
+# (``MAX_BATCH_RESULTS``) and batch status already have caps; generation
+# is the most expensive mutation and needs one too. Shared by the MCP
+# operation, the intake schema, and the REST query parameter so every
+# transport enforces the same bound.
+MAX_GENERATION_BATCH_SIZE = 100
 
 # =============================================================================
 # Diversity Interpretation (diagnostics suggestions analysis)

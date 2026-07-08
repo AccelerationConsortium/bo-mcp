@@ -130,20 +130,26 @@ async def ensure_owned_campaigns(campaign_ids: list[str], user_id: UUID) -> None
     Invalid or missing IDs are intentionally ignored — operations surface
     those in their structured payloads. Only foreign-owned campaigns
     raise :class:`NotAuthorizedError` here.
+
+    Fetches all campaigns in one set-based query: ``campaign_ids`` may
+    carry up to ``MAX_BATCH_CAMPAIGN_IDS`` entries, so a per-id lookup
+    would issue that many sequential SELECTs before the operation starts.
     """
+    campaign_uuids: set[UUID] = set()
+    for campaign_id in campaign_ids:
+        try:
+            campaign_uuids.add(UUID(campaign_id))
+        except ValueError:
+            continue
+    if not campaign_uuids:
+        return
     async with get_session() as session:
         repo = CampaignRepository(session)
-        for campaign_id in campaign_ids:
-            try:
-                campaign_uuid = UUID(campaign_id)
-            except ValueError:
-                continue
-            campaign = await repo.get(campaign_uuid)
-            if campaign is None:
-                continue
-            if campaign.owner_id != user_id:
-                msg = "campaign"
-                raise NotAuthorizedError(msg, campaign_id)
+        campaigns_by_id = await repo.get_by_ids(sorted(campaign_uuids))
+    for campaign_uuid in sorted(campaigns_by_id):
+        if campaigns_by_id[campaign_uuid].owner_id != user_id:
+            msg = "campaign"
+            raise NotAuthorizedError(msg, str(campaign_uuid))
 
 
 async def get_campaign_with_spec(campaign_id: str, user_id: UUID) -> tuple[Campaign, CampaignSpec]:
@@ -209,8 +215,9 @@ async def get_spec_for_user(spec_id: str, user_id: UUID) -> CampaignSpec:
         if spec is None:
             msg = "Spec"
             raise NotFoundError(msg, spec_id)
-        campaigns_for_owner, _ = await campaign_repo.list_filtered(owner_id=user_id)
-    owns_campaign_with_spec = any(c.spec_id == spec_uuid for c in campaigns_for_owner)
+        owns_campaign_with_spec = await campaign_repo.owner_has_campaign_with_spec(
+            user_id, spec_uuid
+        )
     if not owns_campaign_with_spec:
         msg = "Spec"
         raise NotFoundError(msg, spec_id)

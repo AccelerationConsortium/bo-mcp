@@ -36,6 +36,7 @@ from bo_engine.pending_points import filter_pending_points
 from bo_engine.progress import ProgressCallback
 from bo_engine.types import ObservationData, OptimizationSpec
 from bo_mcp_server.backend import get_backend_async
+from bo_mcp_server.constants import MAX_GENERATION_BATCH_SIZE
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import (
     Campaign,
@@ -301,6 +302,31 @@ def _build_success_response(
     return response
 
 
+def _validate_batch_size(batch_size: int | None) -> dict[str, Any] | None:
+    """Reject an out-of-range ``batch_size`` before any DB or backend work.
+
+    ``None`` (use the campaign's configured batch size) is valid. Zero is
+    an explicit error rather than a silent fallback to the spec default,
+    negatives must never reach the backend, and the upper bound keeps a
+    single request from pinning a worker in a superlinear q-batch
+    acquisition solve. Lives in the shared operation so every transport
+    (MCP, REST, CLI) enforces the same bounds.
+    """
+    if batch_size is None or 1 <= batch_size <= MAX_GENERATION_BATCH_SIZE:
+        return None
+    message = f"batch_size must be between 1 and {MAX_GENERATION_BATCH_SIZE}, got {batch_size}."
+    response = make_error_response(
+        ErrorCode.VALIDATION_FAILED,
+        message=message,
+        details={
+            "batch_size": batch_size,
+            "max_batch_size": MAX_GENERATION_BATCH_SIZE,
+        },
+    )
+    response["field_errors"] = {"batch_size": [message]}
+    return response
+
+
 @with_response_metadata
 async def generate_suggestions_operation(
     campaign_id: str,
@@ -361,6 +387,10 @@ async def generate_suggestions_operation(
     if isinstance(campaign_id_result, dict):
         return campaign_id_result
     campaign_uuid = campaign_id_result
+
+    batch_size_error = _validate_batch_size(batch_size)
+    if batch_size_error is not None:
+        return batch_size_error
 
     if dry_run:
         return await _preview_generation(campaign_id, campaign_uuid, batch_size)
@@ -669,7 +699,7 @@ def _compute_preflight(
     if stopping.should_stop:
         return _build_stopping_response(stopping, campaign.iteration, str(campaign.id))
 
-    planned = batch_size or spec.batch_size
+    planned = batch_size if batch_size is not None else spec.batch_size
     budget_remaining: int | None = None
     clamped = False
     if opt_spec.max_observations is not None:
@@ -908,7 +938,7 @@ async def _load_generation_snapshot(
     valid_pending, stale_pending = _classify_pending_suggestions(pending)
     pending_info = _build_pending_info(pending, valid_pending, len(stale_pending))
 
-    actual_batch_size = batch_size or spec.batch_size
+    actual_batch_size = batch_size if batch_size is not None else spec.batch_size
     opt_spec = campaign_spec_to_optimization_spec(spec)
     new_iteration = campaign.iteration + 1
     observations = results_to_observations(results)

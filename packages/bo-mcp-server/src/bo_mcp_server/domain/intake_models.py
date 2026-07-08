@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, cast
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from bo_engine.types import ScalarizationMode, ScalarizerKind
+from bo_mcp_server.constants import MAX_GENERATION_BATCH_SIZE
 from bo_mcp_server.domain.campaign_spec import (
     AcquisitionMethod,
     AcquisitionOptimizationConfig,
@@ -42,7 +43,7 @@ class CampaignIntakeInput(BaseModel):
     parameters: tuple[InputParameter, ...] = Field(..., min_length=1)
     objectives: tuple[Objective, ...] = Field(..., min_length=1)
     constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
-    batch_size: int = Field(default=1, ge=1)
+    batch_size: int = Field(default=1, ge=1, le=MAX_GENERATION_BATCH_SIZE)
     max_iterations: int | None = None
     # Budget / convergence-based stopping (optional). Mirrors the fields on
     # ``CampaignSpec``; see :mod:`bo_engine.convergence.evaluate_stopping_decision`.

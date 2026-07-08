@@ -54,6 +54,7 @@ from bo_mcp_server.client.lifecycle import (
     ping_database,
     ping_database_detailed,
 )
+from bo_mcp_server.constants import MAX_GENERATION_BATCH_SIZE
 from bo_mcp_server.domain import (
     AcquisitionMethod,
     AcquisitionOptimizationConfig,
@@ -149,6 +150,8 @@ __all__ = [
     "DEV_USER_EMAIL",
     "DEV_USER_NAME",
     "ERROR_CODE_TO_HTTP_STATUS",
+    # Shared request-size caps (transport-neutral)
+    "MAX_GENERATION_BATCH_SIZE",
     "RESPONSE_SCHEMA_VERSION",
     # DTOs
     "AcquisitionMethod",

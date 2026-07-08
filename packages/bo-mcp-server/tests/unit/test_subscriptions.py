@@ -17,6 +17,7 @@ instance is covered separately in
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
@@ -29,6 +30,22 @@ from bo_mcp_server.subscriptions import (
     notify_campaign_updated,
     reset_for_tests,
 )
+
+
+class _StalledSession:
+    """A subscriber whose transport accepted the connection but never reads.
+
+    Models the zero-buffered SSE memory stream with a stalled-but-open
+    TCP peer: ``send_resource_updated`` blocks forever without raising,
+    so only a per-attempt timeout can classify it as failed.
+    """
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def send_resource_updated(self, _uri: Any) -> None:
+        self.attempts += 1
+        await asyncio.Event().wait()
 
 
 class _FakeSession:
@@ -177,6 +194,39 @@ class TestNotifyDelivery:
         await notify_campaign_updated(cid)
         # Delivery eventually landed and the subscription survived.
         assert sub.delivered == [campaign_uri(cid)]
+        assert await registry.total_subscriptions() == 1
+
+    @pytest.mark.asyncio
+    async def test_stalled_subscriber_is_dropped_and_others_still_notified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A send that never returns counts against the retry budget.
+
+        The SDK's SSE transport uses zero-buffered memory streams, so a
+        stalled-but-open connection blocks ``send_resource_updated``
+        *without raising* — pre-fix, the notify task hung forever and
+        every subscriber sequenced after the stalled one was starved.
+        The per-attempt timeout converts the hang into a failed attempt
+        (feeding the existing drop budget) and the concurrent fan-out
+        keeps the healthy subscriber's delivery independent.
+        """
+        monkeypatch.setattr("bo_mcp_server.subscriptions.SUBSCRIPTION_SEND_TIMEOUT_SECONDS", 0.02)
+        cid = uuid4()
+        registry = get_registry()
+        stalled = _StalledSession()
+        healthy = _FakeSession()
+        await registry.subscribe(campaign_uri(cid), stalled)
+        await registry.subscribe(campaign_uri(cid), healthy)
+
+        # Must complete despite the never-returning send; the outer
+        # wait_for guards the test against a regression to the hang.
+        await asyncio.wait_for(notify_campaign_updated(cid), timeout=2.0)
+
+        assert healthy.delivered == [campaign_uri(cid)]
+        from bo_mcp_server.subscriptions import SUBSCRIPTION_SEND_MAX_ATTEMPTS
+
+        assert stalled.attempts == SUBSCRIPTION_SEND_MAX_ATTEMPTS
+        # Only the healthy subscription survives.
         assert await registry.total_subscriptions() == 1
 
     @pytest.mark.asyncio

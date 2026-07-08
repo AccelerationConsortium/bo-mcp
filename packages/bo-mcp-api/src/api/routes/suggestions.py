@@ -9,6 +9,7 @@ from api.deps import (
     get_authorized_campaign,
     get_authorized_suggestion,
 )
+from api.limits import MAX_GENERATION_BATCH_SIZE
 from api.schemas.common import API_RESPONSE_SCHEMA_VERSION
 from api.schemas.errors import COMMON_HTTP_ERROR_RESPONSES, operation_failure_response
 from api.schemas.suggestion import (
@@ -62,7 +63,7 @@ async def generate_campaign_suggestions(
     campaign_id: str,
     current_user: CurrentUser,
     response: Response,
-    batch_size: Annotated[int | None, Query(ge=1)] = None,
+    batch_size: Annotated[int | None, Query(ge=1, le=MAX_GENERATION_BATCH_SIZE)] = None,
 ) -> SuggestionsGenerateResponse:
     """Generate new suggestions for a campaign.
 

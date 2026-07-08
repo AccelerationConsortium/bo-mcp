@@ -15,6 +15,12 @@ from bo_mcp_server.errors import ErrorCode, raise_resource_error
 from bo_mcp_server.server import mcp
 from bo_mcp_server.storage import CampaignRepository, SuggestionRepository, get_session
 
+# Ceiling for the Markdown listing: the tool twin (``bo_list_suggestions``)
+# paginates with cursors, but resources have no parameters, so a long
+# campaign's pending pool would otherwise render as an unbounded blob.
+# Overflow is summarized in a trailer pointing at the paginated tool.
+MAX_PENDING_SUGGESTIONS_RENDERED = 50
+
 
 @mcp.resource("suggestions://{campaign_id}")
 async def get_suggestions(campaign_id: str) -> str:
@@ -24,7 +30,9 @@ async def get_suggestions(campaign_id: str) -> str:
         campaign_id: UUID of the campaign
 
     Returns:
-        Markdown listing on success.
+        Markdown listing on success — at most
+        :data:`MAX_PENDING_SUGGESTIONS_RENDERED` suggestions (oldest
+        first) plus a trailer naming how many more are pending.
 
     Raises:
         ResourceOperationError: ``INVALID_CAMPAIGN_ID`` for malformed
@@ -53,16 +61,28 @@ async def get_suggestions(campaign_id: str) -> str:
             )
 
         suggestion_repo = SuggestionRepository(session)
-        suggestions = await suggestion_repo.list_by_campaign(
-            campaign_uuid, status=SuggestionStatus.PENDING
-        )
-
-        if not suggestions:
+        # Count first, then hydrate only the rendered prefix: the pool
+        # can be arbitrarily large, so the LIMIT must live in the query,
+        # not in a Python slice over fully-hydrated rows. The repository
+        # orders by (created_at, id) ascending, keeping the capped view
+        # stable across reads.
+        pending_counts = await suggestion_repo.count_pending_by_campaigns([campaign_uuid])
+        n_pending = pending_counts.get(campaign_uuid, 0)
+        if n_pending == 0:
             return f"No pending suggestions for campaign {campaign_id}"
+
+        rendered = await suggestion_repo.list_by_campaign(
+            campaign_uuid,
+            status=SuggestionStatus.PENDING,
+            limit=MAX_PENDING_SUGGESTIONS_RENDERED,
+        )
+        # max() guards the count-then-fetch race (a suggestion created
+        # between the two queries must not produce a negative trailer).
+        n_overflow = max(n_pending - len(rendered), 0)
 
         lines = [f"# Pending Suggestions for Campaign {campaign_id}", ""]
 
-        for i, sugg in enumerate(suggestions, 1):
+        for i, sugg in enumerate(rendered, 1):
             lines.append(f"## Suggestion {i} (ID: {sugg.id})")
             lines.append("")
             lines.append("**Parameters:**")
@@ -76,6 +96,13 @@ async def get_suggestions(campaign_id: str) -> str:
             lines.append(f"**Method:** {sugg.provenance.generation_method}")
             if sugg.provenance.acquisition_value is not None:
                 lines.append(f"**Acquisition Value:** {sugg.provenance.acquisition_value:.4g}")
+            lines.append("")
+
+        if n_overflow:
+            lines.append(
+                f"{n_overflow} more pending suggestion(s) not shown — "
+                "use bo_list_suggestions with cursor pagination to read them."
+            )
             lines.append("")
 
         return "\n".join(lines)

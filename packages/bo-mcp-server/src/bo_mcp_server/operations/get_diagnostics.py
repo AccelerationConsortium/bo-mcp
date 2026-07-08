@@ -209,8 +209,13 @@ async def _compute_sections(
         compute_suggestion_diversity_metrics(all_suggestions, opt_spec, diagnostics)
 
     if "constraints" in requested:
-        compute_constraint_satisfaction_metrics(results, spec, diagnostics)
-        compute_outcome_constraint_calibration_metrics(results, spec, diagnostics)
+        # Calibration fits one feasibility GP per outcome constraint —
+        # offloaded like the backend sections so concurrent sessions
+        # are not frozen for the fit duration.
+        await asyncio.to_thread(compute_constraint_satisfaction_metrics, results, spec, diagnostics)
+        await asyncio.to_thread(
+            compute_outcome_constraint_calibration_metrics, results, spec, diagnostics
+        )
 
     if "convergence" in requested:
         compute_convergence_diagnostics(
@@ -273,8 +278,6 @@ async def get_diagnostics_operation(
         return validated
     verbosity_level, campaign_uuid, requested = validated
 
-    is_full = requested == ALL_SECTIONS
-
     async with get_session() as session:
         campaign_repo = CampaignRepository(session)
         spec_repo = CampaignSpecRepository(session)
@@ -289,19 +292,18 @@ async def get_diagnostics_operation(
                 details={"campaign_id": campaign_id},
             )
 
-        cache_key = f"diagnostics:{campaign_id}:{campaign.version}"
-        if use_cache and is_full:
+        # Keyed by section set so partial-section reads (e.g. only
+        # "constraints", which re-fits feasibility GPs) are cached too,
+        # not just the full envelope.
+        section_key = ",".join(sorted(requested))
+        cache_key = f"diagnostics:{campaign_id}:{campaign.version}:{section_key}"
+        if use_cache:
             cached = await diagnostics_cache.get(cache_key)
             if cached is not None:
                 record_diagnostics_cache("hit")
                 logger.debug("Returning cached diagnostics for campaign %s", campaign_id)
                 return format_diagnostics_response(cached, verbosity_level)
             record_diagnostics_cache("miss")
-        elif use_cache:
-            # Partial-section reads cannot use the cached envelope but
-            # still touch the cache subsystem; track them under a
-            # ``partial`` label so the hit rate stays meaningful.
-            record_diagnostics_cache("partial")
 
         spec = await spec_repo.get(campaign.spec_id)
         if spec is None:
@@ -332,7 +334,6 @@ async def get_diagnostics_operation(
             diagnostics.get("health_status", "unknown"),
         )
 
-        if is_full:
-            await diagnostics_cache.set(cache_key, diagnostics)
+        await diagnostics_cache.set(cache_key, diagnostics)
 
         return format_diagnostics_response(diagnostics, verbosity_level)

@@ -559,6 +559,23 @@ class CampaignRepository:
         )
         return {UUID(m.id): self._to_entity(m) for m in result.scalars()}
 
+    async def owner_has_campaign_with_spec(self, owner_id: UUID, spec_id: UUID) -> bool:
+        """Whether ``owner_id`` owns at least one active campaign using ``spec_id``.
+
+        Authorization predicate: a single scalar ``SELECT ... LIMIT 1``
+        instead of hydrating the owner's full campaign list.
+        """
+        result = await self.session.scalar(
+            select(CampaignModel.id)
+            .where(
+                CampaignModel.owner_id == str(owner_id),
+                CampaignModel.spec_id == str(spec_id),
+                *_active_filter(CampaignModel, include_deleted=False),
+            )
+            .limit(1)
+        )
+        return result is not None
+
     async def list_recent(
         self,
         owner_id: UUID | None = None,
@@ -760,15 +777,27 @@ class SuggestionRepository:
         campaign_id: UUID,
         status: SuggestionStatus | None = None,
         *,
+        limit: int | None = None,
         include_deleted: bool = False,
     ) -> list[Suggestion]:
-        """List suggestions for a campaign (hides soft-deleted by default)."""
+        """List suggestions for a campaign in deterministic insertion order.
+
+        Ordered by ``(created_at, id)`` ascending so bounded reads
+        (``limit``) return a stable oldest-first prefix; hides
+        soft-deleted rows by default. ``limit`` caps the rows hydrated
+        at the database — callers rendering a bounded view must pass it
+        instead of slicing in Python, or a large pool still pays full
+        hydration.
+        """
         query = select(SuggestionModel).where(
             SuggestionModel.campaign_id == str(campaign_id),
             *_active_filter(SuggestionModel, include_deleted),
         )
         if status is not None:
             query = query.where(SuggestionModel.status == status)
+        query = query.order_by(SuggestionModel.created_at.asc(), SuggestionModel.id.asc())
+        if limit is not None:
+            query = query.limit(limit)
         result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
 
@@ -1159,7 +1188,7 @@ class ResultRepository:
         return self._to_entity(model)
 
     async def list_by_campaign(
-        self, campaign_id: UUID, *, include_deleted: bool = False
+        self, campaign_id: UUID, *, limit: int | None = None, include_deleted: bool = False
     ) -> list[Result]:
         """List results for a campaign in deterministic insertion order.
 
@@ -1167,9 +1196,12 @@ class ResultRepository:
         across query plans, restored database snapshots, and concurrent
         writes — a load-bearing assumption for the convergence-stop
         running-best trajectory and for any future identity-based campaign
-        state reconciliation.
+        state reconciliation. ``limit`` caps the rows hydrated at the
+        database, returning the stable oldest-first prefix — capped
+        consumers (the inline CSV export) must bound the read here rather
+        than truncating after full hydration.
         """
-        result = await self.session.execute(
+        query = (
             select(ResultModel)
             .where(
                 ResultModel.campaign_id == str(campaign_id),
@@ -1177,6 +1209,9 @@ class ResultRepository:
             )
             .order_by(ResultModel.created_at.asc(), ResultModel.id.asc())
         )
+        if limit is not None:
+            query = query.limit(limit)
+        result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
 
     async def list_by_campaign_paginated(

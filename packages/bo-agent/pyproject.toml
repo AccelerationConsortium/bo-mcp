@@ -1,0 +1,17 @@
+[tool.uv.sources]
+subagents-pydantic-ai = { git = "https://github.com/jb2197/subagents-pydantic-ai.git", rev = "b611496178909466498686ce6b6859b003185e3e" }
+
+[project]
+name = "bo-agent"
+version = "0.1.0"
+description = "Bayesian Optimization Agent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-ai>=1.61.0",
+    "openai>=1.0.0",
+    "langchain-experimental>=0.4.1",
+    "python-dotenv>=1.0.0",
+    "pydantic-deep>=0.3.31",
+    "subagents-pydantic-ai",
+]

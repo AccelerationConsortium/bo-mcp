@@ -1,0 +1,16 @@
+from typing import Any
+
+from prompts import BO_SPECIALIST_INSTRUCTIONS
+
+BO_SPECIALIST_NAME = "bo-specialist"
+BO_SPECIALIST_DESCRIPTION = (
+    "Designs BO-MCP campaigns and integrates the appropriate function-evaluation packages."
+)
+
+
+def build_bo_specialist_subagent() -> dict[str, Any]:
+    return {
+        "name": BO_SPECIALIST_NAME,
+        "description": BO_SPECIALIST_DESCRIPTION,
+        "instructions": BO_SPECIALIST_INSTRUCTIONS,
+    }

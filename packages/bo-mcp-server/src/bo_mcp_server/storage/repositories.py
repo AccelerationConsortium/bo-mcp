@@ -41,6 +41,7 @@ from bo_mcp_server.storage.models import (
     UserModel,
     _strict_json_loads,
 )
+from bo_mcp_server.trace_context import get_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,26 @@ class CampaignSpecRepository:
         # (``get_by_ids``) are cross-campaign and deliberately do not bind.
         set_campaign_backend(spec.backend)
         return spec
+
+    async def get_with_created_at(self, entity_id: UUID) -> tuple[CampaignSpec, datetime] | None:
+        """Get campaign spec by ID together with its persistence timestamp.
+
+        The ``CampaignSpec`` domain object carries no ``created_at`` --
+        adding one would ripple into every engine/MCP call site that
+        constructs a spec from validated intake, where there is no
+        persisted timestamp yet. Callers that need it (e.g. the REST
+        spec-detail route) get it here, from the same single query
+        :meth:`get` already runs, so it costs no extra round trip.
+        """
+        result = await self.session.execute(
+            select(CampaignSpecModel).where(CampaignSpecModel.id == str(entity_id))
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            return None
+        spec = self._to_entity(model)
+        set_campaign_backend(spec.backend)
+        return spec, model.created_at
 
     async def save(self, spec: CampaignSpec, spec_id: UUID) -> CampaignSpec:
         """Save campaign spec with explicit ID (specs are immutable)."""
@@ -418,15 +439,27 @@ class CampaignRepository:
         return self._to_entity(model)
 
     async def list_by_owner(
-        self, owner_id: UUID, *, include_deleted: bool = False
+        self, owner_id: UUID, *, limit: int | None = None, include_deleted: bool = False
     ) -> list[Campaign]:
-        """List campaigns by owner (hides soft-deleted rows by default)."""
-        result = await self.session.execute(
-            select(CampaignModel).where(
+        """List campaigns by owner in deterministic order (hides soft-deleted rows by default).
+
+        Ordered by ``(created_at, id)`` ascending so a bounded read
+        (``limit``) returns a stable oldest-first prefix instead of an
+        arbitrary heap-order subset -- the same contract as
+        :meth:`SuggestionRepository.list_by_campaign` /
+        :meth:`ResultRepository.list_by_campaign`.
+        """
+        query = (
+            select(CampaignModel)
+            .where(
                 CampaignModel.owner_id == str(owner_id),
                 *_active_filter(CampaignModel, include_deleted),
             )
+            .order_by(CampaignModel.created_at.asc(), CampaignModel.id.asc())
         )
+        if limit is not None:
+            query = query.limit(limit)
+        result = await self.session.execute(query)
         return [self._to_entity(m) for m in result.scalars()]
 
     async def list_all(self, *, include_deleted: bool = False) -> list[Campaign]:
@@ -1586,9 +1619,13 @@ class EventRepository:
         ``audit.log_tool_call`` helper, lifecycle / status operations
         that write Events directly — picks it up uniformly. Centralizing
         the splice here means future callers cannot forget it.
-        """
-        from bo_mcp_server.trace_context import get_trace_id
 
+        Events are append-only with a freshly-generated id, so this
+        inserts via ``add()``/``flush()`` rather than ``session.merge()``
+        (an upsert pattern meant for rows that may already be
+        identity-mapped) -- ``merge()`` would emit a wasted SELECT
+        before every INSERT on what is always a brand-new row.
+        """
         enriched_input = dict(event.input_summary)
         trace_id = get_trace_id()
         if trace_id is not None and "trace_id" not in enriched_input:
@@ -1603,8 +1640,9 @@ class EventRepository:
             actor_id=event.actor_id,
             created_at=event.created_at,
         )
-        merged = await self.session.merge(model)
-        return self._to_entity(merged)
+        self.session.add(model)
+        await self.session.flush()
+        return self._to_entity(model)
 
     async def list_by_campaign(
         self, campaign_id: UUID, limit: int = 50, *, include_deleted: bool = False

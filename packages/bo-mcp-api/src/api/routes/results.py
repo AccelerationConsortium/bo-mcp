@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import CurrentUser, IdempotencyKey, get_authorized_campaign
 from api.limits import (
     MAX_BATCH_RESULTS,
+    MAX_RESULTS_LIMIT,
     MAX_UPLOAD_FILE_SIZE_BYTES,
     UPLOAD_READ_CHUNK_BYTES,
 )
@@ -372,9 +373,14 @@ async def list_campaign_results_route(
     campaign_id: str,
     current_user: CurrentUser,
 ) -> list[ResultResponse]:
-    """List results for a campaign."""
+    """List results for a campaign.
+
+    Capped at ``MAX_RESULTS_LIMIT`` (oldest-first) -- campaigns with
+    more results than that must use ``POST .../query``, which
+    paginates via cursor.
+    """
     try:
-        results = await list_campaign_results(campaign_id, current_user.id)
+        results = await list_campaign_results(campaign_id, current_user.id, limit=MAX_RESULTS_LIMIT)
     except InvalidIdentifierError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

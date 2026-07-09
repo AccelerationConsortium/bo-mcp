@@ -1,6 +1,6 @@
 """Generate suggestions tool wrapper for MCP."""
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from mcp.server.fastmcp import Context
@@ -21,6 +21,7 @@ from bo_mcp_server.progress_bridge import (
 )
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
+from bo_mcp_server.tools.response_models import GenerateSuggestionsResponse
 from bo_mcp_server.trace_context import bind_trace_id
 
 
@@ -33,7 +34,7 @@ async def generate_suggestions(
     ctx: Context | None = None,
     dry_run: bool = False,
     trace_id: str | None = None,
-) -> dict[str, Any]:
+) -> GenerateSuggestionsResponse:
     """Generate next batch of experiment suggestions for a campaign.
 
     Workflow: Call after bo_create_campaign (first batch) or after
@@ -63,11 +64,14 @@ async def generate_suggestions(
     """
     with bind_trace_id(trace_id):
         if dry_run:
-            return await generate_suggestions_operation(
-                campaign_id=campaign_id,
-                batch_size=batch_size,
-                verbosity=verbosity,
-                dry_run=True,
+            return cast(
+                GenerateSuggestionsResponse,
+                await generate_suggestions_operation(
+                    campaign_id=campaign_id,
+                    batch_size=batch_size,
+                    verbosity=verbosity,
+                    dry_run=True,
+                ),
             )
 
         # Shared canonical builder — the REST generate route hashes the
@@ -102,11 +106,14 @@ async def generate_suggestions(
             )
 
         try:
-            return await apply_idempotency(
-                tool_name="bo_generate_suggestions",
-                idempotency_key=idempotency_key,
-                request_payload=request_payload,
-                executor=run,
+            return cast(
+                GenerateSuggestionsResponse,
+                await apply_idempotency(
+                    tool_name="bo_generate_suggestions",
+                    idempotency_key=idempotency_key,
+                    request_payload=request_payload,
+                    executor=run,
+                ),
             )
         finally:
             unregister_progress_status(registration_token)

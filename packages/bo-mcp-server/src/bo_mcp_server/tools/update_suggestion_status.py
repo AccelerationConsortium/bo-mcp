@@ -1,6 +1,6 @@
 """Update suggestion status tool wrapper for MCP."""
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,7 @@ from bo_mcp_server.operations.update_suggestion_status import (
 )
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
+from bo_mcp_server.tools.response_models import SuggestionStatusUpdateResponse
 from bo_mcp_server.trace_context import bind_trace_id
 
 # ``completed`` is intentionally excluded -- it is set automatically by
@@ -25,7 +26,7 @@ async def update_suggestion_status(
     idempotency_key: str | None = None,
     dry_run: bool = False,
     trace_id: str | None = None,
-) -> dict[str, Any]:
+) -> SuggestionStatusUpdateResponse:
     """Update the status of a suggestion.
 
     Workflow: Call after reviewing suggestions from bo_list_suggestions to
@@ -64,10 +65,13 @@ async def update_suggestion_status(
     """
     with bind_trace_id(trace_id):
         if dry_run:
-            return await update_suggestion_status_operation(
-                suggestion_id=suggestion_id,
-                status=status,
-                dry_run=True,
+            return cast(
+                SuggestionStatusUpdateResponse,
+                await update_suggestion_status_operation(
+                    suggestion_id=suggestion_id,
+                    status=status,
+                    dry_run=True,
+                ),
             )
 
         request_payload = {
@@ -82,9 +86,12 @@ async def update_suggestion_status(
                 session=session,
             )
 
-        return await apply_idempotency(
-            tool_name="bo_update_suggestion_status",
-            idempotency_key=idempotency_key,
-            request_payload=request_payload,
-            executor=run,
+        return cast(
+            SuggestionStatusUpdateResponse,
+            await apply_idempotency(
+                tool_name="bo_update_suggestion_status",
+                idempotency_key=idempotency_key,
+                request_payload=request_payload,
+                executor=run,
+            ),
         )

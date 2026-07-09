@@ -79,34 +79,42 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp.tools import ToolManager
 
 
+# Per-tool envelope extras, named so the owning tool module can import
+# the exact same object (rather than re-declaring an equal-looking
+# literal) for its own pre-FastMCP shape checks. Keeping one copy means
+# a boundary-caught failure and a body-caught failure always render the
+# identical shape for a given tool.
+CREATE_CAMPAIGN_ENVELOPE_EXTRA: dict[str, Any] = {
+    "campaign_id": None,
+    "spec_id": None,
+    "warnings": [],
+}
+SUBMIT_RESULTS_ENVELOPE_EXTRA: dict[str, Any] = {
+    "result_ids": [],
+    "warnings": [],
+    "duplicates_detected": [],
+}
+# ``bo_validate_intake`` is part of the same validation / localization
+# workflow as ``bo_create_campaign``: agents use it as a dry-run before
+# committing to a campaign. Its operation-layer failure path already
+# produces both ``valid=False`` and the canonical envelope keys, so the
+# boundary path mirrors that shape -- the response stays interchangeable
+# regardless of whether the validator caught the breakage or FastMCP did.
+VALIDATE_INTAKE_ENVELOPE_EXTRA: dict[str, Any] = {
+    "valid": False,
+    "warnings": [],
+    "spec": None,
+}
+
 # Per-tool overrides merged into the boundary-failure envelope so the
 # response shape matches the tool's success path. Tools not listed
 # here still receive the canonical envelope; only the extra polish
 # (campaign_id placeholders, warnings/duplicates arrays, etc.) is
 # skipped. The empty default lives in ``_DEFAULT_EXTRA``.
 _TOOL_ENVELOPE_OVERRIDES: dict[str, dict[str, Any]] = {
-    "bo_create_campaign": {
-        "campaign_id": None,
-        "spec_id": None,
-        "warnings": [],
-    },
-    "bo_submit_results": {
-        "result_ids": [],
-        "warnings": [],
-        "duplicates_detected": [],
-    },
-    # ``bo_validate_intake`` is part of the same validation /
-    # localization workflow as ``bo_create_campaign``: agents use it
-    # as a dry-run before committing to a campaign. Its operation-
-    # layer failure path already produces both ``valid=False`` and
-    # the canonical envelope keys, so the boundary path mirrors that
-    # shape -- the response stays interchangeable regardless of
-    # whether the validator caught the breakage or FastMCP did.
-    "bo_validate_intake": {
-        "valid": False,
-        "warnings": [],
-        "spec": None,
-    },
+    "bo_create_campaign": CREATE_CAMPAIGN_ENVELOPE_EXTRA,
+    "bo_submit_results": SUBMIT_RESULTS_ENVELOPE_EXTRA,
+    "bo_validate_intake": VALIDATE_INTAKE_ENVELOPE_EXTRA,
 }
 
 # Backwards-compat alias for callers that read the old name. New code

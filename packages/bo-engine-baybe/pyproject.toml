@@ -43,7 +43,6 @@ insights = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "ruff>=0.4",
 ]
 
 [project.entry-points."bo_mcp.backends"]

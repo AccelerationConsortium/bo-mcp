@@ -10,13 +10,7 @@ Usage:
     uv run python scripts/v12_v13_features_demo.py
 """
 
-import sys
-from pathlib import Path
-
 import torch
-
-# Add packages to path for development
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "bo-engine" / "src"))
 
 from bo_engine import (
     AcquisitionMethod,

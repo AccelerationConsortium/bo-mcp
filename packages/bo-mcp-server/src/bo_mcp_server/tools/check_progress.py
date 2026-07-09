@@ -14,16 +14,17 @@ channel; poll is the safety net.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from bo_mcp_server.progress_bridge import get_progress_status
 from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.response_models import CheckProgressResponse
 
 
 @mcp.tool(name="bo_check_progress", annotations=READ_ONLY)
-async def check_progress(campaign_id: str) -> dict[str, Any]:
+async def check_progress(campaign_id: str) -> CheckProgressResponse:
     """Return the latest progress snapshot for a long-running campaign.
 
     Use this when the MCP push channel for progress has gone silent —
@@ -70,4 +71,4 @@ async def check_progress(campaign_id: str) -> dict[str, Any]:
     # bound) so transport contracts stay uniform. ``attach_response_metadata``
     # handles both fields without forcing each raw-dict tool to repeat
     # the boilerplate.
-    return attach_response_metadata(response)
+    return cast(CheckProgressResponse, attach_response_metadata(response))

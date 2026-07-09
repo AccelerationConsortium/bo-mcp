@@ -1,12 +1,14 @@
 """Batch status tool wrapper for MCP."""
 
-from typing import Annotated, Any
+from typing import Annotated, cast
 
 from pydantic import Field
 
 from bo_mcp_server.operations.batch_status import MAX_BATCH_SIZE, batch_get_status_operation
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.common import VerbosityLiteral
+from bo_mcp_server.tools.response_models import BatchStatusResponse
 
 
 @mcp.tool(name="bo_batch_get_status", annotations=READ_ONLY)
@@ -25,8 +27,8 @@ async def batch_get_status(
             ),
         ),
     ],
-    verbosity: str = "minimal",
-) -> dict[str, Any]:
+    verbosity: VerbosityLiteral = "minimal",
+) -> BatchStatusResponse:
     """Get status of multiple campaigns in one call.
 
     Workflow: Call to efficiently monitor many campaigns at once instead
@@ -46,4 +48,7 @@ async def batch_get_status(
             - failed_ids: List of campaign IDs that could not be retrieved
             - errors: List of error messages
     """
-    return await batch_get_status_operation(campaign_ids=campaign_ids, verbosity=verbosity)
+    return cast(
+        BatchStatusResponse,
+        await batch_get_status_operation(campaign_ids=campaign_ids, verbosity=verbosity),
+    )

@@ -235,3 +235,56 @@ class TestToolSchemaEnumCoverage:
     async def test_verbosity_is_enum_on_a_representative_tool(self) -> None:
         schema = await self._tool_param_schema("bo_list_campaigns", "verbosity")
         assert self._enum_values(schema) == {"minimal", "standard", "detailed"}
+
+    @staticmethod
+    def _list_item_enum_values(prop_schema: dict) -> set[str]:
+        """Pull the ``enum`` list out of a (possibly nullable) list-item schema."""
+        if "items" in prop_schema:
+            return set(prop_schema["items"].get("enum", []))
+        for branch in prop_schema.get("anyOf", []):
+            if "items" in branch:
+                return set(branch["items"].get("enum", []))
+        return set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool_name", "param"),
+        [
+            ("bo_get_diagnostics", "verbosity"),
+            ("bo_batch_get_status", "verbosity"),
+            ("bo_compare_campaigns", "verbosity"),
+            ("bo_discover_transfer_candidates", "verbosity"),
+        ],
+    )
+    async def test_verbosity_is_enum_on_previously_untyped_tools(
+        self, tool_name: str, param: str
+    ) -> None:
+        """M31 regression: these five tools regressed to untyped ``str`` verbosity."""
+        schema = await self._tool_param_schema(tool_name, param)
+        assert self._enum_values(schema) == {"minimal", "standard", "detailed"}
+
+    @pytest.mark.asyncio
+    async def test_get_diagnostics_sections_items_are_enum(self) -> None:
+        schema = await self._tool_param_schema("bo_get_diagnostics", "sections")
+        assert self._list_item_enum_values(schema) == {
+            "health",
+            "objectives",
+            "model",
+            "convergence",
+            "suggestions",
+            "outliers",
+            "constraints",
+        }
+
+    @pytest.mark.asyncio
+    async def test_export_campaign_output_format_is_enum(self) -> None:
+        schema = await self._tool_param_schema("bo_export_campaign", "output_format")
+        # A single-member ``Literal`` renders as ``const`` rather than
+        # ``enum`` (Pydantic/JSON Schema convention for one-value sets).
+        assert schema.get("const") == "csv"
+
+    @pytest.mark.asyncio
+    async def test_list_campaigns_limit_has_bounds(self) -> None:
+        schema = await self._tool_param_schema("bo_list_campaigns", "limit")
+        assert schema.get("minimum") == 1
+        assert schema.get("maximum") == 100

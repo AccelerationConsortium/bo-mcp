@@ -49,16 +49,17 @@ bo_create_campaign → [bo_generate_suggestions → bo_submit_results]* → bo_g
 
 ## Overview
 
-The MCP server exposes 20 tools organized into six categories:
+The MCP server exposes 22 tools organized into seven categories:
 
 | Category | Tools |
 |----------|-------|
 | **Server Health** | `bo_health_check`, `bo_list_capabilities` |
 | **Campaign Management** | `bo_create_campaign`, `bo_list_campaigns`, `bo_validate_intake` |
-| **Campaign Lifecycle** | `bo_pause_campaign`, `bo_resume_campaign`, `bo_terminate_campaign` |
+| **Campaign Lifecycle** | `bo_pause_campaign`, `bo_resume_campaign`, `bo_terminate_campaign`, `bo_reopen_campaign` |
 | **Suggestion Generation** | `bo_generate_suggestions`, `bo_get_suggestion_explanation`, `bo_list_suggestions`, `bo_update_suggestion_status` |
 | **Result Submission** | `bo_submit_results`, `bo_upload_results_file`, `bo_list_results`, `bo_export_campaign` |
 | **Analysis & Strategy** | `bo_get_diagnostics`, `bo_compare_campaigns`, `bo_discover_transfer_candidates`, `bo_batch_get_status` |
+| **Progress** | `bo_check_progress` |
 
 ---
 
@@ -276,7 +277,10 @@ Lists all campaigns with optional filtering. Tool-based alternative to `campaign
 
 ### `bo_pause_campaign`
 
-Pauses a running campaign.
+Pauses a running campaign. Safe to retry: calling it again once the
+campaign is already ``paused`` returns ``success: true`` with
+``noop: true`` instead of an error, since a retry after an ambiguous
+network failure means the original call may have already succeeded.
 
 **Input Schema:**
 ```json
@@ -292,6 +296,7 @@ Pauses a running campaign.
   "campaign_id": "string",
   "status": "string (new status)",
   "previous_status": "string",
+  "noop": "boolean (present and true only on a repeat call that changed nothing)",
   "errors": ["string"]
 }
 ```
@@ -302,7 +307,9 @@ Pauses a running campaign.
 
 ### `bo_resume_campaign`
 
-Resumes a paused campaign.
+Resumes a paused campaign. Safe to retry: calling it again once the
+campaign is already ``running`` returns ``success: true`` with
+``noop: true`` instead of an error.
 
 **Input Schema:**
 ```json
@@ -318,6 +325,7 @@ Resumes a paused campaign.
   "campaign_id": "string",
   "status": "string (new status)",
   "previous_status": "string",
+  "noop": "boolean (present and true only on a repeat call that changed nothing)",
   "errors": ["string"]
 }
 ```
@@ -328,7 +336,9 @@ Resumes a paused campaign.
 
 ### `bo_terminate_campaign`
 
-Terminates a campaign, marking it as completed.
+Terminates a campaign, marking it as completed. Safe to retry: calling
+it again once the campaign is already ``completed`` returns
+``success: true`` with ``noop: true`` instead of an error.
 
 **Input Schema:**
 ```json
@@ -344,11 +354,41 @@ Terminates a campaign, marking it as completed.
   "campaign_id": "string",
   "status": "string (new status)",
   "previous_status": "string",
+  "noop": "boolean (present and true only on a repeat call that changed nothing)",
   "errors": ["string"]
 }
 ```
 
 **State Transition:** CREATED/RUNNING/PAUSED → COMPLETED
+
+---
+
+### `bo_reopen_campaign`
+
+Reopens a completed or terminated campaign so optimization can continue,
+keeping its spec, model history, and results.
+
+**Input Schema:**
+```json
+{
+  "campaign_id": "string (UUID)",
+  "dry_run": "boolean (default: false)",
+  "trace_id": "string (optional)"
+}
+```
+
+**Output Schema:**
+```json
+{
+  "success": "boolean",
+  "campaign_id": "string",
+  "status": "string (new status)",
+  "previous_status": "string",
+  "errors": ["string"]
+}
+```
+
+**State Transition:** COMPLETED → RUNNING
 
 ---
 
@@ -383,6 +423,40 @@ Batch status retrieval for multiple campaigns. Reduces N calls to 1 for dashboar
   },
   "failed_ids": ["string (UUID)"],
   "errors": ["string"]
+}
+```
+
+---
+
+## Progress Tools
+
+### `bo_check_progress`
+
+Poll-fallback readout of the latest progress snapshot for a long-running
+`bo_generate_suggestions` call. Use it when the MCP push progress channel
+has gone silent, to confirm whether generation is still running, has
+stalled, or has already dropped. The snapshot is process-local — a client
+polling a different replica will not see in-flight state.
+
+**Input Schema:**
+```json
+{
+  "campaign_id": "string (UUID)"
+}
+```
+
+**Output Schema:**
+```json
+{
+  "tracked": "boolean",
+  "campaign_id": "string",
+  "phase": "string (null until the first event fires)",
+  "message": "string (null until the first event fires)",
+  "progress": "number (null until the first event fires)",
+  "total": "number (null until the first event fires)",
+  "failures": "integer",
+  "last_failure_reason": "string (null if no failures)",
+  "schema_version": "string"
 }
 ```
 

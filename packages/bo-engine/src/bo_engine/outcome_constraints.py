@@ -41,6 +41,8 @@ from torch import Tensor
 from bo_engine.constants import (
     CONSTRAINT_CALIBRATION_N_BINS,
     CONSTRAINT_CALIBRATION_WARN_THRESHOLD,
+    CONSTRAINT_PROBABILITY_THRESHOLD,
+    CONSTRAINT_VIOLATION_WEIGHT,
 )
 from bo_engine.device import ensure_device, get_device, get_dtype, to_device
 from bo_engine.models import create_and_fit_single_task_model
@@ -74,8 +76,8 @@ class ConstraintModelConfig:
     """
 
     method: ConstraintModelingMethod = ConstraintModelingMethod.CONTINUOUS
-    probability_threshold: float = 0.5
-    expected_violation_weight: float = 1.0
+    probability_threshold: float = CONSTRAINT_PROBABILITY_THRESHOLD
+    expected_violation_weight: float = CONSTRAINT_VIOLATION_WEIGHT
     use_noise_model: bool = False
 
 

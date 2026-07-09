@@ -29,9 +29,10 @@ from bo_mcp_server.idempotency_gc import idempotency_gc_lifespan  # noqa: E402
 from bo_mcp_server.server import create_mcp_server  # noqa: E402
 from bo_mcp_server.storage import close_database, init_database  # noqa: E402
 
-# SSE binds loopback by default so a bare ``--transport sse`` never
+# Both HTTP transports (streamable-http, and the deprecated sse) bind
+# loopback by default so a bare ``--transport streamable-http`` never
 # exposes the server on the network; ``--host 0.0.0.0`` opts in
-# explicitly. Note: the SSE transport carries no authentication or
+# explicitly. Note: neither transport carries authentication or
 # per-tenant authorization yet (tracked as H19), so a non-loopback bind
 # exposes every tool to anyone who can reach the port — keep it loopback
 # or behind an authenticating proxy.
@@ -67,7 +68,10 @@ async def main_async(transport: str, host: str, port: int) -> None:
             else:
                 mcp.settings.host = host
                 mcp.settings.port = port
-                await mcp.run_sse_async()
+                if transport == "sse":
+                    await mcp.run_sse_async()
+                else:
+                    await mcp.run_streamable_http_async()
     finally:
         await close_database()
 
@@ -105,34 +109,41 @@ async def _verify_setup() -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser.
 
-    ``--host`` defaults to loopback so a bare ``--transport sse`` never
-    exposes campaign data on the network; binding all interfaces
-    requires explicitly passing ``--host 0.0.0.0``. The SSE transport
-    has no authentication or per-tenant authorization yet (H19), so a
-    non-loopback bind exposes every tool to anyone who can reach the
-    port — keep it loopback or front it with an authenticating proxy.
+    ``--host`` defaults to loopback so a bare ``--transport
+    streamable-http`` never exposes campaign data on the network;
+    binding all interfaces requires explicitly passing
+    ``--host 0.0.0.0``. Neither HTTP transport has authentication or
+    per-tenant authorization yet (H19), so a non-loopback bind exposes
+    every tool to anyone who can reach the port — keep it loopback or
+    front it with an authenticating proxy.
     """
     parser = argparse.ArgumentParser(description="BO-MCP Server")
     parser.add_argument(
         "--transport",
-        choices=["stdio", "sse"],
+        choices=["stdio", "streamable-http", "sse"],
         default="stdio",
-        help="Transport protocol (default: stdio)",
+        help=(
+            "Transport protocol (default: stdio). 'streamable-http' is the "
+            "current MCP HTTP transport (protocol revision 2025-03-26); "
+            "'sse' is the deprecated HTTP+SSE transport, kept only for "
+            "backward compatibility with older clients."
+        ),
     )
     parser.add_argument(
         "--host",
         default=DEFAULT_SSE_HOST,
         help=(
-            f"SSE bind host (default: {DEFAULT_SSE_HOST}). Pass 0.0.0.0 explicitly "
-            "to expose the server on the network; the SSE transport is "
-            "unauthenticated (H19), so prefer loopback or an authenticating proxy."
+            f"HTTP transport bind host (default: {DEFAULT_SSE_HOST}). Pass "
+            "0.0.0.0 explicitly to expose the server on the network; both "
+            "HTTP transports are unauthenticated (H19), so prefer loopback "
+            "or an authenticating proxy."
         ),
     )
     parser.add_argument(
         "--port",
         type=int,
         default=DEFAULT_SSE_PORT,
-        help=f"SSE port (default: {DEFAULT_SSE_PORT})",
+        help=f"HTTP transport port (default: {DEFAULT_SSE_PORT})",
     )
     parser.add_argument(
         "--verify",

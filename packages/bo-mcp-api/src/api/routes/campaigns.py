@@ -1,5 +1,6 @@
 """Campaign routes."""
 
+import warnings
 from collections.abc import Mapping
 from typing import Annotated, Any, Protocol, runtime_checkable
 
@@ -16,6 +17,7 @@ from api.deps import (
     get_current_user,
     validate_uuid,
 )
+from api.limits import MAX_CAMPAIGNS_LIST_LIMIT
 from api.schemas.campaign import (
     BatchStatusRequest,
     BatchStatusResponse,
@@ -28,6 +30,7 @@ from api.schemas.campaign import (
     CampaignQueryRequest,
     CampaignQueryResponse,
     CampaignResponse,
+    CampaignSpecResponse,
     CompareCampaignsRequest,
     CompareCampaignsResponse,
     TransferCandidatesRequest,
@@ -301,9 +304,11 @@ async def list_campaigns(current_user: CurrentUser) -> CampaignListResponse:
 
     The facade helper batches the spec lookup in a single query, so the
     historical N+1 issue stays fixed without the route reaching into
-    repositories itself.
+    repositories itself. Capped at ``MAX_CAMPAIGNS_LIST_LIMIT``
+    (oldest-first) -- owners with more campaigns than that must use
+    ``POST /query``, which paginates via cursor.
     """
-    pairs = await list_owner_campaigns_with_specs(current_user.id)
+    pairs = await list_owner_campaigns_with_specs(current_user.id, limit=MAX_CAMPAIGNS_LIST_LIMIT)
     responses = [
         CampaignResponse(
             id=str(campaign.id),
@@ -369,8 +374,6 @@ async def query_campaigns(
     # callers (who leave it at the default 0) do not see noise; the
     # warning still surfaces in the OpenAPI schema and on actual use
     # via the operation-level mutual-exclusion check.
-    import warnings
-
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         offset = request.offset
@@ -607,7 +610,7 @@ async def get_campaign_config(
 
 
 @router.get("/spec/{spec_id}")
-async def get_campaign_spec(spec_id: str, current_user: CurrentUser) -> dict:
+async def get_campaign_spec(spec_id: str, current_user: CurrentUser) -> CampaignSpecResponse:
     """Get campaign spec details for a spec the caller owns via a campaign.
 
     Specs hold parameter, objective, and constraint shape that is often
@@ -619,23 +622,23 @@ async def get_campaign_spec(spec_id: str, current_user: CurrentUser) -> dict:
     # validate_uuid raises a 400 directly; preserve that behavior.
     validate_uuid(spec_id, "spec_id")
     try:
-        spec = await get_spec_for_user(spec_id, current_user.id)
+        spec, created_at = await get_spec_for_user(spec_id, current_user.id)
     except NotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Spec {spec_id} not found",
         ) from None
 
-    return {
-        "id": spec_id,
-        "name": spec.name,
-        "description": spec.description,
-        "parameters": [p.model_dump() for p in spec.parameters],
-        "objectives": [o.model_dump() for o in spec.objectives],
-        "constraints": [c.model_dump() for c in spec.constraints] if spec.constraints else [],
-        "batch_size": spec.batch_size,
-        "created_at": "",  # Spec doesn't have created_at, use empty string
-    }
+    return CampaignSpecResponse(
+        id=spec_id,
+        name=spec.name,
+        description=spec.description,
+        parameters=[p.model_dump() for p in spec.parameters],
+        objectives=[o.model_dump() for o in spec.objectives],
+        constraints=[c.model_dump() for c in spec.constraints] if spec.constraints else [],
+        batch_size=spec.batch_size,
+        created_at=created_at,
+    )
 
 
 @router.get("/{campaign_id}")

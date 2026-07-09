@@ -17,20 +17,15 @@ Usage:
 
 import argparse
 import asyncio
-import hashlib
-import sys
 from pathlib import Path
 from typing import Any
-
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
 
 from adaptive_bo_benchmarks import BENCHMARKS, BenchmarkFunction, get_benchmark
 from adaptive_bo_database import AdaptiveBODatabase
 from adaptive_bo_plots import create_dashboard, save_plots
+from mcp_client_utils import get_or_create_demo_user
 
-from bo_mcp_server.domain import User
-from bo_mcp_server.storage import UserRepository, get_session, init_database
+from bo_mcp_server.storage import init_database
 from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics
@@ -173,24 +168,11 @@ async def setup_user() -> str:
     Returns:
         User ID string.
     """
-    api_key = "adaptive-bo-demo-key"
-    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-
-    async with get_session() as session:
-        repo = UserRepository(session)
-        user = await repo.get_by_email("adaptive-bo@example.com")
-        if not user:
-            user = User(
-                name="Adaptive BO Demo User",
-                email="adaptive-bo@example.com",
-                api_key_hash=api_key_hash,
-            )
-            user = await repo.save(user)
-            print(f"    Created user: {user.id}")
-        else:
-            print(f"    Using existing user: {user.id}")
-
-    return str(user.id)
+    return await get_or_create_demo_user(
+        email="adaptive-bo@example.com",
+        name="Adaptive BO Demo User",
+        api_key="adaptive-bo-demo-key",
+    )
 
 
 async def run_optimization(

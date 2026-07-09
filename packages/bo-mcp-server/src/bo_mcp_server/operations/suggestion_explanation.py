@@ -5,11 +5,13 @@ from typing import Any
 from uuid import UUID
 
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.response_formatter import with_response_metadata
 from bo_mcp_server.storage import SuggestionRepository, get_session
 
 logger = logging.getLogger(__name__)
 
 
+@with_response_metadata
 async def get_suggestion_explanation_operation(suggestion_id: str) -> dict[str, Any]:
     """Get a detailed explanation for a suggestion."""
     logger.debug("Getting explanation for suggestion %s", suggestion_id)

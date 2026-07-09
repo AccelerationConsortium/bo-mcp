@@ -56,6 +56,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from bo_engine.constants import CONSTRAINT_PROBABILITY_THRESHOLD
+
 if TYPE_CHECKING:
     from botorch.models import SingleTaskGP
     from botorch.models.model_list_gp_regression import ModelListGP
@@ -443,7 +445,7 @@ class OutcomeConstraintSpec:
     objective_name: str  # Which objective to constrain
     threshold: float  # Constraint value
     greater_than: bool = True  # True: obj >= threshold, False: obj <= threshold
-    feasibility_threshold: float = 0.5  # P(feasible) cutoff (0-1)
+    feasibility_threshold: float = CONSTRAINT_PROBABILITY_THRESHOLD  # P(feasible) cutoff (0-1)
 
 
 @dataclass(frozen=True)

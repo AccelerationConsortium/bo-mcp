@@ -12,10 +12,20 @@ parsed value remain logically immutable. To enforce that:
    ``Objective``, ``Constraint``, ``CampaignSpec``, ...) are Pydantic
    models with ``model_config = ConfigDict(frozen=True)``.
 2. Callers must never assign back into ``*_json`` columns or mutate the
-   list/dict returned by a ``parsed_*`` property in place. Producing a
-   new ORM instance via ``session.merge`` is the only supported edit
-   path. Mutating the cached value would return stale reads on the
-   next access with no error.
+   list/dict returned by a ``parsed_*`` property in place. Mutating the
+   cached value would return stale reads on the next access with no
+   error.
+
+   Note: ``session.merge()`` does **not** invalidate a ``parsed_*``
+   cache by itself -- when the row is already identity-mapped in the
+   session, ``merge()`` returns that same persistent instance, and its
+   ``cached_property`` values (stored in ``__dict__``) survive the
+   merge untouched. Repository methods that build a new entity after a
+   merge (e.g. ``CampaignSpecRepository.save``) currently get away with
+   this only because specs are write-once; any future spec-mutation
+   path must build the returned entity from the input domain object (or
+   explicitly evict the stale ``__dict__`` entries) instead of relying
+   on ``merge()`` for cache invalidation.
 """
 
 import functools

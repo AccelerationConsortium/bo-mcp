@@ -130,6 +130,13 @@ def create_mcp_server() -> FastMCP:
     """
     logger.info("Creating MCP server...")
 
+    # ``tools/__init__.py`` is the single source of truth for which tool
+    # modules get registered (it is what pins ``bo_check_progress`` in,
+    # for example) -- importing the package here, rather than repeating
+    # its member list, means there is exactly one place to update when a
+    # tool module is added or removed.
+    from bo_mcp_server import tools  # noqa: F401
+
     # Wire the enum-aware ``completion/complete`` handler so agents
     # discover valid values for ``status`` / ``acquisition_method`` /
     # ``backend`` / ``action`` / etc. without resorting to trial-and-
@@ -142,25 +149,6 @@ def create_mcp_server() -> FastMCP:
         campaign_resource,
         events_resource,
         suggestion_resource,
-    )
-    from bo_mcp_server.tools import (  # noqa: F401
-        batch_operations,
-        campaign_lifecycle,
-        compare_campaigns,
-        create_campaign,
-        discover_transfer_candidates,
-        generate_suggestions,
-        get_diagnostics,
-        get_suggestion_explanation,
-        health_check,
-        list_campaigns,
-        list_capabilities,
-        list_results,
-        list_suggestions,
-        submit_results,
-        update_suggestion_status,
-        upload_results_file,
-        validate_intake,
     )
 
     register_completion_handler(mcp)

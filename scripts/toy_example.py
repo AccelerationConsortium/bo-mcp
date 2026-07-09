@@ -3,21 +3,19 @@
 """Toy example: Run a complete Bayesian Optimization workflow."""
 
 import asyncio
-import hashlib
 import random
 
 import dotenv
 
 dotenv.load_dotenv()
 
-from bo_mcp_server.domain import User
-from bo_mcp_server.storage import UserRepository, get_session, lifespan
+from demos.mcp_client_utils import get_or_create_demo_user
+
+from bo_mcp_server.storage import lifespan
 from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics
 from bo_mcp_server.tools.submit_results import submit_results
-
-API_KEY = "dev-api-key-12345"
 
 
 def simulate_experiment(params: dict) -> dict:
@@ -53,22 +51,8 @@ async def main():
 
     async with lifespan():
         # Create or get test user
-        api_key_hash = hashlib.sha256(API_KEY.encode()).hexdigest()
-        async with get_session() as session:
-            repo = UserRepository(session)
-            user = await repo.get_by_email("test@example.com")
-            if not user:
-                user = User(
-                    name="Test User",
-                    email="test@example.com",
-                    api_key_hash=api_key_hash,
-                )
-                user = await repo.save(user)
-                print(f"Created test user: {user.id}")
-            else:
-                print(f"Using existing user: {user.id}")
-
-        owner_id = str(user.id)
+        owner_id = await get_or_create_demo_user(email="test@example.com", name="Test User")
+        print(f"Using demo user: {owner_id}")
 
         # Step 1: Create campaign
         print("\n" + "-" * 40)

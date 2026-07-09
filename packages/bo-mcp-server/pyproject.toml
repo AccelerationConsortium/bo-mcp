@@ -20,13 +20,20 @@ dependencies = [
     # BayBE is the default backend; the server must always be able to load
     # its entry point. BoTorch (bo-engine) stays as the legacy fallback.
     "bo-engine-baybe",
-    "mcp>=1.0",
-    "fastmcp>=0.4",
+    # Upper-bounded: tool_boundary.py/resource_boundary.py monkeypatch private
+    # FastMCP internals whose signatures are not a public contract. A version
+    # canary (tests/unit/test_mcp_sdk_signature_canary.py) fails loudly if a
+    # future mcp release changes them; bump the ceiling only after re-checking
+    # that canary.
+    "mcp>=1.25,<2",
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
     "aiosqlite>=0.19",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
+    # settings.py imports dotenv directly (load_anchored_dotenv); previously
+    # undeclared and only present via pydantic-settings' transitive pin.
+    "python-dotenv>=1.0",
     "alembic>=1.13",
     "prometheus-client>=0.20",
     "python-json-logger>=3.0",
@@ -39,13 +46,15 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "ruff>=0.4",
-    "pyright>=1.1",
 ]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "testcontainers[postgres]>=4.0",
+    # tests/integration/test_api_endpoints.py (pytest.mark.docker) drives the
+    # live REST API over HTTP and needs its own client, independent of
+    # whatever bo-mcp-api's dev extra happens to pull in transitively.
+    "httpx>=0.27",
 ]
 
 [project.scripts]

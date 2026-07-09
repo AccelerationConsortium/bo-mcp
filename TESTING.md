@@ -4,18 +4,29 @@ This document describes the testing strategy for the BO-MCP monorepo, including 
 
 ## Quick Reference
 
+Each package has its own `tests/conftest.py`, and pytest's plugin manager
+registers conftest modules by their dotted path — running from the repo root
+collides four identically-named `tests.conftest` modules into one registration
+and pytest refuses collection. Run tests per package, as CI does:
+
 ```bash
 # Fast PR gate (must pass on every PR, target < 5 min)
-uv run pytest -m "not integration and not slow and not nightly and not docker and not postgres" packages/
+for pkg in bo-engine bo-mcp-server bo-mcp-api bo-engine-baybe; do
+  (cd "packages/$pkg" && uv run pytest -m "not integration and not slow and not nightly and not docker and not postgres")
+done
 
 # Integration tier (runs on PRs in a separate job)
 cd packages/bo-mcp-server && uv run pytest -m "integration and not slow and not nightly and not docker and not postgres"
 
 # Slow tests on main (MCMC, cross-validation)
-uv run pytest -m "slow and not nightly and not docker and not postgres" packages/
+for pkg in bo-engine bo-mcp-server bo-engine-baybe; do
+  (cd "packages/$pkg" && uv run pytest -m "slow and not nightly and not docker and not postgres")
+done
 
 # Nightly: everything except infra-bound suites
-uv run pytest -m "not docker and not postgres" packages/
+for pkg in bo-engine bo-mcp-server bo-engine-baybe; do
+  (cd "packages/$pkg" && uv run pytest -m "not docker and not postgres")
+done
 
 # Recalibrate tolerances for stochastic tests
 uv run python scripts/calibrate_test_tolerances.py
@@ -40,17 +51,17 @@ Tests are organized using pytest markers to enable selective execution:
 ### Selecting Tests by Marker
 
 ```bash
-# Run only smoke tests (fastest)
-uv run pytest -m smoke packages/
+# Run only smoke tests (fastest) - per package
+cd packages/bo-engine && uv run pytest -m smoke
 
-# Run everything except slow and nightly
-uv run pytest -m "not slow and not nightly" packages/
+# Run everything except slow and nightly - per package
+cd packages/bo-engine && uv run pytest -m "not slow and not nightly"
 
 # Run tutorial reproduction tests
-uv run pytest -m tutorial packages/bo-engine/
+cd packages/bo-engine && uv run pytest -m tutorial
 
-# Run nightly statistical tests
-uv run pytest -m nightly packages/
+# Run nightly statistical tests - per package
+cd packages/bo-engine && uv run pytest -m nightly
 ```
 
 ## CI Pipeline Structure
@@ -244,16 +255,6 @@ If a test fails intermittently:
    torch.manual_seed(42)
    # ... all random operations should be within seed scope
    ```
-
-## xfailed Tests
-
-Some tests are marked as `xfail` (expected failure) for documented reasons:
-
-- **Input validation tests (9):** Validation features not yet implemented
-- **Response structure tests (4):** API response features on roadmap
-- **Reproducibility tests (3):** Full reproducibility features planned
-
-These are tracked in `pyproject.toml` with `xfail_strict = true` - if an xfailed test starts passing, CI will fail to notify that the feature was implemented.
 
 ## Timeouts
 

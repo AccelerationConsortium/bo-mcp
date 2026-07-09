@@ -94,7 +94,9 @@ class TestSpecLookupOwnership:
         # specifically due to the caller not owning a campaign with this spec.
         from bo_mcp_server.client import get_spec_for_user
 
-        owner_view = await get_spec_for_user(foreign_spec_id, persisted_another_user.id)
+        owner_view, _created_at = await get_spec_for_user(
+            foreign_spec_id, persisted_another_user.id
+        )
         assert owner_view is not None
 
     @pytest.mark.asyncio

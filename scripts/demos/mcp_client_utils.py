@@ -52,7 +52,7 @@ async def connect_to_mcp_server() -> AsyncIterator[ClientSession]:
 
     server_params = StdioServerParameters(
         command="uv",
-        args=["run", "python", "scripts/run_mcp_server.py"],
+        args=["run", "bo-mcp-server"],
         cwd=str(PROJECT_ROOT),
         env=env,
     )
@@ -329,12 +329,19 @@ def suppress_stderr():
 # =============================================================================
 
 
-async def get_or_create_demo_user() -> str:
+async def get_or_create_demo_user(
+    email: str = DEMO_USER_EMAIL,
+    name: str = DEMO_USER_NAME,
+    api_key: str = DEMO_API_KEY,
+) -> str:
     """Get or create a demo user and return the user ID.
 
     This function creates a demo user directly via the storage layer
     (not through MCP) since user management is typically done outside
-    the optimization workflow.
+    the optimization workflow. Defaults to the shared MCP-protocol demo
+    identity; pass distinct ``email``/``name``/``api_key`` values so a
+    given demo script's user (and the label it prints) stays stable
+    across runs without colliding with other demos' rows.
 
     Note: This sets up environment variables for the database before importing
     the storage module to ensure consistent database usage with the MCP server.
@@ -354,15 +361,15 @@ async def get_or_create_demo_user() -> str:
     # Initialize database (idempotent)
     await init_database()
 
-    api_key_hash = hashlib.sha256(DEMO_API_KEY.encode()).hexdigest()
+    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
     async with get_session() as session:
         repo = UserRepository(session)
-        user = await repo.get_by_email(DEMO_USER_EMAIL)
+        user = await repo.get_by_email(email)
         if not user:
             user = User(
-                name=DEMO_USER_NAME,
-                email=DEMO_USER_EMAIL,
+                name=name,
+                email=email,
                 api_key_hash=api_key_hash,
             )
             user = await repo.save(user)

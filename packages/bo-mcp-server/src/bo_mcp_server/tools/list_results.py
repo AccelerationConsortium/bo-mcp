@@ -1,11 +1,12 @@
 """List results and export campaign tool wrappers for MCP."""
 
-from typing import Any, Literal
+from typing import Literal, cast
 
 from bo_mcp_server.operations.export_campaign import export_campaign_operation
 from bo_mcp_server.operations.list_results import list_results_operation
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.response_models import ExportCampaignResponse, ResultListResponse
 
 
 @mcp.tool(name="bo_list_results", annotations=READ_ONLY)
@@ -15,7 +16,7 @@ async def list_results(
     offset: int = 0,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
     cursor: str | None = None,
-) -> dict[str, Any]:
+) -> ResultListResponse:
     """List experimental results for a campaign.
 
     Workflow: Call to review submitted results or audit past submissions.
@@ -44,20 +45,23 @@ async def list_results(
             - next_cursor: Cursor for the next page (null when finished)
             - errors: List of error messages
     """
-    return await list_results_operation(
-        campaign_id=campaign_id,
-        limit=limit,
-        offset=offset,
-        verbosity=verbosity,
-        cursor=cursor,
+    return cast(
+        ResultListResponse,
+        await list_results_operation(
+            campaign_id=campaign_id,
+            limit=limit,
+            offset=offset,
+            verbosity=verbosity,
+            cursor=cursor,
+        ),
     )
 
 
 @mcp.tool(name="bo_export_campaign", annotations=READ_ONLY)
 async def export_campaign(
     campaign_id: str,
-    output_format: str = "csv",
-) -> dict[str, Any]:
+    output_format: Literal["csv"] = "csv",
+) -> ExportCampaignResponse:
     """Export all results for a campaign as CSV.
 
     Workflow: Call to export all campaign data for offline analysis.
@@ -80,7 +84,10 @@ async def export_campaign(
               page the remainder with bo_list_results (cursor pagination)
             - errors: List of error messages
     """
-    return await export_campaign_operation(
-        campaign_id=campaign_id,
-        output_format=output_format,
+    return cast(
+        ExportCampaignResponse,
+        await export_campaign_operation(
+            campaign_id=campaign_id,
+            output_format=output_format,
+        ),
     )

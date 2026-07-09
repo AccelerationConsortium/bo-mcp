@@ -14,6 +14,11 @@ from bo_mcp_server.errors import ErrorCode, raise_resource_error
 from bo_mcp_server.server import mcp
 from bo_mcp_server.storage import CampaignRepository, EventRepository, get_session
 
+# Most-recent events rendered per read. The resource is meant as quick
+# audit-trail context, not a paginated export, so this stays a small
+# fixed window rather than growing a cursor-based API of its own.
+_EVENTS_RESOURCE_LIMIT = 50
+
 
 @mcp.resource("events://{campaign_id}")
 async def get_campaign_events(campaign_id: str) -> str:
@@ -48,7 +53,7 @@ async def get_campaign_events(campaign_id: str) -> str:
             )
 
         repo = EventRepository(session)
-        events = await repo.list_by_campaign(campaign_uuid, limit=50)
+        events = await repo.list_by_campaign(campaign_uuid, limit=_EVENTS_RESOURCE_LIMIT)
 
     if not events:
         return f"No events recorded for campaign {campaign_id}."

@@ -254,6 +254,41 @@ class TestSuggestionRepository:
 
         assert len(all_suggestions) == 5
 
+    @pytest.mark.asyncio
+    async def test_list_by_campaign_returns_submission_order(
+        self, session: AsyncSession, campaign_id: UUID
+    ) -> None:
+        """``list_by_campaign`` must not depend on the database's heap order.
+
+        Mirrors ``TestListByCampaignsOrdering.test_results_returned_in_submission_order``:
+        the contract is ``(created_at, id)`` ascending regardless of insertion
+        order, matching the plural ``ResultRepository.list_by_campaigns``.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        repo = SuggestionRepository(session)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        # Insert deliberately out of chronological order.
+        for offset_minutes in (30, 10, 50, 20, 40):
+            await repo.save(
+                Suggestion(
+                    campaign_id=campaign_id,
+                    parameter_values={"x": offset_minutes / 100.0},
+                    provenance=SuggestionProvenance(iteration=1, batch_index=offset_minutes),
+                    created_at=base + timedelta(minutes=offset_minutes),
+                )
+            )
+        await session.commit()
+
+        suggestions = await repo.list_by_campaign(campaign_id)
+
+        created = [s.created_at for s in suggestions]
+        assert created == sorted(created), (
+            "list_by_campaign must return suggestions in (created_at, id) "
+            "ascending order regardless of insertion order."
+        )
+        assert [s.provenance.batch_index for s in suggestions] == [10, 20, 30, 40, 50]
+
 
 class TestResultRepository:
     """Tests for ResultRepository."""

@@ -7,7 +7,7 @@ from uuid import UUID
 from bo_mcp_server.domain import Campaign, CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.pagination import build_page_cursor, parse_optional_cursor
-from bo_mcp_server.response_formatter import VerbosityLevel
+from bo_mcp_server.response_formatter import VerbosityLevel, with_response_metadata
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -132,6 +132,7 @@ def _validate_list_campaigns_inputs(
     return verbosity_level, status_filter, cursor_parsed[0], cursor_parsed[1]
 
 
+@with_response_metadata
 async def list_campaigns_operation(
     owner_id: UUID | None = None,
     status: str | None = None,

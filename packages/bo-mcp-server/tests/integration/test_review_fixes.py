@@ -34,6 +34,7 @@ from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 from bo_mcp_server.operations.list_results import list_results_operation
 from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
 from bo_mcp_server.operations.submit_results import submit_results_operation
+from tests.factories import seed_owner
 
 pytestmark = pytest.mark.usefixtures("setup_database")
 
@@ -48,7 +49,7 @@ def _single_param_spec(name: str = "Test Campaign") -> dict[str, Any]:
 
 async def _make_campaign(owner_id: str | None = None, name: str = "Test Campaign") -> str:
     """Create a campaign via the operation layer and return its id."""
-    owner_id = owner_id or str(uuid4())
+    owner_id = owner_id or await seed_owner()
     intake = CampaignIntakeInput.model_validate(_single_param_spec(name=name))
     response = await create_campaign_operation(
         intake_data=intake,
@@ -88,7 +89,7 @@ async def test_concurrent_create_campaign_with_same_idempotency_key() -> None:
     """
     from bo_mcp_server.tools.create_campaign import create_campaign
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = _single_param_spec("Race Campaign")
     key = "race-key-1"
 
@@ -205,7 +206,7 @@ async def test_list_campaigns_no_cursor_on_exact_final_page() -> None:
     incorrectly advertised another page when the total was a multiple
     of ``limit``.
     """
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     for i in range(3):
         await _make_campaign(owner_id=owner_id, name=f"Campaign {i}")
 
@@ -227,7 +228,7 @@ async def test_list_campaigns_cursor_walks_until_exhausted() -> None:
     handled above; this test guards against re-introducing it via a
     different limit boundary.
     """
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     for i in range(3):
         await _make_campaign(owner_id=owner_id, name=f"Campaign {i}")
 
@@ -256,7 +257,7 @@ async def test_campaigns_resource_accepts_cursor_filter() -> None:
     """
     from bo_mcp_server.resources.campaign_resource import list_campaigns_filtered
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     for i in range(3):
         await _make_campaign(owner_id=owner_id, name=f"Campaign {i}")
 
@@ -627,7 +628,7 @@ async def test_idempotent_submit_results_rolls_back_on_concurrent_modification(
     from bo_mcp_server.storage.models import IdempotencyCacheModel
     from bo_mcp_server.tools.submit_results import submit_results as submit_results_tool
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = CampaignIntakeInput.model_validate(
         {
             "name": "Idempotent Submit CMError",

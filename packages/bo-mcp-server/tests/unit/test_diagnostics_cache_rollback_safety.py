@@ -43,6 +43,7 @@ from bo_mcp_server.storage import (
     ConcurrentModificationError,
     get_session,
 )
+from tests.factories import seed_campaign_parents
 
 pytestmark = pytest.mark.usefixtures("setup_database")
 
@@ -71,8 +72,7 @@ async def test_failed_mutation_leaves_cache_aligned_with_committed_state() -> No
 
     # Seed a campaign and stamp a known diagnostics payload into the
     # cache under its current version.
-    spec_id = uuid4()
-    owner_id = uuid4()
+    owner_id, spec_id = await seed_campaign_parents()
     campaign_id = uuid4()
     seeded = Campaign(
         id=campaign_id,
@@ -123,8 +123,7 @@ async def test_successful_mutation_makes_old_cache_key_unreachable() -> None:
     """
     from bo_mcp_server.domain import Campaign, CampaignStatus
 
-    spec_id = uuid4()
-    owner_id = uuid4()
+    owner_id, spec_id = await seed_campaign_parents()
     campaign_id = uuid4()
     seeded = Campaign(
         id=campaign_id,

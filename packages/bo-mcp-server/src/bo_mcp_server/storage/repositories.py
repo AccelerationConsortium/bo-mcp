@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select, update
@@ -39,6 +39,7 @@ from bo_mcp_server.storage.models import (
     ResultModel,
     SuggestionModel,
     UserModel,
+    _strict_json_loads,
 )
 
 logger = logging.getLogger(__name__)
@@ -336,11 +337,32 @@ class CampaignSpecRepository:
                 raw_samples=acq_samples,
             )
 
+        # Route through the hardened decoder so a corrupted column
+        # surfaces as CorruptedJsonColumnError (DATA_INTEGRITY_ERROR at
+        # the transport boundary) instead of a raw JSONDecodeError.
         backend_options_raw = getattr(model, "backend_options_json", None)
-        backend_options = json.loads(backend_options_raw) if backend_options_raw else None
+        backend_options = (
+            cast(
+                "dict[str, dict[str, Any]]",
+                _strict_json_loads(
+                    backend_options_raw, context=f"CampaignSpec({model.id}).backend_options"
+                ),
+            )
+            if backend_options_raw
+            else None
+        )
 
         advanced_raw = getattr(model, "advanced_options_json", None)
-        advanced = json.loads(advanced_raw) if advanced_raw else {}
+        advanced = (
+            cast(
+                "dict[str, Any]",
+                _strict_json_loads(
+                    advanced_raw, context=f"CampaignSpec({model.id}).advanced_options"
+                ),
+            )
+            if advanced_raw
+            else {}
+        )
 
         return CampaignSpec(
             name=model.name,
@@ -1521,7 +1543,13 @@ class ResultRepository:
         """Convert ORM model to domain entity."""
         measurement_uncertainty = None
         if model.measurement_uncertainty_json:
-            measurement_uncertainty = json.loads(model.measurement_uncertainty_json)
+            measurement_uncertainty = cast(
+                "dict[str, float]",
+                _strict_json_loads(
+                    model.measurement_uncertainty_json,
+                    context=f"Result({model.id}).measurement_uncertainty",
+                ),
+            )
 
         snapshot_raw = model.get_suggestion_snapshot()
         suggestion_snapshot = (
@@ -1600,8 +1628,18 @@ class EventRepository:
             campaign_id=UUID(model.campaign_id) if model.campaign_id else None,
             event_type=EventType(model.event_type),
             tool_name=model.tool_name,
-            input_summary=json.loads(model.input_summary_json),
-            output_summary=json.loads(model.output_summary_json),
+            input_summary=cast(
+                "dict[str, Any]",
+                _strict_json_loads(
+                    model.input_summary_json, context=f"Event({model.id}).input_summary"
+                ),
+            ),
+            output_summary=cast(
+                "dict[str, Any]",
+                _strict_json_loads(
+                    model.output_summary_json, context=f"Event({model.id}).output_summary"
+                ),
+            ),
             actor_id=model.actor_id,
             created_at=model.created_at,
         )

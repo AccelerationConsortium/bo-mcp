@@ -15,12 +15,12 @@ References:
 
 import math
 import random
-from uuid import uuid4
 
 import pytest
 import torch
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
@@ -50,7 +50,7 @@ class TestSingleObjectiveLifecycle:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         # 1. Create campaign
         intake_data = {
@@ -162,7 +162,7 @@ class TestSingleObjectiveLifecycle:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Maximization E2E Test",
@@ -241,7 +241,7 @@ class TestMultiObjectiveLifecycle:
         random.seed(42)
         torch.manual_seed(42)
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Multi-Objective E2E Test",
@@ -321,7 +321,7 @@ class TestMultiObjectiveLifecycle:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Three-Objective E2E Test",
@@ -386,7 +386,7 @@ class TestMixedParameterLifecycle:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Mixed Parameters E2E Test",
@@ -444,7 +444,7 @@ class TestMixedParameterLifecycle:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Discrete Parameters E2E Test",
@@ -507,7 +507,7 @@ class TestConstrainedLifecycle:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Constrained E2E Test",
@@ -584,7 +584,7 @@ class TestLongRunningLifecycle:
         from bo_mcp_server.tools.get_diagnostics import get_diagnostics
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Convergence E2E Test",
@@ -657,7 +657,7 @@ class TestCampaignStateTransitions:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "State Transition Test",
@@ -694,7 +694,7 @@ class TestCampaignStateTransitions:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Iteration Tracking Test",

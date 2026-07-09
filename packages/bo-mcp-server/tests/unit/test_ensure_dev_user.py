@@ -110,3 +110,44 @@ async def test_reactivates_deactivated_dev_user() -> None:
     via_auth = await get_user_by_api_key(DEV_API_KEY)
     assert via_auth is not None
     assert via_auth.id == repaired.id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_bootstrap_race_resolves_to_single_user(monkeypatch) -> None:
+    """A lost check-then-insert race resolves to the winner's row, not a crash.
+
+    The API and MCP containers start in parallel against a fresh
+    database: both read "no dev user", both INSERT, and the loser hits
+    the email unique constraint. The loser must retry, read the
+    winner's committed row, and return the same user id instead of
+    failing startup. Simulated deterministically here by pre-committing
+    the winner's row and forcing the loser's first existence check to
+    return ``None`` (the pre-race read).
+
+    Reference: the standard recovery for check-then-insert races is to
+    catch the unique-violation and re-read — see PostgreSQL docs on
+    UPSERT/unique violations,
+    https://www.postgresql.org/docs/current/sql-insert.html#SQL-ON-CONFLICT.
+    """
+    winner = await ensure_dev_user()
+
+    real_get_by_email = UserRepository.get_by_email
+    calls = {"count": 0}
+
+    async def racing_get_by_email(self: UserRepository, email: str):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            # Simulate reading before the concurrent process committed.
+            return None
+        return await real_get_by_email(self, email)
+
+    monkeypatch.setattr(UserRepository, "get_by_email", racing_get_by_email)
+
+    loser = await ensure_dev_user()
+
+    assert loser.id == winner.id
+    assert calls["count"] >= 2, "the loser must re-read after the IntegrityError"
+
+    via_auth = await get_user_by_api_key(DEV_API_KEY)
+    assert via_auth is not None
+    assert via_auth.id == winner.id

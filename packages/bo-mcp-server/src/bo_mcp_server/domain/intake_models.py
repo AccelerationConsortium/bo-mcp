@@ -44,12 +44,14 @@ class CampaignIntakeInput(BaseModel):
     objectives: tuple[Objective, ...] = Field(..., min_length=1)
     constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
     batch_size: int = Field(default=1, ge=1, le=MAX_GENERATION_BATCH_SIZE)
-    max_iterations: int | None = None
+    # ``ge=1`` matches ``max_observations``: zero or negative would create
+    # a born-dead campaign whose every generate returns BUDGET_EXCEEDED.
+    max_iterations: int | None = Field(default=None, ge=1)
     # Budget / convergence-based stopping (optional). Mirrors the fields on
     # ``CampaignSpec``; see :mod:`bo_engine.convergence.evaluate_stopping_decision`.
     max_observations: int | None = Field(default=None, ge=1)
     convergence_tolerance: float | None = Field(default=None, gt=0.0)
-    initial_design_size: int | None = None
+    initial_design_size: int | None = Field(default=None, ge=1)
     # Default ``None`` so MCP and REST intake forms behave identically when
     # the caller omits the seed: a fresh OS-level scramble each iteration.
     # Callers that want deterministic Sobol sequences must opt in by

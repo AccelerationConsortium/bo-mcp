@@ -27,7 +27,7 @@ writers through one version-checked row is the standard remediation.
 from __future__ import annotations
 
 from itertools import pairwise
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -35,6 +35,7 @@ from bo_mcp_server.domain import ResultSubmissionInput
 from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.storage import CampaignRepository, get_session
 from bo_mcp_server.tools.create_campaign import create_campaign
+from tests.factories import seed_owner
 
 
 async def _campaign_version(campaign_id: str) -> int:
@@ -47,7 +48,7 @@ async def _campaign_version(campaign_id: str) -> int:
 
 async def _create_single_objective_campaign() -> tuple[str, str]:
     """Create a single-objective continuous campaign; return (id, owner_id)."""
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Submit version bump",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],

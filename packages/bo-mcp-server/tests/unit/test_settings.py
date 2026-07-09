@@ -6,6 +6,9 @@ official replacement for the previous ``BaseSettings`` that lived in
 pydantic core (now removed in v2).
 """
 
+from pathlib import Path
+from typing import Any, cast
+
 import pytest
 
 from bo_mcp_server.settings import (
@@ -20,19 +23,158 @@ from bo_mcp_server.settings import (
 )
 
 
-def test_default_values_when_env_unset(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+@pytest.fixture
+def no_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Detach the anchored ``.env`` candidates for hermetic default tests.
+
+    The ``env_file`` anchors are absolute paths (CWD-independent by
+    design), so ``monkeypatch.chdir`` no longer isolates a test from a
+    developer's repo-root ``.env``. Tests that assert *documented
+    defaults* after ``delenv`` clear the source explicitly instead.
+    """
+    # ``model_config`` is a TypedDict; cast to a plain mapping so the
+    # ``None`` sentinel (meaning "no env file") type-checks.
+    monkeypatch.setitem(cast("dict[str, Any]", Settings.model_config), "env_file", None)
+
+
+@pytest.mark.usefixtures("no_env_file")
+def test_default_values_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     """All knobs fall back to documented defaults when nothing is set."""
     for key in ("DATABASE_URL", "USE_ALEMBIC", "SQL_ECHO", "BO_BACKEND"):
         monkeypatch.delenv(key, raising=False)
-    # Point to a fresh empty env file so a developer-local ``.env`` does not
-    # leak overrides into this assertion (pydantic-settings parameterizes the
-    # ``env_file`` via ``model_config``).
-    monkeypatch.chdir(tmp_path)
     settings = Settings()
     assert settings.database_url.get_secret_value().startswith("sqlite+aiosqlite://")
     assert settings.use_alembic == "auto"
     assert settings.sql_echo is False
     assert settings.bo_backend == "baybe"
+
+
+@pytest.mark.usefixtures("no_env_file")
+def test_default_database_url_is_launch_context_independent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The default SQLite URL resolves the same absolute file from any CWD.
+
+    MCP clients spawn stdio servers from arbitrary working directories;
+    a CWD-relative default would silently select a different database
+    per launch context ("my campaigns disappeared") or fail with
+    ``PermissionError`` when the CWD is not writable. The default must
+    therefore be an absolute path anchored at the package.
+    """
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    cwd_a = tmp_path / "launch_a"
+    cwd_b = tmp_path / "launch_b"
+    cwd_a.mkdir()
+    cwd_b.mkdir()
+
+    monkeypatch.chdir(cwd_a)
+    url_from_a = get_database_url()
+    monkeypatch.chdir(cwd_b)
+    url_from_b = get_database_url()
+
+    assert url_from_a == url_from_b
+    db_path = url_from_a.removeprefix("sqlite+aiosqlite:///")
+    assert db_path.startswith("/"), f"default SQLite path is not absolute: {db_path!r}"
+
+
+def test_source_tree_anchor_matches_source_layout() -> None:
+    """Running from the checkout, the anchor lands on this project's root.
+
+    ``_source_project_root`` derives ``parents[2]`` of ``settings.py``,
+    which encodes the src layout
+    (``<project>/src/bo_mcp_server/settings.py``). If the module is ever
+    moved (or the layout flattened), the default database path and the
+    ``.env`` anchors would silently point somewhere else — this pins the
+    assumption so such a refactor fails loudly.
+    """
+    from bo_mcp_server import settings as settings_module
+
+    project_root = settings_module._source_project_root(Path(settings_module.__file__))
+    assert project_root is not None, "src-layout assumption broken — see _source_project_root"
+    assert 'name = "bo-mcp-server"' in (project_root / "pyproject.toml").read_text()
+    assert settings_module._DEFAULT_DATA_DIR == project_root / "data"
+
+
+def test_installed_wheel_defaults_to_user_data_dir(tmp_path) -> None:
+    """A wheel-installed package must not default the DB under the venv lib dir.
+
+    Simulates the installed layout
+    (``…/lib/python3.13/site-packages/bo_mcp_server/settings.py``): no
+    ``pyproject.toml`` sits two levels up, so the default database goes
+    to the OS user data directory (platformdirs) instead of an
+    interpreter-internal path, and no ambient ``.env`` candidates are
+    honored — installed deployments configure via real environment
+    variables.
+
+    Reference: platformdirs is the maintained successor of appdirs for
+    OS-appropriate per-user data locations —
+    https://platformdirs.readthedocs.io/en/latest/.
+    """
+    import platformdirs
+
+    from bo_mcp_server.settings import _default_data_dir, _env_file_candidates
+
+    fake_wheel_settings = (
+        tmp_path / "venv" / "lib" / "python3.13" / "site-packages" / "bo_mcp_server" / "settings.py"
+    )
+    fake_wheel_settings.parent.mkdir(parents=True)
+    fake_wheel_settings.touch()
+
+    data_dir = _default_data_dir(fake_wheel_settings)
+    assert data_dir == Path(platformdirs.user_data_dir(appname="bo-mcp-server"))
+    assert not data_dir.is_relative_to(tmp_path), (
+        f"default data dir {data_dir} must not live inside the interpreter tree"
+    )
+    assert _env_file_candidates(fake_wheel_settings) == ()
+
+
+def test_source_tree_layout_resolves_project_paths(tmp_path) -> None:
+    """A simulated src-layout checkout anchors data and .env at the project."""
+    from bo_mcp_server.settings import _default_data_dir, _env_file_candidates
+
+    project = tmp_path / "repo" / "packages" / "bo-mcp-server"
+    settings_file = project / "src" / "bo_mcp_server" / "settings.py"
+    settings_file.parent.mkdir(parents=True)
+    settings_file.touch()
+    (project / "pyproject.toml").write_text('[project]\nname = "bo-mcp-server"\n')
+
+    assert _default_data_dir(settings_file) == project / "data"
+    assert _env_file_candidates(settings_file) == (
+        str(tmp_path / "repo" / ".env"),
+        str(project / ".env"),
+    )
+
+
+def test_foreign_env_file_in_launch_cwd_is_ignored(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A ``.env`` sitting in the launch CWD must not repoint the database.
+
+    ``.env`` discovery is anchored to the package/repo roots (absolute
+    paths), so a foreign file in whatever directory the MCP client
+    happens to spawn the server from is never read — while an explicit
+    environment variable keeps its priority over every ``.env`` source.
+    """
+    foreign_cwd = tmp_path / "foreign_launch"
+    neutral_cwd = tmp_path / "neutral_launch"
+    foreign_cwd.mkdir()
+    neutral_cwd.mkdir()
+    (foreign_cwd / ".env").write_text("DATABASE_URL=sqlite+aiosqlite:///stolen/foreign.db\n")
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    monkeypatch.chdir(neutral_cwd)
+    url_from_neutral = get_database_url()
+    monkeypatch.chdir(foreign_cwd)
+    url_from_foreign = get_database_url()
+
+    assert "foreign.db" not in url_from_foreign
+    assert url_from_foreign == url_from_neutral
+
+    # Explicit environment variables still outrank any .env candidate.
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://explicit@db.host/bo")
+    assert get_database_url() == "postgresql+asyncpg://explicit@db.host/bo"
 
 
 def test_env_override_is_observed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -43,7 +185,8 @@ def test_env_override_is_observed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert get_sql_echo() is True
 
 
-def test_compute_timeout_default_is_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+@pytest.mark.usefixtures("no_env_file")
+def test_compute_timeout_default_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """The compute timeout is on by default so a hung backend is bounded out-of-the-box.
 
     The M36 wedged-backend protection must not depend on every deployment
@@ -51,7 +194,6 @@ def test_compute_timeout_default_is_enabled(monkeypatch: pytest.MonkeyPatch, tmp
     detector. ``0`` remains the explicit opt-out.
     """
     monkeypatch.delenv("BO_COMPUTE_TIMEOUT_SECONDS", raising=False)
-    monkeypatch.chdir(tmp_path)
     assert Settings().bo_compute_timeout_seconds == 30 * 60
     assert get_bo_compute_timeout_seconds() == 30 * 60
 
@@ -59,16 +201,14 @@ def test_compute_timeout_default_is_enabled(monkeypatch: pytest.MonkeyPatch, tmp
     assert get_bo_compute_timeout_seconds() == 0.0
 
 
-def test_heartbeat_extension_cap_default_is_bounded(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+@pytest.mark.usefixtures("no_env_file")
+def test_heartbeat_extension_cap_default_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     """The reservation-heartbeat extension is capped by default (30 minutes).
 
     Without a finite cap a wedged backend could hold a reservation slot
     indefinitely via the heartbeat; the default bounds it.
     """
     monkeypatch.delenv("IDEMPOTENCY_HEARTBEAT_MAX_TOTAL_EXTENSION_SECONDS", raising=False)
-    monkeypatch.chdir(tmp_path)
     assert get_idempotency_heartbeat_max_total_extension_seconds() == 30 * 60
 
 

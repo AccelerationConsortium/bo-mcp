@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
@@ -49,7 +50,7 @@ class TestNaNAndInfInputs:
     async def _create_campaign(self) -> tuple[str, str]:
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake_data = {
             "name": "Non-Finite Rejection Test",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -203,7 +204,7 @@ class TestExtremeBounds:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Small Bounds Test",
@@ -228,7 +229,7 @@ class TestExtremeBounds:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Large Bounds Test",
@@ -253,7 +254,7 @@ class TestExtremeBounds:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Negative to Positive Test",
@@ -275,7 +276,7 @@ class TestExtremeBounds:
         """Campaign with inverted bounds (lower > upper) should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Inverted Bounds Test",
@@ -295,7 +296,7 @@ class TestExtremeBounds:
         """Campaign with equal bounds (zero range) should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Equal Bounds Test",
@@ -324,7 +325,7 @@ class TestConflictingConstraints:
         """Constraint that cannot be satisfied should be rejected or warn."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Impossible Constraint Test",
@@ -354,7 +355,7 @@ class TestConflictingConstraints:
         """Constraint referencing unknown parameter should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Bad Constraint Reference Test",
@@ -443,7 +444,7 @@ class TestMissingAndEmptyFields:
         """Campaign with no parameters should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "No Parameters Test",
@@ -460,7 +461,7 @@ class TestMissingAndEmptyFields:
         """Campaign with no objectives should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "No Objectives Test",
@@ -477,7 +478,7 @@ class TestMissingAndEmptyFields:
         """Parameter without name should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Missing Parameter Name Test",
@@ -493,7 +494,7 @@ class TestMissingAndEmptyFields:
         """Objective without direction should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Missing Direction Test",
@@ -534,7 +535,7 @@ class TestBoundaryValues:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Lower Bound Test",
@@ -564,7 +565,7 @@ class TestBoundaryValues:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Upper Bound Test",
@@ -594,7 +595,7 @@ class TestBoundaryValues:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Out of Bounds Test",
@@ -631,7 +632,7 @@ class TestBoundaryValues:
         """Batch size of 0 should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Zero Batch Size Test",
@@ -649,7 +650,7 @@ class TestBoundaryValues:
         """Negative batch size should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Negative Batch Size Test",
@@ -674,7 +675,7 @@ class TestDuplicateAndConflictingData:
         """Duplicate parameter names should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Duplicate Param Names Test",
@@ -694,7 +695,7 @@ class TestDuplicateAndConflictingData:
         """Duplicate objective names should be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Duplicate Objective Names Test",
@@ -719,7 +720,7 @@ class TestDuplicateAndConflictingData:
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
         from bo_mcp_server.tools.submit_results import submit_results
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Near Duplicate Test",
@@ -771,7 +772,7 @@ class TestExtremeCampaignConfigurations:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         # 20 parameters (triggers TuRBO consideration)
         parameters = [
@@ -799,7 +800,7 @@ class TestExtremeCampaignConfigurations:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         # 4 objectives
         objectives = [{"name": f"f{i}", "direction": "minimize"} for i in range(4)]
@@ -827,7 +828,7 @@ class TestExtremeCampaignConfigurations:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Large Batch Test",
@@ -849,7 +850,7 @@ class TestExtremeCampaignConfigurations:
         """Campaign with very long parameter name should work or be rejected."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         long_name = "x" * 1000  # 1000 character name
 
@@ -869,7 +870,7 @@ class TestExtremeCampaignConfigurations:
         """Parameter names with special characters should be handled."""
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
 
         intake_data = {
             "name": "Special Characters Test",

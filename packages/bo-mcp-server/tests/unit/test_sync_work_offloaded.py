@@ -31,6 +31,7 @@ from bo_mcp_server.operations import get_diagnostics as get_diagnostics_module
 from bo_mcp_server.operations import submit_results_pipeline
 from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
 from bo_mcp_server.operations.submit_results import submit_results_operation
+from tests.factories import seed_owner
 
 
 def _row(x: float, y: float) -> ResultSubmissionInput:
@@ -48,7 +49,7 @@ async def _create_campaign() -> str:
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
         "objectives": [{"name": "y", "direction": "minimize"}],
     }
-    created = await create_campaign(intake, str(uuid4()))
+    created = await create_campaign(intake, await seed_owner())
     assert created["success"] is True
     return created["campaign_id"]
 

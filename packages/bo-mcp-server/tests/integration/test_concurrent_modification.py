@@ -19,13 +19,12 @@ in-memory SQLite engine's concurrency primitives (which run through a single
 connection and therefore cannot race at the SQL layer).
 """
 
-from uuid import uuid4
-
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
 from bo_mcp_server.storage import repositories as repo_mod
 from bo_mcp_server.storage.base import ConcurrentModificationError
+from tests.factories import seed_owner
 
 
 def _to_result_inputs(results: list[dict]) -> list[ResultSubmissionInput]:
@@ -77,7 +76,7 @@ class TestConcurrentModificationEnvelope:
         # Multi-objective so submit_results computes hypervolume and triggers
         # the campaign save in _update_campaign_state — the site that can lose
         # the race in production.
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Concurrent Submit Race",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -142,7 +141,7 @@ class TestConcurrentModificationEnvelope:
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Lifecycle Race",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -183,7 +182,7 @@ class TestConcurrentModificationEnvelope:
         )
         from bo_mcp_server.tools.create_campaign import create_campaign
 
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         intake = {
             "name": "Generate Race",
             "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],

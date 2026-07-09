@@ -21,11 +21,13 @@ parsed value remain logically immutable. To enforce that:
 import functools
 import json
 import logging
-from datetime import datetime
-from typing import Any, cast
+from datetime import UTC, datetime
+from typing import Any, cast, override
 
 from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 from bo_mcp_server.domain.campaign import CampaignStatus
 from bo_mcp_server.domain.event import EventType
@@ -82,6 +84,39 @@ def _strict_json_loads(raw: str, *, context: str) -> object:
         # the typed exception further up.
         logger.exception("Corrupted JSON in %s (raw=%r)", context, raw[:200])
         raise CorruptedJsonColumnError(context, raw if isinstance(raw, str) else "", exc) from exc
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    """``DateTime(timezone=True)`` that round-trips timezone-aware UTC values.
+
+    SQLite stores ``DateTime(timezone=True)`` as offset-less wall-clock
+    text and returns **naive** datetimes, while PostgreSQL returns aware
+    ones — so every ``isoformat()`` emit site would flip wire format
+    between deployments, and offset-less strings get read as *local*
+    time by RFC-3339/JS consumers. Normalizing at the type boundary
+    keeps the contract identical on both drivers: aware inputs are
+    converted to UTC before storage, and values read back always carry
+    ``tzinfo=UTC``.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    @override
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        """Convert aware datetimes to UTC so SQLite's wall-clock text is UTC."""
+        if value is not None and value.tzinfo is not None:
+            return value.astimezone(UTC)
+        return value
+
+    @override
+    def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        """Return an aware UTC datetime regardless of driver behavior."""
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 # Foreign key constants to avoid duplicated literals
@@ -141,8 +176,8 @@ class UserModel(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     api_key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    last_active_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     # Relationships
     #
@@ -187,7 +222,7 @@ class CampaignSpecModel(Base):
     # as a JSON blob because the values are consumed in-process and
     # adding a new advanced field should not require another migration.
     advanced_options_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
     # Relationships — see :class:`UserModel` for the ``lazy="raise"`` rationale.
     campaigns: Mapped[list["CampaignModel"]] = relationship(back_populates="spec", lazy="raise")
@@ -283,16 +318,16 @@ class CampaignModel(Base):
     )
     version: Mapped[int] = mapped_column(Integer, default=1)
     iteration: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     # v1.2: TuRBO state for high-dimensional optimization
     turbo_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # v2.8: Hypervolume history for multi-objective convergence detection
     hypervolume_history_json: Mapped[str] = mapped_column(Text, default="[]")
     # Soft-delete marker. ``NULL`` means active; repositories filter
     # rows where this is non-null by default.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     # Relationships — see :class:`UserModel` for the ``lazy="raise"`` rationale.
     spec: Mapped["CampaignSpecModel"] = relationship(back_populates="campaigns", lazy="raise")
@@ -362,10 +397,10 @@ class SuggestionModel(Base):
         Enum(SuggestionStatus), default=SuggestionStatus.PENDING
     )
     provenance_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     # Soft-delete marker. See :class:`CampaignModel.deleted_at`.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     # Relationships — see :class:`UserModel` for the ``lazy="raise"`` rationale.
     campaign: Mapped["CampaignModel"] = relationship(back_populates="suggestions", lazy="raise")
@@ -463,9 +498,9 @@ class ResultModel(Base):
     # ``provenance`` so the result reconstructs the BO context even if
     # the suggestion row is later removed.
     suggestion_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     # Soft-delete marker. See :class:`CampaignModel.deleted_at`.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     # Relationships — see :class:`UserModel` for the ``lazy="raise"`` rationale.
     campaign: Mapped["CampaignModel"] = relationship(back_populates="results", lazy="raise")
@@ -560,12 +595,12 @@ class EventModel(Base):
     input_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     output_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     # Soft-delete marker. See :class:`CampaignModel.deleted_at`.
     # Events are append-only audit history; soft-delete should be reserved
     # for explicit retention purges. Read paths filter ``deleted_at IS
     # NULL`` for consistency.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
 
 class IdempotencyCacheModel(Base):
@@ -585,6 +620,14 @@ class IdempotencyCacheModel(Base):
 
     __tablename__ = "idempotency_cache"
 
+    # Mirrors migration ``010_idempotency_cache`` so ``alembic
+    # --autogenerate`` does not propose dropping the index, and SQLite
+    # ``create_all`` deployments get it too. The hourly GC sweep
+    # (:func:`bo_mcp_server.idempotency.purge_expired_cache_rows`)
+    # deletes on ``expires_at <= now`` — without this index every sweep
+    # is a full table scan.
+    __table_args__ = (Index("ix_idempotency_cache_expires_at", "expires_at"),)
+
     tool_name: Mapped[str] = mapped_column(String(255), primary_key=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
     # SHA256 of the canonical request payload so a re-used key paired
@@ -595,5 +638,5 @@ class IdempotencyCacheModel(Base):
     # rows written before the idempotency follow-up.
     reservation_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
     response_json: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)

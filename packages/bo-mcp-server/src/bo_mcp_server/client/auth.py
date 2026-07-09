@@ -17,6 +17,8 @@ import hashlib
 import logging
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
+
 from bo_mcp_server.domain import Campaign, CampaignSpec, Result, Suggestion, User
 from bo_mcp_server.domain.suggestion import SuggestionStatus
 from bo_mcp_server.settings import get_api_env, get_dev_auth
@@ -334,6 +336,26 @@ async def get_user_by_api_key(api_key: str) -> User | None:
 
 async def ensure_dev_user() -> User:
     """Ensure the shared development user exists, is active, and uses ``DEV_API_KEY``.
+
+    The check-then-insert in :func:`_ensure_dev_user_once` races across
+    processes: the API and MCP containers start in parallel against a
+    fresh database, both read "no user", and the loser's INSERT hits
+    the email (or api-key-hash) unique constraint. Instead of failing
+    startup, the loser retries once — the winner's committed row is now
+    visible, so the retry takes the read/repair path and both processes
+    resolve the same user.
+    """
+    try:
+        return await _ensure_dev_user_once()
+    except IntegrityError:
+        logger.info(
+            "Lost the dev-user bootstrap race to a concurrent process; re-reading the winner's row"
+        )
+        return await _ensure_dev_user_once()
+
+
+async def _ensure_dev_user_once() -> User:
+    """Single check-then-insert/repair pass for the shared development user.
 
     The new real-auth path resolves callers by API-key hash and active
     status, so "a user named ``test@example.com`` exists" is no longer

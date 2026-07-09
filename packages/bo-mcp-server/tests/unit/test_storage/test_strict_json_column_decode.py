@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncGenerator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -64,10 +64,12 @@ from bo_mcp_server.domain import (
     User,
 )
 from bo_mcp_server.domain.campaign import Campaign, CampaignStatus
+from bo_mcp_server.domain.event import Event, EventType
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
     CorruptedJsonColumnError,
+    EventRepository,
     ResultRepository,
     SuggestionRepository,
     UserRepository,
@@ -173,6 +175,8 @@ _CORRUPTIBLE_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("campaign_specs", "parameters_json"),
         ("campaign_specs", "objectives_json"),
         ("campaign_specs", "constraints_json"),
+        ("campaign_specs", "backend_options_json"),
+        ("campaign_specs", "advanced_options_json"),
         ("campaigns", "turbo_state_json"),
         ("campaigns", "hypervolume_history_json"),
         ("suggestions", "parameter_values_json"),
@@ -181,6 +185,9 @@ _CORRUPTIBLE_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("results", "objective_values_json"),
         ("results", "metadata_json"),
         ("results", "suggestion_snapshot_json"),
+        ("results", "measurement_uncertainty_json"),
+        ("events", "input_summary_json"),
+        ("events", "output_summary_json"),
     }
 )
 
@@ -333,3 +340,80 @@ async def test_legitimate_writes_round_trip_through_strict_decoder() -> None:
         ).scalar_one()
         assert campaign_row.parsed_hypervolume_history == [0.1, 0.2]
         assert campaign_row.parsed_turbo_state is None
+
+
+# ---------------------------------------------------------------------------
+# Repository-level reads (columns decoded outside the parsed_* properties)
+# ---------------------------------------------------------------------------
+#
+# The four columns below are deserialized ad hoc inside the repositories,
+# not via the model-layer cached properties, so the hardening must be
+# asserted through the repository read paths.
+
+
+@pytest.mark.asyncio
+async def test_spec_backend_options_decode_raises_on_corruption() -> None:
+    """Corrupted ``backend_options_json`` fails loud through the repository."""
+    ids = await _seed_full_campaign()
+    await _corrupt_column("campaign_specs", "backend_options_json", ids["spec_id"], "not-json")
+
+    async with get_session() as session:
+        with pytest.raises(CorruptedJsonColumnError) as exc_info:
+            await CampaignSpecRepository(session).get(UUID(ids["spec_id"]))
+    assert "backend_options" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_spec_advanced_options_decode_raises_on_corruption() -> None:
+    """Corrupted ``advanced_options_json`` fails loud through the repository."""
+    ids = await _seed_full_campaign()
+    await _corrupt_column("campaign_specs", "advanced_options_json", ids["spec_id"], "{broken")
+
+    async with get_session() as session:
+        with pytest.raises(CorruptedJsonColumnError) as exc_info:
+            await CampaignSpecRepository(session).get(UUID(ids["spec_id"]))
+    assert "advanced_options" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_result_measurement_uncertainty_decode_raises_on_corruption() -> None:
+    """Corrupted ``measurement_uncertainty_json`` fails loud through the repository."""
+    ids = await _seed_full_campaign()
+    await _corrupt_column(
+        "results", "measurement_uncertainty_json", ids["result_id"], "}corrupted{"
+    )
+
+    async with get_session() as session:
+        with pytest.raises(CorruptedJsonColumnError) as exc_info:
+            await ResultRepository(session).get(UUID(ids["result_id"]))
+    assert "measurement_uncertainty" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_event_summaries_decode_raise_on_corruption() -> None:
+    """Corrupted event summary columns fail loud through the repository."""
+    ids = await _seed_full_campaign()
+    event = Event(
+        campaign_id=UUID(ids["campaign_id"]),
+        event_type=EventType.TOOL_CALL,
+        tool_name="bo_test_tool",
+        input_summary={"arg": 1},
+        output_summary={"ok": True},
+    )
+    async with get_session() as session:
+        await EventRepository(session).save(event)
+
+    await _corrupt_column("events", "input_summary_json", str(event.id), "not-json")
+    async with get_session() as session:
+        with pytest.raises(CorruptedJsonColumnError) as exc_info:
+            await EventRepository(session).list_by_campaign(UUID(ids["campaign_id"]))
+    assert "input_summary" in str(exc_info.value)
+
+    # Restore the input column and corrupt the output column so both
+    # reads are pinned independently.
+    await _corrupt_column("events", "input_summary_json", str(event.id), "{}")
+    await _corrupt_column("events", "output_summary_json", str(event.id), "abc")
+    async with get_session() as session:
+        with pytest.raises(CorruptedJsonColumnError) as exc_info:
+            await EventRepository(session).list_by_campaign(UUID(ids["campaign_id"]))
+    assert "output_summary" in str(exc_info.value)

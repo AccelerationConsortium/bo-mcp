@@ -23,19 +23,19 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
 from bo_mcp_server.errors import ErrorCode
 from bo_mcp_server.operations import generate_suggestions as gs
+from tests.factories import seed_owner
 
 
 async def _create_minimal_campaign() -> str:
     """Create a single-objective continuous campaign and return its ID."""
     from bo_mcp_server.tools.create_campaign import create_campaign
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Three-phase split test",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
@@ -515,7 +515,7 @@ async def test_dry_run_preview_matches_real_batch_when_budget_clamped(
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.submit_results import submit_results
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     created = await create_campaign(
         intake_data={
             "name": "Dry-run parity (budget clamp)",

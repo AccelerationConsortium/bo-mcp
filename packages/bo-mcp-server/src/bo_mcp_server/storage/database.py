@@ -18,8 +18,8 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import dotenv
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import ConnectionPoolEntry
 
 from bo_mcp_server.settings import (
     get_database_init_connect_timeout_seconds,
@@ -36,7 +37,9 @@ from bo_mcp_server.settings import (
     get_db_pool_recycle_seconds,
     get_db_pool_size,
     get_sql_echo,
+    get_sqlite_busy_timeout_ms,
     get_use_alembic_mode,
+    load_anchored_dotenv,
 )
 from bo_mcp_server.storage.models import Base
 
@@ -67,8 +70,9 @@ class DatabaseInitializationError(RuntimeError):
 
 logger = logging.getLogger(__name__)
 
-# Ensure .env values are available even when this module is imported directly.
-dotenv.load_dotenv()
+# Ensure .env values are available even when this module is imported
+# directly. Anchored (never CWD-relative) — see settings.load_anchored_dotenv.
+load_anchored_dotenv()
 
 # Lazy-initialized engine and session factory. The engine is created at
 # first use by ``_create_engine_with_options`` which reads the active
@@ -156,17 +160,33 @@ def _create_engine_with_options() -> AsyncEngine:
             pool_recycle=get_db_pool_recycle_seconds(),
             **common_options,
         )
-    # SQLite (used for testing). FK enforcement is intentionally
-    # *not* enabled engine-wide here: many pre-existing test
-    # fixtures construct campaigns with synthetic ``owner_id`` /
-    # ``spec_id`` UUIDs that have no matching parent row, and
-    # turning the pragma on globally would surface those as
-    # spurious failures unrelated to the change at hand. Tests
-    # that specifically exercise the ``ON DELETE RESTRICT``
-    # contract (see ``test_soft_delete_and_snapshot.py``) enable
-    # the pragma on their own engine. Production runs PostgreSQL,
-    # which enforces FKs unconditionally.
-    return create_async_engine(database_url, **common_options)
+    # SQLite — the out-of-the-box default deployment, not just a test
+    # driver. SQLite disables foreign-key enforcement per connection
+    # unless the pragma is switched on, so without it the schema's
+    # ``ON DELETE RESTRICT`` / ``SET NULL`` contracts silently do not
+    # hold and ``hard_delete`` can orphan child rows. WAL keeps a
+    # concurrent reader from blocking a writer (and vice versa), and
+    # the busy timeout converts immediate 'database is locked' errors
+    # under writer contention into a bounded retry — both mirror the
+    # guarantees PostgreSQL provides unconditionally in production.
+    engine = create_async_engine(database_url, **common_options)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragmas(
+        dbapi_connection: DBAPIConnection, _connection_record: ConnectionPoolEntry
+    ) -> None:
+        """Apply per-connection SQLite pragmas (FKs, WAL, busy timeout)."""
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+            # WAL is a no-op for in-memory databases (journal_mode stays
+            # 'memory'); executing it unconditionally keeps the hook simple.
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute(f"PRAGMA busy_timeout={get_sqlite_busy_timeout_ms()}")
+        finally:
+            cursor.close()
+
+    return engine
 
 
 def _should_use_alembic() -> bool:
@@ -327,9 +347,16 @@ async def init_database() -> None:
     # Log with credentials masked (only shows host:port/db)
     logger.info("Initializing database: %s", database_url.split("@")[-1])
 
-    # Ensure data directory exists for SQLite (testing only)
+    # Ensure the data directory exists for file-backed SQLite, and log
+    # the resolved absolute path: MCP clients spawn stdio servers from
+    # arbitrary CWDs, so an operator diagnosing "my campaigns
+    # disappeared" needs to see exactly which file this process opened.
     if database_url.startswith("sqlite") and "memory" not in database_url:
-        data_dir = Path(database_url.replace("sqlite+aiosqlite:///", "")).parent
+        db_path = Path(database_url.replace("sqlite+aiosqlite:///", ""))
+        # ``resolve`` touches the filesystem, so keep it off the event loop.
+        resolved_db_path = await asyncio.to_thread(db_path.resolve)
+        logger.info("SQLite database file resolves to: %s", resolved_db_path)
+        data_dir = db_path.parent
         if str(data_dir) and str(data_dir) != ".":
             data_dir.mkdir(parents=True, exist_ok=True)
 

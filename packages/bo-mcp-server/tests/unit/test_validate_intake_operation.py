@@ -104,6 +104,21 @@ class TestValidateIntakeOperation:
         assert result["valid"] is False
         assert len(result["errors"]) > 0
 
+    def test_non_positive_iteration_budgets_rejected(self):
+        """``max_iterations`` / ``initial_design_size`` reject 0 and negatives.
+
+        A campaign created with ``max_iterations=-5`` would be born dead:
+        every generate call returns BUDGET_EXCEEDED. Intake must reject
+        the value instead of persisting it.
+        """
+        for field in ("max_iterations", "initial_design_size"):
+            for value in (0, -5):
+                intake = _make_valid_intake()
+                intake[field] = value
+                result = validate_intake_operation(intake)
+                assert result["valid"] is False, f"{field}={value} must fail intake"
+                assert any(field in e for e in result["errors"])
+
     def test_warning_many_objectives(self):
         """More than 4 objectives triggers a warning."""
         intake = _make_valid_intake(n_objectives=5)

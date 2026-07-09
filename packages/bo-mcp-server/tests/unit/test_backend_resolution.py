@@ -127,6 +127,40 @@ def test_explicit_backend_name_bypasses_capability_check():
     assert resolved == "baybe"
 
 
+def test_auto_resolution_skips_backend_raising_import_error(monkeypatch, caplog):
+    """A backend whose entry point raises ``ImportError`` is skipped, not fatal.
+
+    A broken optional dependency surfaces as ``ImportError`` at
+    entry-point load — the same failure shape the health path already
+    tolerates (``get_backend_capabilities`` catches ``(ValueError,
+    ImportError)``). Auto-resolution must skip such a backend and
+    resolve one that loads, instead of aborting the whole
+    create/validate call.
+    """
+    real_get_backend = backend_module.get_backend
+
+    def flaky_get_backend(name: str | None = None):
+        if name == "botorch":
+            msg = "No module named 'torch' (broken optional dependency)"
+            raise ImportError(msg)
+        return real_get_backend(name)
+
+    monkeypatch.setenv("BO_BACKEND", "botorch")
+    monkeypatch.setattr(backend_module, "get_backend", flaky_get_backend)
+    monkeypatch.setattr(
+        backend_module, "_get_available_backend_names", lambda: ["botorch", "baybe"]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_backend_name("auto", _simple_spec_dict())
+
+    assert resolved == "baybe"
+    assert any(
+        "Skipping backend 'botorch' during auto-selection" in record.message
+        for record in caplog.records
+    )
+
+
 def test_auto_selects_env_default_when_compatible(monkeypatch):
     """``auto`` accepts the env default when it reports compatibility."""
     monkeypatch.setenv("BO_BACKEND", "botorch")

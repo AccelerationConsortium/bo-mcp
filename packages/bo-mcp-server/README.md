@@ -52,7 +52,7 @@ docker compose up mcp db
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./data/bo_mcp.db` | Database connection string |
+| `DATABASE_URL` | source checkout: `sqlite+aiosqlite:///<project>/data/bo_mcp.db`; installed package: SQLite file in the OS user data directory (via `platformdirs`, e.g. `~/.local/share/bo-mcp-server` on Linux, `~/Library/Application Support/bo-mcp-server` on macOS) | Database connection string; both defaults are absolute, so stdio launches from any directory use the same file |
 | `BO_MCP_LOG_LEVEL` | `INFO` | Logging verbosity |
 | `MCP_ALLOWED_HOSTS` | `127.0.0.1:*,localhost:*,[::1]:*,mcp:*` | DNS rebinding protection (comma-separated) |
 | `MCP_ALLOWED_ORIGINS` | `http://127.0.0.1:*,http://localhost:*,http://[::1]:*,http://mcp:*` | CORS origins (comma-separated) |

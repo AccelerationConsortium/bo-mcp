@@ -27,12 +27,12 @@ Reference:
 
 import asyncio
 import time
-from uuid import uuid4
 
 import pytest
 
 from bo_engine.botorch_backend import BoTorchBackend
 from bo_mcp_server import backend as backend_module
+from tests.factories import seed_owner
 
 # Chosen so the test stays hermetic under CI load: long enough that any
 # scheduling slack in ``asyncio.sleep`` is negligible against it, short enough
@@ -47,7 +47,7 @@ async def _create_campaign() -> str:
     """Create a minimal single-objective campaign and return its ID."""
     from bo_mcp_server.tools.create_campaign import create_campaign
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Event-loop responsiveness",
         "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],

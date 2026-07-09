@@ -21,7 +21,7 @@ here is this server's own ``bo_mcp_server.audit`` failure model.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
@@ -31,6 +31,7 @@ from bo_mcp_server.domain.event import EventType
 from bo_mcp_server.storage import EventRepository, get_session
 from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+from tests.factories import seed_owner
 
 
 async def _call(tool: str, arguments: dict[str, Any]) -> Any:
@@ -117,7 +118,7 @@ class TestToolCallAudit:
     @pytest.mark.asyncio
     async def test_boundary_dispatch_writes_tool_call_event(self) -> None:
         """A lifecycle tool driven through ``call_tool`` leaves an audit row."""
-        campaign_id = await _create_running_campaign(str(uuid4()), "Audit Trail Pause")
+        campaign_id = await _create_running_campaign(await seed_owner(), "Audit Trail Pause")
 
         result = await _call("bo_pause_campaign", {"campaign_id": campaign_id})
         assert result["success"] is True, result
@@ -139,7 +140,7 @@ class TestToolCallAudit:
         capture ``success=False`` plus the code so the trail explains
         failures, not only successes.
         """
-        owner_id = str(uuid4())
+        owner_id = await seed_owner()
         created = await create_campaign(
             {
                 "name": "Audit Trail Invalid Pause",
@@ -171,7 +172,7 @@ class TestToolCallAudit:
         result, so a compliance deployment cannot mutate state
         while silently skipping the audit row.
         """
-        campaign_id = await _create_running_campaign(str(uuid4()), "Audit Fatal Mode")
+        campaign_id = await _create_running_campaign(await seed_owner(), "Audit Fatal Mode")
 
         class _BrokenRepo:
             def __init__(self, _session: Any) -> None: ...
@@ -193,7 +194,7 @@ class TestToolCallAudit:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Default mode: a broken audit sink never fails the tool call."""
-        campaign_id = await _create_running_campaign(str(uuid4()), "Audit Nonfatal Mode")
+        campaign_id = await _create_running_campaign(await seed_owner(), "Audit Nonfatal Mode")
 
         class _BrokenRepo:
             def __init__(self, _session: Any) -> None: ...

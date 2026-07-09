@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import patch
-from uuid import uuid4
 
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
+from tests.factories import seed_owner
 
 pytestmark = pytest.mark.usefixtures("setup_database")
 
@@ -38,7 +38,7 @@ async def test_acquisition_optimization_overrides_round_trip() -> None:
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Acquisition Optimization Override",
         "parameters": [
@@ -109,7 +109,7 @@ async def test_intake_without_override_uses_dimension_adaptive_defaults() -> Non
     from bo_mcp_server.tools.create_campaign import create_campaign
     from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 
-    owner_id = str(uuid4())
+    owner_id = await seed_owner()
     intake = {
         "name": "Default Acquisition Optimization",
         # Dimension-adaptive restart/raw-sample defaults are BoTorch pipeline internals.

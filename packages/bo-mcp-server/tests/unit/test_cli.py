@@ -99,6 +99,69 @@ async def test_main_async_keeps_startup_imports_off_the_event_loop(monkeypatch) 
     )
 
 
+@pytest.mark.asyncio
+async def test_main_async_disposes_engine_on_clean_return(monkeypatch) -> None:
+    """``main_async`` disposes the DB engine when the transport exits cleanly.
+
+    Without the disposal, PostgreSQL logs per-connection EOF noise on
+    every restart and in-flight background transactions die server-side
+    instead of closing cleanly.
+    """
+    closed: list[str] = []
+
+    async def fake_init_database() -> None:
+        pass
+
+    async def fake_warm_default_backend() -> None:
+        pass
+
+    async def fake_close_database() -> None:
+        closed.append("close_database")
+
+    async def fake_run_stdio_async() -> None:
+        pass
+
+    fake_mcp = SimpleNamespace(run_stdio_async=fake_run_stdio_async)
+    monkeypatch.setattr(cli, "init_database", fake_init_database)
+    monkeypatch.setattr(cli, "warm_default_backend", fake_warm_default_backend)
+    monkeypatch.setattr(cli, "close_database", fake_close_database)
+    monkeypatch.setattr(cli, "create_mcp_server", lambda: fake_mcp)
+
+    await cli.main_async("stdio", "127.0.0.1", 8001)
+
+    assert closed == ["close_database"]
+
+
+@pytest.mark.asyncio
+async def test_main_async_disposes_engine_on_transport_error(monkeypatch) -> None:
+    """``main_async`` disposes the DB engine even when the transport raises."""
+    closed: list[str] = []
+
+    async def fake_init_database() -> None:
+        pass
+
+    async def fake_warm_default_backend() -> None:
+        pass
+
+    async def fake_close_database() -> None:
+        closed.append("close_database")
+
+    async def failing_run_stdio_async() -> None:
+        msg = "transport crashed"
+        raise RuntimeError(msg)
+
+    fake_mcp = SimpleNamespace(run_stdio_async=failing_run_stdio_async)
+    monkeypatch.setattr(cli, "init_database", fake_init_database)
+    monkeypatch.setattr(cli, "warm_default_backend", fake_warm_default_backend)
+    monkeypatch.setattr(cli, "close_database", fake_close_database)
+    monkeypatch.setattr(cli, "create_mcp_server", lambda: fake_mcp)
+
+    with pytest.raises(RuntimeError, match="transport crashed"):
+        await cli.main_async("stdio", "127.0.0.1", 8001)
+
+    assert closed == ["close_database"]
+
+
 def test_parsed_default_host_is_loopback() -> None:
     """A bare ``--transport sse`` must not expose the server on the network.
 

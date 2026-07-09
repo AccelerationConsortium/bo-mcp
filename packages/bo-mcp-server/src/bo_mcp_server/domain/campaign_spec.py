@@ -683,7 +683,9 @@ class CampaignSpec(BaseModel):
     objectives: tuple[Objective, ...] = Field(..., min_length=1)
     constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
     batch_size: int = Field(default=1, ge=1)
-    max_iterations: int | None = None
+    # ``ge=1`` matches ``max_observations``: zero or negative would create
+    # a born-dead campaign whose every generate returns BUDGET_EXCEEDED.
+    max_iterations: int | None = Field(default=None, ge=1)
     # Total observation cap. Counted across all iterations; reaching it short-
     # circuits ``generate_suggestions`` even mid-iteration.
     max_observations: int | None = Field(default=None, ge=1)
@@ -691,7 +693,7 @@ class CampaignSpec(BaseModel):
     # set, the suggestion entry point reports ``CONVERGED`` once recent
     # improvement falls below this value.
     convergence_tolerance: float | None = Field(default=None, gt=0.0)
-    initial_design_size: int | None = None
+    initial_design_size: int | None = Field(default=None, ge=1)
     random_seed: int | None = Field(
         default=None,
         description=(

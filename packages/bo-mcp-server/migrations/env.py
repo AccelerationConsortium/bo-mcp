@@ -10,11 +10,12 @@ import asyncio
 import os
 from logging.config import fileConfig
 
-import dotenv
 from alembic import context
 from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from bo_mcp_server.settings import get_database_url, load_anchored_dotenv
 
 # Import models to ensure they're registered with Base.metadata
 from bo_mcp_server.storage.models import Base
@@ -26,14 +27,17 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Ensure Alembic sees the same .env configuration as application startup.
-dotenv.load_dotenv()
+# Ensure Alembic sees the same anchored .env configuration as application
+# startup (never the invoking shell's CWD).
+load_anchored_dotenv()
 
 # Target metadata for 'autogenerate' support
 target_metadata = Base.metadata
 
-# Get database URL from environment (consistent with database.py)
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bo_mcp.db")
+# Resolve the database URL through the shared settings accessor so the
+# fallback default (package-anchored absolute SQLite path) cannot drift
+# from database.py.
+DATABASE_URL = get_database_url()
 
 
 def get_url() -> str:

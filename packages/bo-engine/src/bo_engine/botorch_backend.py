@@ -26,6 +26,7 @@ from bo_engine.backend import (
     SuggestionBatch,
 )
 from bo_engine.backend_base import (
+    BackendInputError,
     BackendValidationResult,
     BaseBackend,
     CapabilityReport,
@@ -111,6 +112,24 @@ def _dict_to_turbo_state(data: dict[str, Any]) -> TurboState:
         best_value=data["best_value"],
         restart_triggered=data["restart_triggered"],
     )
+
+
+def _corrupted_state_error(exc: Exception, backend_name: str) -> BackendInputError:
+    """Wrap a state-restoration failure in the typed backend hierarchy.
+
+    Persisted-state restoration (``unwrap_state`` + TurboState
+    deserialization) raises raw ``KeyError``/``ValueError``/``TypeError``
+    on a corrupted or foreign envelope. Those must not cross the backend
+    boundary untyped — the base-class contract is that only
+    :class:`BackendError` subclasses leak, so the MCP error mapper can
+    build a structured, non-retryable envelope.
+    """
+    msg = (
+        f"Backend '{backend_name}' could not restore the persisted backend "
+        f"state ({type(exc).__name__}: {exc}). The stored state is corrupted "
+        "or from an incompatible schema; clear it or recreate the campaign."
+    )
+    return BackendInputError(msg, cause=exc)
 
 
 def _turbo_state_to_dict(state: TurboState) -> dict[str, Any]:
@@ -626,12 +645,18 @@ class BoTorchBackend(BaseBackend):
         progress_callback: ProgressCallback | None = None,
     ) -> SuggestionBatch:
         """Build a GP, optimize the acquisition function and return the next batch."""
-        # Accept either the new envelope or a legacy bare payload.
-        inner_state = self.unwrap_state(backend_state)
-        turbo_state = None
-        use_turbo = spec.use_turbo or should_use_turbo(spec.n_parameters)
-        if use_turbo and spec.n_objectives == 1 and inner_state is not None:
-            turbo_state = _dict_to_turbo_state(inner_state)
+        # Accept either the new envelope or a legacy bare payload. State
+        # restoration runs inside the typed-error boundary: a corrupted
+        # persisted envelope (foreign backend, missing TurboState keys)
+        # must surface as a typed BackendError, not a raw KeyError.
+        try:
+            inner_state = self.unwrap_state(backend_state)
+            turbo_state = None
+            use_turbo = spec.use_turbo or should_use_turbo(spec.n_parameters)
+            if use_turbo and spec.n_objectives == 1 and inner_state is not None:
+                turbo_state = _dict_to_turbo_state(inner_state)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise _corrupted_state_error(exc, self.name) from exc
 
         emit(
             progress_callback,
@@ -750,10 +775,15 @@ class BoTorchBackend(BaseBackend):
         if spec.n_objectives != 1 or backend_state is None:
             return None
 
-        inner = self.unwrap_state(backend_state)
-        if inner is None:
-            return None
-        turbo_state = _dict_to_turbo_state(inner)
+        # Same typed-error boundary as generate_suggestions: corrupted
+        # persisted state must not leak raw KeyError/ValueError.
+        try:
+            inner = self.unwrap_state(backend_state)
+            if inner is None:
+                return None
+            turbo_state = _dict_to_turbo_state(inner)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise _corrupted_state_error(exc, self.name) from exc
         new_turbo = update_turbo_after_evaluation(
             turbo_state=turbo_state,
             new_observations=new_observations,

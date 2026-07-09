@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from bo_mcp.tools import build_bo_mcp_openapi_toolset
 from prompts import BO_SPECIALIST_INSTRUCTIONS
 
 BO_SPECIALIST_NAME = "bo-specialist"
@@ -16,4 +17,5 @@ def build_bo_specialist_subagent() -> dict[str, Any]:
         "name": BO_SPECIALIST_NAME,
         "description": BO_SPECIALIST_DESCRIPTION,
         "instructions": BO_SPECIALIST_INSTRUCTIONS,
+        "toolsets": [build_bo_mcp_openapi_toolset()],
     }

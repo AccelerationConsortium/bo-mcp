@@ -4,7 +4,7 @@ import asyncio
 import csv
 import io
 import logging
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,8 @@ from bo_mcp_server.response_formatter import attach_response_metadata, with_resp
 from bo_mcp_server.result_upload_parser import parse_prefixed_result_rows
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
+from bo_mcp_server.tools.common import mcp_identity_error
+from bo_mcp_server.tools.response_models import UploadResultsResponse
 from bo_mcp_server.trace_context import bind_trace_id
 
 logger = logging.getLogger(__name__)
@@ -102,14 +104,7 @@ def _parse_uuids(campaign_id: str, submitted_by: str | None) -> dict[str, Any] |
 
 
 def _mcp_identity_error(exc: AuthenticationConfigurationError) -> dict[str, Any]:
-    """Return a structured error when MCP cannot resolve a current user."""
-    return attach_response_metadata(
-        make_error_response(
-            ErrorCode.INTERNAL_ERROR,
-            message=str(exc),
-            details={"transport": "mcp", "missing_identity": True},
-        )
-    )
+    return mcp_identity_error(exc)
 
 
 async def upload_results_file(
@@ -145,7 +140,7 @@ async def _upload_results_file_tool(
     idempotency_key: str | None = None,
     dry_run: bool = False,
     trace_id: str | None = None,
-) -> dict[str, Any]:
+) -> UploadResultsResponse:
     """Upload experimental results from a CSV file.
 
     Workflow: Alternative to bo_submit_results for bulk uploads. Use when
@@ -165,21 +160,24 @@ async def _upload_results_file_tool(
         # Offloaded: parsing a multi-MB CSV must not block the event loop.
         validated = await asyncio.to_thread(_validate_upload_payload, file_content, file_format)
         if isinstance(validated, dict):
-            return attach_response_metadata(validated)
+            return cast(UploadResultsResponse, attach_response_metadata(validated))
 
         try:
             user = await resolve_mcp_user()
         except AuthenticationConfigurationError as exc:
-            return _mcp_identity_error(exc)
+            return cast(UploadResultsResponse, _mcp_identity_error(exc))
 
-        return await _upload_dispatch(
-            campaign_id=campaign_id,
-            file_content=file_content,
-            file_format=file_format,
-            submitted_by=str(user.id),
-            idempotency_key=idempotency_key,
-            dry_run=dry_run,
-            parsed_payload=validated,
+        return cast(
+            UploadResultsResponse,
+            await _upload_dispatch(
+                campaign_id=campaign_id,
+                file_content=file_content,
+                file_format=file_format,
+                submitted_by=str(user.id),
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+                parsed_payload=validated,
+            ),
         )
 
 

@@ -1,10 +1,11 @@
 """List suggestions tool wrapper for MCP."""
 
-from typing import Any, Literal
+from typing import Literal, cast
 
 from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.response_models import SuggestionListResponse
 
 # ``Literal`` mirrors :class:`bo_mcp_server.domain.SuggestionStatus` so the
 # generated MCP tool schema declares an ``enum`` constraint on
@@ -28,7 +29,7 @@ async def list_suggestions(
     limit: int | None = None,
     offset: int = 0,
     cursor: str | None = None,
-) -> dict[str, Any]:
+) -> SuggestionListResponse:
     """List suggestions for a campaign with optional status filtering.
 
     Workflow: Call to review pending, accepted, or completed suggestions.
@@ -55,11 +56,14 @@ async def list_suggestions(
             - next_cursor: Cursor for the next page (null when finished)
             - errors: List of error messages
     """
-    return await list_suggestions_operation(
-        campaign_id=campaign_id,
-        status_filter=status_filter,
-        limit=limit,
-        offset=offset,
-        verbosity=verbosity,
-        cursor=cursor,
+    return cast(
+        SuggestionListResponse,
+        await list_suggestions_operation(
+            campaign_id=campaign_id,
+            status_filter=status_filter,
+            limit=limit,
+            offset=offset,
+            verbosity=verbosity,
+            cursor=cursor,
+        ),
     )

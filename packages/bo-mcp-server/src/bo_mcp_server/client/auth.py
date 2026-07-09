@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -195,8 +196,8 @@ async def get_campaign_spec_by_id(spec_id: str) -> CampaignSpec:
     return spec
 
 
-async def get_spec_for_user(spec_id: str, user_id: UUID) -> CampaignSpec:
-    """Fetch a campaign spec only when ``user_id`` owns a campaign using it.
+async def get_spec_for_user(spec_id: str, user_id: UUID) -> tuple[CampaignSpec, datetime]:
+    """Fetch a campaign spec (with its persistence timestamp) the user owns.
 
     Resolves ownership through the owning campaign instead of treating
     the spec UUID as a global key. Without this routing, anyone who knows
@@ -213,8 +214,8 @@ async def get_spec_for_user(spec_id: str, user_id: UUID) -> CampaignSpec:
     async with get_session() as session:
         spec_repo = CampaignSpecRepository(session)
         campaign_repo = CampaignRepository(session)
-        spec = await spec_repo.get(spec_uuid)
-        if spec is None:
+        spec_with_created_at = await spec_repo.get_with_created_at(spec_uuid)
+        if spec_with_created_at is None:
             msg = "Spec"
             raise NotFoundError(msg, spec_id)
         owns_campaign_with_spec = await campaign_repo.owner_has_campaign_with_spec(
@@ -223,11 +224,13 @@ async def get_spec_for_user(spec_id: str, user_id: UUID) -> CampaignSpec:
     if not owns_campaign_with_spec:
         msg = "Spec"
         raise NotFoundError(msg, spec_id)
-    return spec
+    return spec_with_created_at
 
 
-async def list_owner_campaigns_with_specs(user_id: UUID) -> list[tuple[Campaign, CampaignSpec]]:
-    """List all campaigns owned by ``user_id`` paired with their resolved spec.
+async def list_owner_campaigns_with_specs(
+    user_id: UUID, *, limit: int | None = None
+) -> list[tuple[Campaign, CampaignSpec]]:
+    """List campaigns owned by ``user_id`` paired with their resolved spec.
 
     **Convenience helper for legacy REST shape.** This intentionally does
     NOT route through :func:`list_campaigns_operation`: that operation
@@ -238,6 +241,13 @@ async def list_owner_campaigns_with_specs(user_id: UUID) -> list[tuple[Campaign,
     use this helper. See ``TestConvenienceVsOperationDivergence`` for
     the pinned divergence.
 
+    ``limit`` caps the rows hydrated at the database (oldest-first, per
+    :meth:`CampaignRepository.list_by_owner`'s ordering) -- callers
+    rendering a bounded view must pass it instead of slicing in Python,
+    or a large pool still pays full hydration. ``None`` (the default)
+    keeps the historical unbounded behavior for internal/test callers;
+    the REST route passes an explicit cap.
+
     Uses a single ``get_by_ids`` batch to avoid an N+1 spec lookup;
     campaigns whose spec has been deleted are dropped (mirroring the
     historical REST behavior).
@@ -246,7 +256,7 @@ async def list_owner_campaigns_with_specs(user_id: UUID) -> list[tuple[Campaign,
         campaign_repo = CampaignRepository(session)
         spec_repo = CampaignSpecRepository(session)
 
-        campaigns = await campaign_repo.list_by_owner(user_id)
+        campaigns = await campaign_repo.list_by_owner(user_id, limit=limit)
         if not campaigns:
             return []
         spec_ids = [c.spec_id for c in campaigns]
@@ -264,6 +274,8 @@ async def list_campaign_suggestions(
     campaign_id: str,
     user_id: UUID,
     status_filter: SuggestionStatus | None = None,
+    *,
+    limit: int | None = None,
 ) -> list[Suggestion]:
     """List suggestions for a campaign after owner authorization.
 
@@ -275,14 +287,20 @@ async def list_campaign_suggestions(
     the legacy route does not have to reach into ``SuggestionRepository``
     itself. See ``TestConvenienceVsOperationDivergence`` for the pinned
     divergence.
+
+    ``limit`` caps the rows hydrated at the database; ``None`` (the
+    default) keeps the historical unbounded behavior for internal/test
+    callers, and the REST route passes an explicit cap.
     """
     campaign = await authorize_campaign(campaign_id, user_id)
     async with get_session() as session:
         suggestion_repo = SuggestionRepository(session)
-        return await suggestion_repo.list_by_campaign(campaign.id, status_filter)
+        return await suggestion_repo.list_by_campaign(campaign.id, status_filter, limit=limit)
 
 
-async def list_campaign_results(campaign_id: str, user_id: UUID) -> list[Result]:
+async def list_campaign_results(
+    campaign_id: str, user_id: UUID, *, limit: int | None = None
+) -> list[Result]:
     """List results for a campaign after owner authorization.
 
     **Convenience helper for legacy REST shape.** Mirrors
@@ -291,11 +309,15 @@ async def list_campaign_results(campaign_id: str, user_id: UUID) -> list[Result]
     Result entities, while MCP / ``POST /query`` callers consume the
     paginated envelope from :func:`list_results_operation`. Both shapes
     are first-class; see ``TestConvenienceVsOperationDivergence``.
+
+    ``limit`` caps the rows hydrated at the database; ``None`` (the
+    default) keeps the historical unbounded behavior for internal/test
+    callers, and the REST route passes an explicit cap.
     """
     campaign = await authorize_campaign(campaign_id, user_id)
     async with get_session() as session:
         result_repo = ResultRepository(session)
-        return await result_repo.list_by_campaign(campaign.id)
+        return await result_repo.list_by_campaign(campaign.id, limit=limit)
 
 
 # ---------------------------------------------------------------------------

@@ -1,16 +1,17 @@
 """Suggestion explanation tool wrapper for MCP."""
 
-from typing import Any
+from typing import cast
 
 from bo_mcp_server.operations.suggestion_explanation import (
     get_suggestion_explanation_operation,
 )
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.response_models import SuggestionExplanationResponse
 
 
 @mcp.tool(name="bo_get_suggestion_explanation", annotations=READ_ONLY)
-async def get_suggestion_explanation(suggestion_id: str) -> dict[str, Any]:
+async def get_suggestion_explanation(suggestion_id: str) -> SuggestionExplanationResponse:
     """Get detailed explanation for why a suggestion was generated.
 
     Workflow: Call after bo_generate_suggestions to understand the reasoning
@@ -26,4 +27,7 @@ async def get_suggestion_explanation(suggestion_id: str) -> dict[str, Any]:
             - provenance: Full provenance data (model type, acquisition function, etc.)
             - errors: List of error messages
     """
-    return await get_suggestion_explanation_operation(suggestion_id)
+    return cast(
+        SuggestionExplanationResponse,
+        await get_suggestion_explanation_operation(suggestion_id),
+    )

@@ -174,7 +174,7 @@ Containers on the shared network can reach BO-MCP by Docker service name:
 
 ## MCP Tools
 
-20 tools grouped by workflow stage:
+22 tools grouped by workflow stage:
 
 | Category | Tool | Description |
 |----------|------|-------------|
@@ -194,12 +194,14 @@ Containers on the shared network can reach BO-MCP by Docker service name:
 | **Diagnostics** | `bo_get_diagnostics` | Campaign progress, Pareto front, model health |
 | | `bo_health_check` | Server health and connectivity |
 | | `bo_batch_get_status` | Status for multiple campaigns in one call |
+| | `bo_check_progress` | Poll progress of a long-running suggestion generation call |
 | **Lifecycle** | `bo_pause_campaign` | Pause a running campaign |
 | | `bo_resume_campaign` | Resume a paused campaign |
 | | `bo_terminate_campaign` | Terminate a campaign |
+| | `bo_reopen_campaign` | Reopen a completed/terminated campaign |
 | **Transfer** | `bo_discover_transfer_candidates` | Find campaigns suitable for transfer learning |
 
-5 MCP resources: `campaign://{campaign_id}`, `campaigns://list`, `suggestions://{campaign_id}`, `suggestion://{suggestion_id}`, `events://{campaign_id}`.
+8 MCP resources: `campaign://{campaign_id}`, `campaigns://recent`, `campaigns://recent/{filters}`, `campaigns://list`, `campaigns://list/{filters}`, `suggestions://{campaign_id}`, `suggestion://{suggestion_id}`, `events://{campaign_id}`.
 
 See [TOOL_SCHEMAS.md](packages/bo-mcp-server/TOOL_SCHEMAS.md) for full input/output schemas.
 
@@ -263,21 +265,22 @@ observation count, then chooses accordingly.
 
 ### Testing
 
+Each package has its own `tests/conftest.py`; running pytest from the repo
+root collides their identically-named `tests.conftest` modules, so always run
+per package (as CI does):
+
 ```bash
 # All fast tests (run on every PR)
-uv run pytest -m "not slow and not nightly"
-
-# Per-package
-uv run pytest packages/bo-engine/tests -v
-uv run pytest packages/bo-engine-baybe/tests -v
-uv run pytest packages/bo-mcp-server/tests -v
-uv run pytest packages/bo-mcp-api/tests -v
+uv run pytest packages/bo-engine/tests -v -m "not slow and not nightly"
+uv run pytest packages/bo-engine-baybe/tests -v -m "not slow and not nightly"
+uv run pytest packages/bo-mcp-server/tests -v -m "not slow and not nightly"
+uv run pytest packages/bo-mcp-api/tests -v -m "not slow and not nightly"
 
 # Slow tests (MCMC-based, main branch only)
-uv run pytest -m slow
+uv run pytest packages/bo-engine/tests -m slow
 
 # Nightly (statistical tests, multiple seeds)
-uv run pytest -m nightly
+uv run pytest packages/bo-engine/tests -m nightly
 ```
 
 ### Lint, format, type-check

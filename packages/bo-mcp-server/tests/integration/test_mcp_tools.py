@@ -2108,8 +2108,14 @@ class TestCampaignLifecycleTools:
         assert result["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_invalid_state_transition(self):
-        """Pausing an already paused campaign returns error."""
+    async def test_repeated_pause_is_a_noop_success(self):
+        """Pausing an already-paused campaign is a safe retry, not an error.
+
+        ``bo_pause_campaign`` carries ``idempotentHint=True`` ("safe to
+        retry on ambiguous network failures"); a retry that lands after
+        the first pause already took effect must not come back as
+        ``INVALID_STATE_TRANSITION``, or the hint would be a lie.
+        """
         from bo_mcp_server.tools.campaign_lifecycle import pause_campaign
         from bo_mcp_server.tools.create_campaign import create_campaign
         from bo_mcp_server.tools.generate_suggestions import generate_suggestions
@@ -2124,14 +2130,17 @@ class TestCampaignLifecycleTools:
         campaign_id = create_result["campaign_id"]
 
         await generate_suggestions(campaign_id)
-        await pause_campaign(campaign_id)
+        first = await pause_campaign(campaign_id)
+        assert first["success"] is True
+        assert first.get("noop") is not True
 
-        # Try to pause again - should fail
+        # Retry the pause - must succeed as a no-op, not error.
         result = await pause_campaign(campaign_id)
 
-        assert result["success"] is False
-        errors_str = str(result["errors"]).lower()
-        assert "cannot pause" in errors_str or "paused" in errors_str
+        assert result["success"] is True
+        assert result["noop"] is True
+        assert result["status"] == "paused"
+        assert result["previous_status"] == "paused"
 
 
 @pytest.mark.usefixtures("setup_database")

@@ -11,7 +11,7 @@ from api.deps import (
     get_authorized_campaign,
     get_authorized_suggestion,
 )
-from api.limits import MAX_GENERATION_BATCH_SIZE
+from api.limits import MAX_GENERATION_BATCH_SIZE, MAX_SUGGESTIONS_LIMIT
 from api.schemas.common import API_RESPONSE_SCHEMA_VERSION
 from api.schemas.errors import (
     COMMON_HTTP_ERROR_RESPONSES,
@@ -219,7 +219,12 @@ async def list_campaign_suggestions_route(
     current_user: CurrentUser,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
 ) -> list[SuggestionResponse]:
-    """List suggestions for a campaign."""
+    """List suggestions for a campaign.
+
+    Capped at ``MAX_SUGGESTIONS_LIMIT`` (oldest-first) -- campaigns
+    with more suggestions than that must use ``POST .../query``, which
+    paginates via cursor.
+    """
     status_enum: SuggestionStatus | None = None
     if status_filter:
         try:
@@ -235,6 +240,7 @@ async def list_campaign_suggestions_route(
             campaign_id,
             current_user.id,
             status_filter=status_enum,
+            limit=MAX_SUGGESTIONS_LIMIT,
         )
     except InvalidIdentifierError:
         raise HTTPException(

@@ -1,7 +1,7 @@
 """Submit results tool wrapper for MCP."""
 
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bo_mcp_server.client import AuthenticationConfigurationError, resolve_mcp_user
 from bo_mcp_server.domain import ResultSubmissionInput
 from bo_mcp_server.domain.intake_models import RESULT_SUBMISSION_JSON_SCHEMA
-from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.field_errors import shape_envelope, validation_envelope
 from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.idempotency_wrapper import (
@@ -18,7 +17,10 @@ from bo_mcp_server.operations.idempotency_wrapper import (
 from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tool_boundary import SUBMIT_RESULTS_ENVELOPE_EXTRA
 from bo_mcp_server.tools.annotations import NON_IDEMPOTENT_MUTATION
+from bo_mcp_server.tools.common import mcp_identity_error
+from bo_mcp_server.tools.response_models import SubmitResultsResponse
 from bo_mcp_server.trace_context import bind_trace_id
 
 # Accept loose payloads at the MCP boundary and validate inside the
@@ -54,11 +56,7 @@ ResultsPayload = Annotated[
     ),
 ]
 
-_RESULTS_BOUNDARY_DEFAULTS: dict[str, Any] = {
-    "result_ids": [],
-    "warnings": [],
-    "duplicates_detected": [],
-}
+_RESULTS_BOUNDARY_DEFAULTS = SUBMIT_RESULTS_ENVELOPE_EXTRA
 
 
 def _validate_result_rows(
@@ -141,14 +139,7 @@ def _rebase_row_validation_error(error: ValidationError, row_index: int) -> Vali
 
 
 def _mcp_identity_error(exc: AuthenticationConfigurationError) -> dict[str, Any]:
-    """Return a structured error when MCP cannot resolve a current user."""
-    return attach_response_metadata(
-        make_error_response(
-            ErrorCode.INTERNAL_ERROR,
-            message=str(exc),
-            details={"transport": "mcp", "missing_identity": True},
-        )
-    )
+    return mcp_identity_error(exc)
 
 
 def _validate_results_before_identity(
@@ -284,7 +275,7 @@ async def _submit_results_tool(
     idempotency_key: str | None = None,
     dry_run: bool = False,
     trace_id: str | None = None,
-) -> dict[str, Any]:
+) -> SubmitResultsResponse:
     """Submit experimental results for a campaign.
 
     Workflow: Call after running experiments from bo_generate_suggestions.
@@ -298,23 +289,26 @@ async def _submit_results_tool(
         trace_id=trace_id,
     )
     if validation_error is not None:
-        return validation_error
+        return cast(SubmitResultsResponse, validation_error)
 
     try:
         user = await resolve_mcp_user()
     except AuthenticationConfigurationError as exc:
-        return _mcp_identity_error(exc)
+        return cast(SubmitResultsResponse, _mcp_identity_error(exc))
 
-    return await _submit_results_for_user(
-        campaign_id=campaign_id,
-        results=results,
-        submitted_by=str(user.id),
-        source=source,
-        force=force,
-        atomic=atomic,
-        continue_on_error=continue_on_error,
-        verbosity=verbosity,
-        idempotency_key=idempotency_key,
-        dry_run=dry_run,
-        trace_id=trace_id,
+    return cast(
+        SubmitResultsResponse,
+        await _submit_results_for_user(
+            campaign_id=campaign_id,
+            results=results,
+            submitted_by=str(user.id),
+            source=source,
+            force=force,
+            atomic=atomic,
+            continue_on_error=continue_on_error,
+            verbosity=verbosity,
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
+            trace_id=trace_id,
+        ),
     )

@@ -9,7 +9,6 @@ for each donor/acceptor pair instead of running expensive quantum chemistry.
 
 import dotenv
 import asyncio
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,19 +18,16 @@ import seaborn as sns
 
 dotenv.load_dotenv()  # Load environment variables from .env if present
 
+from demos.mcp_client_utils import get_or_create_demo_user
+
 from bo_mcp_server.domain import (  # type: ignore[import-untyped]
     CampaignIntakeInput,
     InputParameter,
     Objective,
     ParameterType,
     ResultSubmissionInput,
-    User,
 )
-from bo_mcp_server.storage import (  # type: ignore[import-untyped]
-    UserRepository,
-    get_session,
-    lifespan,
-)
+from bo_mcp_server.storage import lifespan  # type: ignore[import-untyped]
 from bo_mcp_server.tools.create_campaign import create_campaign  # type: ignore[import-untyped]
 from bo_mcp_server.tools.generate_suggestions import (  # type: ignore[import-untyped]
     generate_suggestions,
@@ -39,7 +35,6 @@ from bo_mcp_server.tools.generate_suggestions import (  # type: ignore[import-un
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics  # type: ignore[import-untyped]
 from bo_mcp_server.tools.submit_results import submit_results  # type: ignore[import-untyped]
 
-API_KEY = "dev-api-key-12345"
 N_CYCLES = 10
 EXPECTED_BATCH_SIZE = 2
 N_RUNS = 100
@@ -167,22 +162,8 @@ async def main() -> None:
         raise ValueError(msg)
 
     async with lifespan():
-        api_key_hash = hashlib.sha256(API_KEY.encode()).hexdigest()
-        async with get_session() as session:
-            repo = UserRepository(session)
-            user = await repo.get_by_email("test@example.com")
-            if not user:
-                user = User(
-                    name="Test User",
-                    email="test@example.com",
-                    api_key_hash=api_key_hash,
-                )
-                user = await repo.save(user)
-                print(f"Created test user: {user.id}")
-            else:
-                print(f"Using existing user: {user.id}")
-
-        owner_id = str(user.id)
+        owner_id = await get_or_create_demo_user(email="test@example.com", name="Test User")
+        print(f"Using demo user: {owner_id}")
 
         all_runs_records: list[dict[str, float | int]] = []
         run_best_gaps: list[float] = []

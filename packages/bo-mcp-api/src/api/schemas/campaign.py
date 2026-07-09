@@ -52,6 +52,19 @@ class CampaignResponse(BaseModel):
     n_objectives: int
 
 
+class CampaignSpecResponse(BaseModel):
+    """Campaign spec detail response schema (``GET /campaigns/spec/{spec_id}``)."""
+
+    id: str
+    name: str
+    description: str
+    parameters: list[dict[str, Any]] = Field(default_factory=list)
+    objectives: list[dict[str, Any]] = Field(default_factory=list)
+    constraints: list[dict[str, Any]] = Field(default_factory=list)
+    batch_size: int
+    created_at: datetime
+
+
 class CampaignConfigResponse(BaseModel):
     """Stable campaign setup snapshot for reproducibility/provenance."""
 

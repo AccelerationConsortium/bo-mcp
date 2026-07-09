@@ -7,13 +7,17 @@ Reference: MCP Tool Best Practices - Agents prefer tools for consistent workflow
 https://modelcontextprotocol.io/docs/concepts/tools
 """
 
-from typing import Any, Literal
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
+from pydantic import Field
+
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
+from bo_mcp_server.operations.list_campaigns import MAX_LIMIT, list_campaigns_operation
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.common import VerbosityLiteral
+from bo_mcp_server.tools.response_models import CampaignListResponse
 
 # ``Literal`` mirrors ``CampaignStatus`` so the generated MCP tool
 # schema declares an ``enum`` constraint -- agents discover the valid
@@ -27,18 +31,17 @@ CampaignStatusFilter = Literal[
     "completed",
     "failed",
 ]
-VerbosityLiteral = Literal["minimal", "standard", "detailed"]
 
 
 @mcp.tool(name="bo_list_campaigns", annotations=READ_ONLY)
 async def list_campaigns(
     owner_id: str | None = None,
     status: CampaignStatusFilter | None = None,
-    limit: int = 20,
+    limit: Annotated[int, Field(ge=1, le=MAX_LIMIT)] = 20,
     offset: int = 0,
     verbosity: VerbosityLiteral = "standard",
     cursor: str | None = None,
-) -> dict[str, Any]:
+) -> CampaignListResponse:
     """List optimization campaigns with optional filtering and pagination.
 
     Workflow: Call anytime to find campaign IDs or check campaign statuses.
@@ -85,17 +88,23 @@ async def list_campaigns(
         try:
             owner_uuid = UUID(owner_id)
         except ValueError:
-            return make_error_response(
-                ErrorCode.VALIDATION_FAILED,
-                message="Invalid owner_id format",
-                details={"owner_id": owner_id},
+            return cast(
+                CampaignListResponse,
+                make_error_response(
+                    ErrorCode.VALIDATION_FAILED,
+                    message="Invalid owner_id format",
+                    details={"owner_id": owner_id},
+                ),
             )
 
-    return await list_campaigns_operation(
-        owner_id=owner_uuid,
-        status=status,
-        limit=limit,
-        offset=offset,
-        verbosity=verbosity,
-        cursor=cursor,
+    return cast(
+        CampaignListResponse,
+        await list_campaigns_operation(
+            owner_id=owner_uuid,
+            status=status,
+            limit=limit,
+            offset=offset,
+            verbosity=verbosity,
+            cursor=cursor,
+        ),
     )

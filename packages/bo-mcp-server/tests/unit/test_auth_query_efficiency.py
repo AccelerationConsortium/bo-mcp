@@ -29,6 +29,7 @@ from bo_mcp_server.client.auth import (
     NotFoundError,
     ensure_owned_campaigns,
     get_spec_for_user,
+    list_owner_campaigns_with_specs,
 )
 from bo_mcp_server.domain import (
     CampaignSpec,
@@ -163,6 +164,33 @@ class TestEnsureOwnedCampaignsBatched:
         assert counter[0] == 0
 
 
+class TestListOwnerCampaignsWithSpecsCapped:
+    """The bare ``GET /campaigns`` view must not return an unbounded array.
+
+    Mirrors the suggestion/result list caps: ``limit`` truncates at the
+    database to a stable oldest-first prefix instead of a large owner's
+    full campaign history (OWASP API4, unrestricted resource consumption).
+    """
+
+    @pytest.mark.asyncio
+    async def test_limit_truncates_to_oldest_first_prefix(self) -> None:
+        owner = await _seed_user()
+        await _seed_campaigns(owner.id, 5)
+
+        pairs = await list_owner_campaigns_with_specs(owner.id, limit=3)
+
+        assert [spec.name for _, spec in pairs] == ["spec-0", "spec-1", "spec-2"]
+
+    @pytest.mark.asyncio
+    async def test_no_limit_returns_everything(self) -> None:
+        owner = await _seed_user()
+        await _seed_campaigns(owner.id, 5)
+
+        pairs = await list_owner_campaigns_with_specs(owner.id)
+
+        assert len(pairs) == 5
+
+
 class TestGetSpecForUserSingleQuery:
     """Spec authorization must not hydrate the owner's campaign list."""
 
@@ -172,7 +200,7 @@ class TestGetSpecForUserSingleQuery:
         _, spec_ids = await _seed_campaigns(owner.id, 10)
 
         with _count_select_statements() as counter:
-            spec = await get_spec_for_user(str(spec_ids[0]), owner.id)
+            spec, _created_at = await get_spec_for_user(str(spec_ids[0]), owner.id)
 
         assert spec.name == "spec-0"
         # One SELECT for the spec row, one LIMIT-1 ownership probe —

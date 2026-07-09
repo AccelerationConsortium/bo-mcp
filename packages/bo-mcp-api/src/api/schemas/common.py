@@ -64,6 +64,7 @@ RESOURCE_VIEW_MODEL_NAMES: Final[frozenset[str]] = frozenset(
         # Bare resource representations returned from GET-by-id routes.
         "CampaignConfigResponse",
         "CampaignResponse",
+        "CampaignSpecResponse",
         "SuggestionResponse",
         "ResultResponse",
         # Nested item models that compose into envelope responses but

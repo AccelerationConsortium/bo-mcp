@@ -52,6 +52,46 @@ async def test_main_async_initializes_mcp_server(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_main_async_dispatches_streamable_http_transport(monkeypatch) -> None:
+    """The current (non-deprecated) MCP HTTP transport is reachable via the CLI."""
+    calls: list[str] = []
+    host = "127.0.0.1"
+
+    async def fake_init_database() -> None:
+        calls.append("init_database")
+
+    async def fake_warm_default_backend() -> None:
+        calls.append("warm_default_backend")
+
+    async def fake_run_streamable_http_async() -> None:
+        calls.append("run_streamable_http_async")
+
+    fake_mcp = SimpleNamespace(
+        settings=SimpleNamespace(host="placeholder", port=0),
+        run_streamable_http_async=fake_run_streamable_http_async,
+    )
+
+    def fake_create_mcp_server():
+        calls.append("create_mcp_server")
+        return fake_mcp
+
+    monkeypatch.setattr(cli, "init_database", fake_init_database)
+    monkeypatch.setattr(cli, "create_mcp_server", fake_create_mcp_server)
+    monkeypatch.setattr(cli, "warm_default_backend", fake_warm_default_backend)
+
+    await cli.main_async("streamable-http", host, 8001)
+
+    assert calls == [
+        "init_database",
+        "warm_default_backend",
+        "create_mcp_server",
+        "run_streamable_http_async",
+    ]
+    assert fake_mcp.settings.host == host
+    assert fake_mcp.settings.port == 8001
+
+
+@pytest.mark.asyncio
 async def test_main_async_keeps_startup_imports_off_the_event_loop(monkeypatch) -> None:
     """Startup must warm before building the server, and build off the loop.
 
@@ -182,6 +222,13 @@ def test_explicit_host_overrides_loopback_default() -> None:
     args = cli.build_arg_parser().parse_args(["--transport", "sse", "--host", bind_all_host])
 
     assert args.host == bind_all_host
+
+
+def test_streamable_http_is_an_accepted_transport_choice() -> None:
+    """The current (non-deprecated) MCP HTTP transport is a valid ``--transport`` value."""
+    args = cli.build_arg_parser().parse_args(["--transport", "streamable-http"])
+
+    assert args.transport == "streamable-http"
 
 
 def test_main_configures_logging_before_serving(monkeypatch) -> None:

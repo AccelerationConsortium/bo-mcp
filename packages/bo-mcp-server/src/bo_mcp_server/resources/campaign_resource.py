@@ -16,7 +16,7 @@ from uuid import UUID
 
 from bo_mcp_server.domain import CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, raise_resource_error
-from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
+from bo_mcp_server.operations.list_campaigns import MAX_LIMIT, list_campaigns_operation
 from bo_mcp_server.recovery import MAX_SUGGESTIONS, find_similar_campaign_ids
 from bo_mcp_server.server import mcp
 from bo_mcp_server.storage import CampaignRepository, CampaignSpecRepository, get_session
@@ -153,10 +153,10 @@ async def get_campaign(campaign_id: str) -> str:
         return "\n".join(lines)
 
 
-# Limit pulled from ``list_campaigns_operation.MAX_LIMIT`` so the resource
-# advertises the same cap. The default 20 mirrors ``bo_list_campaigns``.
+# Default page size for the resource view. The cap itself is imported
+# (``MAX_LIMIT``) rather than copied, so the resource can never drift
+# from the tool's cap on the same underlying data.
 _RESOURCE_DEFAULT_LIMIT = 20
-_RESOURCE_MAX_LIMIT = 100
 
 
 def _parse_resource_limit(raw: str | None) -> int | None:
@@ -166,7 +166,7 @@ def _parse_resource_limit(raw: str | None) -> int | None:
         value = int(raw)
     except ValueError:
         return None
-    return max(1, min(value, _RESOURCE_MAX_LIMIT))
+    return max(1, min(value, MAX_LIMIT))
 
 
 def _parse_resource_offset(raw: str | None) -> int | None:

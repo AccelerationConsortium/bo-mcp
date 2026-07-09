@@ -1,6 +1,6 @@
 """Get diagnostics tool wrapper for MCP."""
 
-from typing import Any
+from typing import Literal, cast
 
 from mcp.server.fastmcp import Context
 
@@ -11,19 +11,34 @@ from bo_mcp_server.operations.get_diagnostics import (
 from bo_mcp_server.progress_bridge import make_progress_callback_from_context
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.common import VerbosityLiteral
+from bo_mcp_server.tools.response_models import GetDiagnosticsResponse
 
 # Re-export for backward compatibility
 __all__ = ["ALL_SECTIONS", "get_diagnostics"]
+
+# Mirrors ``ALL_SECTIONS`` so the generated MCP tool schema declares an
+# ``enum`` constraint on each list item. Keep aligned with
+# :data:`bo_mcp_server.operations.get_diagnostics.ALL_SECTIONS`.
+SectionLiteral = Literal[
+    "health",
+    "objectives",
+    "model",
+    "convergence",
+    "suggestions",
+    "outliers",
+    "constraints",
+]
 
 
 @mcp.tool(name="bo_get_diagnostics", annotations=READ_ONLY)
 async def get_diagnostics(
     campaign_id: str,
     use_cache: bool = True,
-    verbosity: str = "standard",
-    sections: list[str] | None = None,
+    verbosity: VerbosityLiteral = "standard",
+    sections: list[SectionLiteral] | None = None,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> GetDiagnosticsResponse:
     """Get diagnostic information for a campaign.
 
     Workflow: Call after bo_submit_results to check model health, convergence,
@@ -50,10 +65,18 @@ async def get_diagnostics(
     Returns:
         Dictionary with diagnostic fields based on requested sections.
     """
-    return await get_diagnostics_operation(
-        campaign_id=campaign_id,
-        use_cache=use_cache,
-        verbosity=verbosity,
-        sections=sections,
-        progress_callback=make_progress_callback_from_context(ctx),
+    # ``list`` is invariant, so ``list[SectionLiteral]`` does not
+    # structurally satisfy the operation's ``list[str]`` parameter even
+    # though every ``SectionLiteral`` value is a ``str`` at runtime; the
+    # explicit annotation here is the widening, not a behavior change.
+    sections_str: list[str] | None = list(sections) if sections is not None else None
+    return cast(
+        GetDiagnosticsResponse,
+        await get_diagnostics_operation(
+            campaign_id=campaign_id,
+            use_cache=use_cache,
+            verbosity=verbosity,
+            sections=sections_str,
+            progress_callback=make_progress_callback_from_context(ctx),
+        ),
     )

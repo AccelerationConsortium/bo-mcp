@@ -1,12 +1,14 @@
 """Transfer candidate discovery tool wrapper for MCP."""
 
-from typing import Any
+from typing import cast
 
 from bo_mcp_server.operations.transfer_candidates import (
     discover_transfer_candidates_operation,
 )
 from bo_mcp_server.server import mcp
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.common import VerbosityLiteral
+from bo_mcp_server.tools.response_models import DiscoverTransferCandidatesResponse
 
 
 @mcp.tool(name="bo_discover_transfer_candidates", annotations=READ_ONLY)
@@ -14,9 +16,9 @@ async def discover_transfer_candidates(
     campaign_id: str,
     similarity_threshold: float = 0.5,
     max_candidates: int = 5,
-    verbosity: str = "standard",
+    verbosity: VerbosityLiteral = "standard",
     parameter_aliases: dict[str, list[str]] | None = None,
-) -> dict[str, Any]:
+) -> DiscoverTransferCandidatesResponse:
     """Discover campaigns suitable for transfer learning.
 
     Workflow: Call before bo_create_campaign to find prior campaigns whose
@@ -46,10 +48,13 @@ async def discover_transfer_candidates(
             - overall_recommendation: Transfer learning recommendation
             - errors: List of error messages
     """
-    return await discover_transfer_candidates_operation(
-        campaign_id=campaign_id,
-        similarity_threshold=similarity_threshold,
-        max_candidates=max_candidates,
-        verbosity=verbosity,
-        parameter_aliases=parameter_aliases,
+    return cast(
+        DiscoverTransferCandidatesResponse,
+        await discover_transfer_candidates_operation(
+            campaign_id=campaign_id,
+            similarity_threshold=similarity_threshold,
+            max_candidates=max_candidates,
+            verbosity=verbosity,
+            parameter_aliases=parameter_aliases,
+        ),
     )

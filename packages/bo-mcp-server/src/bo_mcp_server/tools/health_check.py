@@ -7,15 +7,17 @@ before starting optimization operations.
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import cast
 
 from sqlalchemy import text
 
 from bo_mcp_server import __version__
 from bo_mcp_server.backend import get_backend_capabilities
+from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.server import create_mcp_server, mcp
 from bo_mcp_server.storage.database import get_session
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.response_models import HealthCheckResponse
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ def _get_server_start_time() -> float:
 
 
 @mcp.tool(name="bo_health_check", annotations=READ_ONLY)
-async def health_check() -> dict[str, Any]:
+async def health_check() -> HealthCheckResponse:
     """Check MCP server health and connectivity.
 
     Use this tool to verify the server is running and responsive before
@@ -85,11 +87,16 @@ async def health_check() -> dict[str, Any]:
         sorted(backends),
     )
 
-    return {
-        "healthy": healthy,
-        "version": __version__,
-        "database": db_status,
-        "tools_available": tools_count,
-        "uptime_seconds": uptime,
-        "backends": backends,
-    }
+    return cast(
+        HealthCheckResponse,
+        attach_response_metadata(
+            {
+                "healthy": healthy,
+                "version": __version__,
+                "database": db_status,
+                "tools_available": tools_count,
+                "uptime_seconds": uptime,
+                "backends": backends,
+            }
+        ),
+    )

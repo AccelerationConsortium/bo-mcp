@@ -53,6 +53,7 @@ from bo_mcp_server.errors import (
     make_error_response,
 )
 from bo_mcp_server.idempotency import reservation_heartbeat, session_scope
+from bo_mcp_server.metrics import observe_suggestion_latency
 from bo_mcp_server.operations.backend_output import (
     BackendOutputError,
     BackendStateTooLargeError,
@@ -457,8 +458,6 @@ async def _run_three_phase_generation(
     on the success path so callers tracking ``observe_suggestion_latency``
     keep a clean histogram for "the compute actually ran".
     """
-    from bo_mcp_server.metrics import observe_suggestion_latency
-
     phase1 = await _load_generation_snapshot(campaign_id, campaign_uuid, batch_size)
     if not isinstance(phase1, _GenerationSnapshot):
         return phase1

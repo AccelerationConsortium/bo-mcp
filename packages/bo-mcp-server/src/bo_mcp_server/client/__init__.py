@@ -114,10 +114,14 @@ from bo_mcp_server.operations.idempotency_wrapper import (
     canonical_submit_results_payload,
     run_idempotent_operation,
 )
+from bo_mcp_server.operations.list_campaigns import MAX_LIMIT as MAX_CAMPAIGNS_LIST_LIMIT
 from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
-from bo_mcp_server.operations.list_results import list_results_operation
-from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
+from bo_mcp_server.operations.list_results import MAX_RESULTS_LIMIT, list_results_operation
+from bo_mcp_server.operations.list_suggestions import (
+    MAX_SUGGESTIONS_LIMIT,
+    list_suggestions_operation,
+)
 from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.operations.suggestion_explanation import (
     get_suggestion_explanation_operation,
@@ -152,7 +156,10 @@ __all__ = [
     "DEV_USER_NAME",
     "ERROR_CODE_TO_HTTP_STATUS",
     # Shared request-size caps (transport-neutral)
+    "MAX_CAMPAIGNS_LIST_LIMIT",
     "MAX_GENERATION_BATCH_SIZE",
+    "MAX_RESULTS_LIMIT",
+    "MAX_SUGGESTIONS_LIMIT",
     "RESPONSE_SCHEMA_VERSION",
     # DTOs
     "AcquisitionMethod",

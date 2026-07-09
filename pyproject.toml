@@ -5,23 +5,10 @@ description = "Bayesian Optimization MCP - Monorepo workspace"
 requires-python = ">=3.13"
 readme = "README.md"
 
-# No direct dependencies - all deps are in packages
-dependencies = [
-    "plotly>=6.5.2",
-    "seaborn>=0.13.2",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=4.0",
-    "pytest-timeout>=2.3.1",
-    "ruff>=0.15.2",
-    "ty>=0.0.26",
-    "pre-commit>=3.7",
-    "types-seaborn>=0.13.2.20251221",
-]
+# No direct runtime dependencies - all runtime deps are in packages/*;
+# plotting libs are dev-only (scripts/hardcoded_fragment_bo_example.py,
+# scripts/demos/adaptive_bo_plots.py) and live in [dependency-groups].dev.
+dependencies = []
 
 [dependency-groups]
 dev = [
@@ -32,7 +19,13 @@ dev = [
     "ruff>=0.15.2",
     "ty>=0.0.26",
     "pre-commit>=3.7",
+    "plotly>=6.5.2",
+    "seaborn>=0.13.2",
     "types-seaborn>=0.13.2.20251221",
+    # scripts/toy_example.py and scripts/hardcoded_fragment_bo_example.py
+    # import dotenv directly; only present today as a transitive dependency
+    # of pydantic-settings.
+    "python-dotenv>=1.0",
 ]
 
 [tool.uv.workspace]
@@ -174,6 +167,4 @@ markers = [
     "tutorial: marks tests that reproduce BoTorch tutorial results",
     "deterministic: marks tests that require deterministic torch operations",
     "integration: marks integration tests (auto-applied to tests/ integration/ in bo-mcp-server)",
-    "xfail_validation: xfail tests for input validation (roadmap item)",
-    "xfail_reproducibility: xfail tests for reproducibility features (roadmap item)",
 ]

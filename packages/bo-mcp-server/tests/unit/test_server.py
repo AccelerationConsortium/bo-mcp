@@ -21,6 +21,45 @@ def test_all_registered_tool_names_use_bo_prefix() -> None:
     assert all(name.startswith("bo_") for name in tool_names)
 
 
+def test_registered_tool_names_match_expected_set() -> None:
+    """Pin the exact tool set so a silently-dropped registration fails CI.
+
+    ``create_mcp_server`` registers tools by importing the
+    ``bo_mcp_server.tools`` package rather than repeating its member
+    list; ``tools/__init__.py`` is the single source of truth for
+    membership. This test is the guard against that source of truth
+    silently losing a tool (e.g. a future refactor that imports
+    submodules individually again and forgets one).
+    """
+    expected = {
+        "bo_batch_get_status",
+        "bo_check_progress",
+        "bo_compare_campaigns",
+        "bo_create_campaign",
+        "bo_discover_transfer_candidates",
+        "bo_generate_suggestions",
+        "bo_get_diagnostics",
+        "bo_get_suggestion_explanation",
+        "bo_health_check",
+        "bo_list_campaigns",
+        "bo_list_capabilities",
+        "bo_list_results",
+        "bo_export_campaign",
+        "bo_list_suggestions",
+        "bo_pause_campaign",
+        "bo_resume_campaign",
+        "bo_terminate_campaign",
+        "bo_reopen_campaign",
+        "bo_submit_results",
+        "bo_update_suggestion_status",
+        "bo_upload_results_file",
+        "bo_validate_intake",
+    }
+    tool_names = {tool.name for tool in create_mcp_server()._tool_manager.list_tools()}
+
+    assert tool_names == expected
+
+
 def test_health_endpoint_returns_200_with_status_ok() -> None:
     """``/health`` is a non-streaming JSON probe for docker / k8s.
 

@@ -36,6 +36,18 @@ _ACTION_MAPPING: dict[LifecycleAction, tuple[CampaignStatus, list[CampaignStatus
     "reopen": (CampaignStatus.RUNNING, [CampaignStatus.COMPLETED]),
 }
 
+# Actions whose target status is safe to treat as a no-op success when the
+# campaign is already there -- i.e. "already at the target" is read as "a
+# previous call of this same action already succeeded", matching each
+# tool's ``idempotentHint=True`` annotation (see ``tools/annotations.py``).
+# "reopen" is deliberately excluded even though it shares "resume"'s target
+# (RUNNING): a fresh, never-terminated campaign also sits at RUNNING, and
+# unlike an accidental extra "resume" call, an accidental "reopen" call is
+# a meaningfully different mistake worth surfacing as an error --
+# ``test_reopen_rejects_campaign_that_is_not_completed`` pins that "reopen"
+# is only a valid request starting from COMPLETED.
+_NOOP_ELIGIBLE_ACTIONS: frozenset[LifecycleAction] = frozenset({"pause", "resume", "terminate"})
+
 
 def _build_dry_run_preview(
     campaign_id: str,
@@ -57,6 +69,74 @@ def _build_dry_run_preview(
         },
         "errors": [],
     }
+
+
+def _check_state_precondition(
+    campaign_id: str,
+    action: LifecycleAction,
+    status: CampaignStatus,
+    target_status: CampaignStatus,
+    valid_from_statuses: list[CampaignStatus],
+) -> dict[str, Any] | None:
+    """Return an early-exit envelope for the campaign's current status, or ``None`` to proceed.
+
+    Two cases short-circuit the transition:
+
+    * The campaign is already at ``target_status`` for a
+      :data:`_NOOP_ELIGIBLE_ACTIONS` action -- most commonly a retry
+      after a network failure whose original call actually succeeded.
+      ``idempotentHint=True`` (see ``tools/annotations.py``) promises
+      exactly this: a retry after ambiguous success must not come back
+      as an error. Reported as success with a ``noop`` flag so the
+      caller can tell "nothing to do" apart from "this transition
+      never made sense".
+    * The campaign's status isn't one ``action`` can start from at
+      all -- ``INVALID_STATE_TRANSITION``.
+
+    Folding both into one early-return keeps the caller below ruff's
+    6-return ceiling (mirrors :func:`_validate_request`).
+    """
+    previous_status = status.value
+
+    if action in _NOOP_ELIGIBLE_ACTIONS and status == target_status:
+        logger.info(
+            "Campaign %s already in target status for lifecycle action %s: %s",
+            campaign_id,
+            action,
+            target_status.value,
+        )
+        return {
+            "success": True,
+            "campaign_id": campaign_id,
+            "status": target_status.value,
+            "previous_status": previous_status,
+            "noop": True,
+            "errors": [],
+        }
+
+    if status not in valid_from_statuses:
+        response = make_error_response(
+            ErrorCode.INVALID_STATE_TRANSITION,
+            message=(
+                f"Cannot {action} campaign with status '{status.value}'. "
+                f"Valid statuses for {action}: {[s.value for s in valid_from_statuses]}"
+            ),
+            details={
+                "current_status": status.value,
+                "valid_statuses": [s.value for s in valid_from_statuses],
+                "action": action,
+            },
+        )
+        response.update(
+            {
+                "campaign_id": campaign_id,
+                "status": status.value,
+                "previous_status": previous_status,
+            }
+        )
+        return response
+
+    return None
 
 
 def _validate_request(
@@ -136,27 +216,11 @@ async def manage_campaign_lifecycle_operation(
 
         previous_status = campaign.status.value
 
-        if campaign.status not in valid_from_statuses:
-            response = make_error_response(
-                ErrorCode.INVALID_STATE_TRANSITION,
-                message=(
-                    f"Cannot {action} campaign with status '{campaign.status.value}'. "
-                    f"Valid statuses for {action}: {[s.value for s in valid_from_statuses]}"
-                ),
-                details={
-                    "current_status": campaign.status.value,
-                    "valid_statuses": [s.value for s in valid_from_statuses],
-                    "action": action,
-                },
-            )
-            response.update(
-                {
-                    "campaign_id": campaign_id,
-                    "status": campaign.status.value,
-                    "previous_status": previous_status,
-                }
-            )
-            return response
+        precondition_response = _check_state_precondition(
+            campaign_id, action, campaign.status, target_status, valid_from_statuses
+        )
+        if precondition_response is not None:
+            return precondition_response
 
         if dry_run:
             logger.info(

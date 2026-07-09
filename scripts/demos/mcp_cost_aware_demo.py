@@ -15,12 +15,12 @@ Usage:
 """
 
 import asyncio
-import hashlib
 import math
 import random
 
-from bo_mcp_server.domain import User
-from bo_mcp_server.storage import UserRepository, get_session, init_database
+from mcp_client_utils import get_or_create_demo_user
+
+from bo_mcp_server.storage import init_database
 from bo_mcp_server.tools.create_campaign import create_campaign
 from bo_mcp_server.tools.generate_suggestions import generate_suggestions
 from bo_mcp_server.tools.get_diagnostics import get_diagnostics
@@ -88,24 +88,12 @@ async def main() -> None:
 
     # Setup user
     print("[2] Setting up user...")
-    api_key = "cost-aware-demo-key"
-    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-
-    async with get_session() as session:
-        repo = UserRepository(session)
-        user = await repo.get_by_email("costaware@example.com")
-        if not user:
-            user = User(
-                name="Cost-Aware Demo User",
-                email="costaware@example.com",
-                api_key_hash=api_key_hash,
-            )
-            user = await repo.save(user)
-            print(f"    Created user: {user.id}")
-        else:
-            print(f"    Using existing user: {user.id}")
-
-    owner_id = str(user.id)
+    owner_id = await get_or_create_demo_user(
+        email="costaware@example.com",
+        name="Cost-Aware Demo User",
+        api_key="cost-aware-demo-key",
+    )
+    print(f"    Using demo user: {owner_id}")
 
     # Define optimization problem with cost tracking
     print("\n[3] Defining cost-aware optimization problem...")

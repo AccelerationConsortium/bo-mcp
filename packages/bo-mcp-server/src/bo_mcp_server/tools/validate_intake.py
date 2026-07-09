@@ -1,20 +1,18 @@
 """Validate intake tool wrapper for MCP."""
 
-from collections.abc import Mapping
-from typing import Annotated, Any, Literal
-
-from pydantic import BaseModel, Field
+from typing import Any, Literal, cast
 
 from bo_mcp_server.errors import ErrorCode, make_error_response
-from bo_mcp_server.field_errors import shape_envelope
 from bo_mcp_server.operations.validate_intake import validate_intake_with_capabilities
 from bo_mcp_server.response_formatter import (
     VerbosityLevel,
     format_validate_intake_response,
 )
-from bo_mcp_server.schema_extension import intake_schema_with_backend_extensions
 from bo_mcp_server.server import mcp
+from bo_mcp_server.tool_boundary import VALIDATE_INTAKE_ENVELOPE_EXTRA
 from bo_mcp_server.tools.annotations import READ_ONLY
+from bo_mcp_server.tools.common import IntakePayload, check_intake_shape
+from bo_mcp_server.tools.response_models import ValidateIntakeResponse
 
 # The tool boundary widens to ``Any`` for the same reason as
 # ``bo_create_campaign``: the
@@ -27,31 +25,7 @@ from bo_mcp_server.tools.annotations import READ_ONLY
 # ``field_errors`` envelope wins on every failure mode -- whether the
 # outer shape is wrong, a scalar arg is missing, or an inner sub-
 # field tripped a constraint.
-_INTAKE_SCHEMA = intake_schema_with_backend_extensions()
-IntakePayload = Annotated[
-    Any,
-    Field(
-        description=(
-            "Campaign intake specification. Validated against "
-            "CampaignIntakeInput; validation failures are returned as a "
-            "structured error envelope with ``field_errors`` keyed by "
-            "dotted path."
-        ),
-        json_schema_extra={
-            "type": "object",
-            "properties": _INTAKE_SCHEMA.get("properties", {}),
-            "required": _INTAKE_SCHEMA.get("required", []),
-            "$defs": _INTAKE_SCHEMA.get("$defs", {}),
-            "additionalProperties": False,
-        },
-    ),
-]
-
-_VALIDATE_INTAKE_BOUNDARY_DEFAULTS: dict[str, Any] = {
-    "valid": False,
-    "warnings": [],
-    "spec": None,
-}
+_VALIDATE_INTAKE_BOUNDARY_DEFAULTS = VALIDATE_INTAKE_ENVELOPE_EXTRA
 
 
 def _check_intake_shape(intake_data: object) -> dict[str, Any] | None:
@@ -62,20 +36,14 @@ def _check_intake_shape(intake_data: object) -> dict[str, Any] | None:
     create-campaign contract -- a single dotted ``intake_data`` key
     in ``field_errors`` instead of Pydantic-internal noise.
     """
-    if isinstance(intake_data, (Mapping, BaseModel)):
-        return None
-    return shape_envelope(
-        "intake_data",
-        f"Input should be an object, got {type(intake_data).__name__}",
-        extra=_VALIDATE_INTAKE_BOUNDARY_DEFAULTS,
-    )
+    return check_intake_shape(intake_data, extra=_VALIDATE_INTAKE_BOUNDARY_DEFAULTS)
 
 
 @mcp.tool(name="bo_validate_intake", annotations=READ_ONLY)
 async def validate_intake(
     intake_data: IntakePayload,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
-) -> dict[str, Any]:
+) -> ValidateIntakeResponse:
     """Validate a campaign specification without creating a campaign (dry-run).
 
     Workflow: Call before bo_create_campaign to check for errors without
@@ -108,15 +76,23 @@ async def validate_intake(
     """
     shape_error = _check_intake_shape(intake_data)
     if shape_error is not None:
-        return shape_error
+        return cast(ValidateIntakeResponse, shape_error)
 
     try:
         verbosity_level = VerbosityLevel(verbosity)
     except ValueError:
-        return make_error_response(
-            ErrorCode.VALIDATION_FAILED,
-            message=f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed",
+        return cast(
+            ValidateIntakeResponse,
+            make_error_response(
+                ErrorCode.VALIDATION_FAILED,
+                message=(
+                    f"Invalid verbosity '{verbosity}'. Must be one of: minimal, standard, detailed"
+                ),
+            ),
         )
 
     full_response = await validate_intake_with_capabilities(intake_data)
-    return format_validate_intake_response(full_response, verbosity_level)
+    return cast(
+        ValidateIntakeResponse,
+        format_validate_intake_response(full_response, verbosity_level),
+    )

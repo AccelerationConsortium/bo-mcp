@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from bo_mcp_server.errors import ErrorCode, make_error_response
+from bo_mcp_server.response_formatter import with_response_metadata
 from bo_mcp_server.storage import (
     CampaignRepository,
     CampaignSpecRepository,
@@ -34,6 +35,7 @@ MAX_EXPORT_CONTENT_BYTES = 256 * 1024
 MIN_EXPORT_ROW_BYTES = 64
 
 
+@with_response_metadata
 async def export_campaign_operation(
     campaign_id: str,
     output_format: str = "csv",

@@ -128,6 +128,47 @@ class TestSharedOperations:
         assert "running" in str(result["errors"])
 
     @pytest.mark.asyncio
+    async def test_repeated_terminate_is_a_noop_success(self):
+        owner_id = await seed_owner()
+        campaign_id = await _create_single_objective_campaign(
+            owner_id,
+            "Repeated Terminate Test",
+        )
+        await generate_suggestions(campaign_id)
+
+        first = await manage_campaign_lifecycle_operation(campaign_id, "terminate")
+        assert first["success"] is True
+        assert first.get("noop") is not True
+
+        retry = await manage_campaign_lifecycle_operation(campaign_id, "terminate")
+
+        assert retry["success"] is True
+        assert retry["noop"] is True
+        assert retry["status"] == "completed"
+        assert retry["previous_status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_repeated_resume_is_a_noop_success(self):
+        owner_id = await seed_owner()
+        campaign_id = await _create_single_objective_campaign(
+            owner_id,
+            "Repeated Resume Test",
+        )
+        await generate_suggestions(campaign_id)
+        await manage_campaign_lifecycle_operation(campaign_id, "pause")
+
+        first = await manage_campaign_lifecycle_operation(campaign_id, "resume")
+        assert first["success"] is True
+        assert first.get("noop") is not True
+
+        retry = await manage_campaign_lifecycle_operation(campaign_id, "resume")
+
+        assert retry["success"] is True
+        assert retry["noop"] is True
+        assert retry["status"] == "running"
+        assert retry["previous_status"] == "running"
+
+    @pytest.mark.asyncio
     async def test_suggestion_explanation_operation_matches_tool(self):
         owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(

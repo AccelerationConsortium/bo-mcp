@@ -1,13 +1,16 @@
+"""OpenAPI inspection tools for the BO-MCP service."""
+
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from pydantic import Field, validate_call
 from pydantic_ai import ModelRetry
-
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
 OpenAPIVerbosity = Literal["default", "extended", "full"]
@@ -24,9 +27,7 @@ def _truncate_text(text: str) -> str:
         return text
 
     truncated_chars = len(text) - MAX_OUTPUT_CHARS
-    return text[:MAX_OUTPUT_CHARS] + (
-        f"\n\n[output truncated; {truncated_chars} chars omitted]"
-    )
+    return text[:MAX_OUTPUT_CHARS] + (f"\n\n[output truncated; {truncated_chars} chars omitted]")
 
 
 def _default_openapi_url() -> str:
@@ -34,15 +35,20 @@ def _default_openapi_url() -> str:
     if explicit_url:
         return explicit_url
 
-    api_url = (
-        os.getenv("BO_MCP_API_URL") or os.getenv("BO_REST_URL") or "http://api:8000"
-    ).rstrip("/")
+    api_url = (os.getenv("BO_MCP_API_URL") or os.getenv("BO_REST_URL") or "http://api:8000").rstrip(
+        "/"
+    )
     return f"{api_url}/openapi.json"
 
 
 def _fetch_openapi(url: str) -> dict:
-    req = Request(url, headers={"Accept": "application/json"})
-    with urlopen(req, timeout=30) as resp:
+    parsed_url = urlparse(url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        message = "BO-MCP OpenAPI URL must be an absolute HTTP(S) URL."
+        raise ValueError(message)
+
+    req = Request(url, headers={"Accept": "application/json"})  # noqa: S310 - Scheme is validated above.
+    with urlopen(req, timeout=30) as resp:  # noqa: S310 - Scheme is validated above.
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -50,7 +56,7 @@ def _schema_name_from_ref(ref: str) -> str:
     return ref.split("/")[-1] if isinstance(ref, str) else "UnknownRef"
 
 
-def _type_repr(schema: dict, spec: dict) -> str:
+def _type_repr(schema: dict, spec: dict) -> str:  # noqa: C901, PLR0911 - Mirrors OpenAPI schema variants.
     if not schema:
         return "Any"
 
@@ -105,7 +111,7 @@ def _describe_schema_brief(schema: dict, spec: dict) -> str:
     return f"{schema_type}" + (f"({schema_format})" if schema_format else "")
 
 
-def _iter_operations(spec: dict, substring_filter: str = ""):
+def _iter_operations(spec: dict, substring_filter: str = "") -> Iterator[tuple[str, str, dict]]:
     filt = (substring_filter or "").lower().strip()
     for path, path_item in (spec.get("paths") or {}).items():
         if filt and filt not in path.lower():
@@ -248,9 +254,7 @@ def _select_responses(
     if verbosity != "default":
         return items
 
-    success_items = [
-        (code, response) for code, response in items if str(code).startswith("2")
-    ]
+    success_items = [(code, response) for code, response in items if str(code).startswith("2")]
     return success_items or items[:1]
 
 
@@ -271,9 +275,7 @@ def _format_responses(
             lines.append(f"    - {code}: {description}")
         for content_type, content_obj in content.items():
             schema = (content_obj or {}).get("schema") or {}
-            lines.append(
-                f"    - {code} {content_type}: {_describe_schema_brief(schema, spec)}"
-            )
+            lines.append(f"    - {code} {content_type}: {_describe_schema_brief(schema, spec)}")
             example = (content_obj or {}).get("example")
             if verbosity in {"extended", "full"} and example is not None:
                 example_text = json.dumps(example, ensure_ascii=False)
@@ -405,7 +407,7 @@ def _format_schema_dataclass_like(name: str, schema: dict, spec: dict) -> list[s
     return lines
 
 
-def _collect_schema_refs_from_schema(
+def _collect_schema_refs_from_schema(  # noqa: C901, PLR0912 - Visits the OpenAPI schema graph variants.
     schema: dict,
     spec: dict,
     seen: set[str],
@@ -591,9 +593,8 @@ def inspect_bo_mcp_openapi_overview(
     try:
         spec = _fetch_openapi(target_url)
     except Exception as exc:  # pragma: no cover - exact urllib failure types vary
-        raise ModelRetry(
-            f"Failed to fetch BO-MCP OpenAPI schema from {target_url}: {exc}"
-        ) from exc
+        message = f"Failed to fetch BO-MCP OpenAPI schema from {target_url}: {exc}"
+        raise ModelRetry(message) from exc
 
     info = spec.get("info") or {}
     sections = [
@@ -634,9 +635,7 @@ def inspect_bo_mcp_openapi_operation(
     method: Annotated[
         str,
         Field(
-            description=(
-                "HTTP method for the operation, e.g. `get` or `post`. Case-insensitive."
-            )
+            description=("HTTP method for the operation, e.g. `get` or `post`. Case-insensitive.")
         ),
     ],
     openapi_url: Annotated[
@@ -653,32 +652,26 @@ def inspect_bo_mcp_openapi_operation(
     target_url = (openapi_url or _default_openapi_url()).strip()
     normalized_method = method.strip().lower()
     if normalized_method not in HTTP_METHODS:
-        raise ModelRetry(
+        message = (
             f"Unsupported HTTP method {method!r}. Expected one of: "
             f"{', '.join(sorted(HTTP_METHODS))}."
         )
+        raise ModelRetry(message)
 
     try:
         spec = _fetch_openapi(target_url)
     except Exception as exc:  # pragma: no cover - exact urllib failure types vary
-        raise ModelRetry(
-            f"Failed to fetch BO-MCP OpenAPI schema from {target_url}: {exc}"
-        ) from exc
+        message = f"Failed to fetch BO-MCP OpenAPI schema from {target_url}: {exc}"
+        raise ModelRetry(message) from exc
 
     found = _find_path_item_and_operation(spec, path, normalized_method)
     if found is None:
         matches = [
-            f"{op_method} {op_path}"
-            for op_path, op_method, _ in _iter_operations(spec, path)
+            f"{op_method} {op_path}" for op_path, op_method, _ in _iter_operations(spec, path)
         ]
-        hint = (
-            "\nClosest path-filter matches:\n" + "\n".join(matches[:20])
-            if matches
-            else ""
-        )
-        raise ModelRetry(
-            f"Operation {normalized_method.upper()} {path} not found in {target_url}.{hint}"
-        )
+        hint = "\nClosest path-filter matches:\n" + "\n".join(matches[:20]) if matches else ""
+        message = f"Operation {normalized_method.upper()} {path} not found in {target_url}.{hint}"
+        raise ModelRetry(message)
 
     path_item, operation = found
     parameters = _merge_parameters(

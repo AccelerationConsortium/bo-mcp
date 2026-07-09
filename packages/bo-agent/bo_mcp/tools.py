@@ -1,18 +1,19 @@
+"""Toolset builders and registration helpers for BO-MCP."""
+
 from __future__ import annotations
 
 import os
 from typing import Any
 
-from pydantic_ai import FunctionToolset, Tool
-from pydantic_ai.agent import AbstractAgent
-from pydantic_ai.mcp import MCPServerSSE
-
 from domains.bo_mcp.openapi import (
-    inspect_bo_mcp_openapi_overview,
     inspect_bo_mcp_openapi_operation,
+    inspect_bo_mcp_openapi_overview,
 )
 from grafico.agents.compat import unwrap_mutable_agent
 from grafico.tools.toolset_registration import register_persistent_toolset
+from pydantic_ai import FunctionToolset, Tool
+from pydantic_ai.agent import AbstractAgent
+from pydantic_ai.mcp import MCPServerSSE
 
 BO_MCP_TOOLSET_ID = "bo_mcp_toolset"
 BO_MCP_OPENAPI_TOOLSET_ID = "bo_mcp_openapi_toolset"
@@ -28,6 +29,7 @@ def build_bo_mcp_toolset() -> MCPServerSSE:
 
 
 def build_bo_mcp_openapi_toolset() -> FunctionToolset[object]:
+    """Build tools that inspect the live BO-MCP OpenAPI schema."""
     return FunctionToolset(
         id=BO_MCP_OPENAPI_TOOLSET_ID,
         tools=[
@@ -46,6 +48,7 @@ def build_bo_mcp_openapi_toolset() -> FunctionToolset[object]:
 
 
 def register_bo_mcp_tools(agent: AbstractAgent[Any, Any]) -> None:
+    """Register the BO-MCP SSE toolset on an agent."""
     mutable_agent = unwrap_mutable_agent(agent)
     register_persistent_toolset(
         mutable_agent,
@@ -55,6 +58,7 @@ def register_bo_mcp_tools(agent: AbstractAgent[Any, Any]) -> None:
 
 
 def register_bo_mcp_openapi_tools(agent: AbstractAgent[Any, Any]) -> None:
+    """Register the BO-MCP OpenAPI inspection tools on an agent."""
     mutable_agent = unwrap_mutable_agent(agent)
     register_persistent_toolset(
         mutable_agent,

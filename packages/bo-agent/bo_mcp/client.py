@@ -1,3 +1,5 @@
+"""Client for the BO-MCP REST campaign API."""
+
 from __future__ import annotations
 
 import os
@@ -7,6 +9,7 @@ from typing import Any
 import requests
 
 _ERROR_DETAIL_LIMIT = 500
+JsonPayload = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 class BoMcpClientError(RuntimeError):
@@ -21,6 +24,7 @@ class BoMcpOperationError(BoMcpClientError):
     """
 
     def __init__(self, message: str, payload: dict[str, Any]) -> None:
+        """Store the API error payload alongside the exception message."""
         super().__init__(message)
         self.payload = payload
 
@@ -102,9 +106,8 @@ class BoMcpClient:
     rejected — checking only the status code would hide the rejection).
     """
 
-    def __init__(
-        self, *, base_url: str, api_key: str, timeout_s: float = 120.0
-    ) -> None:
+    def __init__(self, *, base_url: str, api_key: str, timeout_s: float = 120.0) -> None:
+        """Create a client with the API base URL and authentication key."""
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.session = requests.Session()
@@ -117,17 +120,16 @@ class BoMcpClient:
         )
 
     @classmethod
-    def from_env(cls, *, timeout_s: float = 120.0) -> "BoMcpClient":
+    def from_env(cls, *, timeout_s: float = 120.0) -> BoMcpClient:
+        """Create a client from the required BO-MCP environment variables."""
         base_url = os.getenv("BO_MCP_API_URL")
         if not base_url:
-            raise BoMcpClientError(
-                "BO_MCP_API_URL is not set; it must point at the BO-MCP REST API."
-            )
+            message = "BO_MCP_API_URL is not set; it must point at the BO-MCP REST API."
+            raise BoMcpClientError(message)
         api_key = os.getenv("BO_MCP_API_KEY")
         if not api_key:
-            raise BoMcpClientError(
-                "BO_MCP_API_KEY is not set; it is required for BO-MCP REST calls."
-            )
+            message = "BO_MCP_API_KEY is not set; it is required for BO-MCP REST calls."
+            raise BoMcpClientError(message)
         return cls(base_url=base_url, api_key=api_key, timeout_s=timeout_s)
 
     def validate_intake(self, intake: dict[str, Any]) -> dict[str, Any]:
@@ -137,13 +139,10 @@ class BoMcpClient:
         exact field shapes via ``inspect_bo_mcp_openapi_operation`` on
         ``POST /api/v1/campaigns``, then validate here before creating.
         """
-        return self._json_request(
-            "POST", "/api/v1/campaigns/validate", json={"intake": intake}
-        )
+        return self._json_request("POST", "/api/v1/campaigns/validate", json={"intake": intake})
 
-    def create_campaign(
-        self, intake: dict[str, Any], *, idempotency_key: str
-    ) -> dict[str, Any]:
+    def create_campaign(self, intake: dict[str, Any], *, idempotency_key: str) -> dict[str, Any]:
+        """Create a campaign from an already validated intake payload."""
         return self._json_request(
             "POST",
             "/api/v1/campaigns",
@@ -152,6 +151,7 @@ class BoMcpClient:
         )
 
     def get_campaign(self, campaign_id: str) -> dict[str, Any]:
+        """Return the current campaign record."""
         return self._json_request("GET", f"/api/v1/campaigns/{campaign_id}")
 
     def query_suggestions(
@@ -161,6 +161,7 @@ class BoMcpClient:
         status_filter: str | None = None,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
+        """Return existing suggestions, optionally filtered by status."""
         response = self._json_request(
             "POST",
             f"/api/v1/suggestions/{campaign_id}/query",
@@ -172,9 +173,8 @@ class BoMcpClient:
         )
         return list(response.get("suggestions") or [])
 
-    def generate_suggestions(
-        self, campaign_id: str, *, batch_size: int = 1
-    ) -> dict[str, Any]:
+    def generate_suggestions(self, campaign_id: str, *, batch_size: int = 1) -> dict[str, Any]:
+        """Ask BO-MCP to generate a batch of candidate suggestions."""
         return self._json_request(
             "POST",
             f"/api/v1/suggestions/{campaign_id}/generate",
@@ -188,6 +188,7 @@ class BoMcpClient:
         results: list[dict[str, Any]],
         idempotency_key: str,
     ) -> dict[str, Any]:
+        """Submit externally evaluated candidate results to BO-MCP."""
         return self._json_request(
             "POST",
             f"/api/v1/results/{campaign_id}",
@@ -195,9 +196,8 @@ class BoMcpClient:
             headers={"Idempotency-Key": idempotency_key},
         )
 
-    def update_suggestion_status(
-        self, suggestion_id: str, status: str
-    ) -> dict[str, Any]:
+    def update_suggestion_status(self, suggestion_id: str, status: str) -> dict[str, Any]:
+        """Set the lifecycle status for one suggestion."""
         return self._json_request(
             "POST",
             f"/api/v1/suggestions/{suggestion_id}/status",
@@ -222,11 +222,11 @@ class BoMcpClient:
         )
         campaign = (response.get("campaigns") or {}).get(campaign_id)
         if campaign is None:
-            raise BoMcpOperationError(
+            message = (
                 f"BO-MCP has no status for campaign {campaign_id}: "
-                f"{response.get('errors') or response.get('failed_ids')}",
-                response,
+                f"{response.get('errors') or response.get('failed_ids')}"
             )
+            raise BoMcpOperationError(message, response)
         recommendation = campaign.get("next_action_recommendation") or {}
         return {
             "status": campaign.get("status"),
@@ -244,9 +244,12 @@ class BoMcpClient:
         verbosity: str = "standard",
         timeout_s: float | None = None,
     ) -> dict[str, Any]:
-        """Fetch campaign diagnostics; see the loop-policy note in the class
+        """Fetch campaign diagnostics.
+
+        See the loop-policy note in the class
         docstring — computation grows with the campaign, so end-of-invocation
-        calls should pass a generous ``timeout_s``."""
+        calls should pass a generous ``timeout_s``.
+        """
         return self._json_request(
             "GET",
             f"/api/v1/diagnostics/{campaign_id}",
@@ -254,19 +257,17 @@ class BoMcpClient:
             timeout=timeout_s if timeout_s is not None else self.timeout_s,
         )
 
-    def export_campaign(
-        self, campaign_id: str, *, fmt: str = "csv"
-    ) -> tuple[bytes, str]:
+    def export_campaign(self, campaign_id: str, *, fmt: str = "csv") -> tuple[bytes, str]:
+        """Export campaign artifacts in the requested format."""
         response = self._request(
             "GET",
             f"/api/v1/campaigns/{campaign_id}/export",
             params={"format": fmt},
         )
-        return response.content, response.headers.get(
-            "Content-Type", "application/octet-stream"
-        )
+        return response.content, response.headers.get("Content-Type", "application/octet-stream")
 
     def lifecycle(self, campaign_id: str, *, action: str) -> dict[str, Any]:
+        """Apply a campaign lifecycle action such as pause or resume."""
         return self._json_request(
             "POST",
             f"/api/v1/campaigns/{campaign_id}/lifecycle",
@@ -275,26 +276,27 @@ class BoMcpClient:
 
     @staticmethod
     def make_idempotency_key(prefix: str, *parts: str) -> str:
+        """Build a unique, readable idempotency key for one logical request."""
         joined = "-".join(part.replace("/", "_") for part in parts if part)
         return f"{prefix}-{joined}-{uuid.uuid4().hex[:10]}"
 
-    def _json_request(self, method: str, path: str, **kwargs: Any) -> Any:
+    def _json_request(self, method: str, path: str, **kwargs: object) -> JsonPayload:
         response = self._request(method, path, **kwargs)
         try:
             payload = response.json()
         except ValueError as exc:
-            raise BoMcpClientError(
+            message = (
                 f"BO-MCP {method} {path} returned non-JSON body: "
                 f"{response.text[:_ERROR_DETAIL_LIMIT]}"
-            ) from exc
+            )
+            raise BoMcpClientError(message) from exc
         if isinstance(payload, dict) and payload.get("success") is False:
             errors = payload.get("errors") or payload.get("error") or payload
-            raise BoMcpOperationError(
-                f"BO-MCP {method} {path} rejected the operation: {errors}", payload
-            )
+            message = f"BO-MCP {method} {path} rejected the operation: {errors}"
+            raise BoMcpOperationError(message, payload)
         return payload
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
+    def _request(self, method: str, path: str, **kwargs: object) -> requests.Response:
         response = self.session.request(
             method,
             self.base_url + path,
@@ -302,8 +304,9 @@ class BoMcpClient:
             **kwargs,
         )
         if response.status_code >= 400:
-            raise BoMcpClientError(
+            message = (
                 f"BO-MCP {method} {path} failed with {response.status_code}: "
                 f"{response.text[:_ERROR_DETAIL_LIMIT]}"
             )
+            raise BoMcpClientError(message)
         return response

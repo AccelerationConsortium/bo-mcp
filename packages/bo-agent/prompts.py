@@ -1,3 +1,5 @@
+"""Prompt constants for the Bayesian optimization agent and specialist."""
+
 BO_MAIN_AGENT_INSTRUCTION = (
     "For BO-MCP related tasks, delegate BO API interpretation and function-evaluation "
     "planning to `bo-specialist`. "
@@ -46,7 +48,8 @@ BO_SPECIALIST_INSTRUCTIONS = (
     "When you need repository source files, use absolute `/app` paths. "
     "Conduct all Bayesian optimization through BO-MCP — never a custom "
     "implementation. Use the canonical client from the active `uv` environment: "
-    'first run `uv run python -c "from domains.bo_mcp.client import BoMcpClient; print(BoMcpClient.__doc__)"`, '
+    'first run `uv run python -c "from domains.bo_mcp.client import BoMcpClient; print('
+    'BoMcpClient.__doc__)"`, '
     "then construct `BoMcpClient.from_env()` in scripts (`BO_MCP_API_URL` and "
     "`BO_MCP_API_KEY` are required and fail fast when missing); never write "
     "your own HTTP client for BO-MCP. Its class docstring at "
@@ -106,15 +109,18 @@ BO_SPECIALIST_INSTRUCTIONS = (
     "Use a concurrency model compatible with the evaluator and its runtime; avoid "
     "fork-based multiprocessing when the evaluator initializes GPU or other unsafe "
     "process-local resources. "
-    "Make stdout concise, readable, visually clear, and UI-friendly; do not dump large data structures. "
-    "Keep scripts concise and minimal; prefer iterating on a simple script over upfront over-engineering. "
+    "Make stdout concise, readable, visually clear, and UI-friendly; "
+    "do not dump large data structures. "
+    "Keep scripts concise and minimal; prefer iterating on a simple script over upfront "
+    "over-engineering. "
     "After writing a script, don't read the full file back just to inspect it. "
     "Use targeted validation instead, such as `python -m py_compile`, linting/formatting, "
     "or a limited smoke test. Only read specific regions when debugging a concrete error. "
     "Add Logfire request instrumentation near the script header for BO runs: "
     "`import logfire`, `from grafico.core.logfire_config import configure_logfire`, "
     "`configure_logfire()`, `logfire.instrument_requests()`. "
-    "When logging use `logfire.info` for general messages, `logfire.debug` for detailed debugging information. "
+    "When logging use `logfire.info` for general messages, `logfire.debug` for detailed "
+    "debugging information. "
     "Use persistent memory as a narrow self-improvement mechanism for "
     "campaign-script authoring. If, while writing or smoke-testing a script, "
     "you discover general implementation caveats that will help future BO "
@@ -137,3 +143,4 @@ BO_SPECIALIST_INSTRUCTIONS = (
     "interpret that as forbidding only full campaign execution, not the required smoke test. "
     "Iterate from the result. "
 )
+"""Prompt constants for the Bayesian optimization agent and specialist."""

@@ -1,3 +1,5 @@
+"""Bayesian optimization specialist subagent configuration."""
+
 from typing import Any
 
 from prompts import BO_SPECIALIST_INSTRUCTIONS
@@ -9,6 +11,7 @@ BO_SPECIALIST_DESCRIPTION = (
 
 
 def build_bo_specialist_subagent() -> dict[str, Any]:
+    """Return the BO specialist's subagent configuration."""
     return {
         "name": BO_SPECIALIST_NAME,
         "description": BO_SPECIALIST_DESCRIPTION,

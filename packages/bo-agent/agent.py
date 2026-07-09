@@ -1,18 +1,19 @@
+"""Web entrypoint for the Bayesian optimization agent."""
+
 import subprocess
 
+import logfire
 from dotenv import load_dotenv
 from langchain_experimental.tools.python.tool import PythonREPLTool
+from prompts import BO_MAIN_AGENT_INSTRUCTION
 from pydantic_ai import Tool
 from pydantic_ai.ext.langchain import tool_from_langchain
 from pydantic_deep import DeepAgentDeps, LocalBackend, create_deep_agent
 from pydantic_deep.subagents import GENERAL_PURPOSE_SUBAGENT
-
-from prompts import BO_MAIN_AGENT_INSTRUCTION
 from specialist import build_bo_specialist_subagent
 
 load_dotenv()
 
-import logfire
 logfire.configure(send_to_logfire="if-token-present")
 logfire.instrument_pydantic_ai()
 logfire.instrument_httpx(capture_all=True)
@@ -23,8 +24,8 @@ deps = DeepAgentDeps(backend=LocalBackend(root_dir="."))
 def bash(command: str) -> str:
     """Run a Bash command and return its combined output."""
     try:
-        result = subprocess.run(
-            ["bash", "-lc", command],
+        result = subprocess.run(  # noqa: S603 - This tool intentionally runs user-directed commands.
+            ["/bin/bash", "-lc", command],
             capture_output=True,
             text=True,
             timeout=36_000,

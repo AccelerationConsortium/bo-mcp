@@ -12,6 +12,7 @@ References:
 """
 
 import random
+import statistics
 
 import pytest
 import torch
@@ -433,11 +434,28 @@ class TestSuggestionQualityRegression:
 
     @pytest.mark.asyncio
     async def test_branin_currin_hypervolume_regression(self):
-        """Hypervolume on Branin-Currin should reach minimum threshold.
+        """Seeded Branin-Currin run must clear the catastrophe-floor hypervolume.
+
+        The metric is the dominated hypervolume in **raw objective
+        units** against a reference box pinned to the campaign's first 5
+        observations (+10% margin, see
+        ``bo_engine.diagnostics.compute_observed_hypervolume``) — its
+        absolute value therefore encodes initial-design spread as much
+        as optimizer quality and is NOT comparable across backends
+        (measured seeded values: baybe ≈ 3.28, botorch ≈ 1.36, from the
+        same seed but different initial designs / reference boxes).
+
+        The 0.1 threshold is a catastrophe detector, deliberately far
+        below both healthy values: breakage of the C1 class (acquisition
+        optimizing the wrong direction, degenerate reference box) lands
+        at ~0.001–0.01, two orders of magnitude under the floor, while
+        leaving 13–33x headroom for benign trajectory drift across torch
+        versions/platforms. Seed-robust quality (not just this pinned
+        trajectory) is covered by the nightly multi-seed statistical
+        test.
 
         Reference: BoTorch Multi-Objective Tutorial
         https://botorch.org/tutorials/multi_objective_bo
-        Expected hypervolume after 3 iterations: > 0.5 (normalized)
         """
         from bo_engine.benchmarks import branin_currin
         from bo_mcp_server.tools.create_campaign import create_campaign
@@ -460,6 +478,14 @@ class TestSuggestionQualityRegression:
                 {"name": "currin", "direction": "minimize"},
             ],
             "batch_size": 3,
+            # Load-bearing: unseeded campaigns draw per-call OS-entropy
+            # seeds (draw_fallback_seed), so the random.seed /
+            # torch.manual_seed above do NOT pin the trajectory. Without
+            # the campaign seed the hypervolume is a per-run random
+            # variable whose lower tail (a tiny pinned reference box from
+            # clustered early observations) falls below any useful
+            # threshold.
+            "random_seed": 42,
         }
 
         create_result = await create_campaign(intake_data, owner_id)
@@ -518,6 +544,8 @@ class TestSuggestionQualityRegression:
             ],
             "objectives": [{"name": "f", "direction": "minimize"}],
             "batch_size": 3,
+            # Load-bearing for determinism — see the hypervolume test above.
+            "random_seed": 42,
         }
 
         def quadratic(x: float, y: float) -> float:
@@ -553,6 +581,126 @@ class TestSuggestionQualityRegression:
         # After 12 evaluations, best value should be close to 0
         # Allow 0.1 tolerance for this regression test
         assert diag["best_value"] < 0.1, f"Best value too high: {diag['best_value']}"
+
+
+# Multi-seed quality calibration (CPU, torch pinned by uv.lock).
+# Fixed reference point (6.0, 1.0) = the scaled Branin-Currin domain-wide
+# worst corner (branin/51.95 spans ~[0.008, 5.93], currin/13.77 spans
+# ~[0.3, 1.0] over [0,1]^2), so — unlike the pinned first-5-observations
+# box used by campaign diagnostics — the hypervolume is comparable across
+# seeds and backends.
+#
+# Measured fixed-ref hypervolume, 3 iterations x batch 3, per seed:
+#   baybe:   seed 0: 5.39, 1: 5.29, 7: 5.25, 123: 3.53, 2026: 5.36
+#   botorch: seed 0: 4.92, 1: 5.27, 7: 5.08, 123: 5.30, 2026: 5.30
+# Random-search baseline (9 uniform points, 500 draws):
+#   p1=3.08, p5=3.29, median=3.67, p95=4.76
+#
+# The seed identities are arbitrary and carry no significance; the
+# statistical power comes from running five independent trajectories
+# against thresholds calibrated on the measurements above. Seed 42 is
+# deliberately excluded so this tier is independent of the fast-lane
+# regression tests' pinned seed.
+_MULTI_SEED_QUALITY_SEEDS: tuple[int, ...] = (0, 1, 7, 123, 2026)
+_BRANIN_CURRIN_FIXED_REF: tuple[float, float] = (6.0, 1.0)
+# Catastrophe floor per seed: below random search's p1 (3.08) but far
+# above inverted/broken behavior (< 1), and 29% under the worst healthy
+# seed observed (3.53) for cross-platform headroom.
+_PER_SEED_HV_FLOOR = 2.5
+# Median floor: 13% under the healthy medians (5.27/5.29 on the two
+# backends); five *random-search* campaigns would clear it with only
+# ~0.5% probability (requires >=3 of 5 draws above the random p95), so
+# a breach means quality degraded toward random search, not seed luck.
+_MEDIAN_HV_FLOOR = 4.6
+
+
+@pytest.mark.nightly
+@pytest.mark.usefixtures("setup_database")
+class TestSuggestionQualityAcrossSeeds:
+    """Statistical quality tier: results must not hinge on one lucky seed.
+
+    The fast-lane regression tests above pin a single ``random_seed`` so
+    they are deterministic catastrophe detectors. This nightly tier
+    answers the complementary question — is optimization quality robust
+    across seeds? Invariant/seeded checks run per-PR; multi-seed
+    statistical checks run in the scheduled nightly job.
+
+    Reference: BoTorch Multi-Objective Tutorial (Branin-Currin with a
+    fixed reference point) https://botorch.org/tutorials/multi_objective_bo
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(600)
+    async def test_branin_currin_hypervolume_across_seeds(self):
+        """Fixed-reference hypervolume holds a floor on every seed and a median bound.
+
+        Calibration data and threshold rationale are documented on the
+        module-level constants above.
+        """
+        from bo_engine.benchmarks import branin_currin
+        from bo_engine.diagnostics import compute_hypervolume, compute_pareto_front
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+        from bo_mcp_server.tools.submit_results import submit_results
+
+        ref_point = torch.tensor(_BRANIN_CURRIN_FIXED_REF, dtype=torch.float64)
+        hv_by_seed: dict[int, float] = {}
+
+        for seed in _MULTI_SEED_QUALITY_SEEDS:
+            owner_id = await seed_owner()
+            intake_data = {
+                "name": f"Branin-Currin Multi-Seed {seed}",
+                "parameters": [
+                    {"name": "x0", "type": "continuous", "bounds": [0.0, 1.0]},
+                    {"name": "x1", "type": "continuous", "bounds": [0.0, 1.0]},
+                ],
+                "objectives": [
+                    {"name": "branin", "direction": "minimize"},
+                    {"name": "currin", "direction": "minimize"},
+                ],
+                "batch_size": 3,
+                "random_seed": seed,
+            }
+            create_result = await create_campaign(intake_data, owner_id)
+            campaign_id = create_result["campaign_id"]
+
+            all_y: list[list[float]] = []
+            for _ in range(3):
+                gen = await generate_suggestions(campaign_id)
+                assert gen["success"] is True, gen.get("errors")
+                results = []
+                for s in gen["suggestions"]:
+                    x = torch.tensor([[s["parameter_values"]["x0"], s["parameter_values"]["x1"]]])
+                    y = branin_currin(x)
+                    all_y.append([y[0, 0].item(), y[0, 1].item()])
+                    results.append(
+                        {
+                            "parameter_values": s["parameter_values"],
+                            "objective_values": {
+                                "branin": y[0, 0].item(),
+                                "currin": y[0, 1].item(),
+                            },
+                        }
+                    )
+                await submit_results(campaign_id, _to_result_inputs(results), owner_id)
+
+            # Both objectives minimize, so raw values are already in the
+            # canonical minimization form the helpers expect.
+            y_tensor = torch.tensor(all_y, dtype=torch.float64)
+            pareto_y, _ = compute_pareto_front(y_tensor)
+            hv_by_seed[seed] = compute_hypervolume(pareto_y, ref_point)
+
+        failing = {s: hv for s, hv in hv_by_seed.items() if hv <= _PER_SEED_HV_FLOOR}
+        assert not failing, (
+            f"Seeds below the catastrophe floor {_PER_SEED_HV_FLOOR}: {failing} "
+            f"(all values: {hv_by_seed})"
+        )
+
+        median_hv = statistics.median(hv_by_seed.values())
+        assert median_hv > _MEDIAN_HV_FLOOR, (
+            f"Median fixed-ref hypervolume {median_hv:.3f} <= {_MEDIAN_HV_FLOOR} — "
+            f"quality degraded toward random search (per-seed: {hv_by_seed})"
+        )
 
 
 @pytest.mark.usefixtures("setup_database")

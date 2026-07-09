@@ -5,15 +5,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from domains.bo_mcp.openapi import (
+from pydantic_ai import FunctionToolset, Tool
+from pydantic_ai.mcp import MCPToolset, SSETransport
+
+from bo_mcp.openapi import (
     inspect_bo_mcp_openapi_operation,
     inspect_bo_mcp_openapi_overview,
 )
-from grafico.agents.compat import unwrap_mutable_agent
-from grafico.tools.toolset_registration import register_persistent_toolset
-from pydantic_ai import FunctionToolset, Tool
-from pydantic_ai.agent import AbstractAgent
-from pydantic_ai.mcp import MCPServerSSE
 
 BO_MCP_TOOLSET_ID = "bo_mcp_toolset"
 BO_MCP_OPENAPI_TOOLSET_ID = "bo_mcp_openapi_toolset"
@@ -23,9 +21,9 @@ def _bo_mcp_sse_url() -> str:
     return os.getenv("BO_MCP_SSE_URL", "http://mcp:8001/sse")
 
 
-def build_bo_mcp_toolset() -> MCPServerSSE:
+def build_bo_mcp_toolset() -> MCPToolset[Any]:
     """Build the BO MCP client used by the chat runtime."""
-    return MCPServerSSE(_bo_mcp_sse_url(), id=BO_MCP_TOOLSET_ID)
+    return MCPToolset(SSETransport(_bo_mcp_sse_url()), id=BO_MCP_TOOLSET_ID)
 
 
 def build_bo_mcp_openapi_toolset() -> FunctionToolset[object]:
@@ -44,24 +42,4 @@ def build_bo_mcp_openapi_toolset() -> FunctionToolset[object]:
                 max_retries=2,
             ),
         ],
-    )
-
-
-def register_bo_mcp_tools(agent: AbstractAgent[Any, Any]) -> None:
-    """Register the BO-MCP SSE toolset on an agent."""
-    mutable_agent = unwrap_mutable_agent(agent)
-    register_persistent_toolset(
-        mutable_agent,
-        toolset_id=BO_MCP_TOOLSET_ID,
-        build_toolset=build_bo_mcp_toolset,
-    )
-
-
-def register_bo_mcp_openapi_tools(agent: AbstractAgent[Any, Any]) -> None:
-    """Register the BO-MCP OpenAPI inspection tools on an agent."""
-    mutable_agent = unwrap_mutable_agent(agent)
-    register_persistent_toolset(
-        mutable_agent,
-        toolset_id=BO_MCP_OPENAPI_TOOLSET_ID,
-        build_toolset=build_bo_mcp_openapi_toolset,
     )

@@ -9,7 +9,6 @@ from typing import Any
 import requests
 
 _ERROR_DETAIL_LIMIT = 500
-JsonPayload = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 class BoMcpClientError(RuntimeError):
@@ -280,7 +279,12 @@ class BoMcpClient:
         joined = "-".join(part.replace("/", "_") for part in parts if part)
         return f"{prefix}-{joined}-{uuid.uuid4().hex[:10]}"
 
-    def _json_request(self, method: str, path: str, **kwargs: object) -> JsonPayload:
+    def _json_request(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,  # noqa: ANN401 - Requests accepts endpoint-specific keyword arguments.
+    ) -> dict[str, Any]:
         response = self._request(method, path, **kwargs)
         try:
             payload = response.json()
@@ -290,13 +294,21 @@ class BoMcpClient:
                 f"{response.text[:_ERROR_DETAIL_LIMIT]}"
             )
             raise BoMcpClientError(message) from exc
-        if isinstance(payload, dict) and payload.get("success") is False:
+        if not isinstance(payload, dict):
+            message = f"BO-MCP {method} {path} returned a JSON value instead of an object."
+            raise BoMcpClientError(message)
+        if payload.get("success") is False:
             errors = payload.get("errors") or payload.get("error") or payload
             message = f"BO-MCP {method} {path} rejected the operation: {errors}"
             raise BoMcpOperationError(message, payload)
         return payload
 
-    def _request(self, method: str, path: str, **kwargs: object) -> requests.Response:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,  # noqa: ANN401 - Requests accepts endpoint-specific keyword arguments.
+    ) -> requests.Response:
         response = self.session.request(
             method,
             self.base_url + path,

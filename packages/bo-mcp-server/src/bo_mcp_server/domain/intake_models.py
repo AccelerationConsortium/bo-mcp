@@ -91,24 +91,66 @@ class CampaignIntakeInput(BaseModel):
     # ``Literal`` produces an explicit ``enum`` constraint in the
     # generated MCP tool schema, so agents discover the valid backend
     # selectors directly from the schema instead of by failing requests.
-    backend: Literal["auto", "botorch", "baybe"] = "auto"
+    backend: Literal["auto", "botorch", "baybe"] = Field(
+        default="auto",
+        description=(
+            "Optimization backend. 'auto' prefers the deployment's "
+            "configured default backend (BO_BACKEND env var, typically "
+            "'baybe'), but switches to whichever installed backend can "
+            "run the spec without silently dropping an option — e.g. a "
+            "spec using a BoTorch-only feature (TuRBO, SAASBO, "
+            "multi-fidelity, RGPE transfer learning, cost-aware, input "
+            "warping, outcome constraints) auto-selects 'botorch'. Pin "
+            "explicitly to fail fast instead of silently switching."
+        ),
+    )
     # Typed backend-native option surface; see ``CampaignSpec.backend_options``.
     # Validation rejects options addressed to an explicit non-matching backend
     # so misrouted knobs surface at intake instead of silently disappearing.
-    backend_options: dict[str, dict[str, Any]] | None = None
+    backend_options: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Backend-native option surface, keyed by backend name "
+            "(currently only 'baybe' has a typed schema — see "
+            "BayBEBackendOptions/BayBEParameterOptions). Options addressed "
+            "to a non-selected backend are rejected at intake when "
+            "`backend` is pinned to a concrete name."
+        ),
+    )
     # Advanced cross-backend knobs — passed through to ``CampaignSpec``
     # unchanged; each is honored only by backends that advertise the
     # corresponding capability via ``validate_capabilities``.
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
     # UCB-family exploration weight; only valid with
     # acquisition_method='upper_confidence_bound' (enforced by CampaignSpec).
-    acquisition_beta: float | None = None
+    acquisition_beta: float | None = Field(
+        default=None,
+        description=(
+            "UCB exploration weight. Only valid with "
+            "acquisition_method='upper_confidence_bound'; rejected otherwise."
+        ),
+    )
     # Multi-objective combination strategy + desirability scalarizer flavor;
     # cross-field rules enforced by CampaignSpec.
     scalarization: ScalarizationMode = ScalarizationMode.PARETO
     scalarizer: ScalarizerKind | None = None
-    use_input_warping: bool = False
-    use_cost_aware: bool = False
+    use_input_warping: bool = Field(
+        default=False,
+        description=(
+            "Input warping for non-stationary objectives. BoTorch-only — "
+            "reported UNSUPPORTED on the BayBE backend by default (see "
+            "`acknowledge_degradations`)."
+        ),
+    )
+    use_cost_aware: bool = Field(
+        default=False,
+        description=(
+            "Cost-aware acquisition (EIpu), weighting candidates by "
+            "`fidelity_parameter` cost. BoTorch-only — reported "
+            "UNSUPPORTED on the BayBE backend by default (see "
+            "`acknowledge_degradations`)."
+        ),
+    )
     turbo_config: TurboConfig | None = None
     saasbo_config: SaasboConfig | None = None
     fidelity_parameter: FidelityParameter | None = None
@@ -120,7 +162,16 @@ class CampaignIntakeInput(BaseModel):
     # backends that cannot honor them; naming the field here downgrades
     # the rejection to an IGNORED warning so the caller accepts the
     # degraded run knowingly.
-    acknowledge_degradations: tuple[str, ...] = Field(default_factory=tuple)
+    acknowledge_degradations: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "Opt-in list of attribute names (e.g. 'turbo_config', "
+            "'outcome_constraints') whose BayBE-UNSUPPORTED status should "
+            "downgrade to an IGNORED warning instead of rejecting the "
+            "request, when running a BoTorch-only feature on "
+            "backend='baybe'."
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 

@@ -238,8 +238,9 @@ class BayBEParameterOptions(BaseModel):
         default=True,
         description=(
             "role=custom only. Mirrors BayBE CustomDiscreteParameter.decorrelate: "
-            "true drops highly correlated descriptor columns, false keeps the table "
-            "as-is, or a float in (0, 1) sets the correlation threshold."
+            "true drops descriptor columns correlated above the default "
+            "threshold (0.7), false keeps the table as-is, or a float in "
+            "(0, 1) sets a custom correlation threshold."
         ),
     )
 
@@ -695,14 +696,20 @@ class BayBEBackendOptions(BaseModel):
     allow_recommending_already_measured: bool | None = Field(
         default=None,
         description=(
-            "Whether already-measured points remain candidates. None keeps BayBE's own default."
+            "Whether already-measured points remain candidates. None keeps "
+            "the backend's historical behavior: False on purely discrete "
+            "spaces (overriding BayBE's own AUTO, which always resolves "
+            "this flag to True regardless of search-space type), or "
+            "BayBE's AUTO (True) on spaces with a continuous part."
         ),
     )
     allow_recommending_already_recommended: bool | None = Field(
         default=None,
         description=(
             "Whether previously-recommended points remain candidates on "
-            "later calls. None keeps BayBE's own default."
+            "later calls. None keeps the backend's historical behavior: "
+            "False on purely discrete spaces, BayBE's AUTO (which also "
+            "resolves to True) on spaces with a continuous part."
         ),
     )
     measurements_must_be_within_tolerance: bool | None = Field(

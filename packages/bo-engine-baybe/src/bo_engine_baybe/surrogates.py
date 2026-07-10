@@ -61,7 +61,7 @@ NOISE_PRIOR_IGNORED_REASON = (
 )
 
 # Default Matern smoothness when the kernel config omits ``nu`` — matches
-# BayBE's own DefaultKernelFactory (ScaleKernel(MaternKernel(nu=2.5))).
+# ``baybe.kernels.basic.MaternKernel``'s own attrs default (``nu=2.5``).
 DEFAULT_MATERN_NU = 2.5
 
 # Parameterless surrogate factories for the non-GP curated kinds.

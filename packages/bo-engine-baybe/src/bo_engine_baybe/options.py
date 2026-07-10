@@ -280,7 +280,11 @@ class BayBEKernelKind(StrEnum):
 
 
 # Smoothness values accepted by the Matern kernel family (gpytorch contract).
-MATERN_ALLOWED_NU: frozenset[float] = frozenset({0.5, 1.5, 2.5})
+# ``float`` isn't a valid ``Literal`` parameter per PEP 586 (and rejected by
+# ty's `invalid-type-form` check), so the allowed set is enforced by
+# ``validate_kernel_fields`` and separately surfaced to schema consumers via
+# ``json_schema_extra`` below.
+MATERN_ALLOWED_NU: tuple[float, ...] = (0.5, 1.5, 2.5)
 
 
 class BayBEKernelConfig(BaseModel):
@@ -289,7 +293,14 @@ class BayBEKernelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: BayBEKernelKind
-    nu: float | None = None
+    nu: float | None = Field(
+        default=None,
+        description=(
+            "Matern smoothness. Only valid when kind='matern'; rejected on "
+            f"'rbf'. Must be one of {list(MATERN_ALLOWED_NU)}."
+        ),
+        json_schema_extra={"enum": [*MATERN_ALLOWED_NU, None]},
+    )
 
     @model_validator(mode="after")
     def validate_kernel_fields(self) -> BayBEKernelConfig:
@@ -298,7 +309,7 @@ class BayBEKernelConfig(BaseModel):
             msg = "nu is only valid for the matern kernel"
             raise ValueError(msg)
         if self.nu is not None and self.nu not in MATERN_ALLOWED_NU:
-            msg = f"matern nu must be one of {sorted(MATERN_ALLOWED_NU)}"
+            msg = f"matern nu must be one of {list(MATERN_ALLOWED_NU)}"
             raise ValueError(msg)
         return self
 

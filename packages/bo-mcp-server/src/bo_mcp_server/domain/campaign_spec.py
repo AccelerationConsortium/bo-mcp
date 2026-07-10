@@ -739,10 +739,12 @@ class TransferLearningConfig(BaseModel):
     is deeply immutable.
 
     This RGPE ensemble targets the BoTorch backend; on BayBE it is
-    reported IGNORED by default (see ``acknowledge_degradations`` on
-    :class:`CampaignSpec`) in favor of BayBE's own native transfer-learning
-    mechanism — declare a parameter's ``parameter_options['baybe'].role``
-    as ``'task'`` instead of setting this config.
+    reported UNSUPPORTED unconditionally (unlike the other degradable
+    options, this one is NOT downgradable via ``acknowledge_degradations``
+    — setting this config on ``backend='baybe'`` always rejects the
+    request). Use BayBE's own native transfer-learning mechanism instead
+    — declare a parameter's ``parameter_options['baybe'].role`` as
+    ``'task'`` instead of setting this config.
 
     ``temperature`` is deprecated and has no effect: RGPE ensemble
     weights are computed from the paper's ranking loss (argmin counts

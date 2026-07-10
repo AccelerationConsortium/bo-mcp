@@ -76,7 +76,9 @@ class CampaignIntakeInput(BaseModel):
         gt=0.0,
         description=(
             "Relative-improvement threshold below which the campaign is "
-            "considered converged (single-objective campaigns only)."
+            "considered converged (single-objective campaigns only — "
+            "multi-objective campaigns must rely on hypervolume "
+            "diagnostics instead)."
         ),
     )
     initial_design_size: int | None = Field(

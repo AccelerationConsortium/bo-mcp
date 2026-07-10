@@ -13,10 +13,9 @@ Reference: BayBE surrogates userguide
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import assert_never
 
 from baybe.kernels import (
-    LinearKernel,
     MaternKernel,
     PeriodicKernel,
     PolynomialKernel,
@@ -25,6 +24,7 @@ from baybe.kernels import (
     RQKernel,
     ScaleKernel,
 )
+from baybe.kernels.base import Kernel
 from baybe.surrogates import (
     BayesianLinearSurrogate,
     GaussianProcessSurrogate,
@@ -64,6 +64,25 @@ NOISE_PRIOR_IGNORED_REASON = (
 # ``baybe.kernels.basic.MaternKernel``'s own attrs default (``nu=2.5``).
 DEFAULT_MATERN_NU = 2.5
 
+# The curated ``linear`` kind builds a degree-1 polynomial kernel (linear
+# with a *learned intercept*, i.e. Bayesian linear regression) instead of
+# the homogeneous ``LinearKernel`` (``k = v * x1^T x2``). The homogeneous
+# form has zero prior variance at the input-space origin, and BayBE
+# normalizes continuous parameters so the origin always lies in-bounds:
+# the degenerate corner yields NaN acquisition gradients (botorch
+# ``OptimizationGradientError``) on otherwise valid campaigns.
+LINEAR_KERNEL_POWER = 1
+
+# Human-readable label for BayBE's stock GP kernel: ``DefaultKernelFactory``
+# builds ``ScaleKernel(MaternKernel(nu=2.5))`` with dimension-interpolated
+# priors. Used by the backend's method metadata whenever no explicit
+# kernel/preset is configured.
+DEFAULT_KERNEL_DESCRIPTION = "Matern 5/2 (BayBE default GP surrogate)"
+
+# Display names for the Matern smoothness values in MATERN_ALLOWED_NU,
+# following the conventional fraction spelling (nu=2.5 -> "Matern 5/2").
+MATERN_NU_LABELS: dict[float, str] = {0.5: "1/2", 1.5: "3/2", 2.5: "5/2"}
+
 # Parameterless surrogate factories for the non-GP curated kinds.
 _SIMPLE_SURROGATE_FACTORIES: dict[BayBESurrogateKind, type] = {
     BayBESurrogateKind.RANDOM_FOREST: RandomForestSurrogate,
@@ -78,30 +97,40 @@ def _build_kernel(config: BayBEKernelConfig) -> ScaleKernel:
 
     The ScaleKernel wrapper mirrors BayBE's own default kernel factory so
     a curated kernel selection changes the similarity structure, not the
-    output-scale handling. ``power``/``num_samples`` are guaranteed
-    non-``None`` for their respective kinds by
-    :meth:`BayBEKernelConfig.validate_kernel_fields`.
+    output-scale handling. The ``match`` is exhaustive over
+    :class:`BayBEKernelKind` (``assert_never`` makes a missing branch a
+    type-check error), and the ``None`` re-checks on the required
+    companions turn a violated validator invariant into an immediate,
+    clearly-worded failure instead of an opaque library error.
     """
-    if config.kind == BayBEKernelKind.MATERN:
-        nu = config.nu if config.nu is not None else DEFAULT_MATERN_NU
-        kernel = MaternKernel(nu=nu)
-    elif config.kind == BayBEKernelKind.RBF:
-        kernel = RBFKernel()
-    elif config.kind == BayBEKernelKind.LINEAR:
-        kernel = LinearKernel()
-    elif config.kind == BayBEKernelKind.PERIODIC:
-        kernel = (
-            PeriodicKernel(period_length_initial_value=config.period_length)
-            if config.period_length is not None
-            else PeriodicKernel()
-        )
-    elif config.kind == BayBEKernelKind.POLYNOMIAL:
-        kernel = PolynomialKernel(power=cast("int", config.power))
-    elif config.kind == BayBEKernelKind.RQ:
-        kernel = RQKernel()
-    else:
-        kernel = RFFKernel(num_samples=cast("int", config.num_samples))
-    return ScaleKernel(kernel)
+    base: Kernel
+    match config.kind:
+        case BayBEKernelKind.MATERN:
+            nu = config.nu if config.nu is not None else DEFAULT_MATERN_NU
+            base = MaternKernel(nu=nu)
+        case BayBEKernelKind.RBF:
+            base = RBFKernel()
+        case BayBEKernelKind.LINEAR:
+            # Linear with intercept — see LINEAR_KERNEL_POWER for why the
+            # homogeneous LinearKernel is deliberately not used.
+            base = PolynomialKernel(power=LINEAR_KERNEL_POWER)
+        case BayBEKernelKind.PERIODIC:
+            base = PeriodicKernel(period_length_initial_value=config.period_length)
+        case BayBEKernelKind.POLYNOMIAL:
+            if config.power is None:
+                msg = "power is required for the polynomial kernel"
+                raise ValueError(msg)
+            base = PolynomialKernel(power=config.power)
+        case BayBEKernelKind.RQ:
+            base = RQKernel()
+        case BayBEKernelKind.RFF:
+            if config.num_samples is None:
+                msg = "num_samples is required for the rff kernel"
+                raise ValueError(msg)
+            base = RFFKernel(num_samples=config.num_samples)
+        case _:
+            assert_never(config.kind)
+    return ScaleKernel(base)
 
 
 def _build_gp_surrogate(config: BayBESurrogateConfig) -> GaussianProcessSurrogate:
@@ -138,3 +167,53 @@ def build_baybe_surrogate(
     if config.kind == BayBESurrogateKind.GP:
         return _build_gp_surrogate(config)
     return _SIMPLE_SURROGATE_FACTORIES[config.kind]()
+
+
+def _kernel_label(config: BayBEKernelConfig) -> str:
+    """Human-readable name of the kernel :func:`_build_kernel` constructs."""
+    label: str
+    match config.kind:
+        case BayBEKernelKind.MATERN:
+            nu = config.nu if config.nu is not None else DEFAULT_MATERN_NU
+            label = f"Matern {MATERN_NU_LABELS[nu]}"
+        case BayBEKernelKind.RBF:
+            label = "RBF"
+        case BayBEKernelKind.LINEAR:
+            label = "Linear (with intercept)"
+        case BayBEKernelKind.PERIODIC:
+            label = "Periodic"
+            if config.period_length is not None:
+                label = f"Periodic (period_length={config.period_length})"
+        case BayBEKernelKind.POLYNOMIAL:
+            label = f"Polynomial (power={config.power})"
+        case BayBEKernelKind.RQ:
+            label = "Rational Quadratic"
+        case BayBEKernelKind.RFF:
+            label = f"Random Fourier Features (num_samples={config.num_samples})"
+        case _:
+            assert_never(config.kind)
+    return label
+
+
+def describe_configured_kernel(options: BayBEBackendOptions) -> str:
+    """Kernel label for method/provenance metadata, derived from the config.
+
+    Mirrors what :func:`build_baybe_surrogate` actually constructs so the
+    ``method_info['kernel']`` label cannot drift from the fitted kernel:
+    an explicit kernel config wins, then a GP preset's own kernel choice,
+    then BayBE's stock default; non-GP surrogates have no GP kernel at
+    all and say so instead of inheriting the default label.
+    """
+    surrogate = options.surrogate
+    if surrogate is None:
+        return DEFAULT_KERNEL_DESCRIPTION
+    if surrogate.kind != BayBESurrogateKind.GP:
+        return f"not applicable ({surrogate.kind.value} surrogate)"
+    if surrogate.kernel is not None:
+        label = _kernel_label(surrogate.kernel)
+        if surrogate.gp_preset is not None:
+            return f"{label} ({surrogate.gp_preset.value} GP preset priors)"
+        return label
+    if surrogate.gp_preset is not None:
+        return f"{surrogate.gp_preset.value} GP preset default kernel"
+    return DEFAULT_KERNEL_DESCRIPTION

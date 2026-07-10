@@ -29,6 +29,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from bo_engine_baybe.constants import MAX_RFF_NUM_SAMPLES
+
 
 class BayBEParameterEncoding(StrEnum):
     """Categorical-encoding choices supported by BayBE.
@@ -343,23 +345,28 @@ class BayBERecommenderConfig(BaseModel):
 
     ``switch_after`` delays the initial → BO recommender switch and takes
     precedence over the neutral ``OptimizationSpec.initial_design_size``
-    knob (explicit BayBE option wins); without either, BayBE switches
-    after the first measurement. ``initial_recommender`` selects the
-    space-filling phase recommender, and ``bayesian`` tunes the GP-phase
+    knob when *explicitly set* (``None`` — the default — defers to the
+    neutral knob, so configuring an unrelated sub-option like
+    ``initial_recommender`` or ``bayesian`` cannot silently shrink a
+    requested warm-up); without either, BayBE switches after the first
+    measurement. ``initial_recommender`` selects the space-filling phase
+    recommender, and ``bayesian`` tunes the GP-phase
     :class:`BotorchRecommender`. The overall graph stays the two-phase
     meta-recommender.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    switch_after: int = Field(
-        default=1,
+    switch_after: int | None = Field(
+        default=None,
         ge=1,
         description=(
             "Number of measurements after which the two-phase meta-"
             "recommender switches from `initial_recommender` to the "
             "GP-phase BotorchRecommender. Takes precedence over the "
-            "neutral `initial_design_size` when both are set."
+            "neutral `initial_design_size` when both are set; None (the "
+            "default) defers to `initial_design_size` and then to the "
+            "backend default (switch after the first measurement)."
         ),
     )
     initial_recommender: BayBEInitialRecommender = Field(
@@ -433,6 +440,17 @@ class BayBEKernelKind(StrEnum):
 # ``json_schema_extra`` below.
 MATERN_ALLOWED_NU: tuple[float, ...] = (0.5, 1.5, 2.5)
 
+# Companion-parameter ownership: field name -> (the kernel kind it
+# parameterizes, whether that kind requires it). Single source of truth for
+# ``validate_kernel_fields``; the per-field descriptions repeat the rules in
+# prose for JSON-schema consumers.
+KERNEL_COMPANION_FIELDS: dict[str, tuple[BayBEKernelKind, bool]] = {
+    "nu": (BayBEKernelKind.MATERN, False),
+    "period_length": (BayBEKernelKind.PERIODIC, False),
+    "power": (BayBEKernelKind.POLYNOMIAL, True),
+    "num_samples": (BayBEKernelKind.RFF, True),
+}
+
 
 class BayBEKernelConfig(BaseModel):
     """GP kernel selection (wrapped in a ScaleKernel by the converter).
@@ -442,6 +460,11 @@ class BayBEKernelConfig(BaseModel):
     gpytorch's own initial value). ``power`` and ``num_samples`` are
     *required* companions for ``kind='polynomial'`` and ``kind='rff'``
     respectively. ``linear`` and ``rq`` take no extra parameters here.
+    ``linear`` builds a linear-with-intercept kernel (a degree-1
+    polynomial with learned offset): the homogeneous linear kernel has
+    zero prior variance at the input-space origin, which sits inside
+    every normalized continuous search space and destabilizes
+    acquisition optimization.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -450,10 +473,12 @@ class BayBEKernelConfig(BaseModel):
         description=(
             "Base kernel family. 'matern' (optionally tuned via `nu`) and "
             "'rbf' are smooth/stationary defaults. 'periodic' suits cyclic "
-            "parameters (optional `period_length`). 'linear' and 'rq' "
-            "(rational quadratic) suit non-stationary surfaces. "
-            "'polynomial' requires `power`. 'rff' (random Fourier "
-            "features, an RBF approximation) requires `num_samples`."
+            "parameters (optional `period_length`). 'linear' (built as a "
+            "linear-with-intercept kernel, i.e. Bayesian linear "
+            "regression) and 'rq' (rational quadratic) suit non-stationary "
+            "surfaces. 'polynomial' requires `power`. 'rff' (random "
+            "Fourier features, an RBF approximation) requires "
+            "`num_samples`."
         )
     )
     nu: float | None = Field(
@@ -476,44 +501,51 @@ class BayBEKernelConfig(BaseModel):
     )
     power: int | None = Field(
         default=None,
-        ge=0,
+        ge=1,
         description=(
-            "Polynomial kernel's power (degree). Required when "
-            "kind='polynomial'; rejected on every other kind."
+            "Polynomial kernel's power (degree), at least 1. Required when "
+            "kind='polynomial'; rejected on every other kind. A degree-0 "
+            "polynomial kernel is a constant covariance that ignores every "
+            "input — the GP degenerates to noise-only predictions and the "
+            "recommender to random sampling — so 0 is rejected at intake "
+            "even though the underlying library permits it."
         ),
     )
     num_samples: int | None = Field(
         default=None,
         ge=1,
+        le=MAX_RFF_NUM_SAMPLES,
         description=(
-            "Number of random Fourier frequencies to draw. Required when "
-            "kind='rff'; rejected on every other kind."
+            "Number of random Fourier frequencies to draw, at most "
+            f"{MAX_RFF_NUM_SAMPLES} (each evaluated point is featurized "
+            "into 2*num_samples columns, so the cap bounds the fit-time "
+            "memory this option can demand). Required when kind='rff'; "
+            "rejected on every other kind. RFF approximates the RBF "
+            "kernel and only pays off computationally when 2*num_samples "
+            "is well below the number of measurements; at typical "
+            "campaign sizes prefer kind='rbf'. The frequencies are "
+            "redrawn on every refit, so posteriors are approximate and "
+            "not bit-reproducible across recommend calls."
         ),
     )
 
     @model_validator(mode="after")
     def validate_kernel_fields(self) -> BayBEKernelConfig:
-        """Per-kind parameters only apply to (and are required by) their kind."""
-        if self.nu is not None and self.kind != BayBEKernelKind.MATERN:
-            msg = "nu is only valid for the matern kernel"
-            raise ValueError(msg)
+        """Companion parameters apply to (and are required by) exactly their kind.
+
+        Driven by :data:`KERNEL_COMPANION_FIELDS` so each new kernel kind
+        adds a table row instead of another pair of hand-written clauses.
+        """
+        for field_name, (owner, required) in KERNEL_COMPANION_FIELDS.items():
+            value = getattr(self, field_name)
+            if value is not None and self.kind != owner:
+                msg = f"{field_name} is only valid for the {owner.value} kernel"
+                raise ValueError(msg)
+            if required and self.kind == owner and value is None:
+                msg = f"{field_name} is required for the {owner.value} kernel"
+                raise ValueError(msg)
         if self.nu is not None and self.nu not in MATERN_ALLOWED_NU:
             msg = f"matern nu must be one of {list(MATERN_ALLOWED_NU)}"
-            raise ValueError(msg)
-        if self.period_length is not None and self.kind != BayBEKernelKind.PERIODIC:
-            msg = "period_length is only valid for the periodic kernel"
-            raise ValueError(msg)
-        if self.power is not None and self.kind != BayBEKernelKind.POLYNOMIAL:
-            msg = "power is only valid for the polynomial kernel"
-            raise ValueError(msg)
-        if self.kind == BayBEKernelKind.POLYNOMIAL and self.power is None:
-            msg = "power is required for the polynomial kernel"
-            raise ValueError(msg)
-        if self.num_samples is not None and self.kind != BayBEKernelKind.RFF:
-            msg = "num_samples is only valid for the rff kernel"
-            raise ValueError(msg)
-        if self.kind == BayBEKernelKind.RFF and self.num_samples is None:
-            msg = "num_samples is required for the rff kernel"
             raise ValueError(msg)
         return self
 
@@ -784,3 +816,19 @@ def extract_baybe_backend_options(
     if not raw or "baybe" not in raw:
         return BayBEBackendOptions()
     return BayBEBackendOptions.model_validate(raw["baybe"])
+
+
+def configured_non_gp_surrogate_kind(
+    options: BayBEBackendOptions,
+) -> BayBESurrogateKind | None:
+    """Return the configured surrogate kind when it is not a GP, else ``None``.
+
+    ``None`` covers both "no surrogate configured" (BayBE's implicit
+    default GP) and an explicit ``kind='gp'`` — the two cases where GP
+    kernel/hyperparameter introspection and GP-flavored method labels
+    apply.
+    """
+    surrogate = options.surrogate
+    if surrogate is None or surrogate.kind == BayBESurrogateKind.GP:
+        return None
+    return surrogate.kind

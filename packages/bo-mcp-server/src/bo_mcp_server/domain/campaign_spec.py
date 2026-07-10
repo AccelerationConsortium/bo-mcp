@@ -45,6 +45,15 @@ from bo_engine.types import (
     ScalarizerKind,
     TargetMode,
 )
+from bo_mcp_server.domain.field_docs import (
+    BATCH_SIZE_DOC,
+    CONVERGENCE_TOLERANCE_DOC,
+    DESCRIPTION_DOC,
+    INITIAL_DESIGN_SIZE_DOC,
+    MAX_ITERATIONS_DOC,
+    MAX_OBSERVATIONS_DOC,
+    RANDOM_SEED_DOC,
+)
 
 
 def _freeze_option_value(value: object) -> object:
@@ -157,6 +166,18 @@ class Bounds(BaseModel):
         return self
 
 
+# Structural fields declared per parameter type. Intake requires the
+# type's required subset (see ``validate_parameter``) and rejects any
+# structural field outside the type's set, mirroring the
+# ``_TRANSFORM_KIND_FIELDS`` contract on :class:`ObjectiveTransform`.
+_PARAMETER_STRUCTURAL_FIELDS = ("bounds", "values", "categories")
+_PARAMETER_TYPE_FIELDS: dict[ParameterType, tuple[str, ...]] = {
+    ParameterType.CONTINUOUS: ("bounds",),
+    ParameterType.DISCRETE: ("bounds", "values"),
+    ParameterType.CATEGORICAL: ("categories",),
+}
+
+
 class InputParameter(BaseModel):
     """Input parameter definition.
 
@@ -187,9 +208,11 @@ class InputParameter(BaseModel):
     type: ParameterType = Field(
         description=(
             "Parameter kind, which determines which other fields are "
-            "required (enforced at intake): 'continuous' requires "
-            "`bounds`; 'discrete' requires `values` and/or `bounds`; "
-            "'categorical' requires `categories` with at least 2 entries."
+            "required vs. rejected (enforced at intake): 'continuous' "
+            "requires `bounds`; 'discrete' requires `values` and/or "
+            "`bounds`; 'categorical' requires `categories` with at "
+            "least 2 entries. Fields outside the kind's set are "
+            "rejected."
         )
     )
     bounds: Bounds | None = Field(
@@ -198,20 +221,24 @@ class InputParameter(BaseModel):
             "Numeric range as {lower, upper} (legacy [lower, upper] pairs "
             "also accepted). Required for type='continuous'; for "
             "type='discrete', supplying only `bounds` (no `values`) "
-            "expands to an integer grid over the range."
+            "expands to an integer grid over the range. Rejected for "
+            "type='categorical'."
         ),
     )
     values: tuple[float, ...] | None = Field(
         default=None,
         description=(
             "Explicit discrete grid values (fractional values allowed). "
-            "type='discrete' only; required unless `bounds` is set "
-            "instead."
+            "type='discrete' only (rejected for other types); required "
+            "unless `bounds` is set instead."
         ),
     )
     categories: tuple[str, ...] | None = Field(
         default=None,
-        description="Category labels. type='categorical' only; at least 2 required.",
+        description=(
+            "Category labels. type='categorical' only (rejected for "
+            "other types); at least 2 required."
+        ),
     )
     description: str = Field(
         default="",
@@ -257,15 +284,29 @@ class InputParameter(BaseModel):
 
     @model_validator(mode="after")
     def validate_parameter(self) -> "InputParameter":
-        """Validate parameter has appropriate fields for its type."""
-        if self.type == ParameterType.CONTINUOUS:
-            if self.bounds is None:
-                msg = "Continuous parameter requires bounds"
+        """Require the type's structural fields and reject every other one.
+
+        The rejection half matters as much as the requirement half: a
+        contradictory declaration (e.g. a continuous parameter carrying a
+        discrete `values` grid) would otherwise validate and then be
+        silently ignored by every backend, so the optimizer would explore
+        a different space than the caller believes was declared.
+        """
+        allowed = _PARAMETER_TYPE_FIELDS[self.type]
+        for field_name in _PARAMETER_STRUCTURAL_FIELDS:
+            if field_name not in allowed and getattr(self, field_name) is not None:
+                msg = (
+                    f"Parameter '{self.name}' of type '{self.type.value}' "
+                    f"does not take {field_name}"
+                )
                 raise ValueError(msg)
-        elif self.type == ParameterType.DISCRETE and (self.values is None and self.bounds is None):
+        if self.type == ParameterType.CONTINUOUS and self.bounds is None:
+            msg = "Continuous parameter requires bounds"
+            raise ValueError(msg)
+        if self.type == ParameterType.DISCRETE and self.values is None and self.bounds is None:
             msg = "Discrete parameter requires values or bounds"
             raise ValueError(msg)
-        elif self.type == ParameterType.CATEGORICAL and (
+        if self.type == ParameterType.CATEGORICAL and (
             self.categories is None or len(self.categories) < 2
         ):
             msg = "Categorical parameter requires at least 2 categories"
@@ -347,10 +388,12 @@ class Objective(BaseModel):
     ``log_transform`` opts a minimize objective into a ``Log → Standardize``
     outcome stack so multi-decade targets (e.g. concentrations or rates
     spanning several orders of magnitude) train against a roughly
-    homoskedastic scale. Currently only valid for ``direction="minimize"``;
-    enabling it on a maximize objective raises at the suggestion-generation
-    boundary because BoTorch's ``Log`` transform requires strictly
-    positive targets and negation flips positive raw values to negative.
+    homoskedastic scale. Only valid for minimize objectives — declared
+    via either ``direction="minimize"`` or ``target_mode="minimize"``;
+    enabling it on a maximize objective is rejected by capability
+    validation at campaign creation because BoTorch's ``Log`` transform
+    requires strictly positive targets and negation flips positive raw
+    values to negative.
 
     The goal is declared either through the legacy ``direction`` string or
     the richer ``target_mode`` (mutually exclusive — exactly one must be
@@ -385,10 +428,10 @@ class Objective(BaseModel):
         description=(
             "Apply a Log -> Standardize outcome stack, for multi-decade "
             "targets (e.g. concentrations spanning orders of magnitude). "
-            "Only valid with direction='minimize' (BoTorch's Log transform "
-            "requires strictly positive targets, which negation for "
-            "'maximize' would violate). Mutually exclusive with "
-            "`transform`."
+            "Only valid for minimize objectives (direction='minimize' or "
+            "target_mode='minimize'): BoTorch's Log transform requires "
+            "strictly positive targets, which negation for 'maximize' "
+            "would violate. Mutually exclusive with `transform`."
         ),
     )
     target_mode: TargetMode | None = Field(
@@ -738,13 +781,14 @@ class TransferLearningConfig(BaseModel):
     ``prior_campaign_ids`` field is a tuple so a frozen config instance
     is deeply immutable.
 
-    This RGPE ensemble targets the BoTorch backend; on BayBE it is
-    reported UNSUPPORTED unconditionally (unlike the other degradable
-    options, this one is NOT downgradable via ``acknowledge_degradations``
-    — setting this config on ``backend='baybe'`` always rejects the
-    request). Use BayBE's own native transfer-learning mechanism instead
-    — declare a parameter's ``parameter_options['baybe'].role`` as
-    ``'task'`` instead of setting this config.
+    This RGPE ensemble targets the BoTorch backend. On a pinned
+    ``backend='baybe'`` the spec is reported UNSUPPORTED and rejected at
+    intake, and — unlike other BoTorch-only features —
+    ``acknowledge_degradations`` cannot downgrade the rejection to a
+    warning. Use BayBE's own native transfer-learning mechanism instead:
+    declare a parameter's ``parameter_options['baybe'].role`` as
+    ``'task'`` rather than setting this config (with ``backend='auto'``
+    an RGPE spec simply resolves to the BoTorch backend).
 
     ``temperature`` is deprecated and has no effect: RGPE ensemble
     weights are computed from the paper's ranking loss (argmin counts
@@ -930,71 +974,22 @@ class CampaignSpec(BaseModel):
     """
 
     name: str = Field(..., min_length=1)
-    description: str = Field(default="", description="Free-text human-readable note.")
+    description: str = Field(default="", description=DESCRIPTION_DOC)
     parameters: tuple[InputParameter, ...] = Field(..., min_length=1)
     objectives: tuple[Objective, ...] = Field(..., min_length=1)
     constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
-    batch_size: int = Field(
-        default=1, ge=1, description="Number of suggestions generated per call."
-    )
+    batch_size: int = Field(default=1, ge=1, description=BATCH_SIZE_DOC)
     # ``ge=1`` matches ``max_observations``: zero or negative would create
     # a born-dead campaign whose every generate returns BUDGET_EXCEEDED.
-    max_iterations: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "Cap on the number of completed BO iterations. Once reached, "
-            "suggestion generation reports BUDGET_EXCEEDED instead of "
-            "producing more suggestions."
-        ),
-    )
-    # Total observation cap. Counted across all iterations; reaching it short-
-    # circuits ``generate_suggestions`` even mid-iteration.
-    max_observations: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "Cap on the total number of observed results, irrespective of "
-            "iteration grouping. Reaching it short-circuits suggestion "
-            "generation even mid-iteration."
-        ),
-    )
-    # Relative-improvement threshold passed to ``detect_convergence``. When
-    # set, the suggestion entry point reports ``CONVERGED`` once recent
-    # improvement falls below this value.
+    max_iterations: int | None = Field(default=None, ge=1, description=MAX_ITERATIONS_DOC)
+    max_observations: int | None = Field(default=None, ge=1, description=MAX_OBSERVATIONS_DOC)
+    # Passed to ``detect_convergence``; the suggestion entry point reports
+    # ``CONVERGED`` once recent improvement falls below this value.
     convergence_tolerance: float | None = Field(
-        default=None,
-        gt=0.0,
-        description=(
-            "Relative-improvement threshold below which the campaign is "
-            "considered converged (single-objective campaigns only — "
-            "multi-objective campaigns must rely on hypervolume "
-            "diagnostics instead)."
-        ),
+        default=None, gt=0.0, description=CONVERGENCE_TOLERANCE_DOC
     )
-    initial_design_size: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "Number of space-filling (Sobol/random) warmup points before "
-            "switching to the model-driven acquisition phase. None uses a "
-            "dimension-adaptive default (BoTorch) or switches after the "
-            "first measurement (BayBE, unless overridden by "
-            "backend_options['baybe'].recommender.switch_after, which "
-            "takes precedence)."
-        ),
-    )
-    random_seed: int | None = Field(
-        default=None,
-        description=(
-            "Campaign-level RNG seed. Optional. When supplied, the Sobol "
-            "initial design and acquisition multi-start are deterministic "
-            "within a fixed (torch version, device, deterministic-algorithms "
-            "setting) triple; suggestions are NOT byte-identical across "
-            "different torch versions, CPU vs. CUDA, or backend swaps. Set "
-            "torch.use_deterministic_algorithms(True) for strictest behavior."
-        ),
-    )
+    initial_design_size: int | None = Field(default=None, ge=1, description=INITIAL_DESIGN_SIZE_DOC)
+    random_seed: int | None = Field(default=None, description=RANDOM_SEED_DOC)
     # v1.0.1: Acquisition method selection
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
     # Exploration weight for the UCB acquisition family; only valid together

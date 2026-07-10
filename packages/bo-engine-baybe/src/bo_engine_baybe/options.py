@@ -228,10 +228,14 @@ class BayBEBayesianRecommenderOptions(BaseModel):
 class BayBERecommenderConfig(BaseModel):
     """Recommender configuration overrides.
 
-    ``switch_after`` delays the initial → BO recommender switch and takes
-    precedence over the neutral ``OptimizationSpec.initial_design_size``
-    knob (explicit BayBE option wins); without either, BayBE switches
-    after the first measurement. ``initial_recommender`` selects the
+    ``switch_after`` delays the initial → BO recommender switch. When
+    set, it takes precedence over the neutral
+    ``OptimizationSpec.initial_design_size`` knob (explicit BayBE option
+    wins); when ``None`` the neutral knob applies, and without either
+    BayBE switches after the first measurement. The default is ``None``
+    rather than the legacy switch point so that an unrelated recommender
+    override (e.g. ``initial_recommender`` alone) cannot silently discard
+    a requested warmup design. ``initial_recommender`` selects the
     space-filling phase recommender, and ``bayesian`` tunes the GP-phase
     :class:`BotorchRecommender`. The overall graph stays the two-phase
     meta-recommender.
@@ -239,7 +243,7 @@ class BayBERecommenderConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    switch_after: int = Field(default=1, ge=1)
+    switch_after: int | None = Field(default=None, ge=1)
     initial_recommender: BayBEInitialRecommender = BayBEInitialRecommender.RANDOM
     bayesian: BayBEBayesianRecommenderOptions | None = None
 

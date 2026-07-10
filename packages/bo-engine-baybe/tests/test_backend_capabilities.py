@@ -22,6 +22,7 @@ from bo_engine.types import (
     ParameterSpec,
     ParameterType,
     TargetMode,
+    TransferLearningSpec,
 )
 from bo_engine_baybe.backend import BayBEBackend
 
@@ -130,8 +131,6 @@ class TestTransferLearningCapability:
 
     def test_rgpe_style_transfer_unsupported(self) -> None:
         """Neutral ``transfer_learning`` config targets BoTorch RGPE, not BayBE."""
-        from bo_engine.types import TransferLearningSpec
-
         spec = OptimizationSpec(
             parameters=[
                 ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
@@ -144,6 +143,32 @@ class TestTransferLearningCapability:
         assert tr_reports
         assert tr_reports[0].status == CapabilityStatus.UNSUPPORTED
         assert "TaskParameter" in tr_reports[0].reason
+
+    def test_acknowledgement_does_not_downgrade_rgpe_transfer(self) -> None:
+        """``acknowledge_degradations`` cannot rescue an RGPE config on BayBE.
+
+        Unlike the degradable BoTorch-only options, naming
+        ``transfer_learning`` in ``acknowledge_degradations`` must leave
+        the feature-level report UNSUPPORTED (and the spec incompatible):
+        silently dropping the RGPE ensemble would run a different
+        optimization than requested, and BayBE offers a native
+        alternative (a TaskParameter via ``parameter_options['baybe']``)
+        the caller should use instead. Pins the documented
+        non-downgradability of this feature.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            transfer_learning=TransferLearningSpec(prior_campaign_ids=["abc"]),
+            acknowledge_degradations=("transfer_learning",),
+        )
+        result = BayBEBackend().validate_capabilities(spec)
+        tr_reports = [r for r in result.feature_reports if r.key == "transfer_learning"]
+        assert tr_reports
+        assert tr_reports[0].status == CapabilityStatus.UNSUPPORTED
+        assert result.is_compatible is False
 
 
 class TestLogTransformCapability:

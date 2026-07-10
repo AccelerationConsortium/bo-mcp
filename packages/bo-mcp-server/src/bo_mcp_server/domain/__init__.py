@@ -1,5 +1,6 @@
 """Domain models for the BO MCP service."""
 
+from bo_mcp_server.domain import field_docs
 from bo_mcp_server.domain.campaign import Campaign, CampaignStatus
 from bo_mcp_server.domain.campaign_spec import (
     AcquisitionMethod,
@@ -66,4 +67,5 @@ __all__ = [
     "TransferLearningConfig",
     "TurboConfig",
     "User",
+    "field_docs",
 ]

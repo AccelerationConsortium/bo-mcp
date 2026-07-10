@@ -18,6 +18,22 @@ from bo_mcp_server.domain.campaign_spec import (
     TransferLearningConfig,
     TurboConfig,
 )
+from bo_mcp_server.domain.field_docs import (
+    ACKNOWLEDGE_DEGRADATIONS_DOC,
+    ACQUISITION_BETA_DOC,
+    BACKEND_DOC,
+    BACKEND_OPTIONS_DOC,
+    BATCH_SIZE_DOC,
+    CONVERGENCE_TOLERANCE_DOC,
+    DESCRIPTION_DOC,
+    INITIAL_DESIGN_SIZE_DOC,
+    INTAKE_EXAMPLES,
+    MAX_ITERATIONS_DOC,
+    MAX_OBSERVATIONS_DOC,
+    RANDOM_SEED_DOC,
+    USE_COST_AWARE_DOC,
+    USE_INPUT_WARPING_DOC,
+)
 from bo_mcp_server.domain.result import ResultMetadata
 
 # Objective measurements feed the surrogate's training targets. Pydantic's
@@ -39,19 +55,23 @@ class CampaignIntakeInput(BaseModel):
     """
 
     name: str = Field(..., min_length=1)
-    description: str = ""
+    description: str = Field(default="", description=DESCRIPTION_DOC)
     parameters: tuple[InputParameter, ...] = Field(..., min_length=1)
     objectives: tuple[Objective, ...] = Field(..., min_length=1)
     constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
-    batch_size: int = Field(default=1, ge=1, le=MAX_GENERATION_BATCH_SIZE)
+    batch_size: int = Field(
+        default=1, ge=1, le=MAX_GENERATION_BATCH_SIZE, description=BATCH_SIZE_DOC
+    )
     # ``ge=1`` matches ``max_observations``: zero or negative would create
     # a born-dead campaign whose every generate returns BUDGET_EXCEEDED.
-    max_iterations: int | None = Field(default=None, ge=1)
+    max_iterations: int | None = Field(default=None, ge=1, description=MAX_ITERATIONS_DOC)
     # Budget / convergence-based stopping (optional). Mirrors the fields on
     # ``CampaignSpec``; see :mod:`bo_engine.convergence.evaluate_stopping_decision`.
-    max_observations: int | None = Field(default=None, ge=1)
-    convergence_tolerance: float | None = Field(default=None, gt=0.0)
-    initial_design_size: int | None = Field(default=None, ge=1)
+    max_observations: int | None = Field(default=None, ge=1, description=MAX_OBSERVATIONS_DOC)
+    convergence_tolerance: float | None = Field(
+        default=None, gt=0.0, description=CONVERGENCE_TOLERANCE_DOC
+    )
+    initial_design_size: int | None = Field(default=None, ge=1, description=INITIAL_DESIGN_SIZE_DOC)
     # Default ``None`` so MCP and REST intake forms behave identically when
     # the caller omits the seed: a fresh OS-level scramble each iteration.
     # Callers that want deterministic Sobol sequences must opt in by
@@ -74,41 +94,32 @@ class CampaignIntakeInput(BaseModel):
     # A nightly drift test in CI pins suggestions against a golden file for
     # a reference campaign on the production torch version; bumping the
     # torch pin requires regenerating the golden file.
-    random_seed: int | None = Field(
-        default=None,
-        description=(
-            "Campaign-level RNG seed. Optional. When supplied, the Sobol "
-            "initial design and acquisition multi-start are deterministic "
-            "within a fixed (torch version, device, deterministic-algorithms "
-            "setting) triple; suggestions are NOT byte-identical across "
-            "different torch versions, CPU vs. CUDA, or backend swaps. Set "
-            "torch.use_deterministic_algorithms(True) for strictest behavior."
-        ),
-    )
+    random_seed: int | None = Field(default=None, description=RANDOM_SEED_DOC)
     # Per-campaign override for L-BFGS-B restart count / raw-sample budget.
     # Leave None to use the dimension-adaptive defaults in bo-engine.
     acquisition_optimization: AcquisitionOptimizationConfig | None = None
     # ``Literal`` produces an explicit ``enum`` constraint in the
     # generated MCP tool schema, so agents discover the valid backend
     # selectors directly from the schema instead of by failing requests.
-    backend: Literal["auto", "botorch", "baybe"] = "auto"
+    backend: Literal["auto", "botorch", "baybe"] = Field(default="auto", description=BACKEND_DOC)
     # Typed backend-native option surface; see ``CampaignSpec.backend_options``.
     # Validation rejects options addressed to an explicit non-matching backend
     # so misrouted knobs surface at intake instead of silently disappearing.
-    backend_options: dict[str, dict[str, Any]] | None = None
+    backend_options: dict[str, dict[str, Any]] | None = Field(
+        default=None, description=BACKEND_OPTIONS_DOC
+    )
     # Advanced cross-backend knobs — passed through to ``CampaignSpec``
     # unchanged; each is honored only by backends that advertise the
     # corresponding capability via ``validate_capabilities``.
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
-    # UCB-family exploration weight; only valid with
-    # acquisition_method='upper_confidence_bound' (enforced by CampaignSpec).
-    acquisition_beta: float | None = None
+    # Cross-field rule (beta requires the UCB family) enforced by CampaignSpec.
+    acquisition_beta: float | None = Field(default=None, description=ACQUISITION_BETA_DOC)
     # Multi-objective combination strategy + desirability scalarizer flavor;
     # cross-field rules enforced by CampaignSpec.
     scalarization: ScalarizationMode = ScalarizationMode.PARETO
     scalarizer: ScalarizerKind | None = None
-    use_input_warping: bool = False
-    use_cost_aware: bool = False
+    use_input_warping: bool = Field(default=False, description=USE_INPUT_WARPING_DOC)
+    use_cost_aware: bool = Field(default=False, description=USE_COST_AWARE_DOC)
     turbo_config: TurboConfig | None = None
     saasbo_config: SaasboConfig | None = None
     fidelity_parameter: FidelityParameter | None = None
@@ -120,9 +131,14 @@ class CampaignIntakeInput(BaseModel):
     # backends that cannot honor them; naming the field here downgrades
     # the rejection to an IGNORED warning so the caller accepts the
     # degraded run knowingly.
-    acknowledge_degradations: tuple[str, ...] = Field(default_factory=tuple)
+    acknowledge_degradations: tuple[str, ...] = Field(
+        default_factory=tuple, description=ACKNOWLEDGE_DEGRADATIONS_DOC
+    )
 
-    model_config = {"extra": "forbid"}
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {"examples": INTAKE_EXAMPLES},
+    }
 
     @model_validator(mode="after")
     def validate_names_and_constraints(self) -> "CampaignIntakeInput":

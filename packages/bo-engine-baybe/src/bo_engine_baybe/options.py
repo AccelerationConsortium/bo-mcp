@@ -700,7 +700,11 @@ class BayBEBackendOptions(BaseModel):
             "the backend's historical behavior: False on purely discrete "
             "spaces (overriding BayBE's own AUTO, which always resolves "
             "this flag to True regardless of search-space type), or "
-            "BayBE's AUTO (True) on spaces with a continuous part."
+            "BayBE's AUTO (True) on spaces with a continuous part. An "
+            "explicit False is rejected by BayBE (IncompatibilityError) "
+            "whenever the search space has a continuous subspace — as "
+            "with the other two `allow_recommending_*` flags, it is only "
+            "honored on purely discrete spaces."
         ),
     )
     allow_recommending_already_recommended: bool | None = Field(
@@ -709,7 +713,11 @@ class BayBEBackendOptions(BaseModel):
             "Whether previously-recommended points remain candidates on "
             "later calls. None keeps the backend's historical behavior: "
             "False on purely discrete spaces, BayBE's AUTO (which also "
-            "resolves to True) on spaces with a continuous part."
+            "resolves to True) on spaces with a continuous part. An "
+            "explicit False is rejected by BayBE (IncompatibilityError) "
+            "whenever the search space has a continuous subspace — as "
+            "with the other two `allow_recommending_*` flags, it is only "
+            "honored on purely discrete spaces."
         ),
     )
     measurements_must_be_within_tolerance: bool | None = Field(

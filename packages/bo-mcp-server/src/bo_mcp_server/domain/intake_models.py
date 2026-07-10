@@ -212,7 +212,21 @@ class CampaignIntakeInput(BaseModel):
         ),
     )
 
-    model_config = {"extra": "forbid"}
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "name": "example-baybe-campaign",
+                    "parameters": [
+                        {"name": "x", "type": "continuous", "bounds": {"lower": 0.0, "upper": 1.0}}
+                    ],
+                    "objectives": [{"name": "y", "direction": "minimize"}],
+                    "backend": "baybe",
+                }
+            ]
+        },
+    }
 
     @model_validator(mode="after")
     def validate_names_and_constraints(self) -> "CampaignIntakeInput":

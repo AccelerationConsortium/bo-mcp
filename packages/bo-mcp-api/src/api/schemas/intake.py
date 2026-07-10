@@ -201,4 +201,18 @@ class IntakeData(BaseModel):
         ),
     )
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "example-baybe-campaign",
+                    "parameters": [
+                        {"name": "x", "type": "continuous", "bounds": {"lower": 0.0, "upper": 1.0}}
+                    ],
+                    "objectives": [{"name": "y", "direction": "minimize"}],
+                    "backend": "baybe",
+                }
+            ]
+        },
+    )

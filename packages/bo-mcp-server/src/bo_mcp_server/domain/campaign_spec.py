@@ -928,22 +928,60 @@ class CampaignSpec(BaseModel):
     """
 
     name: str = Field(..., min_length=1)
-    description: str = ""
+    description: str = Field(default="", description="Free-text human-readable note.")
     parameters: tuple[InputParameter, ...] = Field(..., min_length=1)
     objectives: tuple[Objective, ...] = Field(..., min_length=1)
     constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
-    batch_size: int = Field(default=1, ge=1)
+    batch_size: int = Field(
+        default=1, ge=1, description="Number of suggestions generated per call."
+    )
     # ``ge=1`` matches ``max_observations``: zero or negative would create
     # a born-dead campaign whose every generate returns BUDGET_EXCEEDED.
-    max_iterations: int | None = Field(default=None, ge=1)
+    max_iterations: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Cap on the number of completed BO iterations. Once reached, "
+            "suggestion generation reports BUDGET_EXCEEDED instead of "
+            "producing more suggestions."
+        ),
+    )
     # Total observation cap. Counted across all iterations; reaching it short-
     # circuits ``generate_suggestions`` even mid-iteration.
-    max_observations: int | None = Field(default=None, ge=1)
+    max_observations: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Cap on the total number of observed results, irrespective of "
+            "iteration grouping. Reaching it short-circuits suggestion "
+            "generation even mid-iteration."
+        ),
+    )
     # Relative-improvement threshold passed to ``detect_convergence``. When
     # set, the suggestion entry point reports ``CONVERGED`` once recent
     # improvement falls below this value.
-    convergence_tolerance: float | None = Field(default=None, gt=0.0)
-    initial_design_size: int | None = Field(default=None, ge=1)
+    convergence_tolerance: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Relative-improvement threshold below which the campaign is "
+            "considered converged (single-objective campaigns only — "
+            "multi-objective campaigns must rely on hypervolume "
+            "diagnostics instead)."
+        ),
+    )
+    initial_design_size: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Number of space-filling (Sobol/random) warmup points before "
+            "switching to the model-driven acquisition phase. None uses a "
+            "dimension-adaptive default (BoTorch) or switches after the "
+            "first measurement (BayBE, unless overridden by "
+            "backend_options['baybe'].recommender.switch_after, which "
+            "takes precedence)."
+        ),
+    )
     random_seed: int | None = Field(
         default=None,
         description=(

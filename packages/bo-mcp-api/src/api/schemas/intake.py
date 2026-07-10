@@ -58,7 +58,7 @@ class IntakeData(BaseModel):
     """
 
     name: str = Field(..., min_length=1)
-    description: str = ""
+    description: str = Field(default="", description="Free-text human-readable note.")
     parameters: tuple[InputParameter, ...] = Field(
         ..., min_length=1, max_length=MAX_INTAKE_PARAMETERS
     )
@@ -66,11 +66,45 @@ class IntakeData(BaseModel):
     constraints: tuple[Constraint, ...] = Field(
         default_factory=tuple, max_length=MAX_INTAKE_CONSTRAINTS
     )
-    batch_size: int = Field(default=1, ge=1)
-    max_iterations: int | None = None
-    max_observations: int | None = Field(default=None, ge=1)
-    convergence_tolerance: float | None = Field(default=None, gt=0.0)
-    initial_design_size: int | None = None
+    batch_size: int = Field(
+        default=1, ge=1, description="Number of suggestions generated per call."
+    )
+    max_iterations: int | None = Field(
+        default=None,
+        description=(
+            "Cap on the number of completed BO iterations. Once reached, "
+            "suggestion generation reports BUDGET_EXCEEDED instead of "
+            "producing more suggestions."
+        ),
+    )
+    max_observations: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Cap on the total number of observed results, irrespective of "
+            "iteration grouping. Reaching it short-circuits suggestion "
+            "generation even mid-iteration."
+        ),
+    )
+    convergence_tolerance: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Relative-improvement threshold below which the campaign is "
+            "considered converged (single-objective campaigns only)."
+        ),
+    )
+    initial_design_size: int | None = Field(
+        default=None,
+        description=(
+            "Number of space-filling (Sobol/random) warmup points before "
+            "switching to the model-driven acquisition phase. None uses a "
+            "dimension-adaptive default (BoTorch) or switches after the "
+            "first measurement (BayBE, unless overridden by "
+            "backend_options['baybe'].recommender.switch_after, which "
+            "takes precedence)."
+        ),
+    )
     random_seed: int | None = Field(
         default=None,
         description=(
@@ -87,8 +121,29 @@ class IntakeData(BaseModel):
     # so the REST OpenAPI schema advertises an explicit ``enum`` constraint
     # and the route handler can pass the value straight through without a
     # ``ty: ignore`` widening cast.
-    backend: Literal["auto", "botorch", "baybe"] = "auto"
-    backend_options: dict[str, dict[str, Any]] | None = None
+    backend: Literal["auto", "botorch", "baybe"] = Field(
+        default="auto",
+        description=(
+            "Optimization backend. 'auto' prefers the deployment's "
+            "configured default backend (BO_BACKEND env var, typically "
+            "'baybe'), but switches to whichever installed backend can "
+            "run the spec without silently dropping an option — e.g. a "
+            "spec using a BoTorch-only feature (TuRBO, SAASBO, "
+            "multi-fidelity, RGPE transfer learning, cost-aware, input "
+            "warping, outcome constraints) auto-selects 'botorch'. Pin "
+            "explicitly to fail fast instead of silently switching."
+        ),
+    )
+    backend_options: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Backend-native option surface, keyed by backend name "
+            "(currently only 'baybe' has a typed schema — see "
+            "BayBEBackendOptions/BayBEParameterOptions below). Options "
+            "addressed to a non-selected backend are rejected at intake "
+            "when `backend` is pinned to a concrete name."
+        ),
+    )
     # Typed as the ``AcquisitionMethod`` enum (mirroring
     # ``CampaignIntakeInput``) so the REST OpenAPI advertises the valid
     # values and an invalid method is rejected at the request boundary
@@ -98,13 +153,34 @@ class IntakeData(BaseModel):
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
     # UCB-family exploration weight; only valid with
     # acquisition_method='upper_confidence_bound' (enforced by CampaignSpec).
-    acquisition_beta: float | None = None
+    acquisition_beta: float | None = Field(
+        default=None,
+        description=(
+            "UCB exploration weight. Only valid with "
+            "acquisition_method='upper_confidence_bound'; rejected otherwise."
+        ),
+    )
     # Multi-objective combination strategy + desirability scalarizer flavor;
     # cross-field rules enforced by CampaignSpec.
     scalarization: ScalarizationMode = ScalarizationMode.PARETO
     scalarizer: ScalarizerKind | None = None
-    use_input_warping: bool = False
-    use_cost_aware: bool = False
+    use_input_warping: bool = Field(
+        default=False,
+        description=(
+            "Input warping for non-stationary objectives. BoTorch-only — "
+            "reported UNSUPPORTED on the BayBE backend by default (see "
+            "`acknowledge_degradations`)."
+        ),
+    )
+    use_cost_aware: bool = Field(
+        default=False,
+        description=(
+            "Cost-aware acquisition (EIpu), weighting candidates by "
+            "`fidelity_parameter` cost. BoTorch-only — reported "
+            "UNSUPPORTED on the BayBE backend by default (see "
+            "`acknowledge_degradations`)."
+        ),
+    )
     turbo_config: TurboConfig | None = None
     saasbo_config: SaasboConfig | None = None
     fidelity_parameter: FidelityParameter | None = None
@@ -114,6 +190,15 @@ class IntakeData(BaseModel):
     # fields". Mirrors :class:`CampaignIntakeInput.acknowledge_degradations`
     # (same ``tuple[str, ...]`` annotation) so the REST and MCP transports
     # accept and validate the identical shape.
-    acknowledge_degradations: tuple[str, ...] = Field(default_factory=tuple)
+    acknowledge_degradations: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "Opt-in list of attribute names (e.g. 'turbo_config', "
+            "'outcome_constraints') whose BayBE-UNSUPPORTED status should "
+            "downgrade to an IGNORED warning instead of rejecting the "
+            "request, when running a BoTorch-only feature on "
+            "backend='baybe'."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")

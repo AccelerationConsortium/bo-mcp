@@ -13,8 +13,18 @@ Reference: BayBE surrogates userguide
 from __future__ import annotations
 
 import logging
+from typing import cast
 
-from baybe.kernels import MaternKernel, RBFKernel, ScaleKernel
+from baybe.kernels import (
+    LinearKernel,
+    MaternKernel,
+    PeriodicKernel,
+    PolynomialKernel,
+    RBFKernel,
+    RFFKernel,
+    RQKernel,
+    ScaleKernel,
+)
 from baybe.surrogates import (
     BayesianLinearSurrogate,
     GaussianProcessSurrogate,
@@ -68,12 +78,30 @@ def _build_kernel(config: BayBEKernelConfig) -> ScaleKernel:
 
     The ScaleKernel wrapper mirrors BayBE's own default kernel factory so
     a curated kernel selection changes the similarity structure, not the
-    output-scale handling.
+    output-scale handling. ``power``/``num_samples`` are guaranteed
+    non-``None`` for their respective kinds by
+    :meth:`BayBEKernelConfig.validate_kernel_fields`.
     """
     if config.kind == BayBEKernelKind.MATERN:
         nu = config.nu if config.nu is not None else DEFAULT_MATERN_NU
-        return ScaleKernel(MaternKernel(nu=nu))
-    return ScaleKernel(RBFKernel())
+        kernel = MaternKernel(nu=nu)
+    elif config.kind == BayBEKernelKind.RBF:
+        kernel = RBFKernel()
+    elif config.kind == BayBEKernelKind.LINEAR:
+        kernel = LinearKernel()
+    elif config.kind == BayBEKernelKind.PERIODIC:
+        kernel = (
+            PeriodicKernel(period_length_initial_value=config.period_length)
+            if config.period_length is not None
+            else PeriodicKernel()
+        )
+    elif config.kind == BayBEKernelKind.POLYNOMIAL:
+        kernel = PolynomialKernel(power=cast("int", config.power))
+    elif config.kind == BayBEKernelKind.RQ:
+        kernel = RQKernel()
+    else:
+        kernel = RFFKernel(num_samples=cast("int", config.num_samples))
+    return ScaleKernel(kernel)
 
 
 def _build_gp_surrogate(config: BayBESurrogateConfig) -> GaussianProcessSurrogate:

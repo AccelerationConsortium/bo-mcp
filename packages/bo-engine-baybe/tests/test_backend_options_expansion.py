@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 
 import pytest
 from baybe import Campaign
+from baybe.kernels import LinearKernel, PeriodicKernel, PolynomialKernel, RFFKernel, RQKernel
 from baybe.recommenders import (
     BotorchRecommender,
     FPSRecommender,
@@ -45,7 +46,7 @@ from bo_engine_baybe.options import (
     extract_baybe_backend_options,
 )
 from bo_engine_baybe.state import _build_campaign
-from bo_engine_baybe.surrogates import build_baybe_surrogate
+from bo_engine_baybe.surrogates import _build_kernel, build_baybe_surrogate
 
 
 def _meta(campaign: Campaign) -> TwoPhaseMetaRecommender:
@@ -119,6 +120,26 @@ class TestOptionsValidation:
                 kernel=BayBEKernelConfig(kind=BayBEKernelKind.RBF),
             )
 
+    def test_period_length_on_non_periodic_rejected(self) -> None:
+        with pytest.raises(ValueError, match="period_length is only valid"):
+            BayBEKernelConfig(kind=BayBEKernelKind.RBF, period_length=2.0)
+
+    def test_power_on_non_polynomial_rejected(self) -> None:
+        with pytest.raises(ValueError, match="power is only valid"):
+            BayBEKernelConfig(kind=BayBEKernelKind.RBF, power=2)
+
+    def test_power_required_for_polynomial(self) -> None:
+        with pytest.raises(ValueError, match="power is required"):
+            BayBEKernelConfig(kind=BayBEKernelKind.POLYNOMIAL)
+
+    def test_num_samples_on_non_rff_rejected(self) -> None:
+        with pytest.raises(ValueError, match="num_samples is only valid"):
+            BayBEKernelConfig(kind=BayBEKernelKind.RBF, num_samples=100)
+
+    def test_num_samples_required_for_rff(self) -> None:
+        with pytest.raises(ValueError, match="num_samples is required"):
+            BayBEKernelConfig(kind=BayBEKernelKind.RFF)
+
 
 class TestRecommenderSelection:
     def test_fps_initial_recommender_is_built(self) -> None:
@@ -166,6 +187,54 @@ class TestSurrogateSelection:
         options = extract_baybe_backend_options(spec.backend_options)
         assert isinstance(build_baybe_surrogate(spec, options), GaussianProcessSurrogate)
         # The campaign wraps it (CompositeSurrogate replication) but builds.
+        assert _build_campaign(spec) is not None
+
+    def test_linear_kernel(self) -> None:
+        kernel = _build_kernel(BayBEKernelConfig(kind=BayBEKernelKind.LINEAR))
+        assert isinstance(kernel.base_kernel, LinearKernel)
+
+    def test_periodic_kernel_default(self) -> None:
+        kernel = _build_kernel(BayBEKernelConfig(kind=BayBEKernelKind.PERIODIC))
+        assert isinstance(kernel.base_kernel, PeriodicKernel)
+        assert kernel.base_kernel.period_length_initial_value is None
+
+    def test_periodic_kernel_explicit_period_length(self) -> None:
+        kernel = _build_kernel(BayBEKernelConfig(kind=BayBEKernelKind.PERIODIC, period_length=3.5))
+        assert isinstance(kernel.base_kernel, PeriodicKernel)
+        assert kernel.base_kernel.period_length_initial_value == pytest.approx(3.5)
+
+    def test_polynomial_kernel(self) -> None:
+        kernel = _build_kernel(BayBEKernelConfig(kind=BayBEKernelKind.POLYNOMIAL, power=3))
+        assert isinstance(kernel.base_kernel, PolynomialKernel)
+        assert kernel.base_kernel.power == 3
+
+    def test_rq_kernel(self) -> None:
+        kernel = _build_kernel(BayBEKernelConfig(kind=BayBEKernelKind.RQ))
+        assert isinstance(kernel.base_kernel, RQKernel)
+
+    def test_rff_kernel(self) -> None:
+        kernel = _build_kernel(BayBEKernelConfig(kind=BayBEKernelKind.RFF, num_samples=50))
+        assert isinstance(kernel.base_kernel, RFFKernel)
+        assert kernel.base_kernel.num_samples == 50
+
+    @pytest.mark.parametrize(
+        "kernel_payload",
+        [
+            {"kind": "linear"},
+            {"kind": "periodic"},
+            {"kind": "periodic", "period_length": 1.5},
+            {"kind": "polynomial", "power": 2},
+            {"kind": "rq"},
+            {"kind": "rff", "num_samples": 32},
+        ],
+    )
+    def test_new_kernel_kinds_build_a_campaign(self, kernel_payload: dict[str, Any]) -> None:
+        spec = _spec(
+            _CONTINUOUS_PARAMS,
+            {"surrogate": {"kind": "gp", "kernel": kernel_payload}},
+        )
+        options = extract_baybe_backend_options(spec.backend_options)
+        assert isinstance(build_baybe_surrogate(spec, options), GaussianProcessSurrogate)
         assert _build_campaign(spec) is not None
 
     def test_gp_preset(self) -> None:

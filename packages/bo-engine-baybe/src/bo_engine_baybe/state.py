@@ -103,18 +103,19 @@ except ImportError:
 def _resolve_switch_after(spec: OptimizationSpec) -> int:
     """Resolve the random → GP switch point for the TwoPhaseMetaRecommender.
 
-    Precedence: an explicitly set BayBE-native
+    Precedence: an *explicitly set* BayBE-native
     ``backend_options['baybe'].recommender.switch_after`` wins over the
     neutral ``spec.initial_design_size``, which in turn wins over the
-    legacy default of switching after the first measurement. The check is
-    on the option *value*, not on the presence of a recommender block, so
-    an unrelated recommender override (e.g. ``initial_recommender``) does
-    not silently discard a requested warmup design. Bridging the neutral
-    knob keeps ``backend="auto"`` comparisons like-for-like — a requested
-    warmup of N random points means N on both backends.
+    legacy default of switching after the first measurement. The
+    explicit-set check matters: the mere presence of the recommender
+    sub-config (e.g. only ``initial_recommender`` or ``bayesian`` is
+    configured) must not shadow the neutral knob with the field default.
+    Bridging the neutral knob keeps ``backend="auto"`` comparisons
+    like-for-like — a requested warmup of N random points means N on
+    both backends.
     """
     options = extract_baybe_backend_options(spec.backend_options)
-    if options.recommender and options.recommender.switch_after is not None:
+    if options.recommender is not None and options.recommender.switch_after is not None:
         return options.recommender.switch_after
     if spec.initial_design_size:
         return spec.initial_design_size
@@ -133,14 +134,16 @@ _INITIAL_RECOMMENDER_FACTORIES: dict[BayBEInitialRecommender, type] = {
 }
 
 
+def _initial_recommender_choice(options: BayBEBackendOptions) -> BayBEInitialRecommender:
+    """Resolve the configured initial-design recommender kind (default: random)."""
+    if options.recommender is not None:
+        return options.recommender.initial_recommender
+    return BayBEInitialRecommender.RANDOM
+
+
 def _build_initial_recommender(options: BayBEBackendOptions) -> RecommenderProtocol:
     """Instantiate the configured initial-design recommender (default: random)."""
-    choice = (
-        options.recommender.initial_recommender
-        if options.recommender is not None
-        else BayBEInitialRecommender.RANDOM
-    )
-    return _INITIAL_RECOMMENDER_FACTORIES[choice]()
+    return _INITIAL_RECOMMENDER_FACTORIES[_initial_recommender_choice(options)]()
 
 
 def _build_bayesian_recommender(

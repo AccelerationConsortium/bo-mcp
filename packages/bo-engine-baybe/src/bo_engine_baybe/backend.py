@@ -115,10 +115,6 @@ from bo_engine_baybe.converters import (
     resolve_searchspace_budget,
 )
 from bo_engine_baybe.introspection import (
-    _DEFAULT_KERNEL_DESCRIPTION,
-    _FALLBACK_ACQ_MULTI,
-    _FALLBACK_ACQ_SINGLE,
-    _MODEL_TYPE_MULTI,
     _MODEL_TYPE_SINGLE,
     _acquisition_label,
     _active_recommender,
@@ -137,22 +133,27 @@ from bo_engine_baybe.options import (
     BayBEInitialRecommender,
     BayBEParameterOptions,
     BayBESurrogateKind,
+    configured_non_gp_surrogate_kind,
     extract_baybe_backend_options,
     extract_baybe_parameter_options,
 )
 from bo_engine_baybe.searchspace_budget import subsample_warning
 from bo_engine_baybe.state import (
     _BAYBE_SAFE_EXCEPTIONS,
+    _INITIAL_RECOMMENDER_FACTORIES,
     _STATE_SCHEMA_VERSION_IDENTITY,
     _build_observation_identity,
+    _initial_recommender_choice,
     _observation_fingerprint,
     _reconcile_measurements,
+    _resolve_switch_after,
     _restore_or_build_campaign,
     _serialize_campaign,
 )
 from bo_engine_baybe.surrogates import (
     NOISE_PRIOR_IGNORED_REASON,
     build_baybe_surrogate,
+    describe_configured_kernel,
 )
 
 logger = logging.getLogger(__name__)
@@ -1048,7 +1049,10 @@ class BayBEBackend(BaseBackend):
 
         predictions, posterior_warning = _extract_posterior_stats(campaign, rec_df, spec)
         acq_values, acq_warning = _extract_acquisition_values(campaign, rec_df, pending_df)
-        model_info, model_warning = _extract_model_info(campaign)
+        non_gp_surrogate = configured_non_gp_surrogate_kind(
+            extract_baybe_backend_options(spec.backend_options)
+        )
+        model_info, model_warning = _extract_model_info(campaign, non_gp_surrogate)
 
         method_info = self._method_info_from_campaign(campaign, spec, len(observations))
         method_info.update(model_info)
@@ -1144,7 +1148,13 @@ class BayBEBackend(BaseBackend):
         rec_name = type(recommender).__name__ if recommender is not None else None
         searchspace_str = _campaign_searchspace_label(campaign)
         objective_type = type(getattr(campaign, "objective", None)).__name__
-        strategy, model_type = _strategy_and_model(rec_name, is_nonpredictive, output_multi)
+        backend_opts = extract_baybe_backend_options(spec.backend_options)
+        strategy, model_type = _strategy_and_model(
+            rec_name,
+            is_nonpredictive,
+            output_multi,
+            configured_non_gp_surrogate_kind(backend_opts),
+        )
         acq_fn, acq_inferred = _acquisition_label(recommender, is_nonpredictive, output_multi)
 
         return {
@@ -1158,7 +1168,7 @@ class BayBEBackend(BaseBackend):
             # on this flag instead of string-matching the label.
             "acquisition_function_inferred": acq_inferred,
             "optimization_strategy": strategy,
-            "kernel": _DEFAULT_KERNEL_DESCRIPTION,
+            "kernel": describe_configured_kernel(backend_opts),
             "recommender": rec_name,
             "is_nonpredictive": is_nonpredictive,
             "searchspace_type": searchspace_str,
@@ -1214,17 +1224,34 @@ class BayBEBackend(BaseBackend):
         # runs a single-output model, so the fallback labels must not
         # advertise the hypervolume family.
         output_multi = acquisition_output_count(spec) > 1
-        if n_observations == 0:
-            strategy = "RandomRecommender (space-filling initial design)"
-        else:
-            strategy = "BotorchRecommender (GP-based)"
-        acq_fn = _FALLBACK_ACQ_MULTI if output_multi else _FALLBACK_ACQ_SINGLE
+        backend_opts = extract_baybe_backend_options(spec.backend_options)
+        non_gp_surrogate = configured_non_gp_surrogate_kind(backend_opts)
+        # Reuse the live-path label helpers so fallback and live metadata
+        # agree phase-for-phase (no label churn when a consumer's next
+        # call hits the live path). The phase is resolved exactly like
+        # campaign construction: before the switch point the configured
+        # initial recommender is active and no surrogate or acquisition
+        # function exists.
+        in_warmup = n_observations < _resolve_switch_after(spec)
+        initial_name = (
+            _INITIAL_RECOMMENDER_FACTORIES[_initial_recommender_choice(backend_opts)].__name__
+            if in_warmup
+            else None
+        )
+        strategy, model_type = _strategy_and_model(
+            initial_name, in_warmup, output_multi, non_gp_surrogate
+        )
+        # With no live recommender to read (recommender=None), the warm-up
+        # label "none (space-filling)" is definitive (inferred=False, as on
+        # the live path) while the GP-phase label is the static-table guess
+        # (inferred=True).
+        acq_fn, acq_inferred = _acquisition_label(None, in_warmup, output_multi)
         return {
-            "model_type": _MODEL_TYPE_MULTI if output_multi else _MODEL_TYPE_SINGLE,
+            "model_type": model_type,
             "acquisition_function": acq_fn,
-            "acquisition_function_inferred": True,
+            "acquisition_function_inferred": acq_inferred,
             "optimization_strategy": strategy,
-            "kernel": _DEFAULT_KERNEL_DESCRIPTION,
+            "kernel": describe_configured_kernel(backend_opts),
             "is_fallback": True,
             "input_transforms": ["BayBE internal encoding"],
             "explanation": (
@@ -1382,7 +1409,10 @@ class BayBEBackend(BaseBackend):
             campaign = _build_fitted_campaign(spec, observations)
             obs_df = observations_to_dataframe(observations, spec)
 
-            model_info, _ = _extract_model_info(campaign)
+            non_gp_surrogate = configured_non_gp_surrogate_kind(
+                extract_baybe_backend_options(spec.backend_options)
+            )
+            model_info, _ = _extract_model_info(campaign, non_gp_surrogate)
             fi_report = _extract_feature_importance_report(campaign, spec) or {}
             corr = _baybe_model_correlation(campaign, obs_df, spec)
             parameter_names = [parameter.name for parameter in spec.parameters]
@@ -1395,6 +1425,12 @@ class BayBEBackend(BaseBackend):
                 ),
                 "noise_variance": model_info.get("noise_variance"),
                 "output_scale": model_info.get("output_scale"),
+                # Kernel-specific learned parameters — present when the
+                # fitted kernel exposes them (offset for linear/polynomial,
+                # period length for periodic, alpha for rational quadratic).
+                "kernel_offset": model_info.get("kernel_offset"),
+                "kernel_period_length": model_info.get("kernel_period_length"),
+                "kernel_alpha": model_info.get("kernel_alpha"),
             }
         except (*_BAYBE_SAFE_EXCEPTIONS,) as e:
             logger.debug("BayBE model diagnostics failed: %s", e)

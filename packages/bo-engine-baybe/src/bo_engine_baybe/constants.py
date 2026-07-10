@@ -87,3 +87,15 @@ OBJECT_CELL_POINTER_BYTES = 8
 # per-campaign override lives in
 # ``backend_options['baybe'].insights.row_level_max_rows``.
 DEFAULT_MAX_ROW_LEVEL_SHAP_ROWS = 32
+
+# Upper bound on the RFF kernel's random Fourier feature count
+# (``backend_options['baybe'].surrogate.kernel.num_samples``). gpytorch
+# allocates a ``randn(encoded_dims, num_samples)`` weight buffer at fit
+# time and featurizes every evaluated point into ``2 * num_samples``
+# columns, so an unbounded payload value is a memory/CPU exhaustion
+# vector. At this cap the worst-case feature matrix over a fully
+# budgeted discrete subspace (DEFAULT_MAX_CANDIDATES rows) stays around
+# 10_000 x 4_096 float64 ~ 0.3 GiB, while the statistically useful
+# regime (2 * num_samples below the measurement count) sits orders of
+# magnitude lower.
+MAX_RFF_NUM_SAMPLES = 2_048

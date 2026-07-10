@@ -236,16 +236,26 @@ class TestFallbackSelectMethods:
         ``is_fallback`` / ``acquisition_function_inferred`` flags; the
         legacy ``"(fallback)"`` suffix is removed so consumers do not
         have to substring-match free-form labels.
+        ``acquisition_function_inferred`` mirrors the live path
+        phase-for-phase: during warm-up the "no acquisition function"
+        label is definitive (``False``); in the GP phase the label is the
+        static-table guess (``True``).
         """
         backend = BayBEBackend()
         info = backend.select_methods(_spec(), n_observations=0)
         assert info["is_fallback"] is True
-        assert info["acquisition_function_inferred"] is True
+        assert info["acquisition_function_inferred"] is False
+        assert info["acquisition_function"] == "none (space-filling)"
         # The labels themselves are free of the legacy suffix.
         assert "(fallback)" not in info["optimization_strategy"]
         assert "(fallback)" not in info["acquisition_function"]
         # And the confidence is honest about the lack of live data.
         assert info["confidence"] == "low"
+
+        gp_info = backend.select_methods(_spec(), n_observations=3)
+        assert gp_info["is_fallback"] is True
+        assert gp_info["acquisition_function_inferred"] is True
+        assert "(fallback)" not in gp_info["acquisition_function"]
 
     def test_select_methods_multi_objective_label(self) -> None:
         spec = OptimizationSpec(

@@ -26,7 +26,7 @@ from bo_engine.transforms import encode_categorical, get_bounds_tensor
 from bo_engine.types import ObjectiveSpec, ObservationData, OptimizationSpec
 from bo_engine_baybe.constants import DEFAULT_MAX_ROW_LEVEL_SHAP_ROWS
 from bo_engine_baybe.converters import observations_to_dataframe
-from bo_engine_baybe.options import extract_baybe_backend_options
+from bo_engine_baybe.options import BayBESurrogateKind, extract_baybe_backend_options
 from bo_engine_baybe.state import _BAYBE_SAFE_EXCEPTIONS, _add_measurements, _build_campaign
 
 logger = logging.getLogger(__name__)
@@ -34,13 +34,12 @@ logger = logging.getLogger(__name__)
 
 _MODEL_TYPE_SINGLE = "BayBE GP"
 _MODEL_TYPE_MULTI = "BayBE GP (CompositeSurrogate)"
+# Model-type and acquisition label while a space-filling (nonpredictive)
+# recommender is active: no surrogate is fitted and no acquisition
+# function exists, and the metadata must not claim otherwise.
+_MODEL_TYPE_NONPREDICTIVE = "none (space-filling)"
 _FALLBACK_ACQ_SINGLE = "qLogNoisyExpectedImprovement"
 _FALLBACK_ACQ_MULTI = "qLogNoisyExpectedHypervolumeImprovement"
-# Covariance module of BayBE's stock GP surrogate: ``DefaultKernelFactory``
-# builds ``ScaleKernel(MaternKernel(nu=2.5))`` with dimension-interpolated
-# priors. Reported by ``select_methods`` when no fitted surrogate is
-# available to introspect; a fitted surrogate's ``kernel_type`` wins.
-_DEFAULT_KERNEL_DESCRIPTION = "Matern 5/2 (BayBE default GP surrogate)"
 
 
 def _extract_posterior_stats(
@@ -116,8 +115,17 @@ def _extract_acquisition_values(
         return [None] * len(rec_df), str(e)
 
 
+def _rounded_tensor_values(value: object, digits: int) -> list[float]:
+    """Detach a tensor-like hyperparameter into a flat list of rounded floats."""
+    tensor = cast("torch.Tensor", value).detach().squeeze()
+    if tensor.numel() == 1:
+        return [round(float(tensor.item()), digits)]
+    return [round(float(v), digits) for v in tensor.tolist()]
+
+
 def _extract_model_info(
     campaign: Campaign,
+    non_gp_surrogate: BayBESurrogateKind | None = None,
 ) -> tuple[dict[str, str | list[float] | float | None], str | None]:
     """Extract model hyperparameters from BayBE's fitted surrogate.
 
@@ -127,10 +135,25 @@ def _extract_model_info(
     GP per target). The ``kernel_type`` key is always present so callers
     can distinguish "fitted" (string class name) from "not available"
     (``None``) — surfacing only the latter as a method warning.
+
+    ``non_gp_surrogate`` short-circuits extraction: a configured non-GP
+    surrogate has no GP covariance module *by construction*, so skipping
+    it (instead of failing on it) keeps the warning channel reserved for
+    genuine introspection failures.
+
+    Each hyperparameter is read independently: kernels without a
+    lengthscale (gpytorch ``has_lengthscale=False``, e.g. polynomial
+    kernels) return ``None`` for it, and skipping the absent attribute
+    must not abort the noise/output-scale extraction that still applies.
+    Kernel-specific learned parameters are reported alongside — the
+    linear/polynomial ``offset``, the periodic ``period_length``, and
+    the rational-quadratic ``alpha``.
     """
     info: dict[str, str | list[float] | float | None] = {
         "kernel_type": None,
     }
+    if non_gp_surrogate is not None:
+        return info, None
     try:
         surrogate = campaign.get_surrogate()
         botorch_model = cast("SingleTaskGP | ModelListGP", surrogate.to_botorch())
@@ -141,11 +164,18 @@ def _extract_model_info(
         kernel = getattr(covar, "base_kernel", covar)
         info["kernel_type"] = type(kernel).__name__
 
-        ls = cast("torch.Tensor", kernel.lengthscale).detach().squeeze()
-        if ls.numel() == 1:
-            info["lengthscales"] = [round(float(ls.item()), 4)]
-        else:
-            info["lengthscales"] = [round(float(v), 4) for v in ls.tolist()]
+        lengthscale = getattr(kernel, "lengthscale", None)
+        if lengthscale is not None:
+            info["lengthscales"] = _rounded_tensor_values(lengthscale, 4)
+        offset = getattr(kernel, "offset", None)
+        if offset is not None:
+            info["kernel_offset"] = _rounded_tensor_values(offset, 4)[0]
+        period_length = getattr(kernel, "period_length", None)
+        if period_length is not None:
+            info["kernel_period_length"] = _rounded_tensor_values(period_length, 4)
+        alpha = getattr(kernel, "alpha", None)
+        if alpha is not None:
+            info["kernel_alpha"] = _rounded_tensor_values(alpha, 4)[0]
 
         if hasattr(model_for_kernel, "likelihood") and hasattr(
             model_for_kernel.likelihood, "noise"
@@ -388,28 +418,44 @@ def _campaign_searchspace_label(campaign: Campaign) -> str:
     return str(searchspace_type)
 
 
+def _non_gp_model_type(kind: BayBESurrogateKind, is_multi: bool) -> str:
+    """Model-type label for a configured non-GP surrogate.
+
+    Mirrors the GP labels' ``(CompositeSurrogate)`` suffix convention for
+    multi-output replication.
+    """
+    model_type = f"BayBE {kind.value}"
+    if is_multi:
+        model_type += " (CompositeSurrogate)"
+    return model_type
+
+
 def _strategy_and_model(
     rec_name: str | None,
     is_nonpredictive: bool,
     is_multi: bool,
+    non_gp_surrogate: BayBESurrogateKind | None = None,
 ) -> tuple[str, str]:
     """Compose the live ``(strategy, model_type)`` labels for method-info.
 
     Nonpredictive recommenders (e.g. random warmup) explicitly report
     ``"none (space-filling)"`` for the model type so the audit trail
-    cannot claim a GP surrogate when none is fitted.
+    cannot claim a GP surrogate when none is fitted; likewise a
+    configured non-GP surrogate reports its own kind instead of the GP
+    labels. The fallback path (``select_methods``) reuses this helper so
+    live and pre-campaign metadata agree phase-for-phase.
     """
     if is_nonpredictive:
-        strategy = (
-            f"{rec_name} (space-filling, no surrogate)"
-            if rec_name
-            else "RandomRecommender (space-filling initial design)"
+        name = rec_name if rec_name is not None else "RandomRecommender"
+        return f"{name} (space-filling, no surrogate)", _MODEL_TYPE_NONPREDICTIVE
+    name = rec_name if rec_name is not None else "BotorchRecommender"
+    if non_gp_surrogate is not None:
+        return (
+            f"{name} ({non_gp_surrogate.value} surrogate)",
+            _non_gp_model_type(non_gp_surrogate, is_multi),
         )
-        return strategy, "none (space-filling)"
     surrogate = _MODEL_TYPE_MULTI if is_multi else _MODEL_TYPE_SINGLE
-    if rec_name is not None:
-        return f"{rec_name} (GP-based)", surrogate
-    return "BotorchRecommender (GP-based)", surrogate
+    return f"{name} (GP-based)", surrogate
 
 
 def _acquisition_label(
@@ -431,7 +477,7 @@ def _acquisition_label(
     if is_nonpredictive:
         # Nonpredictive recommenders do not have an acquisition function;
         # claiming qLogNEI here would mislead audit metadata.
-        return "none (space-filling)", False
+        return _MODEL_TYPE_NONPREDICTIVE, False
     live_acq = _active_acquisition_label(recommender)
     if live_acq is not None:
         return live_acq, False

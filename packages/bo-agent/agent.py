@@ -1,13 +1,11 @@
 """Web entrypoint for the Bayesian optimization agent."""
 
-import subprocess
 from typing import cast
 
 import logfire
 from dotenv import load_dotenv
 from langchain_experimental.tools.python.tool import PythonREPLTool
 from prompts import BO_MAIN_AGENT_INSTRUCTION
-from pydantic_ai import Tool
 from pydantic_ai.ext.langchain import tool_from_langchain
 from pydantic_deep import DeepAgentDeps, LocalBackend, create_deep_agent
 from pydantic_deep.subagents import GENERAL_PURPOSE_SUBAGENT
@@ -23,21 +21,6 @@ logfire.instrument_httpx(capture_all=True)
 backend = LocalBackend(root_dir=".")
 deps = DeepAgentDeps(backend=backend)
 
-
-def bash(command: str) -> str:
-    """Run a Bash command and return its combined output."""
-    try:
-        result = subprocess.run(  # noqa: S603 - This tool intentionally runs user-directed commands.
-            ["/bin/bash", "-lc", command],
-            capture_output=True,
-            text=True,
-            timeout=36_000,
-        )
-    except subprocess.TimeoutExpired:
-        return "Command timed out after 36,000 seconds."
-    return result.stdout + result.stderr
-
-
 agent = create_deep_agent(
     "openai-responses:gpt-5.4",
     instructions="You are a helpful assistant. " + BO_MAIN_AGENT_INSTRUCTION,
@@ -46,7 +29,7 @@ agent = create_deep_agent(
         GENERAL_PURPOSE_SUBAGENT,
     ],
     backend=backend,
-    tools=[tool_from_langchain(PythonREPLTool()), Tool(bash)],
+    tools=[tool_from_langchain(PythonREPLTool())],
     model_settings={"extra_body": {"text": {"verbosity": "low"}}},
     include_execute=True,
     include_todo=False,

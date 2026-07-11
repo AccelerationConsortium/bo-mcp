@@ -15,3 +15,12 @@ dependencies = [
     "pydantic-deep>=0.3.31",
     "subagents-pydantic-ai",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+pythonpath = ["."]

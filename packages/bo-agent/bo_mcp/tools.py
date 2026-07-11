@@ -18,7 +18,11 @@ BO_MCP_OPENAPI_TOOLSET_ID = "bo_mcp_openapi_toolset"
 
 
 def _bo_mcp_sse_url() -> str:
-    return os.getenv("BO_MCP_SSE_URL", "http://mcp:8001/sse")
+    sse_url = os.getenv("BO_MCP_SSE_URL", "").strip()
+    if not sse_url:
+        message = "BO_MCP_SSE_URL is not set; configure the BO-MCP SSE endpoint."
+        raise ValueError(message)
+    return sse_url
 
 
 def build_bo_mcp_toolset() -> MCPToolset[Any]:

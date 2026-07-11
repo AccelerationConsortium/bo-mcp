@@ -31,13 +31,17 @@ def _truncate_text(text: str) -> str:
 
 
 def _default_openapi_url() -> str:
-    explicit_url = os.getenv("BO_MCP_OPENAPI_URL")
+    explicit_url = os.getenv("BO_MCP_OPENAPI_URL", "").strip()
     if explicit_url:
         return explicit_url
 
-    api_url = (os.getenv("BO_MCP_API_URL") or os.getenv("BO_REST_URL") or "http://api:8000").rstrip(
-        "/"
-    )
+    api_url = os.getenv("BO_MCP_API_URL", "").strip().rstrip("/")
+    if not api_url:
+        message = (
+            "BO_MCP_OPENAPI_URL or BO_MCP_API_URL is not set; configure the BO-MCP "
+            "OpenAPI endpoint."
+        )
+        raise ValueError(message)
     return f"{api_url}/openapi.json"
 
 

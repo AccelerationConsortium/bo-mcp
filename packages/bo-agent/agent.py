@@ -4,6 +4,7 @@ import os
 from typing import cast
 
 import logfire
+from bo_mcp.tools import register_bo_mcp_tools
 from dotenv import load_dotenv
 from langchain_experimental.tools.python.tool import PythonREPLTool
 from prompts import BO_MAIN_AGENT_INSTRUCTION
@@ -45,6 +46,7 @@ agent = create_deep_agent(
     web_search=False,
     web_fetch=False,
 )
+register_bo_mcp_tools(agent)
 
 # uv run uvicorn agent:app --reload
 app = agent.to_web(models={"GPT-5.4": "openai-responses:gpt-5.4"}, deps=deps)

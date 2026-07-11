@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from pydantic_ai import FunctionToolset, Tool
+from pydantic_ai import Agent, FunctionToolset, RunContext, Tool
 from pydantic_ai.mcp import MCPToolset, SSETransport
 
 from bo_mcp.openapi import (
@@ -28,6 +28,16 @@ def _bo_mcp_sse_url() -> str:
 def build_bo_mcp_toolset() -> MCPToolset[Any]:
     """Build the BO MCP client used by the chat runtime."""
     return MCPToolset(SSETransport(_bo_mcp_sse_url()), id=BO_MCP_TOOLSET_ID)
+
+
+def register_bo_mcp_tools(agent: Agent[Any, Any]) -> None:
+    """Register the BO-MCP SSE toolset on an agent once."""
+    if any(toolset.id == BO_MCP_TOOLSET_ID for toolset in agent.toolsets):
+        return
+
+    @agent.toolset(per_run_step=False, id=BO_MCP_TOOLSET_ID)
+    def bo_mcp_toolset(_ctx: RunContext[Any]) -> MCPToolset[Any]:
+        return build_bo_mcp_toolset()
 
 
 def build_bo_mcp_openapi_toolset() -> FunctionToolset[object]:

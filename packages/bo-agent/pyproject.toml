@@ -5,14 +5,16 @@ subagents-pydantic-ai = { git = "https://github.com/jb2197/subagents-pydantic-ai
 name = "bo-agent"
 version = "0.1.0"
 description = "Bayesian Optimization Agent"
-readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "logfire>=4.0.0",
     "pydantic-ai>=1.61.0",
+    "pydantic>=2.0.0",
     "openai>=1.0.0",
     "langchain-experimental>=0.4.1",
     "python-dotenv>=1.0.0",
     "pydantic-deep>=0.3.31",
+    "requests>=2.32.0",
     "subagents-pydantic-ai",
 ]
 

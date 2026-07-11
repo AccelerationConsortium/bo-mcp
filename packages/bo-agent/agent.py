@@ -1,5 +1,6 @@
 """Web entrypoint for the Bayesian optimization agent."""
 
+import os
 from typing import cast
 
 import logfire
@@ -13,6 +14,8 @@ from specialist import build_bo_specialist_subagent
 from subagents_pydantic_ai import SubAgentConfig
 
 load_dotenv()
+
+MEMORY_DIR = os.getenv("BO_AGENT_MEMORY_DIR", ".deep/memory")
 
 logfire.configure(send_to_logfire="if-token-present")
 logfire.instrument_pydantic_ai()
@@ -37,7 +40,8 @@ agent = create_deep_agent(
     include_skills=False,
     include_builtin_subagents=False,
     include_plan=False,
-    include_memory=False,
+    include_memory=True,
+    memory_dir=MEMORY_DIR,
     web_search=False,
     web_fetch=False,
 )

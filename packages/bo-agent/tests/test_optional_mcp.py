@@ -18,7 +18,7 @@ def test_specialist_run_survives_unreachable_mcp_server() -> None:
         {"BO_MCP_SSE_URL": "http://127.0.0.1:1/sse"},
         clear=True,
     ):
-        specialist_config = build_bo_specialist_subagent()
+        specialist_config = build_bo_specialist_subagent(TestModel())
 
     specialist = Agent(
         TestModel(call_tools=[], custom_output_text="ok"),
@@ -38,7 +38,7 @@ def test_optional_mcp_toolset_is_registered_on_specialist() -> None:
         {"BO_MCP_SSE_URL": "http://127.0.0.1:8001/sse"},
         clear=True,
     ):
-        specialist_config = build_bo_specialist_subagent()
+        specialist_config = build_bo_specialist_subagent(TestModel())
 
     assert "BO-MCP MCP tools" in BO_SPECIALIST_INSTRUCTIONS
     assert BO_MCP_TOOLSET_ID in {toolset.id for toolset in specialist_config["toolsets"]}

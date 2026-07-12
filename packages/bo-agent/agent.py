@@ -16,6 +16,7 @@ from subagents_pydantic_ai import SubAgentConfig
 load_dotenv()
 
 MEMORY_DIR = os.getenv("BO_AGENT_MEMORY_DIR", ".deep/memory")
+AGENT_MODEL = "openai-responses:gpt-5.4"
 
 logfire.configure(send_to_logfire="if-token-present")
 logfire.instrument_pydantic_ai()
@@ -25,10 +26,10 @@ backend = LocalBackend(root_dir=".")
 deps = DeepAgentDeps(backend=backend)
 
 agent = create_deep_agent(
-    "openai-responses:gpt-5.4",
+    AGENT_MODEL,
     instructions="You are a helpful assistant. " + BO_MAIN_AGENT_INSTRUCTION,
     subagents=[
-        cast(SubAgentConfig, build_bo_specialist_subagent()),
+        cast(SubAgentConfig, build_bo_specialist_subagent(AGENT_MODEL)),
         GENERAL_PURPOSE_SUBAGENT,
     ],
     backend=backend,
@@ -47,4 +48,4 @@ agent = create_deep_agent(
 )
 
 # uv run uvicorn agent:app --reload --port 8899
-app = agent.to_web(models={"GPT-5.4": "openai-responses:gpt-5.4"}, deps=deps)
+app = agent.to_web(models={"GPT-5.4": AGENT_MODEL}, deps=deps)

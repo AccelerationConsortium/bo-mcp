@@ -17,3 +17,15 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      - id: ty-bo-agent
+        name: ty type checker (bo-agent)
+        entry: uv run --project packages/bo-agent ty check packages/bo-agent --project packages/bo-agent --python packages/bo-agent/.venv
+        language: system
+        files: ^packages/bo-agent/.*\.py$
+        pass_filenames: false
+      - id: uv-lock-bo-agent
+        name: uv lock (bo-agent)
+        entry: uv lock --project packages/bo-agent --check
+        language: system
+        files: ^packages/bo-agent/(pyproject\.toml|uv\.lock)$
+        pass_filenames: false

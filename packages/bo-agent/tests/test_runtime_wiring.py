@@ -10,6 +10,7 @@ import pydantic_deep
 import pytest
 from bo_mcp.tools import BO_MCP_TOOLSET_ID
 from prompts import BO_SPECIALIST_INSTRUCTIONS
+from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.test import TestModel
 
@@ -20,6 +21,7 @@ def agent_module() -> Iterator[ModuleType]:
     monkeypatch = pytest.MonkeyPatch()
     configure = logfire.configure
     create_deep_agent = pydantic_deep.create_deep_agent
+    to_web = Agent.to_web
 
     def configure_without_sending(*args: Any, **kwargs: Any) -> Any:
         kwargs["send_to_logfire"] = False
@@ -32,8 +34,17 @@ def agent_module() -> Iterator[ModuleType]:
     ) -> Any:
         return create_deep_agent(TestModel(), *args, **kwargs)
 
+    def to_web_with_test_model(
+        self: Agent[Any, Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        kwargs["models"] = {"Test": TestModel()}
+        return to_web(self, *args, **kwargs)
+
     monkeypatch.setattr(logfire, "configure", configure_without_sending)
     monkeypatch.setattr(pydantic_deep, "create_deep_agent", create_deep_agent_with_test_model)
+    monkeypatch.setattr(Agent, "to_web", to_web_with_test_model)
     try:
         yield importlib.import_module("agent")
     finally:

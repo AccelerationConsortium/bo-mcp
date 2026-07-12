@@ -169,6 +169,30 @@ class TestInitialDesignSizeBridging:
         )
         assert batch.method_info["is_nonpredictive"] is False
 
+    def test_recommender_block_without_switch_after_keeps_design_size(self) -> None:
+        """An unrelated recommender override must not discard the warmup design.
+
+        Only an explicitly set ``switch_after`` takes precedence over the
+        neutral ``initial_design_size``; a recommender block that merely
+        selects e.g. an ``initial_recommender`` keeps the requested
+        switch point (``TwoPhaseMetaRecommender.switch_after`` semantics:
+        https://emdgroup.github.io/baybe/stable/userguide/recommenders.html).
+        Before ``switch_after`` became optional, the block's default of 1
+        silently shrank a requested N-point design to a single warmup
+        measurement.
+        """
+        backend = BayBEBackend()
+        batch = backend.generate_suggestions(
+            spec=_spec(
+                initial_design_size=4,
+                backend_options={"baybe": {"recommender": {"initial_recommender": "random"}}},
+            ),
+            observations=_observations(2),
+            batch_size=1,
+            iteration=1,
+        )
+        assert batch.method_info["is_nonpredictive"] is True
+
 
 class TestAcquisitionMethodHonored:
     """``spec.acquisition_method`` reaches BayBE's BotorchRecommender.
@@ -212,16 +236,26 @@ class TestFallbackSelectMethods:
         ``is_fallback`` / ``acquisition_function_inferred`` flags; the
         legacy ``"(fallback)"`` suffix is removed so consumers do not
         have to substring-match free-form labels.
+        ``acquisition_function_inferred`` mirrors the live path
+        phase-for-phase: during warm-up the "no acquisition function"
+        label is definitive (``False``); in the GP phase the label is the
+        static-table guess (``True``).
         """
         backend = BayBEBackend()
         info = backend.select_methods(_spec(), n_observations=0)
         assert info["is_fallback"] is True
-        assert info["acquisition_function_inferred"] is True
+        assert info["acquisition_function_inferred"] is False
+        assert info["acquisition_function"] == "none (space-filling)"
         # The labels themselves are free of the legacy suffix.
         assert "(fallback)" not in info["optimization_strategy"]
         assert "(fallback)" not in info["acquisition_function"]
         # And the confidence is honest about the lack of live data.
         assert info["confidence"] == "low"
+
+        gp_info = backend.select_methods(_spec(), n_observations=3)
+        assert gp_info["is_fallback"] is True
+        assert gp_info["acquisition_function_inferred"] is True
+        assert "(fallback)" not in gp_info["acquisition_function"]
 
     def test_select_methods_multi_objective_label(self) -> None:
         spec = OptimizationSpec(

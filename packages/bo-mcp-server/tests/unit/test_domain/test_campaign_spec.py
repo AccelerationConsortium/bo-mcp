@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from bo_engine.types import TargetMode
 from bo_mcp_server.domain import (
     CampaignSpec,
     Constraint,
@@ -90,6 +91,61 @@ class TestInputParameter:
         )
         assert param.name == "catalyst"
         assert len(param.categories) == 3  # ty: ignore[invalid-argument-type]
+
+    def test_continuous_param_rejects_discrete_values(self):
+        """A continuous parameter carrying a discrete grid is contradictory.
+
+        Backends ignore structural fields outside the declared type
+        (mirroring BayBE, where a NumericalContinuousParameter takes only
+        bounds and a NumericalDiscreteParameter only values:
+        https://emdgroup.github.io/baybe/stable/userguide/parameters.html),
+        so accepting the grid would silently optimize over the full
+        continuous range instead of the caller's intended values.
+        """
+        with pytest.raises(ValidationError, match="does not take values"):
+            InputParameter(
+                name="temp",
+                type=ParameterType.CONTINUOUS,
+                bounds=(20.0, 100.0),  # ty: ignore[invalid-argument-type]
+                values=(30.0, 50.0),
+            )
+
+    def test_continuous_param_rejects_categories(self):
+        """Category labels on a continuous parameter are rejected."""
+        with pytest.raises(ValidationError, match="does not take categories"):
+            InputParameter(
+                name="temp",
+                type=ParameterType.CONTINUOUS,
+                bounds=(20.0, 100.0),  # ty: ignore[invalid-argument-type]
+                categories=("low", "high"),
+            )
+
+    def test_discrete_param_rejects_categories(self):
+        """Category labels on a discrete parameter are rejected."""
+        with pytest.raises(ValidationError, match="does not take categories"):
+            InputParameter(
+                name="count",
+                type=ParameterType.DISCRETE,
+                values=(1.0, 2.0),
+                categories=("low", "high"),
+            )
+
+    def test_categorical_param_rejects_numeric_fields(self):
+        """Bounds / values on a categorical parameter are rejected."""
+        with pytest.raises(ValidationError, match="does not take bounds"):
+            InputParameter(
+                name="catalyst",
+                type=ParameterType.CATEGORICAL,
+                categories=("Pt", "Pd"),
+                bounds=(0.0, 1.0),  # ty: ignore[invalid-argument-type]
+            )
+        with pytest.raises(ValidationError, match="does not take values"):
+            InputParameter(
+                name="catalyst",
+                type=ParameterType.CATEGORICAL,
+                categories=("Pt", "Pd"),
+                values=(1.0,),
+            )
 
 
 class TestConstraintShape:
@@ -186,6 +242,22 @@ class TestObjective:
                 name="cost",
                 direction="invalid",
             )
+
+    def test_log_transform_valid_with_target_mode_minimize(self):
+        """``log_transform`` gates on the resolved goal, not the spelling.
+
+        The engine consumes the collapsed minimize flag (``is_minimize``),
+        so the richer ``target_mode='minimize'`` declaration is as valid
+        with ``log_transform`` as the legacy ``direction='minimize'``
+        (BoTorch's Log outcome transform requires strictly positive
+        targets, hence the minimize-only restriction:
+        https://botorch.org/docs/tutorials/custom_botorch_model_in_ax/
+        and ``botorch.models.transforms.outcome.Log``). Pins the field
+        documentation, which names both spellings.
+        """
+        obj = Objective(name="cost", target_mode=TargetMode.MINIMIZE, log_transform=True)
+        assert obj.is_minimize is True
+        assert obj.log_transform is True
 
 
 class TestCampaignSpec:

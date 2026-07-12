@@ -19,7 +19,12 @@ from __future__ import annotations
 
 import json
 
+import annotated_types
+import pytest
+from pydantic import ValidationError
+
 from api.schemas.intake import IntakeData
+from bo_mcp_server.client import MAX_GENERATION_BATCH_SIZE, field_docs
 from bo_mcp_server.domain import CampaignIntakeInput, CampaignSpec
 
 
@@ -203,3 +208,94 @@ def test_intake_data_annotations_match_campaign_intake_input() -> None:
         if name in mcp_fields and rest_fields[name].annotation != mcp_fields[name].annotation
     }
     assert mismatches == {}
+
+
+def test_intake_data_descriptions_match_campaign_intake_input() -> None:
+    """Each shared field carries the same description on both transports.
+
+    The ``Field(description=...)`` strings feed the REST OpenAPI document
+    and the MCP tool schema — the contracts agents read when constructing
+    payloads. A one-sided edit makes the two transports document different
+    behavior for the same field, so descriptions are single-sourced in
+    :mod:`bo_mcp_server.domain.field_docs`; this guards against a model
+    reverting to an inline literal. Same architecture-fitness-function
+    rationale as the field-set test above (cf. ArchUnit / importlinter).
+    """
+    rest_fields = IntakeData.model_fields
+    mcp_fields = CampaignIntakeInput.model_fields
+    mismatches = {
+        name: (rest_fields[name].description, mcp_fields[name].description)
+        for name in rest_fields
+        if rest_fields[name].description != mcp_fields[name].description
+    }
+    assert mismatches == {}
+
+
+def test_intake_data_numeric_constraints_match_campaign_intake_input() -> None:
+    """Numeric range constraints (ge / gt / le / lt) agree on both transports.
+
+    Pins the asymmetry where the REST schema used to accept born-dead
+    budgets (``max_iterations=0``, ``initial_design_size=0``) and
+    uncapped ``batch_size`` values that the MCP model rejects: the
+    published OpenAPI then advertises values the downstream coercion
+    422s, breaking schema-driven client codegen (OpenAPI guidance is
+    that the schema must describe exactly what the server accepts:
+    https://spec.openapis.org/oas/v3.1.0#schema-object). Collection
+    length limits (``min_length``/``max_length``) legitimately differ —
+    REST adds the ``MAX_INTAKE_*`` payload caps — so only numeric-range
+    metadata is compared. The comparison is an equality, not a subset:
+    dropping a bound on either side fails.
+    """
+    range_types = (annotated_types.Ge, annotated_types.Gt, annotated_types.Le, annotated_types.Lt)
+    rest_fields = IntakeData.model_fields
+    mcp_fields = CampaignIntakeInput.model_fields
+    mismatches = {}
+    for name, rest_field in rest_fields.items():
+        rest_bounds = {m for m in rest_field.metadata if isinstance(m, range_types)}
+        mcp_bounds = {m for m in mcp_fields[name].metadata if isinstance(m, range_types)}
+        if rest_bounds != mcp_bounds:
+            mismatches[name] = (rest_bounds, mcp_bounds)
+    assert mismatches == {}
+
+
+def test_rest_intake_rejects_out_of_range_budgets_at_boundary() -> None:
+    """Range violations fail in ``IntakeData`` itself, not downstream.
+
+    Before the constraints were aligned, ``max_iterations=0`` passed the
+    REST boundary and was only rejected by the internal coercion with an
+    error location the published schema never declared.
+    """
+    for overrides in (
+        {"max_iterations": 0},
+        {"initial_design_size": 0},
+        {"batch_size": MAX_GENERATION_BATCH_SIZE + 1},
+    ):
+        with pytest.raises(ValidationError):
+            IntakeData.model_validate({**_minimal_intake(), **overrides})
+
+
+def test_intake_examples_validate_on_both_transports() -> None:
+    """Every advertised schema example is a valid payload on both models.
+
+    OpenAPI guidance requires examples to validate against their schema
+    (https://swagger.io/docs/specification/adding-examples/); both models
+    use ``extra="forbid"``, so a field rename or shape change invalidates
+    the example and fails here instead of shipping a copy-paste-broken
+    example to agents.
+    """
+    assert field_docs.INTAKE_EXAMPLES
+    for example in field_docs.INTAKE_EXAMPLES:
+        IntakeData.model_validate(example)
+        CampaignIntakeInput.model_validate(example)
+
+
+def test_intake_examples_are_the_shared_constant_on_both_transports() -> None:
+    """Both transports advertise exactly the shared example payloads.
+
+    Ties the round-trip test above to what the schemas actually publish:
+    if a model swaps in its own inline example dict, the validated
+    constant and the advertised example diverge silently.
+    """
+    expected = {"examples": field_docs.INTAKE_EXAMPLES}
+    assert IntakeData.model_config.get("json_schema_extra") == expected
+    assert CampaignIntakeInput.model_config.get("json_schema_extra") == expected

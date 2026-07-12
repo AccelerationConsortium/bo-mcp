@@ -81,6 +81,7 @@ from bo_mcp_server.domain import (
     TransferLearningConfig,
     TurboConfig,
     User,
+    field_docs,
 )
 from bo_mcp_server.errors import (
     ERROR_CODE_TO_HTTP_STATUS,
@@ -220,6 +221,7 @@ __all__ = [
     "ensure_mcp_startup_user",
     "ensure_owned_campaigns",
     "export_campaign_operation",
+    "field_docs",
     "format_validate_intake_response",
     "generate_suggestions_operation",
     "get_campaign_spec_by_id",

@@ -45,6 +45,15 @@ from bo_engine.types import (
     ScalarizerKind,
     TargetMode,
 )
+from bo_mcp_server.domain.field_docs import (
+    BATCH_SIZE_DOC,
+    CONVERGENCE_TOLERANCE_DOC,
+    DESCRIPTION_DOC,
+    INITIAL_DESIGN_SIZE_DOC,
+    MAX_ITERATIONS_DOC,
+    MAX_OBSERVATIONS_DOC,
+    RANDOM_SEED_DOC,
+)
 
 
 def _freeze_option_value(value: object) -> object:
@@ -157,6 +166,18 @@ class Bounds(BaseModel):
         return self
 
 
+# Structural fields declared per parameter type. Intake requires the
+# type's required subset (see ``validate_parameter``) and rejects any
+# structural field outside the type's set, mirroring the
+# ``_TRANSFORM_KIND_FIELDS`` contract on :class:`ObjectiveTransform`.
+_PARAMETER_STRUCTURAL_FIELDS = ("bounds", "values", "categories")
+_PARAMETER_TYPE_FIELDS: dict[ParameterType, tuple[str, ...]] = {
+    ParameterType.CONTINUOUS: ("bounds",),
+    ParameterType.DISCRETE: ("bounds", "values"),
+    ParameterType.CATEGORICAL: ("categories",),
+}
+
+
 class InputParameter(BaseModel):
     """Input parameter definition.
 
@@ -184,12 +205,54 @@ class InputParameter(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(..., min_length=1)
-    type: ParameterType
-    bounds: Bounds | None = None  # For continuous/discrete
-    values: tuple[float, ...] | None = None  # For discrete (fractional values ok)
-    categories: tuple[str, ...] | None = None  # For categorical
-    description: str = ""
-    parameter_options: Mapping[str, Mapping[str, Any]] | None = None
+    type: ParameterType = Field(
+        description=(
+            "Parameter kind, which determines which other fields are "
+            "required vs. rejected (enforced at intake): 'continuous' "
+            "requires `bounds`; 'discrete' requires `values` and/or "
+            "`bounds`; 'categorical' requires `categories` with at "
+            "least 2 entries. Fields outside the kind's set are "
+            "rejected."
+        )
+    )
+    bounds: Bounds | None = Field(
+        default=None,
+        description=(
+            "Numeric range as {lower, upper} (legacy [lower, upper] pairs "
+            "also accepted). Required for type='continuous'; for "
+            "type='discrete', supplying only `bounds` (no `values`) "
+            "expands to an integer grid over the range. Rejected for "
+            "type='categorical'."
+        ),
+    )
+    values: tuple[float, ...] | None = Field(
+        default=None,
+        description=(
+            "Explicit discrete grid values (fractional values allowed). "
+            "type='discrete' only (rejected for other types); required "
+            "unless `bounds` is set instead."
+        ),
+    )
+    categories: tuple[str, ...] | None = Field(
+        default=None,
+        description=(
+            "Category labels. type='categorical' only (rejected for "
+            "other types); at least 2 required."
+        ),
+    )
+    description: str = Field(
+        default="",
+        description="Free-text human-readable note. Not consumed by any backend.",
+    )
+    parameter_options: Mapping[str, Mapping[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Per-backend metadata with no neutral cross-backend "
+            "equivalent, keyed by backend name (currently only "
+            "'baybe' — see BayBEParameterOptions). A backend ignores "
+            "options addressed to a different backend."
+        ),
+    )
 
     @field_validator("bounds", mode="before")
     @classmethod
@@ -221,15 +284,29 @@ class InputParameter(BaseModel):
 
     @model_validator(mode="after")
     def validate_parameter(self) -> "InputParameter":
-        """Validate parameter has appropriate fields for its type."""
-        if self.type == ParameterType.CONTINUOUS:
-            if self.bounds is None:
-                msg = "Continuous parameter requires bounds"
+        """Require the type's structural fields and reject every other one.
+
+        The rejection half matters as much as the requirement half: a
+        contradictory declaration (e.g. a continuous parameter carrying a
+        discrete `values` grid) would otherwise validate and then be
+        silently ignored by every backend, so the optimizer would explore
+        a different space than the caller believes was declared.
+        """
+        allowed = _PARAMETER_TYPE_FIELDS[self.type]
+        for field_name in _PARAMETER_STRUCTURAL_FIELDS:
+            if field_name not in allowed and getattr(self, field_name) is not None:
+                msg = (
+                    f"Parameter '{self.name}' of type '{self.type.value}' "
+                    f"does not take {field_name}"
+                )
                 raise ValueError(msg)
-        elif self.type == ParameterType.DISCRETE and (self.values is None and self.bounds is None):
+        if self.type == ParameterType.CONTINUOUS and self.bounds is None:
+            msg = "Continuous parameter requires bounds"
+            raise ValueError(msg)
+        if self.type == ParameterType.DISCRETE and self.values is None and self.bounds is None:
             msg = "Discrete parameter requires values or bounds"
             raise ValueError(msg)
-        elif self.type == ParameterType.CATEGORICAL and (
+        if self.type == ParameterType.CATEGORICAL and (
             self.categories is None or len(self.categories) < 2
         ):
             msg = "Categorical parameter requires at least 2 categories"
@@ -311,10 +388,12 @@ class Objective(BaseModel):
     ``log_transform`` opts a minimize objective into a ``Log → Standardize``
     outcome stack so multi-decade targets (e.g. concentrations or rates
     spanning several orders of magnitude) train against a roughly
-    homoskedastic scale. Currently only valid for ``direction="minimize"``;
-    enabling it on a maximize objective raises at the suggestion-generation
-    boundary because BoTorch's ``Log`` transform requires strictly
-    positive targets and negation flips positive raw values to negative.
+    homoskedastic scale. Only valid for minimize objectives — declared
+    via either ``direction="minimize"`` or ``target_mode="minimize"``;
+    enabling it on a maximize objective is rejected by capability
+    validation at campaign creation because BoTorch's ``Log`` transform
+    requires strictly positive targets and negation flips positive raw
+    values to negative.
 
     The goal is declared either through the legacy ``direction`` string or
     the richer ``target_mode`` (mutually exclusive — exactly one must be
@@ -328,16 +407,81 @@ class Objective(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(..., min_length=1)
-    direction: str | None = Field(default=None, pattern="^(minimize|maximize)$")
-    unit: str = ""
-    target: float | None = None  # Match-mode target value
-    log_transform: bool = False
-    target_mode: TargetMode | None = None
-    match_shape: MatchShape | None = None
-    match_scale: float | None = Field(default=None, gt=0.0)
-    weight: float | None = Field(default=None, gt=0.0)
-    normalization_bounds: tuple[float, float] | None = None
-    transform: ObjectiveTransform | None = None
+    direction: str | None = Field(
+        default=None,
+        pattern="^(minimize|maximize)$",
+        description=(
+            "Legacy goal declaration. Mutually exclusive with `target_mode` "
+            "— exactly one of the two must be set."
+        ),
+    )
+    unit: str = Field(default="", description="Display unit. Not consumed by any backend.")
+    target: float | None = Field(
+        default=None,
+        description=(
+            "Target value for target_mode='match'. Required when "
+            "target_mode='match'; unused otherwise."
+        ),
+    )
+    log_transform: bool = Field(
+        default=False,
+        description=(
+            "Apply a Log -> Standardize outcome stack, for multi-decade "
+            "targets (e.g. concentrations spanning orders of magnitude). "
+            "Only valid for minimize objectives (direction='minimize' or "
+            "target_mode='minimize'): BoTorch's Log transform requires "
+            "strictly positive targets, which negation for 'maximize' "
+            "would violate. Mutually exclusive with `transform`."
+        ),
+    )
+    target_mode: TargetMode | None = Field(
+        default=None,
+        description=(
+            "Richer goal declaration than `direction`: 'minimize'/"
+            "'maximize' (same as `direction`) or 'match' (hit `target` "
+            "using the `match_shape` distance kernel). Mutually exclusive "
+            "with `direction` — exactly one of the two must be set."
+        ),
+    )
+    match_shape: MatchShape | None = Field(
+        default=None,
+        description="Distance-to-target kernel. Only valid with target_mode='match'.",
+    )
+    match_scale: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Width of the match-mode distance kernel (bell sigma / "
+            "triangular base width). Only meaningful for "
+            "match_shape in ('bell', 'triangular')."
+        ),
+    )
+    weight: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Relative weight for desirability scalarization. Only "
+            "meaningful with the campaign-level "
+            "scalarization='desirability'; ignored under scalarization="
+            "'pareto'."
+        ),
+    )
+    normalization_bounds: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "(lower, upper) range this objective's raw values are mapped "
+            "into before desirability scalarization. Only meaningful with "
+            "the campaign-level scalarization='desirability'."
+        ),
+    )
+    transform: ObjectiveTransform | None = Field(
+        default=None,
+        description=(
+            "Typed target transformation (log / clamp / power / sigmoid). "
+            "Mutually exclusive with `log_transform`. Honored by the "
+            "BayBE backend; BoTorch reports it UNSUPPORTED."
+        ),
+    )
 
     @property
     def is_minimize(self) -> bool:
@@ -432,13 +576,59 @@ class Constraint(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    type: ConstraintType
-    parameters: tuple[str, ...]  # Parameter names involved
-    value: float | None = None  # Arithmetic threshold (SUM_*/PRODUCT_*/LINEAR)
-    coefficients: tuple[float, ...] | None = None  # For linear constraints
-    min_cardinality: int | None = Field(default=None, ge=0)  # CARDINALITY only
-    max_cardinality: int | None = Field(default=None, ge=0)  # CARDINALITY only
-    is_interpoint: bool = False  # Continuous linear/sum only
+    type: ConstraintType = Field(
+        description=(
+            "Constraint family, which determines which of `value` / "
+            "`coefficients` / `min_cardinality` / `max_cardinality` are "
+            "required vs. forbidden (enforced at intake)."
+        )
+    )
+    parameters: tuple[str, ...] = Field(
+        description="Parameter names this constraint references; must already be declared."
+    )
+    value: float | None = Field(
+        default=None,
+        description=(
+            "Arithmetic threshold. Required for the SUM_*/PRODUCT_*/LINEAR "
+            "families; forbidden for every other type."
+        ),
+    )
+    coefficients: tuple[float, ...] | None = Field(
+        default=None,
+        description=(
+            "Per-parameter weights, one per entry in `parameters` in the "
+            "same order. Required for type='linear' only; forbidden for "
+            "every other type (SUM_*/PRODUCT_* are unweighted by "
+            "definition)."
+        ),
+    )
+    min_cardinality: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Minimum count of nonzero parameters. type='cardinality' "
+            "only; at least one of `min_cardinality`/`max_cardinality` "
+            "is required there."
+        ),
+    )
+    max_cardinality: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum count of nonzero parameters. type='cardinality' "
+            "only; at least one of `min_cardinality`/`max_cardinality` "
+            "is required there."
+        ),
+    )
+    is_interpoint: bool = Field(
+        default=False,
+        description=(
+            "Switch a continuous linear/sum constraint to across-the-"
+            "batch semantics (constrains the sum/linear combination over "
+            "the whole recommended batch, not each point individually). "
+            "Only valid for the continuous linear/sum constraint family."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_constraint_shape(self) -> "Constraint":
@@ -520,30 +710,57 @@ class OutcomeConstraint(BaseModel):
     """Outcome constraint learned from data.
 
     Specifies a threshold on an objective that defines feasibility.
+    BoTorch-only — reported UNSUPPORTED on the BayBE backend by default
+    (see ``acknowledge_degradations`` on :class:`CampaignSpec`), which
+    has no equivalent probability-of-feasibility constraint model.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    objective_name: str  # Which objective to constrain
-    threshold: float  # Constraint value
-    greater_than: bool = True  # obj >= threshold (True) or <= threshold
-    feasibility_threshold: float = Field(default=0.5, ge=0.0, le=1.0)  # P(feasible) cutoff
+    objective_name: str = Field(
+        description="Objective this constraint applies to; must be declared."
+    )
+    threshold: float = Field(description="Constraint value on the objective's raw scale.")
+    greater_than: bool = Field(
+        default=True,
+        description="True: objective >= threshold is feasible. False: objective <= threshold.",
+    )
+    feasibility_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cutoff on the constraint GP's predicted P(feasible) above "
+            "which a candidate counts as feasible."
+        ),
+    )
 
 
 class FidelityParameter(BaseModel):
     """Fidelity parameter for multi-fidelity optimization (v2.0).
 
     Fidelity parameters control the approximation level of evaluations.
-    Lower fidelity = cheaper but less accurate.
+    Lower fidelity = cheaper but less accurate. BoTorch-only — reported
+    UNSUPPORTED on the BayBE backend by default (see
+    ``acknowledge_degradations`` on :class:`CampaignSpec`), which has no
+    native multi-fidelity acquisition.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    name: str = Field(..., min_length=1)
-    bounds: Bounds  # (min_fidelity, max_fidelity)
-    target: float  # Target fidelity for final optimization (usually max)
-    cost_weight: float = 1.0  # Cost scaling factor for fidelity
-    fixed_cost: float = Field(default=0.0, ge=0.0)  # Fixed base cost
+    name: str = Field(..., min_length=1, description="Name of the fidelity parameter.")
+    bounds: Bounds = Field(description="(min_fidelity, max_fidelity) range.")
+    target: float = Field(
+        description="Fidelity used for the final recommendation once optimization completes."
+    )
+    cost_weight: float = Field(
+        default=1.0, description="Scales evaluation cost by fidelity level for the acquisition."
+    )
+    fixed_cost: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Fixed per-evaluation overhead added regardless of fidelity level.",
+    )
 
     @field_validator("bounds", mode="before")
     @classmethod
@@ -558,11 +775,20 @@ class FidelityParameter(BaseModel):
 
 
 class TransferLearningConfig(BaseModel):
-    """Configuration for transfer learning from prior campaigns (v2.0).
+    """Configuration for RGPE transfer learning from prior campaigns (v2.0).
 
     Allows leveraging data from prior optimization campaigns. The
     ``prior_campaign_ids`` field is a tuple so a frozen config instance
     is deeply immutable.
+
+    This RGPE ensemble targets the BoTorch backend. On a pinned
+    ``backend='baybe'`` the spec is reported UNSUPPORTED and rejected at
+    intake, and — unlike other BoTorch-only features —
+    ``acknowledge_degradations`` cannot downgrade the rejection to a
+    warning. Use BayBE's own native transfer-learning mechanism instead:
+    declare a parameter's ``parameter_options['baybe'].role`` as
+    ``'task'`` rather than setting this config (with ``backend='auto'``
+    an RGPE spec simply resolves to the BoTorch backend).
 
     ``temperature`` is deprecated and has no effect: RGPE ensemble
     weights are computed from the paper's ranking loss (argmin counts
@@ -573,8 +799,14 @@ class TransferLearningConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    prior_campaign_ids: tuple[str, ...] = Field(..., min_length=1)
-    num_ranking_samples: int = Field(default=512, ge=1)
+    prior_campaign_ids: tuple[str, ...] = Field(
+        ..., min_length=1, description="IDs of prior campaigns to pool data from."
+    )
+    num_ranking_samples: int = Field(
+        default=512,
+        ge=1,
+        description="Posterior samples used to compute RGPE ranking-loss ensemble weights.",
+    )
     temperature: float = Field(
         default=0.5,
         gt=0.0,
@@ -602,15 +834,43 @@ class TurboConfig(BaseModel):
     (``length_min <= initial_length <= length_max``), and the success /
     failure tolerances are at least one (the smallest value that still
     counts a single batch toward expand/contract).
+
+    BoTorch-only — reported UNSUPPORTED on the BayBE backend by default
+    (see ``acknowledge_degradations`` on :class:`CampaignSpec`), which
+    has no native trust-region recommender.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    initial_length: float = Field(default=0.8, gt=0.0)
-    length_min: float = Field(default=0.5**7, gt=0.0)
-    length_max: float = Field(default=1.6, gt=0.0)
-    success_tolerance: int = Field(default=10, ge=1)
-    failure_tolerance: int | None = Field(default=None, ge=1)
+    initial_length: float = Field(
+        default=0.8,
+        gt=0.0,
+        description="Initial trust-region edge in normalized [0,1] input space.",
+    )
+    length_min: float = Field(
+        default=0.5**7,
+        gt=0.0,
+        description="Trust-region edge below which a restart is triggered.",
+    )
+    length_max: float = Field(
+        default=1.6,
+        gt=0.0,
+        description="Trust-region edge cap after expansion.",
+    )
+    success_tolerance: int = Field(
+        default=10,
+        ge=1,
+        description="Consecutive improving batches before the trust region doubles.",
+    )
+    failure_tolerance: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Consecutive non-improving batches before the trust region "
+            "halves. None re-derives a dim/batch-size-aware value at "
+            "construction time; set an integer to override."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_length_invariants(self) -> "TurboConfig":
@@ -635,14 +895,29 @@ class TurboConfig(BaseModel):
 class SaasboConfig(BaseModel):
     """Configuration for SAASBO high-dimensional optimization.
 
-    Present = use SAASBO, absent (None) = standard GP.
+    Present = use SAASBO, absent (None) = standard GP. Sparse
+    Axis-Aligned Subspace BO (Eriksson & Jankowiak, UAI 2021) fits a
+    fully Bayesian GP via NUTS (No-U-Turn Sampler) MCMC to identify the
+    small subset of important dimensions in a high-dimensional
+    (50+ parameter) search space. BoTorch-only — reported UNSUPPORTED
+    on the BayBE backend by default (see ``acknowledge_degradations``
+    on :class:`CampaignSpec`), which has no fully-Bayesian NUTS surrogate.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    warmup_steps: int = 256
-    num_samples: int = 128
-    thinning: int = 16
+    warmup_steps: int = Field(
+        default=256,
+        description="NUTS warmup (burn-in) steps before collecting posterior samples.",
+    )
+    num_samples: int = Field(
+        default=128,
+        description="Number of posterior samples drawn for the fully Bayesian ensemble.",
+    )
+    thinning: int = Field(
+        default=16,
+        description="Keep every Nth NUTS sample, to reduce autocorrelation between samples.",
+    )
 
 
 class AcquisitionOptimizationConfig(BaseModel):
@@ -652,12 +927,33 @@ class AcquisitionOptimizationConfig(BaseModel):
     from bo-engine. Use this only when calibrating against a benchmark or
     when the campaign has a known multi-modal acquisition surface that needs
     more aggressive exploration.
+
+    Targets the BoTorch backend's own L-BFGS-B optimizer — reported
+    IGNORED on the BayBE backend by default (see
+    ``acknowledge_degradations`` on :class:`CampaignSpec`), since BayBE
+    optimizes its acquisition function internally. The BayBE-equivalent
+    knobs are ``n_restarts``/``n_raw_samples`` under
+    ``backend_options['baybe'].recommender.bayesian`` (fixed defaults of
+    10/64, not dimension-adaptive).
     """
 
     model_config = ConfigDict(frozen=True)
 
-    num_restarts: int | None = Field(default=None, ge=1)
-    raw_samples: int | None = Field(default=None, ge=1)
+    num_restarts: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "L-BFGS-B multi-start restart count. None uses bo-engine's dimension-adaptive default."
+        ),
+    )
+    raw_samples: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Raw samples drawn to seed the restarts. None uses "
+            "bo-engine's dimension-adaptive default."
+        ),
+    )
 
 
 class CampaignSpec(BaseModel):
@@ -678,33 +974,22 @@ class CampaignSpec(BaseModel):
     """
 
     name: str = Field(..., min_length=1)
-    description: str = ""
+    description: str = Field(default="", description=DESCRIPTION_DOC)
     parameters: tuple[InputParameter, ...] = Field(..., min_length=1)
     objectives: tuple[Objective, ...] = Field(..., min_length=1)
     constraints: tuple[Constraint, ...] = Field(default_factory=tuple)
-    batch_size: int = Field(default=1, ge=1)
+    batch_size: int = Field(default=1, ge=1, description=BATCH_SIZE_DOC)
     # ``ge=1`` matches ``max_observations``: zero or negative would create
     # a born-dead campaign whose every generate returns BUDGET_EXCEEDED.
-    max_iterations: int | None = Field(default=None, ge=1)
-    # Total observation cap. Counted across all iterations; reaching it short-
-    # circuits ``generate_suggestions`` even mid-iteration.
-    max_observations: int | None = Field(default=None, ge=1)
-    # Relative-improvement threshold passed to ``detect_convergence``. When
-    # set, the suggestion entry point reports ``CONVERGED`` once recent
-    # improvement falls below this value.
-    convergence_tolerance: float | None = Field(default=None, gt=0.0)
-    initial_design_size: int | None = Field(default=None, ge=1)
-    random_seed: int | None = Field(
-        default=None,
-        description=(
-            "Campaign-level RNG seed. Optional. When supplied, the Sobol "
-            "initial design and acquisition multi-start are deterministic "
-            "within a fixed (torch version, device, deterministic-algorithms "
-            "setting) triple; suggestions are NOT byte-identical across "
-            "different torch versions, CPU vs. CUDA, or backend swaps. Set "
-            "torch.use_deterministic_algorithms(True) for strictest behavior."
-        ),
+    max_iterations: int | None = Field(default=None, ge=1, description=MAX_ITERATIONS_DOC)
+    max_observations: int | None = Field(default=None, ge=1, description=MAX_OBSERVATIONS_DOC)
+    # Passed to ``detect_convergence``; the suggestion entry point reports
+    # ``CONVERGED`` once recent improvement falls below this value.
+    convergence_tolerance: float | None = Field(
+        default=None, gt=0.0, description=CONVERGENCE_TOLERANCE_DOC
     )
+    initial_design_size: int | None = Field(default=None, ge=1, description=INITIAL_DESIGN_SIZE_DOC)
+    random_seed: int | None = Field(default=None, description=RANDOM_SEED_DOC)
     # v1.0.1: Acquisition method selection
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
     # Exploration weight for the UCB acquisition family; only valid together

@@ -23,6 +23,7 @@ from api.limits import (
 )
 from bo_engine.types import ScalarizationMode, ScalarizerKind
 from bo_mcp_server.client import (
+    MAX_GENERATION_BATCH_SIZE,
     AcquisitionMethod,
     AcquisitionOptimizationConfig,
     Constraint,
@@ -33,6 +34,7 @@ from bo_mcp_server.client import (
     SaasboConfig,
     TransferLearningConfig,
     TurboConfig,
+    field_docs,
 )
 
 
@@ -58,7 +60,7 @@ class IntakeData(BaseModel):
     """
 
     name: str = Field(..., min_length=1)
-    description: str = ""
+    description: str = Field(default="", description=field_docs.DESCRIPTION_DOC)
     parameters: tuple[InputParameter, ...] = Field(
         ..., min_length=1, max_length=MAX_INTAKE_PARAMETERS
     )
@@ -66,29 +68,36 @@ class IntakeData(BaseModel):
     constraints: tuple[Constraint, ...] = Field(
         default_factory=tuple, max_length=MAX_INTAKE_CONSTRAINTS
     )
-    batch_size: int = Field(default=1, ge=1)
-    max_iterations: int | None = None
-    max_observations: int | None = Field(default=None, ge=1)
-    convergence_tolerance: float | None = Field(default=None, gt=0.0)
-    initial_design_size: int | None = None
-    random_seed: int | None = Field(
-        default=None,
-        description=(
-            "Campaign-level RNG seed. Optional. When supplied, the Sobol "
-            "initial design and acquisition multi-start are deterministic "
-            "within a fixed (torch version, device, deterministic-algorithms "
-            "setting) triple; suggestions are NOT byte-identical across "
-            "different torch versions, CPU vs. CUDA, or backend swaps. Set "
-            "torch.use_deterministic_algorithms(True) for strictest behavior."
-        ),
+    # Numeric budget constraints mirror ``CampaignIntakeInput`` exactly so
+    # the published OpenAPI advertises the same contract the downstream
+    # coercion enforces (a parity test pins the ge/gt/le metadata).
+    batch_size: int = Field(
+        default=1, ge=1, le=MAX_GENERATION_BATCH_SIZE, description=field_docs.BATCH_SIZE_DOC
     )
+    max_iterations: int | None = Field(
+        default=None, ge=1, description=field_docs.MAX_ITERATIONS_DOC
+    )
+    max_observations: int | None = Field(
+        default=None, ge=1, description=field_docs.MAX_OBSERVATIONS_DOC
+    )
+    convergence_tolerance: float | None = Field(
+        default=None, gt=0.0, description=field_docs.CONVERGENCE_TOLERANCE_DOC
+    )
+    initial_design_size: int | None = Field(
+        default=None, ge=1, description=field_docs.INITIAL_DESIGN_SIZE_DOC
+    )
+    random_seed: int | None = Field(default=None, description=field_docs.RANDOM_SEED_DOC)
     acquisition_optimization: AcquisitionOptimizationConfig | None = None
     # ``Literal`` mirrors :class:`bo_mcp_server.domain.CampaignIntakeInput`
     # so the REST OpenAPI schema advertises an explicit ``enum`` constraint
     # and the route handler can pass the value straight through without a
     # ``ty: ignore`` widening cast.
-    backend: Literal["auto", "botorch", "baybe"] = "auto"
-    backend_options: dict[str, dict[str, Any]] | None = None
+    backend: Literal["auto", "botorch", "baybe"] = Field(
+        default="auto", description=field_docs.BACKEND_DOC
+    )
+    backend_options: dict[str, dict[str, Any]] | None = Field(
+        default=None, description=field_docs.BACKEND_OPTIONS_DOC
+    )
     # Typed as the ``AcquisitionMethod`` enum (mirroring
     # ``CampaignIntakeInput``) so the REST OpenAPI advertises the valid
     # values and an invalid method is rejected at the request boundary
@@ -96,15 +105,16 @@ class IntakeData(BaseModel):
     # serializes to ``"auto"``, so an omitted field behaves identically on
     # both transports.
     acquisition_method: AcquisitionMethod = AcquisitionMethod.AUTO
-    # UCB-family exploration weight; only valid with
-    # acquisition_method='upper_confidence_bound' (enforced by CampaignSpec).
-    acquisition_beta: float | None = None
+    # Cross-field rule (beta requires the UCB family) enforced by CampaignSpec.
+    acquisition_beta: float | None = Field(
+        default=None, description=field_docs.ACQUISITION_BETA_DOC
+    )
     # Multi-objective combination strategy + desirability scalarizer flavor;
     # cross-field rules enforced by CampaignSpec.
     scalarization: ScalarizationMode = ScalarizationMode.PARETO
     scalarizer: ScalarizerKind | None = None
-    use_input_warping: bool = False
-    use_cost_aware: bool = False
+    use_input_warping: bool = Field(default=False, description=field_docs.USE_INPUT_WARPING_DOC)
+    use_cost_aware: bool = Field(default=False, description=field_docs.USE_COST_AWARE_DOC)
     turbo_config: TurboConfig | None = None
     saasbo_config: SaasboConfig | None = None
     fidelity_parameter: FidelityParameter | None = None
@@ -114,6 +124,11 @@ class IntakeData(BaseModel):
     # fields". Mirrors :class:`CampaignIntakeInput.acknowledge_degradations`
     # (same ``tuple[str, ...]`` annotation) so the REST and MCP transports
     # accept and validate the identical shape.
-    acknowledge_degradations: tuple[str, ...] = Field(default_factory=tuple)
+    acknowledge_degradations: tuple[str, ...] = Field(
+        default_factory=tuple, description=field_docs.ACKNOWLEDGE_DEGRADATIONS_DOC
+    )
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": field_docs.INTAKE_EXAMPLES},
+    )

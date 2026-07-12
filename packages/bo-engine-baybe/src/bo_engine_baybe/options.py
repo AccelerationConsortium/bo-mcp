@@ -29,6 +29,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from bo_engine_baybe.constants import MAX_RFF_NUM_SAMPLES
+
 
 class BayBEParameterEncoding(StrEnum):
     """Categorical-encoding choices supported by BayBE.
@@ -131,26 +133,95 @@ class BayBEParameterOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    role: BayBEParameterRole = BayBEParameterRole.CATEGORICAL
-    encoding: BayBEParameterEncoding | None = None
+    role: BayBEParameterRole = Field(
+        default=BayBEParameterRole.CATEGORICAL,
+        description=(
+            "Which BayBE parameter class this becomes: 'categorical' (plain "
+            "one-hot/integer-encoded), 'task' (TaskParameter, for "
+            "transfer-learning across related campaigns; see "
+            "`active_values`), 'substance' (SubstanceParameter, "
+            "cheminformatics descriptors; see `substance_data`/"
+            "`substance_encoding`), or 'custom' (CustomDiscreteParameter, a "
+            "caller-supplied numeric representation; see "
+            "`custom_descriptors`)."
+        ),
+    )
+    encoding: BayBEParameterEncoding | None = Field(
+        default=None,
+        description=(
+            "role=categorical only. 'OHE' (one-hot) or 'INT' (integer) "
+            "encoding of the category levels. None keeps BayBE's own "
+            "default (OHE)."
+        ),
+    )
     # Restrict recommendations to a subset of the declared categories while
     # keeping the full set measurable. Valid for every categorical-family
     # role (categorical / task / substance / custom); membership in the
     # declared categories is validated at intake, and the tuple must be
     # non-empty (an empty subset would silently mean "all categories").
-    active_values: tuple[str, ...] | None = Field(default=None, min_length=1)
-    substance_data: dict[str, str] | None = None
-    substance_encoding: BayBESubstanceEncoding | None = None
+    active_values: tuple[str, ...] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Restrict recommendations to this subset of the declared "
+            "categories while keeping every declared category measurable. "
+            "Valid for every categorical-family role (categorical / task / "
+            "substance / custom); every entry must already be a declared "
+            "category (checked at intake) and the tuple must be non-empty."
+        ),
+    )
+    substance_data: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "role=substance only. Maps each declared category label to its "
+            "SMILES string, e.g. {'water': 'O', 'ethanol': 'CCO'}. Required "
+            "for role='substance'; every declared category must have an "
+            "entry."
+        ),
+    )
+    substance_encoding: BayBESubstanceEncoding | None = Field(
+        default=None,
+        description=(
+            "role=substance only. Molecular fingerprint/descriptor "
+            "encoding computed from `substance_data`. None uses BayBE's "
+            "default (MORDRED — a ~1800-descriptor physicochemical block)."
+        ),
+    )
     # role=substance only: keyword passthroughs for the fingerprint
     # computation and (for conformer-based encodings) the conformer
     # generation — forwarded verbatim to BayBE's SubstanceParameter.
-    kwargs_fingerprint: dict[str, Any] | None = None
-    kwargs_conformer: dict[str, Any] | None = None
+    kwargs_fingerprint: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "role=substance only. Keyword arguments forwarded verbatim to "
+            "the underlying scikit-fingerprints fingerprint computation "
+            "selected by `substance_encoding`."
+        ),
+    )
+    kwargs_conformer: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "role=substance only. Keyword arguments forwarded verbatim to "
+            "conformer generation, for the `substance_encoding` choices "
+            "that require 3D conformers (e.g. GETAWAY, WHIM, MORSE, RDF, "
+            "AUTOCORR)."
+        ),
+    )
     # Numerical-discrete parameters only: measurement-matching slack used
     # by BayBE when assigning measured values to grid points. Must stay
     # below half the smallest gap between declared values (BayBE's own
     # validator); checked against the declared grid at intake.
-    tolerance: float | None = Field(default=None, ge=0.0)
+    tolerance: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "Numerical-discrete parameters only. Measurement-matching "
+            "slack BayBE uses when assigning a measured value to its "
+            "nearest declared grid point. Must stay below half the "
+            "smallest gap between declared values (checked at intake); "
+            "None keeps BayBE's own default (no slack)."
+        ),
+    )
     custom_descriptors: dict[str, dict[str, float]] | None = Field(
         default=None,
         description=(
@@ -169,8 +240,9 @@ class BayBEParameterOptions(BaseModel):
         default=True,
         description=(
             "role=custom only. Mirrors BayBE CustomDiscreteParameter.decorrelate: "
-            "true drops highly correlated descriptor columns, false keeps the table "
-            "as-is, or a float in (0, 1) sets the correlation threshold."
+            "true drops descriptor columns correlated above the default "
+            "threshold (0.7), false keeps the table as-is, or a float in "
+            "(0, 1) sets a custom correlation threshold."
         ),
     )
 
@@ -218,11 +290,54 @@ class BayBEBayesianRecommenderOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    sequential_continuous: bool | None = None
-    hybrid_sampler: BayBEHybridSampler | None = None
-    sampling_percentage: float | None = Field(default=None, gt=0.0, le=1.0)
-    n_restarts: int | None = Field(default=None, ge=1)
-    n_raw_samples: int | None = Field(default=None, ge=1)
+    sequential_continuous: bool | None = Field(
+        default=None,
+        description=(
+            "Whether to apply sequential-greedy (True) or joint batch (False) "
+            "optimization in **continuous** search spaces only — discrete/"
+            "hybrid spaces always optimize sequentially regardless of this "
+            "flag. None keeps BayBE's default (True)."
+        ),
+    )
+    hybrid_sampler: BayBEHybridSampler | None = Field(
+        default=None,
+        description=(
+            "Discrete-subspace sampling strategy for **hybrid** (mixed "
+            "discrete/continuous) spaces only: 'Random' or 'FPS' "
+            "(farthest-point sampling). None keeps BayBE's default (no "
+            "sampling — the full discrete subspace is used, and "
+            "`sampling_percentage` is then ignored)."
+        ),
+    )
+    sampling_percentage: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Fraction of the discrete subspace to sample per acquisition "
+            "step, for **hybrid** spaces only when `hybrid_sampler` is set "
+            "(purely discrete spaces are scored exhaustively regardless). "
+            "None keeps BayBE's default (1.0 — the full subspace)."
+        ),
+    )
+    n_restarts: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Number of gradient-based multi-start restarts for continuous "
+            "acquisition optimization; does not affect purely discrete "
+            "optimization. None keeps BayBE's default (10)."
+        ),
+    )
+    n_raw_samples: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Number of raw samples drawn for the initialization heuristic "
+            "that seeds `n_restarts`; does not affect purely discrete "
+            "optimization. None keeps BayBE's default (64)."
+        ),
+    )
 
 
 class BayBERecommenderConfig(BaseModel):
@@ -230,18 +345,43 @@ class BayBERecommenderConfig(BaseModel):
 
     ``switch_after`` delays the initial → BO recommender switch and takes
     precedence over the neutral ``OptimizationSpec.initial_design_size``
-    knob (explicit BayBE option wins); without either, BayBE switches
-    after the first measurement. ``initial_recommender`` selects the
-    space-filling phase recommender, and ``bayesian`` tunes the GP-phase
+    knob when *explicitly set* (``None`` — the default — defers to the
+    neutral knob, so configuring an unrelated sub-option like
+    ``initial_recommender`` or ``bayesian`` cannot silently shrink a
+    requested warm-up); without either, BayBE switches after the first
+    measurement. ``initial_recommender`` selects the space-filling phase
+    recommender, and ``bayesian`` tunes the GP-phase
     :class:`BotorchRecommender`. The overall graph stays the two-phase
     meta-recommender.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    switch_after: int = Field(default=1, ge=1)
-    initial_recommender: BayBEInitialRecommender = BayBEInitialRecommender.RANDOM
-    bayesian: BayBEBayesianRecommenderOptions | None = None
+    switch_after: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Number of measurements after which the two-phase meta-"
+            "recommender switches from `initial_recommender` to the "
+            "GP-phase BotorchRecommender. Takes precedence over the "
+            "neutral `initial_design_size` when both are set; None (the "
+            "default) defers to `initial_design_size` and then to the "
+            "backend default (switch after the first measurement)."
+        ),
+    )
+    initial_recommender: BayBEInitialRecommender = Field(
+        default=BayBEInitialRecommender.RANDOM,
+        description=(
+            "Space-filling recommender used before the switch to the "
+            "GP-phase recommender (see `switch_after`). 'random' works on "
+            "any search space; 'fps'/'kmeans'/'pam'/'gmm' require a purely "
+            "discrete/enumerable search space."
+        ),
+    )
+    bayesian: BayBEBayesianRecommenderOptions | None = Field(
+        default=None,
+        description="Tuning knobs for the GP-phase BotorchRecommender.",
+    )
 
 
 class BayBESurrogateKind(StrEnum):
@@ -273,32 +413,139 @@ class BayBEGPPreset(StrEnum):
 
 
 class BayBEKernelKind(StrEnum):
-    """Curated GP kernel choices (Matern with tunable nu, RBF)."""
+    """Curated GP kernel choices.
+
+    ``matern``/``rbf`` are the historical stationary/smooth defaults.
+    ``linear``/``periodic``/``polynomial``/``rq``/``rff`` extend the zoo for
+    non-stationary or periodic objective surfaces Matern/RBF can't
+    represent well (mirrors ``baybe.kernels.basic``). Composite kernels
+    (``AdditiveKernel``/``ProductKernel``) and the transfer-learning
+    ``IndexKernel`` family are deliberately excluded: they need a
+    recursive/multi-task config shape, not a single enum member.
+    """
 
     MATERN = "matern"
     RBF = "rbf"
+    LINEAR = "linear"
+    PERIODIC = "periodic"
+    POLYNOMIAL = "polynomial"
+    RQ = "rq"
+    RFF = "rff"
 
 
 # Smoothness values accepted by the Matern kernel family (gpytorch contract).
-MATERN_ALLOWED_NU: frozenset[float] = frozenset({0.5, 1.5, 2.5})
+# ``float`` isn't a valid ``Literal`` parameter per PEP 586 (and rejected by
+# ty's `invalid-type-form` check), so the allowed set is enforced by
+# ``validate_kernel_fields`` and separately surfaced to schema consumers via
+# ``json_schema_extra`` below.
+MATERN_ALLOWED_NU: tuple[float, ...] = (0.5, 1.5, 2.5)
+
+# Companion-parameter ownership: field name -> (the kernel kind it
+# parameterizes, whether that kind requires it). Single source of truth for
+# ``validate_kernel_fields``; the per-field descriptions repeat the rules in
+# prose for JSON-schema consumers.
+KERNEL_COMPANION_FIELDS: dict[str, tuple[BayBEKernelKind, bool]] = {
+    "nu": (BayBEKernelKind.MATERN, False),
+    "period_length": (BayBEKernelKind.PERIODIC, False),
+    "power": (BayBEKernelKind.POLYNOMIAL, True),
+    "num_samples": (BayBEKernelKind.RFF, True),
+}
 
 
 class BayBEKernelConfig(BaseModel):
-    """GP kernel selection (wrapped in a ScaleKernel by the converter)."""
+    """GP kernel selection (wrapped in a ScaleKernel by the converter).
+
+    ``nu`` parameterizes ``kind='matern'`` only. ``period_length``
+    parameterizes ``kind='periodic'`` only and is optional (omit for
+    gpytorch's own initial value). ``power`` and ``num_samples`` are
+    *required* companions for ``kind='polynomial'`` and ``kind='rff'``
+    respectively. ``linear`` and ``rq`` take no extra parameters here.
+    ``linear`` builds a linear-with-intercept kernel (a degree-1
+    polynomial with learned offset): the homogeneous linear kernel has
+    zero prior variance at the input-space origin, which sits inside
+    every normalized continuous search space and destabilizes
+    acquisition optimization.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: BayBEKernelKind
-    nu: float | None = None
+    kind: BayBEKernelKind = Field(
+        description=(
+            "Base kernel family. 'matern' (optionally tuned via `nu`) and "
+            "'rbf' are smooth/stationary defaults. 'periodic' suits cyclic "
+            "parameters (optional `period_length`). 'linear' (built as a "
+            "linear-with-intercept kernel, i.e. Bayesian linear "
+            "regression) and 'rq' (rational quadratic) suit non-stationary "
+            "surfaces. 'polynomial' requires `power`. 'rff' (random "
+            "Fourier features, an RBF approximation) requires "
+            "`num_samples`."
+        )
+    )
+    nu: float | None = Field(
+        default=None,
+        description=(
+            "Matern smoothness. Only valid when kind='matern'; rejected on "
+            f"every other kind. Must be one of {list(MATERN_ALLOWED_NU)}."
+        ),
+        json_schema_extra={"enum": [*MATERN_ALLOWED_NU, None]},
+    )
+    period_length: float | None = Field(
+        default=None,
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "Periodic kernel's initial period length. Only valid when "
+            "kind='periodic'; rejected on every other kind. Optional — "
+            "omit to use gpytorch's own initial value."
+        ),
+    )
+    power: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Polynomial kernel's power (degree), at least 1. Required when "
+            "kind='polynomial'; rejected on every other kind. A degree-0 "
+            "polynomial kernel is a constant covariance that ignores every "
+            "input — the GP degenerates to noise-only predictions and the "
+            "recommender to random sampling — so 0 is rejected at intake "
+            "even though the underlying library permits it."
+        ),
+    )
+    num_samples: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_RFF_NUM_SAMPLES,
+        description=(
+            "Number of random Fourier frequencies to draw, at most "
+            f"{MAX_RFF_NUM_SAMPLES} (each evaluated point is featurized "
+            "into 2*num_samples columns, so the cap bounds the fit-time "
+            "memory this option can demand). Required when kind='rff'; "
+            "rejected on every other kind. RFF approximates the RBF "
+            "kernel and only pays off computationally when 2*num_samples "
+            "is well below the number of measurements; at typical "
+            "campaign sizes prefer kind='rbf'. The frequencies are "
+            "redrawn on every refit, so posteriors are approximate and "
+            "not bit-reproducible across recommend calls."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_kernel_fields(self) -> BayBEKernelConfig:
-        """``nu`` belongs to the Matern kernel and must be a valid smoothness."""
-        if self.nu is not None and self.kind != BayBEKernelKind.MATERN:
-            msg = "nu is only valid for the matern kernel"
-            raise ValueError(msg)
+        """Companion parameters apply to (and are required by) exactly their kind.
+
+        Driven by :data:`KERNEL_COMPANION_FIELDS` so each new kernel kind
+        adds a table row instead of another pair of hand-written clauses.
+        """
+        for field_name, (owner, required) in KERNEL_COMPANION_FIELDS.items():
+            value = getattr(self, field_name)
+            if value is not None and self.kind != owner:
+                msg = f"{field_name} is only valid for the {owner.value} kernel"
+                raise ValueError(msg)
+            if required and self.kind == owner and value is None:
+                msg = f"{field_name} is required for the {owner.value} kernel"
+                raise ValueError(msg)
         if self.nu is not None and self.nu not in MATERN_ALLOWED_NU:
-            msg = f"matern nu must be one of {sorted(MATERN_ALLOWED_NU)}"
+            msg = f"matern nu must be one of {list(MATERN_ALLOWED_NU)}"
             raise ValueError(msg)
         return self
 
@@ -308,9 +555,35 @@ class BayBESurrogateConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: BayBESurrogateKind = BayBESurrogateKind.GP
-    gp_preset: BayBEGPPreset | None = None
-    kernel: BayBEKernelConfig | None = None
+    kind: BayBESurrogateKind = Field(
+        default=BayBESurrogateKind.GP,
+        description=(
+            "Surrogate model family. 'gp' (Gaussian process, the only kind "
+            "`gp_preset`/`kernel` apply to) is the default and the only "
+            "kind that meaningfully handles continuous search spaces; "
+            "'random_forest'/'ngboost'/'bayesian_linear'/'mean_prediction' "
+            "are non-differentiable alternatives valid on discrete spaces "
+            "only."
+        ),
+    )
+    gp_preset: BayBEGPPreset | None = Field(
+        default=None,
+        description=(
+            "kind='gp' only. Named hyperparameter-prior preset ('BAYBE', "
+            "'BOTORCH', 'CHEN', 'EDBO', 'EDBO_SMOOTHED', 'HVARFNER') "
+            "combined with `kernel` via `GaussianProcessSurrogate."
+            "from_preset`. None keeps BayBE's own dimension/parameter-"
+            "adaptive default prior selection."
+        ),
+    )
+    kernel: BayBEKernelConfig | None = Field(
+        default=None,
+        description=(
+            "kind='gp' only. Curated GP kernel selection; combined with "
+            "`gp_preset` if both are set. None keeps BayBE's own default "
+            "kernel (a dimension-scaled Matern 5/2)."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_gp_only_fields(self) -> BayBESurrogateConfig:
@@ -360,10 +633,41 @@ class BayBEInsightsOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    explainer: BayBEExplainerKind | None = None
-    use_comp_rep: bool = False
-    include_row_level: bool = False
-    row_level_max_rows: int | None = Field(default=None, ge=1)
+    explainer: BayBEExplainerKind | None = Field(
+        default=None,
+        description=(
+            "SHAP/LIME/MAPLE explainer backend. None keeps BayBE's default "
+            "(KernelExplainer). Non-Kernel SHAP explainers reject "
+            "categorical experimental representations — combine them with "
+            "`use_comp_rep=true` on categorical campaigns."
+        ),
+    )
+    use_comp_rep: bool = Field(
+        default=False,
+        description=(
+            "Explain the computational (encoded) representation instead "
+            "of the experimental one. Required for non-Kernel SHAP "
+            "explainers on categorical campaigns."
+        ),
+    )
+    include_row_level: bool = Field(
+        default=False,
+        description=(
+            "Add bounded per-observation attributions to the diagnostics "
+            "payload. Rows follow the campaign's measurement order and "
+            "carry no per-row identifiers; on multi-target campaigns only "
+            "the first target's attributions are returned."
+        ),
+    )
+    row_level_max_rows: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Row cap for `include_row_level`. None keeps the named "
+            "default (`bo_engine_baybe.constants."
+            "DEFAULT_MAX_ROW_LEVEL_SHAP_ROWS`)."
+        ),
+    )
 
 
 class BayBEBackendOptions(BaseModel):
@@ -392,20 +696,96 @@ class BayBEBackendOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    recommender: BayBERecommenderConfig | None = None
-    surrogate: BayBESurrogateConfig | None = None
-    insights: BayBEInsightsOptions | None = None
-    allow_recommending_pending_experiments: bool | None = None
-    allow_recommending_already_measured: bool | None = None
-    allow_recommending_already_recommended: bool | None = None
-    measurements_must_be_within_tolerance: bool | None = None
+    recommender: BayBERecommenderConfig | None = Field(
+        default=None,
+        description="Recommender graph configuration overrides.",
+    )
+    surrogate: BayBESurrogateConfig | None = Field(
+        default=None,
+        description=(
+            "Surrogate-model configuration. None keeps BayBE's implicit "
+            "default GP surrogate untouched."
+        ),
+    )
+    insights: BayBEInsightsOptions | None = Field(
+        default=None,
+        description="SHAP/LIME/MAPLE feature-importance diagnostics configuration.",
+    )
+    allow_recommending_pending_experiments: bool | None = Field(
+        default=None,
+        description=(
+            "Whether already-recommended-but-unmeasured points remain "
+            "candidates. None keeps the backend's historical behavior "
+            "(False on purely discrete spaces, BayBE's AUTO — which "
+            "resolves to True — on spaces with a continuous part). An "
+            "explicit False is honored on purely discrete spaces only: "
+            "BayBE forbids it whenever the search space has a continuous "
+            "subspace (pending points are handled by the acquisition "
+            "function there, not by candidate exclusion), and that "
+            "combination is reported UNSUPPORTED at intake."
+        ),
+    )
+    allow_recommending_already_measured: bool | None = Field(
+        default=None,
+        description=(
+            "Whether already-measured points remain candidates. None keeps "
+            "the backend's historical behavior: False on purely discrete "
+            "spaces (overriding BayBE's own AUTO, which always resolves "
+            "this flag to True regardless of search-space type), or "
+            "BayBE's AUTO (True) on spaces with a continuous part. An "
+            "explicit False is rejected by BayBE (IncompatibilityError) "
+            "whenever the search space has a continuous subspace — as "
+            "with the other two `allow_recommending_*` flags, it is only "
+            "honored on purely discrete spaces."
+        ),
+    )
+    allow_recommending_already_recommended: bool | None = Field(
+        default=None,
+        description=(
+            "Whether previously-recommended points remain candidates on "
+            "later calls. None keeps the backend's historical behavior: "
+            "False on purely discrete spaces, BayBE's AUTO (which also "
+            "resolves to True) on spaces with a continuous part. An "
+            "explicit False is rejected by BayBE (IncompatibilityError) "
+            "whenever the search space has a continuous subspace — as "
+            "with the other two `allow_recommending_*` flags, it is only "
+            "honored on purely discrete spaces."
+        ),
+    )
+    measurements_must_be_within_tolerance: bool | None = Field(
+        default=None,
+        description=(
+            "Maps to BayBE's `add_measurements(numerical_measurements_"
+            "must_be_within_tolerance=...)`. None keeps BayBE's default "
+            "(True — raises on out-of-tolerance numeric values); False "
+            "accepts out-of-tolerance values instead of raising, a "
+            "data-quality trade-off the caller opts into explicitly."
+        ),
+    )
     # Large-categorical safeguard overrides. ``None`` keeps the named
     # defaults in :mod:`bo_engine_baybe.constants`
     # (DEFAULT_MAX_SEARCHSPACE_STATE_BYTES / DEFAULT_MAX_CANDIDATES); the
     # values bound the serialized size and row count of the enumerated
     # discrete subspace before deterministic subsampling kicks in.
-    max_searchspace_state_bytes: int | None = Field(default=None, ge=1)
-    max_candidates: int | None = Field(default=None, ge=1)
+    max_searchspace_state_bytes: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Byte-size bound on the serialized enumerated discrete "
+            "subspace before deterministic subsampling kicks in. None "
+            "keeps the named default (`bo_engine_baybe.constants."
+            "DEFAULT_MAX_SEARCHSPACE_STATE_BYTES`)."
+        ),
+    )
+    max_candidates: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Row-count bound on the enumerated discrete subspace before "
+            "deterministic subsampling kicks in. None keeps the named "
+            "default (`bo_engine_baybe.constants.DEFAULT_MAX_CANDIDATES`)."
+        ),
+    )
 
 
 def extract_baybe_parameter_options(
@@ -436,3 +816,19 @@ def extract_baybe_backend_options(
     if not raw or "baybe" not in raw:
         return BayBEBackendOptions()
     return BayBEBackendOptions.model_validate(raw["baybe"])
+
+
+def configured_non_gp_surrogate_kind(
+    options: BayBEBackendOptions,
+) -> BayBESurrogateKind | None:
+    """Return the configured surrogate kind when it is not a GP, else ``None``.
+
+    ``None`` covers both "no surrogate configured" (BayBE's implicit
+    default GP) and an explicit ``kind='gp'`` — the two cases where GP
+    kernel/hyperparameter introspection and GP-flavored method labels
+    apply.
+    """
+    surrogate = options.surrogate
+    if surrogate is None or surrogate.kind == BayBESurrogateKind.GP:
+        return None
+    return surrogate.kind

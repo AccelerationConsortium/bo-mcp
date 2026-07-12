@@ -68,6 +68,34 @@ jobs:
       # match so ignores added or removed locally reproduce in CI.
       - run: uv sync --package bo-engine-baybe --extra insights --inexact
       - run: uv run ty check
+  # bo-agent is intentionally not a uv workspace member. Validate its own
+  # lockfile, Python floor, virtual environment, type check, and tests here.
+  bo-agent-quality:
+    name: BO Agent Quality (py3.12)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup
+      - name: Check standalone lockfile
+        run: uv lock --project packages/bo-agent --check --python 3.12
+      - name: Sync standalone environment
+        run: uv sync --project packages/bo-agent --locked --python 3.12
+      - name: Type-check bo-agent
+        run: >-
+          uv run --project packages/bo-agent --locked
+          ty check packages/bo-agent
+          --project packages/bo-agent
+          --python packages/bo-agent/.venv
+      - name: Run bo-agent tests
+        working-directory: packages/bo-agent
+        run: >-
+          uv run --locked pytest -v --durations=10
+          -m "not integration and not slow and not nightly and not docker and not postgres"
   # =============================================================================
   # Fast Tests (PR Checks) - Run on every push/PR
   # =============================================================================

@@ -9,6 +9,7 @@ from typing import Any, cast
 import logfire
 import pydantic_deep
 import pytest
+import specialist as specialist_module
 import subagents_pydantic_ai.toolset as subagent_toolsets
 from prompts import BO_SPECIALIST_INSTRUCTIONS
 from pydantic_ai import Agent
@@ -28,6 +29,8 @@ def agent_module(compiled_subagents: dict[str, Any]) -> Iterator[ModuleType]:
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.delenv("BO_MCP_SSE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
     configure = logfire.configure
     create_deep_agent = pydantic_deep.create_deep_agent
     compile_subagent = subagent_toolsets._compile_subagent
@@ -38,10 +41,11 @@ def agent_module(compiled_subagents: dict[str, Any]) -> Iterator[ModuleType]:
         return configure(*args, **kwargs)
 
     def create_deep_agent_with_test_model(
-        _model: Model | str,
+        model: Model | str | None = None,
         *args: Any,
         **kwargs: Any,
     ) -> Any:
+        del model
         test_model = TestModel(call_tools=[], custom_output_text="ok")
         return create_deep_agent(test_model, *args, **kwargs)
 
@@ -60,6 +64,7 @@ def agent_module(compiled_subagents: dict[str, Any]) -> Iterator[ModuleType]:
 
     monkeypatch.setattr(logfire, "configure", configure_without_sending)
     monkeypatch.setattr(pydantic_deep, "create_deep_agent", create_deep_agent_with_test_model)
+    monkeypatch.setattr(specialist_module, "create_deep_agent", create_deep_agent_with_test_model)
     monkeypatch.setattr(subagent_toolsets, "_compile_subagent", capture_compiled_subagent)
     monkeypatch.setattr(Agent, "to_web", to_web_with_test_model)
     try:

@@ -27,3 +27,6 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 pythonpath = ["."]
+markers = [
+    "smoke: marks tests that verify the assembled agent can start with its declared wiring",
+]

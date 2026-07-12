@@ -1,5 +1,6 @@
 """Runtime import and assembled-agent wiring contract tests."""
 
+import asyncio
 import importlib
 from collections.abc import Iterator
 from types import ModuleType
@@ -25,6 +26,8 @@ def compiled_subagents() -> dict[str, Any]:
 def agent_module(compiled_subagents: dict[str, Any]) -> Iterator[ModuleType]:
     """Import the web entrypoint with a local model and no telemetry export."""
     monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    monkeypatch.delenv("BO_MCP_SSE_URL", raising=False)
     configure = logfire.configure
     create_deep_agent = pydantic_deep.create_deep_agent
     compile_subagent = subagent_toolsets._compile_subagent
@@ -39,14 +42,15 @@ def agent_module(compiled_subagents: dict[str, Any]) -> Iterator[ModuleType]:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        return create_deep_agent(TestModel(), *args, **kwargs)
+        test_model = TestModel(call_tools=[], custom_output_text="ok")
+        return create_deep_agent(test_model, *args, **kwargs)
 
     def to_web_with_test_model(
         self: Agent[Any, Any],
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        kwargs["models"] = {"Test": TestModel()}
+        kwargs["models"] = {"Test": TestModel(call_tools=[], custom_output_text="ok")}
         return to_web(self, *args, **kwargs)
 
     def capture_compiled_subagent(*args: Any, **kwargs: Any) -> Any:
@@ -110,6 +114,15 @@ def test_main_agent_uses_builtin_execute_and_filesystem_tools(agent_module: Modu
         for tool_name in cast(dict[str, Any], getattr(toolset, "tools", {}))
     }
     assert "bash" not in static_tool_names
+
+
+@pytest.mark.smoke
+def test_assembled_main_agent_runs_without_mcp_configuration(agent_module: ModuleType) -> None:
+    """A trivial main-agent run succeeds without configuring the optional MCP service."""
+    deps = agent_module.__dict__["deps"]
+    result = asyncio.run(_runtime_agent(agent_module).run("hi", deps=deps))
+
+    assert result.output == "ok"
 
 
 @pytest.mark.smoke

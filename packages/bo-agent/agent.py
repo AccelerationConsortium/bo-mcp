@@ -46,5 +46,5 @@ agent = create_deep_agent(
     web_fetch=False,
 )
 
-# uv run uvicorn agent:app --reload
+# uv run uvicorn agent:app --reload --port 8899
 app = agent.to_web(models={"GPT-5.4": "openai-responses:gpt-5.4"}, deps=deps)

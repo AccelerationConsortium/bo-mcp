@@ -6,22 +6,34 @@ from types import ModuleType
 from typing import Any, cast
 
 import logfire
+import pydantic_deep
 import pytest
 from bo_mcp.tools import BO_MCP_TOOLSET_ID
 from prompts import BO_SPECIALIST_INSTRUCTIONS
+from pydantic_ai.models import Model
+from pydantic_ai.models.test import TestModel
 
 
 @pytest.fixture(scope="module")
 def agent_module() -> Iterator[ModuleType]:
-    """Import the web entrypoint with real instrumentation but no telemetry export."""
+    """Import the web entrypoint with a local model and no telemetry export."""
     monkeypatch = pytest.MonkeyPatch()
     configure = logfire.configure
+    create_deep_agent = pydantic_deep.create_deep_agent
 
     def configure_without_sending(*args: Any, **kwargs: Any) -> Any:
         kwargs["send_to_logfire"] = False
         return configure(*args, **kwargs)
 
+    def create_deep_agent_with_test_model(
+        _model: Model | str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        return create_deep_agent(TestModel(), *args, **kwargs)
+
     monkeypatch.setattr(logfire, "configure", configure_without_sending)
+    monkeypatch.setattr(pydantic_deep, "create_deep_agent", create_deep_agent_with_test_model)
     try:
         yield importlib.import_module("agent")
     finally:

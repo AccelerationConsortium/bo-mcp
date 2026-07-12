@@ -8,6 +8,7 @@ from typing import Any, cast
 import logfire
 import pydantic_deep
 import pytest
+import subagents_pydantic_ai.toolset as subagent_toolsets
 from prompts import BO_SPECIALIST_INSTRUCTIONS
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -15,11 +16,18 @@ from pydantic_ai.models.test import TestModel
 
 
 @pytest.fixture(scope="module")
-def agent_module() -> Iterator[ModuleType]:
+def compiled_subagents() -> dict[str, Any]:
+    """Collect the real subagents compiled while assembling the main agent."""
+    return {}
+
+
+@pytest.fixture(scope="module")
+def agent_module(compiled_subagents: dict[str, Any]) -> Iterator[ModuleType]:
     """Import the web entrypoint with a local model and no telemetry export."""
     monkeypatch = pytest.MonkeyPatch()
     configure = logfire.configure
     create_deep_agent = pydantic_deep.create_deep_agent
+    compile_subagent = subagent_toolsets._compile_subagent
     to_web = Agent.to_web
 
     def configure_without_sending(*args: Any, **kwargs: Any) -> Any:
@@ -41,8 +49,14 @@ def agent_module() -> Iterator[ModuleType]:
         kwargs["models"] = {"Test": TestModel()}
         return to_web(self, *args, **kwargs)
 
+    def capture_compiled_subagent(*args: Any, **kwargs: Any) -> Any:
+        compiled = compile_subagent(*args, **kwargs)
+        compiled_subagents[compiled.name] = compiled.agent
+        return compiled
+
     monkeypatch.setattr(logfire, "configure", configure_without_sending)
     monkeypatch.setattr(pydantic_deep, "create_deep_agent", create_deep_agent_with_test_model)
+    monkeypatch.setattr(subagent_toolsets, "_compile_subagent", capture_compiled_subagent)
     monkeypatch.setattr(Agent, "to_web", to_web_with_test_model)
     try:
         yield importlib.import_module("agent")
@@ -57,7 +71,11 @@ def _runtime_agent(agent_module: ModuleType) -> Any:
 
 def _toolsets_by_id(agent_module: ModuleType) -> dict[str, Any]:
     """Index the assembled agent's named toolsets."""
-    runtime_agent = _runtime_agent(agent_module)
+    return _agent_toolsets_by_id(_runtime_agent(agent_module))
+
+
+def _agent_toolsets_by_id(runtime_agent: Any) -> dict[str, Any]:
+    """Index an assembled agent's named toolsets."""
     return {
         toolset_id: toolset
         for toolset in runtime_agent.toolsets
@@ -104,9 +122,18 @@ def test_prompted_client_module_is_importable() -> None:
 
 
 @pytest.mark.smoke
-def test_prompted_memory_tools_are_registered(agent_module: ModuleType) -> None:
-    """Memory operations promised by the specialist prompt exist on the main agent."""
-    memory_tools = cast(dict[str, Any], _toolsets_by_id(agent_module)["deep-memory"].tools)
+def test_prompted_memory_tools_are_registered_on_specialist(
+    agent_module: ModuleType,
+    compiled_subagents: dict[str, Any],
+) -> None:
+    """Memory operations promised by the specialist prompt exist on that specialist."""
+    del agent_module  # importing the entrypoint populates compiled_subagents
+    assert "bo-specialist" in compiled_subagents
+    specialist = compiled_subagents["bo-specialist"]
+    memory_tools = cast(
+        dict[str, Any],
+        _agent_toolsets_by_id(specialist)["deep-memory"].tools,
+    )
 
     for tool_name in ("write_memory", "update_memory"):
         assert tool_name in BO_SPECIALIST_INSTRUCTIONS

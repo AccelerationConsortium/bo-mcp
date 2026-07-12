@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from bo_mcp.tools import build_bo_mcp_openapi_toolset
+from bo_mcp.tools import build_bo_mcp_openapi_toolset, build_optional_bo_mcp_toolset
 from prompts import BO_SPECIALIST_INSTRUCTIONS
 
 BO_SPECIALIST_NAME = "bo-specialist"
@@ -13,9 +13,13 @@ BO_SPECIALIST_DESCRIPTION = (
 
 def build_bo_specialist_subagent() -> dict[str, Any]:
     """Return the BO specialist's subagent configuration."""
+    toolsets = [build_bo_mcp_openapi_toolset()]
+    if mcp_toolset := build_optional_bo_mcp_toolset():
+        toolsets.append(mcp_toolset)
+
     return {
         "name": BO_SPECIALIST_NAME,
         "description": BO_SPECIALIST_DESCRIPTION,
         "instructions": BO_SPECIALIST_INSTRUCTIONS,
-        "toolsets": [build_bo_mcp_openapi_toolset()],
+        "toolsets": toolsets,
     }

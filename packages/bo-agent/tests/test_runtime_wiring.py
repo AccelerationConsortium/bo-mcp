@@ -8,7 +8,6 @@ from typing import Any, cast
 import logfire
 import pydantic_deep
 import pytest
-from bo_mcp.tools import BO_MCP_TOOLSET_ID
 from prompts import BO_SPECIALIST_INSTRUCTIONS
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -112,10 +111,3 @@ def test_prompted_memory_tools_are_registered(agent_module: ModuleType) -> None:
     for tool_name in ("write_memory", "update_memory"):
         assert tool_name in BO_SPECIALIST_INSTRUCTIONS
         assert tool_name in memory_tools
-
-
-@pytest.mark.smoke
-def test_bo_mcp_toolset_is_registered(agent_module: ModuleType) -> None:
-    """The assembled main agent includes the BO-MCP toolset promised by its wiring."""
-    assert "BO-MCP MCP tools" in BO_SPECIALIST_INSTRUCTIONS
-    assert BO_MCP_TOOLSET_ID in _toolsets_by_id(agent_module)

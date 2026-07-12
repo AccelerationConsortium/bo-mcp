@@ -5,8 +5,7 @@ from unittest.mock import patch
 
 import pytest
 from bo_mcp.openapi import _default_openapi_url
-from bo_mcp.tools import BO_MCP_TOOLSET_ID, _bo_mcp_sse_url, register_bo_mcp_tools
-from pydantic_ai import Agent
+from bo_mcp.tools import BO_MCP_TOOLSET_ID, _bo_mcp_sse_url, build_optional_bo_mcp_toolset
 
 
 def test_explicit_openapi_url_takes_precedence() -> None:
@@ -48,11 +47,14 @@ def test_missing_sse_url_fails_fast() -> None:
         _bo_mcp_sse_url()
 
 
-def test_register_bo_mcp_tools_is_lazy_and_idempotent() -> None:
-    test_agent = Agent()
+def test_optional_mcp_toolset_is_disabled_without_sse_url() -> None:
+    with patch.dict(os.environ, {}, clear=True):
+        assert build_optional_bo_mcp_toolset() is None
 
-    register_bo_mcp_tools(test_agent)
-    register_bo_mcp_tools(test_agent)
 
-    toolset_ids = [toolset.id for toolset in test_agent.toolsets]
-    assert toolset_ids.count(BO_MCP_TOOLSET_ID) == 1
+def test_optional_mcp_toolset_uses_configured_sse_url() -> None:
+    with patch.dict(os.environ, {"BO_MCP_SSE_URL": "http://127.0.0.1:8001/sse"}, clear=True):
+        toolset = build_optional_bo_mcp_toolset()
+
+    assert toolset is not None
+    assert toolset.id == BO_MCP_TOOLSET_ID

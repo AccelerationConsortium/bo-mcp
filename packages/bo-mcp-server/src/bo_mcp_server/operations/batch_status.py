@@ -305,10 +305,12 @@ async def batch_get_status_operation(
         specs = await spec_repo.get_by_ids(spec_ids)
         result_counts = await result_repo.count_by_campaigns(found_uuids)
 
-        # Pending counts are required at every verbosity level: the minimal
-        # envelope now surfaces a lightweight next-action recommendation that
-        # depends on ``n_pending_suggestions`` (see _minimal_next_action).
-        pending_counts: dict[UUID, int] = await suggestion_repo.count_pending_by_campaigns(
+        # Actionable counts (PENDING + ACCEPTED) are required at every
+        # verbosity level: the next-action recommendation must know whether
+        # results can still be submitted before hinting at the irreversible
+        # terminate action, and ACCEPTED suggestions are submission targets
+        # just like PENDING ones (see _minimal_next_action).
+        pending_counts: dict[UUID, int] = await suggestion_repo.count_actionable_by_campaigns(
             found_uuids
         )
 

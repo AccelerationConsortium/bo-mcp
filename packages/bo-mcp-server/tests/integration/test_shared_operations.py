@@ -197,6 +197,39 @@ class TestSharedOperations:
         assert operation_result == tool_result
 
     @pytest.mark.asyncio
+    async def test_exhausted_paused_campaign_with_accepted_suggestion_keeps_resume_path(self):
+        """ACCEPTED suggestions are valid submission targets just like PENDING
+        ones (Campaign.can_submit_results + the submit pipeline's
+        PENDING/ACCEPTED gate), so the budget-exhaustion hint must count them
+        before recommending the irreversible terminate action.
+        """
+        owner_id = await seed_owner()
+        result = await create_campaign(
+            {
+                "name": "Exhausted Accepted Pending Test",
+                "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+                "objectives": [{"name": "y", "direction": "minimize"}],
+                "max_iterations": 1,
+            },
+            owner_id,
+        )
+        campaign_id = result["campaign_id"]
+
+        gen = await generate_suggestions(campaign_id)
+        suggestion_id = gen["suggestions"][0]["id"]
+        accepted = await update_suggestion_status_operation(suggestion_id, "accepted")
+        assert accepted["success"] is True
+
+        paused = await pause_campaign(campaign_id)
+        assert paused["success"] is True
+
+        status = await batch_get_status_operation([campaign_id], verbosity="minimal")
+        hint = status["campaigns"][campaign_id]["next_action_recommendation"]
+
+        assert hint["action"] != "terminate_campaign"
+        assert "resume" in hint["reason"]
+
+    @pytest.mark.asyncio
     async def test_compare_operation_matches_tool(self):
         owner_id = await seed_owner()
         campaign_a = await _create_single_objective_campaign(owner_id, "Compare Shared Op Test A")

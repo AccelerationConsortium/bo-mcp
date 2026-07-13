@@ -15,6 +15,14 @@ for pkg in bo-engine bo-mcp-server bo-mcp-api bo-engine-baybe; do
   (cd "packages/$pkg" && uv run pytest -m "not integration and not slow and not nightly and not docker and not postgres")
 done
 
+# Standalone bo-agent gate (its own lockfile and virtual environment)
+uv lock --project packages/bo-agent --check --python 3.12
+uv sync --project packages/bo-agent --locked --python 3.12
+uv run --project packages/bo-agent --locked ty check packages/bo-agent \
+  --project packages/bo-agent --python packages/bo-agent/.venv
+(cd packages/bo-agent && uv run --locked pytest \
+  -m "not integration and not slow and not nightly and not docker and not postgres")
+
 # Integration tier (runs on PRs in a separate job)
 cd packages/bo-mcp-server && uv run pytest -m "integration and not slow and not nightly and not docker and not postgres"
 
@@ -78,6 +86,14 @@ The CI pipeline uses a tiered approach to balance speed and coverage. Each gate 
 - **Trigger:** Every push and pull request, in a job parallel to the fast gate
 - **Duration:** ~3-5 minutes (bo-mcp-server only — bo-engine has no `tests/integration/`)
 - **Command:** `pytest -m "integration and not slow and not nightly and not docker and not postgres"`
+- **Must pass:** Yes (blocks merge)
+
+### Standalone BO Agent Gate
+
+- **Trigger:** Every push and pull request
+- **Python:** 3.12 (the package's declared minimum)
+- **Environment:** `packages/bo-agent/.venv`, resolved from its independent `uv.lock`
+- **Checks:** Locked dependency sync, `ty`, and the fast pytest suite
 - **Must pass:** Yes (blocks merge)
 
 ### 3. Slow Tests (Main Branch)

@@ -134,6 +134,10 @@ extra-paths = [
     "packages/bo-mcp-api/src",
 ]
 
+[tool.ty.src]
+# bo-agent is a standalone project with its own lockfile and virtual environment.
+exclude = ["packages/bo-agent"]
+
 [tool.ty.rules]
 # All rules promoted to error. Library-typing limitations are handled
 # with targeted `# ty: ignore[rule]` comments on individual lines.

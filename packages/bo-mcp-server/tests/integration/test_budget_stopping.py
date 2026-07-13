@@ -194,22 +194,21 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
     )
 
     # Generate again. Remaining = 3 - 1 - 1 = 1, so a batch_size=2 request
-    # must be clamped to 1. We verify via the operation's own log line --
-    # the engine's Sobol continuation can produce fewer than the clamped
-    # count, which is a separate concern (and is harmless for the cap).
+    # must be clamped to 1. Pending initial-design points have consumed Sobol
+    # positions, so the engine must advance to a fresh point rather than
+    # redrawing and filtering the pending point into an empty batch.
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="bo_mcp_server.operations.generate_suggestions"):
-        await generate_suggestions(campaign_id)
+        gen2 = await generate_suggestions(campaign_id)
+    assert gen2["success"] is True
+    assert len(gen2["suggestions"]) == 1
+    assert gen2["suggestions"][0]["parameter_values"] != first["parameter_values"]
     clamp_logs = [r.getMessage() for r in caplog.records if "Clamping batch_size" in r.getMessage()]
     assert clamp_logs, "Generation must clamp batch when pending consumes budget"
     assert "n_pending=1" in clamp_logs[0]
 
-    # Force the budget to its limit with a freestanding result. Whether it
-    # lands depends on the backend: BoTorch's Sobol continuation deduped the
-    # clamped generate to zero new pending (slack left, submit accepted →
-    # 2 stored + 1 pending); BayBE returned a fresh point (1 stored +
-    # 2 pending = cap, so the overflow guard rejects the import). Both are
-    # correct budget enforcement — the hard stop below must hold either way.
+    # The fresh pending suggestion reserves the final slot, so a freestanding
+    # result would exceed the cap and must be rejected.
     freestanding = await submit_results_operation(
         campaign_id=campaign_id,
         results=_to_result_inputs(
@@ -223,11 +222,9 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
     assert blocked["error"]["code"] == "E012"  # BUDGET_EXCEEDED
     details = blocked["error"]["details"]
     assert details["stopping_reason"] == "budget_exceeded_observations"
-    # The budget invariant is what matters: stored + pending has reached
-    # the cap, regardless of how the backend split the reservation.
-    assert details["n_pending"] >= 1
-    assert details["n_observations"] == (2 if freestanding["success"] else 1)
-    assert details["n_observations"] + details["n_pending"] >= 3
+    assert freestanding["success"] is False
+    assert details["n_pending"] == 2
+    assert details["n_observations"] == 1
 
 
 @pytest.mark.asyncio

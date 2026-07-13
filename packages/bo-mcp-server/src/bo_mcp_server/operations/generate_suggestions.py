@@ -25,7 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_engine.backend import BOBackend
 from bo_engine.backend_base import BackendError, BackendTransientError
-from bo_engine.constants import PENDING_SUGGESTION_MAX_AGE_HOURS
+from bo_engine.constants import (
+    PENDING_SUGGESTION_MAX_AGE_HOURS,
+    resolve_initial_design_size,
+)
 from bo_engine.convergence import (
     StoppingDecision,
     StoppingReason,
@@ -612,9 +615,9 @@ class _GenerationPreflight:
     """Read-only outcome of the budget/stopping/pending checks.
 
     Surfaces every signal a dry-run needs to report — actionable
-    pending count, stale-pending count, observation-budget clamp,
-    next iteration / planned batch — without writing any
-    ``EXPIRED`` rows or running the BO algorithm.
+    pending count, stale-pending count, retired initial-design history,
+    observation-budget clamp, next iteration / planned batch — without
+    writing any ``EXPIRED`` rows or running the BO algorithm.
     """
 
     next_iteration: int
@@ -623,6 +626,7 @@ class _GenerationPreflight:
     observations: list[ObservationData]
     valid_pending: list[Suggestion]
     stale_pending: list[Suggestion]
+    retired_initial_design: list[Suggestion]
     budget_remaining: int | None
     batch_clamped: bool
 
@@ -648,6 +652,8 @@ class _GenerationSnapshot:
 
     ``stale_pending`` carries the rows that the phase-3 writer will
     mark ``EXPIRED``; phase 1 only classifies them and never writes.
+    ``retired_initial_design`` preserves already-rejected or expired Sobol
+    positions while the backend is still collecting its initial design.
     """
 
     campaign: Campaign
@@ -658,6 +664,7 @@ class _GenerationSnapshot:
     observations: list[ObservationData]
     valid_pending: list[Suggestion]
     stale_pending: list[Suggestion]
+    retired_initial_design: list[Suggestion]
     pending_info: dict[str, Any] | None
     result_count: int
 
@@ -682,6 +689,7 @@ def _compute_preflight(
     spec: CampaignSpec,
     results: list[Any],
     pending: list[Suggestion],
+    retired_initial_design: list[Suggestion],
     batch_size: int | None,
 ) -> _GenerationPreflight | dict[str, Any]:
     """Run the budget / stopping / pending preflight in read-only form.
@@ -749,6 +757,7 @@ def _compute_preflight(
         observations=observations,
         valid_pending=valid_pending,
         stale_pending=stale_pending,
+        retired_initial_design=retired_initial_design,
         budget_remaining=budget_remaining,
         batch_clamped=clamped,
     )
@@ -757,12 +766,21 @@ def _compute_preflight(
 async def _load_preflight_inputs(
     campaign_id: str,
     campaign_uuid: UUID,
-) -> tuple[Any, CampaignSpec, list[Any], list[Suggestion]] | dict[str, Any]:
+) -> (
+    tuple[
+        Any,
+        CampaignSpec,
+        list[Any],
+        list[Suggestion],
+        list[Suggestion],
+    ]
+    | dict[str, Any]
+):
     """Fetch the read-only inputs the preflight needs in a single session.
 
-    Returns ``(campaign, spec, results, pending)`` on success, or the
-    structured error envelope the real path would emit for missing
-    campaign / spec or an invalid state transition.
+    Returns ``(campaign, spec, results, pending, retired_initial_design)``
+    on success, or the structured error envelope the real path would emit
+    for a missing campaign/spec or an invalid state transition.
     """
     async with session_scope(None) as db:
         repos = _init_repositories(db)
@@ -800,7 +818,21 @@ async def _load_preflight_inputs(
             return response
         results = await repos.result.list_by_campaign(campaign_uuid)
         pending = await repos.suggestion.list_actionable_by_campaign(campaign_uuid)
-    return campaign, spec, results, pending
+        retired_initial_design: list[Suggestion] = []
+        opt_spec = campaign_spec_to_optimization_spec(spec)
+        min_data = resolve_initial_design_size(
+            opt_spec.n_parameters,
+            opt_spec.initial_design_size,
+        )
+        if len(results) < min_data:
+            all_suggestions = await repos.suggestion.list_by_campaign(campaign_uuid)
+            retired_initial_design = [
+                suggestion
+                for suggestion in all_suggestions
+                if suggestion.status in (SuggestionStatus.REJECTED, SuggestionStatus.EXPIRED)
+                and suggestion.provenance.generation_method == "initial_design"
+            ]
+    return campaign, spec, results, pending, retired_initial_design
 
 
 async def _preview_generation(
@@ -823,9 +855,16 @@ async def _preview_generation(
     loaded = await _load_preflight_inputs(campaign_id, campaign_uuid)
     if isinstance(loaded, dict):
         return loaded
-    campaign, spec, results, pending = loaded
+    campaign, spec, results, pending, retired_initial_design = loaded
 
-    preflight = _compute_preflight(campaign, spec, results, pending, batch_size)
+    preflight = _compute_preflight(
+        campaign,
+        spec,
+        results,
+        pending,
+        retired_initial_design,
+        batch_size,
+    )
     if not isinstance(preflight, _GenerationPreflight):
         # Stopping criterion or budget exhaustion would short-circuit
         # the real call; surface the same envelope under dry-run so
@@ -922,9 +961,16 @@ async def _load_generation_snapshot(
     loaded = await _load_preflight_inputs(campaign_id, campaign_uuid)
     if isinstance(loaded, dict):
         return loaded
-    campaign, spec, results, pending = loaded
+    campaign, spec, results, pending, retired_initial_design = loaded
 
-    preflight = _compute_preflight(campaign, spec, results, pending, batch_size)
+    preflight = _compute_preflight(
+        campaign,
+        spec,
+        results,
+        pending,
+        retired_initial_design,
+        batch_size,
+    )
     if not isinstance(preflight, _GenerationPreflight):
         return preflight
 
@@ -949,6 +995,7 @@ async def _load_generation_snapshot(
         observations=preflight.observations,
         valid_pending=preflight.valid_pending,
         stale_pending=preflight.stale_pending,
+        retired_initial_design=preflight.retired_initial_design,
         pending_info=pending_info,
         result_count=preflight.n_results,
     )
@@ -1025,6 +1072,23 @@ async def _compute_generation_batch(
     """
     opt_spec = campaign_spec_to_optimization_spec(snapshot.spec)
     pending_parameter_values = [p.parameter_values for p in snapshot.valid_pending]
+    if len(snapshot.observations) < resolve_initial_design_size(
+        opt_spec.n_parameters,
+        opt_spec.initial_design_size,
+    ):
+        # Rejected, expired, and automatically stale initial suggestions
+        # have consumed Sobol positions even though they will never become
+        # observations. Include them only while the engine is still in its
+        # initial-design path so sequence continuation cannot rewind. Once
+        # model-guided BO begins, only genuinely actionable suggestions are
+        # forwarded as X_pending.
+        pending_parameter_values.extend(
+            suggestion.parameter_values
+            for suggestion in (
+                *snapshot.stale_pending,
+                *snapshot.retired_initial_design,
+            )
+        )
 
     suggestion_data, new_backend_state, warnings, live_method_info = await _generate_via_backend(
         backend,
@@ -1248,15 +1312,15 @@ async def _generate_via_backend(
     when to reseed as well, so the two gates disagreed on which Sobol
     stream to continue.  Routing every call through
     ``backend.generate_suggestions`` makes the engine the single source of
-    truth for the initial-design threshold, the Sobol continuation
-    (``n_drawn=len(observations)``), and the exhaustion check for finite
-    categorical spaces.
+    truth for the initial-design threshold, the Sobol continuation past
+    observed, actionable, rejected, expired, and stale initial points,
+    and the exhaustion check for finite categorical spaces.
 
-    ``pending_parameter_values`` carries the parameter dicts of suggestions
-    that are PENDING but not yet observed; the backend is expected to
-    forward them to its acquisition optimizer as ``X_pending`` so
-    parallel / batch BO does not cluster new candidates around the
-    in-flight batch.
+    ``pending_parameter_values`` normally carries actionable suggestions
+    that are not yet observed. During initial design it additionally carries
+    rejected, expired, or stale initial points so the Sobol sequence cannot
+    rewind; after initial design only actionable points reach the backend as
+    ``X_pending`` for parallel / batch BO.
 
     Both paths are CPU-bound (Sobol sampling, GP fitting, acquisition
     optimization, MCMC) and are offloaded via ``asyncio.to_thread`` so

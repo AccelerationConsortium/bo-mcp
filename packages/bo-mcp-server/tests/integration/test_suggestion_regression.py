@@ -78,6 +78,47 @@ class TestSuggestionReproducibility:
             for param in ["x1", "x2"]:
                 assert abs(s1["parameter_values"][param] - s2["parameter_values"][param]) < 1e-10
 
+    @pytest.mark.parametrize("retired_status", ["rejected", "expired"])
+    @pytest.mark.asyncio
+    async def test_retired_initial_suggestions_do_not_rewind_sobol(self, retired_status: str):
+        """Rejected/expired initial suggestions still consume Sobol positions."""
+        from bo_mcp_server.operations.update_suggestion_status import (
+            update_suggestion_status_operation,
+        )
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+
+        owner_id = await seed_owner()
+        created = await create_campaign(
+            {
+                "name": f"Retired Initial Design {retired_status}",
+                "parameters": [
+                    {"name": "x1", "type": "continuous", "bounds": [0.0, 1.0]},
+                    {"name": "x2", "type": "continuous", "bounds": [0.0, 1.0]},
+                ],
+                "objectives": [{"name": "f", "direction": "minimize"}],
+                "batch_size": 3,
+                "random_seed": 17,
+            },
+            owner_id,
+        )
+        campaign_id = created["campaign_id"]
+
+        first = await generate_suggestions(campaign_id)
+        assert first["success"] is True
+        for suggestion in first["suggestions"]:
+            updated = await update_suggestion_status_operation(suggestion["id"], retired_status)
+            assert updated["success"] is True
+
+        second = await generate_suggestions(campaign_id)
+
+        assert second["success"] is True
+        first_points = {tuple(sorted(s["parameter_values"].items())) for s in first["suggestions"]}
+        second_points = {
+            tuple(sorted(s["parameter_values"].items())) for s in second["suggestions"]
+        }
+        assert first_points.isdisjoint(second_points)
+
     @pytest.mark.asyncio
     async def test_suggestion_provenance_includes_seed(self):
         """Suggestion provenance includes random_seed for reproducibility.

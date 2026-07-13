@@ -16,6 +16,7 @@ References:
 """
 
 import random
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -100,6 +101,53 @@ class TestInitialDesign:
         # Sobol should cover the space - check spread
         assert max(x0_values) - min(x0_values) > 0.5
         assert max(x1_values) - min(x1_values) > 0.5
+
+    def test_pending_continuous_initial_design_advances_sobol_sequence(self):
+        """Pending initial points consume Sobol positions even before results arrive."""
+        spec = replace(create_branin_currin_spec(), random_seed=17)
+        pending = generate_initial_design(spec, n_points=5)
+
+        suggestions, _ = generate_next_batch(
+            spec=spec,
+            observations=[],
+            batch_size=5,
+            iteration=2,
+            pending_points=pending,
+        )
+
+        assert len(suggestions) == 5
+        pending_points = {tuple(sorted(point.items())) for point in pending}
+        assert all(
+            tuple(sorted(suggestion.parameter_values.items())) not in pending_points
+            for suggestion in suggestions
+        )
+
+    def test_pending_mixed_initial_design_advances_without_reusing_points(self):
+        """Mixed spaces advance the same issued-point history as continuous spaces."""
+        spec = replace(
+            create_branin_currin_spec(),
+            parameters=[
+                ParameterSpec(name="x0", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="x1", type=ParameterType.DISCRETE, values=[0.0, 0.5, 1.0]),
+            ],
+            random_seed=23,
+        )
+        pending = generate_initial_design(spec, n_points=3)
+
+        suggestions, _ = generate_next_batch(
+            spec=spec,
+            observations=[],
+            batch_size=3,
+            iteration=2,
+            pending_points=pending,
+        )
+
+        assert len(suggestions) == 3
+        pending_points = {tuple(sorted(point.items())) for point in pending}
+        assert all(
+            tuple(sorted(suggestion.parameter_values.items())) not in pending_points
+            for suggestion in suggestions
+        )
 
     def test_default_initial_design_size_formula(self):
         """Default initial design size is 2 × n_params + 1.

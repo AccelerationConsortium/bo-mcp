@@ -107,6 +107,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     # Public surface
+    "InitialDesignGenerationError",
     "MultiFidelityNotSupportedError",
     "OutcomeConstraintConfigurationError",
     "SAASBONotSupportedError",
@@ -139,6 +140,10 @@ __all__ = [
     "generate_next_batch",
     "update_turbo_after_evaluation",
 ]
+
+
+class InitialDesignGenerationError(RuntimeError):
+    """Raised when a non-exhaustible initial-design path produces no point."""
 
 
 class MultiFidelityNotSupportedError(ValueError):
@@ -358,9 +363,20 @@ def generate_next_batch(
             designs = generate_initial_design(
                 spec,
                 batch_size,
-                n_drawn=len(observations),
+                # Pending initial-design suggestions have already consumed Sobol
+                # positions even though they are not observations yet. Advancing
+                # past every issued point prevents a deterministic campaign from
+                # redrawing the pending batch and filtering itself down to zero.
+                n_drawn=len(observations) + len(pending),
                 excluded_points=excluded,
             )
+            if not designs:
+                msg = (
+                    "Continuous or mixed initial-design generation returned no points for "
+                    f"a batch of {batch_size} after "
+                    f"excluding {len(excluded)} issued points."
+                )
+                raise InitialDesignGenerationError(msg)
             suggestions = [
                 SuggestionResult(
                     parameter_values=design,

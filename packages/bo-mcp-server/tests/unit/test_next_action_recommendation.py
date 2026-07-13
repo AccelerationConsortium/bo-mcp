@@ -58,6 +58,29 @@ def test_minimal_next_action_flags_exhausted_budget_on_paused_campaign() -> None
     assert "resume" not in hint["reason"]
 
 
+def test_minimal_next_action_keeps_resume_path_for_exhausted_paused_with_pending() -> None:
+    """Results are only submittable while CREATED or RUNNING
+    (Campaign.can_submit_results), and terminate is irreversible (reopen only
+    accepts COMPLETED). An exhausted paused campaign with pending experiments
+    must therefore be pointed at resume so the results can still land.
+    """
+    hint = _minimal_next_action(
+        CampaignStatus.PAUSED, n_results=18, n_pending=2, iteration=10, max_iterations=10
+    )
+
+    assert hint["action"] != "terminate_campaign"
+    assert "resume" in hint["reason"]
+
+
+def test_minimal_next_action_keeps_reopen_path_for_exhausted_completed_with_pending() -> None:
+    hint = _minimal_next_action(
+        CampaignStatus.COMPLETED, n_results=18, n_pending=2, iteration=10, max_iterations=10
+    )
+
+    assert hint["action"] != "terminate_campaign"
+    assert "reopen" in hint["reason"]
+
+
 def test_minimal_next_action_flags_exhausted_budget_on_completed_campaign() -> None:
     """Reopen flips a completed campaign back to RUNNING but never resets
     iteration or max_iterations, so reopen is a dead end once the budget is

@@ -75,9 +75,12 @@ def _minimal_next_action(
     # terminate_campaign action the stopping decision uses
     # (bo_engine.convergence.evaluate_stopping_decision) instead of pointing
     # agents at resume/reopen/generate calls the server will reject.
+    # Exception: pending suggestions still need their results, and submission
+    # requires CREATED/RUNNING (Campaign.can_submit_results) while terminate is
+    # irreversible — so with pending work the resume/reopen hint must win.
     budget_exhausted = max_iterations is not None and iteration >= max_iterations
     if status in (CampaignStatus.PAUSED, CampaignStatus.COMPLETED, CampaignStatus.FAILED):
-        if budget_exhausted and status != CampaignStatus.FAILED:
+        if budget_exhausted and n_pending == 0 and status != CampaignStatus.FAILED:
             return {
                 "action": "terminate_campaign",
                 "reason": (

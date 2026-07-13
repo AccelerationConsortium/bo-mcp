@@ -40,9 +40,35 @@ def test_minimal_next_action_flags_exhausted_iteration_budget_on_running_campaig
         CampaignStatus.RUNNING, n_results=20, n_pending=0, iteration=10, max_iterations=10
     )
 
-    assert hint["action"] != "bo_generate_suggestions"
+    assert hint["action"] == "terminate_campaign"
     assert "max_iterations" in hint["reason"]
-    assert "terminate" in hint["reason"]
+    assert "reopen" not in hint["reason"]
+
+
+def test_minimal_next_action_flags_exhausted_budget_on_paused_campaign() -> None:
+    """Resuming a paused campaign cannot restore its immutable iteration
+    budget, so an exhausted paused campaign must not be pointed at resume.
+    """
+    hint = _minimal_next_action(
+        CampaignStatus.PAUSED, n_results=20, n_pending=0, iteration=10, max_iterations=10
+    )
+
+    assert hint["action"] == "terminate_campaign"
+    assert "max_iterations" in hint["reason"]
+    assert "resume" not in hint["reason"]
+
+
+def test_minimal_next_action_flags_exhausted_budget_on_completed_campaign() -> None:
+    """Reopen flips a completed campaign back to RUNNING but never resets
+    iteration or max_iterations, so reopen is a dead end once the budget is
+    spent and must not be recommended.
+    """
+    hint = _minimal_next_action(
+        CampaignStatus.COMPLETED, n_results=20, n_pending=0, iteration=10, max_iterations=10
+    )
+
+    assert hint["action"] == "terminate_campaign"
+    assert "max_iterations" in hint["reason"]
     assert "reopen" not in hint["reason"]
 
 

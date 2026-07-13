@@ -69,7 +69,24 @@ def _minimal_next_action(
     convergence / outlier / health-status counters).  Callers that need
     the richer recommendation should request ``verbosity="detailed"``.
     """
+    # max_iterations lives in the immutable intake; neither resume nor reopen
+    # resets the iteration counter, so once the budget is spent there is no
+    # continuation path from any lifecycle state. Emit the same routable
+    # terminate_campaign action the stopping decision uses
+    # (bo_engine.convergence.evaluate_stopping_decision) instead of pointing
+    # agents at resume/reopen/generate calls the server will reject.
+    budget_exhausted = max_iterations is not None and iteration >= max_iterations
     if status in (CampaignStatus.PAUSED, CampaignStatus.COMPLETED, CampaignStatus.FAILED):
+        if budget_exhausted and status != CampaignStatus.FAILED:
+            return {
+                "action": "terminate_campaign",
+                "reason": (
+                    f"Campaign is {status.value} and has reached "
+                    f"max_iterations={max_iterations}; the budget cannot be "
+                    "extended — review results and terminate it."
+                ),
+                "urgency": "low",
+            }
         continuation = {
             CampaignStatus.PAUSED: "resume it to continue, or terminate it",
             CampaignStatus.COMPLETED: "reopen it to continue optimization",
@@ -86,17 +103,11 @@ def _minimal_next_action(
             "reason": f"{n_pending} pending suggestion(s) awaiting results.",
             "urgency": "normal",
         }
-    # Status never auto-transitions to COMPLETED on budget exhaustion (see
-    # bo_engine.convergence.evaluate_stopping_decision), so a campaign can sit
-    # in RUNNING forever with its iteration budget already spent. Catch that
-    # here instead of recommending a generate call the server will reject.
-    # max_iterations lives in the immutable intake and reopen only accepts
-    # COMPLETED campaigns without resetting the counter, so there is no
-    # continuation path — mirror the terminate recommendation the stopping
-    # decision itself emits.
-    if max_iterations is not None and iteration >= max_iterations:
+    # Status never auto-transitions to COMPLETED on budget exhaustion, so a
+    # campaign can sit in RUNNING forever with its budget already spent.
+    if budget_exhausted:
         return {
-            "action": "review_campaign_status",
+            "action": "terminate_campaign",
             "reason": (
                 f"Campaign has reached max_iterations={max_iterations}; the "
                 "budget cannot be extended — review results and terminate it."

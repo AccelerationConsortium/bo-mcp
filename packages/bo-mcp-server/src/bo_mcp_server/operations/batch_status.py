@@ -58,6 +58,8 @@ def _minimal_next_action(
     status: CampaignStatus,
     n_results: int,
     n_pending: int,
+    iteration: int,
+    max_iterations: int | None,
 ) -> dict[str, str]:
     """Lightweight next-action hint for the minimal-verbosity batch envelope.
 
@@ -84,6 +86,23 @@ def _minimal_next_action(
             "reason": f"{n_pending} pending suggestion(s) awaiting results.",
             "urgency": "normal",
         }
+    # Status never auto-transitions to COMPLETED on budget exhaustion (see
+    # bo_engine.convergence.evaluate_stopping_decision), so a campaign can sit
+    # in RUNNING forever with its iteration budget already spent. Catch that
+    # here instead of recommending a generate call the server will reject.
+    # max_iterations lives in the immutable intake and reopen only accepts
+    # COMPLETED campaigns without resetting the counter, so there is no
+    # continuation path — mirror the terminate recommendation the stopping
+    # decision itself emits.
+    if max_iterations is not None and iteration >= max_iterations:
+        return {
+            "action": "review_campaign_status",
+            "reason": (
+                f"Campaign has reached max_iterations={max_iterations}; the "
+                "budget cannot be extended — review results and terminate it."
+            ),
+            "urgency": "low",
+        }
     if n_results == 0:
         return {
             "action": "bo_generate_suggestions",
@@ -105,13 +124,20 @@ def _build_minimal_info(
     campaign: Campaign,
     n_results: int,
     n_pending: int,
+    spec: CampaignSpec | None,
 ) -> dict[str, Any]:
     return {
         "name": name,
         "status": campaign.status.value,
         "iteration": campaign.iteration,
         "n_results": n_results,
-        "next_action_recommendation": _minimal_next_action(campaign.status, n_results, n_pending),
+        "next_action_recommendation": _minimal_next_action(
+            campaign.status,
+            n_results,
+            n_pending,
+            campaign.iteration,
+            spec.max_iterations if spec else None,
+        ),
     }
 
 
@@ -200,7 +226,7 @@ def _build_campaign_info(
 ) -> dict[str, Any]:
     """Build campaign info dict based on verbosity."""
     if verbosity_level == VerbosityLevel.MINIMAL:
-        return _build_minimal_info(name, campaign, n_results, n_pending)
+        return _build_minimal_info(name, campaign, n_results, n_pending, spec)
     if verbosity_level == VerbosityLevel.STANDARD:
         return _build_standard_info(name, campaign, n_results, n_pending, spec)
     return _build_detailed_info(name, campaign, n_results, n_pending, spec)

@@ -5,9 +5,14 @@ recommending "create a new one" steers agents toward rebuilding campaigns
 and replaying results as seeds.
 """
 
+from typing import Any
+
 from bo_mcp_server.domain import CampaignStatus
 from bo_mcp_server.operations.batch_status import _minimal_next_action
-from bo_mcp_server.operations.diagnostics.actions import _determine_next_action
+from bo_mcp_server.operations.diagnostics.actions import (
+    _determine_next_action,
+    compute_next_action_recommendation,
+)
 
 
 def test_minimal_next_action_points_completed_campaigns_at_reopen() -> None:
@@ -130,9 +135,59 @@ def test_determine_next_action_points_completed_campaigns_at_reopen() -> None:
         n_results=5,
         health_status="healthy",
         diagnostics={},
-        n_pending_suggestions=0,
+        n_actionable_suggestions=0,
     )
 
     assert action == "review_campaign_status"
     assert "reopen" in reason.lower()
     assert urgency == "low"
+
+
+def _diagnostics_recommendation(
+    campaign_status: str,
+    n_actionable: int,
+    iteration: int,
+    max_iterations: int | None,
+) -> dict[str, str]:
+    diagnostics: dict[str, Any] = {"n_results": 20, "health_status": "healthy", "convergence": {}}
+    compute_next_action_recommendation(
+        diagnostics,
+        n_actionable,
+        campaign_status,
+        iteration=iteration,
+        max_iterations=max_iterations,
+    )
+    return diagnostics["next_action_recommendation"]
+
+
+def test_diagnostics_recommendation_flags_exhausted_budget_on_running_campaign() -> None:
+    """The diagnostics surface must mirror the batch-status budget guard: an
+    exhausted running campaign must not be pointed at bo_generate_suggestions,
+    a call evaluate_stopping_decision would reject.
+    """
+    hint = _diagnostics_recommendation("running", n_actionable=0, iteration=10, max_iterations=10)
+
+    assert hint["action"] == "terminate_campaign"
+    assert "max_iterations" in hint["reason"]
+
+
+def test_diagnostics_recommendation_reviews_exhausted_completed_campaign() -> None:
+    hint = _diagnostics_recommendation("completed", n_actionable=0, iteration=10, max_iterations=10)
+
+    assert hint["action"] == "review_campaign_status"
+    assert "finished" in hint["reason"]
+
+
+def test_diagnostics_recommendation_keeps_submit_path_when_budget_exhausted() -> None:
+    """Suggestions awaiting results outrank the budget guard: submission is
+    still valid after exhaustion, only new generation is blocked.
+    """
+    hint = _diagnostics_recommendation("running", n_actionable=2, iteration=10, max_iterations=10)
+
+    assert hint["action"] == "bo_submit_results"
+
+
+def test_diagnostics_recommendation_generates_suggestions_under_budget() -> None:
+    hint = _diagnostics_recommendation("running", n_actionable=0, iteration=3, max_iterations=10)
+
+    assert hint["action"] == "bo_generate_suggestions"

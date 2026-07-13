@@ -196,10 +196,21 @@ async def _compute_sections(
             campaign.hypervolume_history,
             diagnostics,
         )
+        # The recommendation gates the irreversible terminate hint on work
+        # still awaiting results, so it needs the actionable count
+        # (PENDING + ACCEPTED, the submit pipeline's gate) — not the strict
+        # PENDING list that feeds the n_pending_suggestions field.
+        n_actionable = sum(
+            1
+            for s in all_suggestions
+            if s.status in (SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED)
+        )
         compute_next_action_recommendation(
             diagnostics,
-            len(pending_suggestions),
+            n_actionable,
             campaign.status.value,
+            iteration=campaign.iteration,
+            max_iterations=spec.max_iterations,
         )
 
     # Suggestions — server-side parts (provenance-based)

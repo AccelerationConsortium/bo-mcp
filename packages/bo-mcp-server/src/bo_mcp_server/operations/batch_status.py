@@ -63,11 +63,11 @@ def _minimal_next_action(
 ) -> dict[str, str]:
     """Lightweight next-action hint for the minimal-verbosity batch envelope.
 
-    Mirrors the decision tree in
+    Mirrors the decision tree (including the iteration-budget guard) in
     :func:`bo_mcp_server.operations.diagnostics.actions.compute_next_action_recommendation`
     but consumes only the fields available at minimal verbosity (no
-    convergence / outlier / health-status counters).  Callers that need
-    the richer recommendation should request ``verbosity="detailed"``.
+    convergence / outlier / health-status counters).  The richer
+    recommendation lives on the ``bo_get_diagnostics`` surface.
     """
     # max_iterations lives in the immutable intake; neither resume nor reopen
     # resets the iteration counter, so once the budget is spent there is no

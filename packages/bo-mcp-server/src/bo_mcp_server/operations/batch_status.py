@@ -305,14 +305,16 @@ async def batch_get_status_operation(
         specs = await spec_repo.get_by_ids(spec_ids)
         result_counts = await result_repo.count_by_campaigns(found_uuids)
 
-        # Actionable counts (PENDING + ACCEPTED) are required at every
-        # verbosity level: the next-action recommendation must know whether
-        # results can still be submitted before hinting at the irreversible
-        # terminate action, and ACCEPTED suggestions are submission targets
-        # just like PENDING ones (see _minimal_next_action).
-        pending_counts: dict[UUID, int] = await suggestion_repo.count_actionable_by_campaigns(
-            found_uuids
-        )
+        # The standard/detailed envelopes report ``n_pending_suggestions``
+        # with its historical strict meaning (PENDING only). The minimal
+        # envelope carries no such field — its next-action hint instead needs
+        # the actionable count (PENDING + ACCEPTED, the submit pipeline's
+        # gate) to know whether results can still be submitted before hinting
+        # at the irreversible terminate action (see _minimal_next_action).
+        if verbosity_level == VerbosityLevel.MINIMAL:
+            suggestion_counts = await suggestion_repo.count_actionable_by_campaigns(found_uuids)
+        else:
+            suggestion_counts = await suggestion_repo.count_pending_by_campaigns(found_uuids)
 
         for campaign_uuid, campaign in campaigns.items():
             cid = id_str_map[campaign_uuid]
@@ -323,7 +325,7 @@ async def batch_get_status_operation(
                 name,
                 campaign,
                 result_counts.get(campaign_uuid, 0),
-                pending_counts.get(campaign_uuid, 0),
+                suggestion_counts.get(campaign_uuid, 0),
                 spec,
             )
 

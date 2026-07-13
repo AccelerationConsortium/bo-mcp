@@ -230,6 +230,34 @@ class TestSharedOperations:
         assert "resume" in hint["reason"]
 
     @pytest.mark.asyncio
+    async def test_standard_pending_count_excludes_accepted_suggestions(self):
+        """``n_pending_suggestions`` in the standard/detailed envelopes keeps
+        its historical strict meaning (PENDING only); the actionable
+        PENDING+ACCEPTED count feeds only the minimal envelope's next-action
+        hint. An accepted suggestion must therefore not inflate the field.
+        """
+        owner_id = await seed_owner()
+        result = await create_campaign(
+            {
+                "name": "Strict Pending Count Test",
+                "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+                "objectives": [{"name": "y", "direction": "minimize"}],
+            },
+            owner_id,
+        )
+        campaign_id = result["campaign_id"]
+
+        gen = await generate_suggestions(campaign_id)
+        suggestion_id = gen["suggestions"][0]["id"]
+        accepted = await update_suggestion_status_operation(suggestion_id, "accepted")
+        assert accepted["success"] is True
+
+        status = await batch_get_status_operation([campaign_id], verbosity="standard")
+        info = status["campaigns"][campaign_id]
+
+        assert info["n_pending_suggestions"] == len(gen["suggestions"]) - 1
+
+    @pytest.mark.asyncio
     async def test_compare_operation_matches_tool(self):
         owner_id = await seed_owner()
         campaign_a = await _create_single_objective_campaign(owner_id, "Compare Shared Op Test A")

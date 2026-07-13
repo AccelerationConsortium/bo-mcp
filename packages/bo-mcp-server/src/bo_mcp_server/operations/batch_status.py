@@ -75,18 +75,28 @@ def _minimal_next_action(
     # terminate_campaign action the stopping decision uses
     # (bo_engine.convergence.evaluate_stopping_decision) instead of pointing
     # agents at resume/reopen/generate calls the server will reject.
-    # Exception: pending suggestions still need their results, and submission
-    # requires CREATED/RUNNING (Campaign.can_submit_results) while terminate is
-    # irreversible — so with pending work the resume/reopen hint must win.
+    # Exception: suggestions still awaiting results (n_pending counts
+    # PENDING and ACCEPTED here) need submission, which requires
+    # CREATED/RUNNING (Campaign.can_submit_results) while terminate is
+    # irreversible — so with outstanding work the resume/reopen hint must win.
     budget_exhausted = max_iterations is not None and iteration >= max_iterations
     if status in (CampaignStatus.PAUSED, CampaignStatus.COMPLETED, CampaignStatus.FAILED):
         if budget_exhausted and n_pending == 0 and status != CampaignStatus.FAILED:
+            # COMPLETED is already terminate's target state — the lifecycle
+            # layer would accept the call only as an idempotent no-op — so
+            # there the hint reviews the finished campaign instead.
+            if status == CampaignStatus.COMPLETED:
+                action = "review_campaign_status"
+                advice = "review the final results — the campaign is finished"
+            else:
+                action = "terminate_campaign"
+                advice = "review results and terminate it"
             return {
-                "action": "terminate_campaign",
+                "action": action,
                 "reason": (
                     f"Campaign is {status.value} and has reached "
                     f"max_iterations={max_iterations}; the budget cannot be "
-                    "extended — review results and terminate it."
+                    f"extended — {advice}."
                 ),
                 "urgency": "low",
             }
@@ -103,7 +113,7 @@ def _minimal_next_action(
     if n_pending > 0:
         return {
             "action": "bo_submit_results",
-            "reason": f"{n_pending} pending suggestion(s) awaiting results.",
+            "reason": f"{n_pending} suggestion(s) awaiting results.",
             "urgency": "normal",
         }
     # Status never auto-transitions to COMPLETED on budget exhaustion, so a

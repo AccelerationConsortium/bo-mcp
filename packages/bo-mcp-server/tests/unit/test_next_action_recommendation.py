@@ -84,14 +84,17 @@ def test_minimal_next_action_keeps_reopen_path_for_exhausted_completed_with_pend
 def test_minimal_next_action_flags_exhausted_budget_on_completed_campaign() -> None:
     """Reopen flips a completed campaign back to RUNNING but never resets
     iteration or max_iterations, so reopen is a dead end once the budget is
-    spent and must not be recommended.
+    spent and must not be recommended. Terminating is pointless too:
+    COMPLETED is already terminate's target state, so the lifecycle layer
+    treats the call as an idempotent no-op. Point at reviewing the finished
+    campaign instead of a routable action.
     """
     hint = _minimal_next_action(
         CampaignStatus.COMPLETED, n_results=20, n_pending=0, iteration=10, max_iterations=10
     )
 
-    assert hint["action"] == "terminate_campaign"
-    assert "max_iterations" in hint["reason"]
+    assert hint["action"] == "review_campaign_status"
+    assert "finished" in hint["reason"]
     assert "reopen" not in hint["reason"]
 
 
@@ -104,6 +107,10 @@ def test_minimal_next_action_ignores_budget_when_pending_results_await_submissio
     )
 
     assert hint["action"] == "bo_submit_results"
+    # The count covers PENDING and ACCEPTED suggestions, so the reason must
+    # not narrow it to "pending".
+    assert "pending" not in hint["reason"]
+    assert "awaiting results" in hint["reason"]
 
 
 def test_minimal_next_action_generates_suggestions_under_budget() -> None:

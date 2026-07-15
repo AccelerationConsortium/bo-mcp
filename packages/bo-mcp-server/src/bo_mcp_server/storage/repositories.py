@@ -1181,11 +1181,30 @@ class SuggestionRepository:
         """
         if not campaign_ids:
             return {}
+        return await self._count_by_campaigns(campaign_ids, (SuggestionStatus.PENDING,))
+
+    async def count_actionable_by_campaigns(self, campaign_ids: list[UUID]) -> dict[UUID, int]:
+        """Count suggestions still awaiting results per campaign.
+
+        Actionable means PENDING or ACCEPTED — the same pair the submit
+        pipeline treats as valid result-submission targets. Distinct from
+        :meth:`count_pending_by_campaigns`, which callers pair with a
+        PENDING-filtered listing.
+        """
+        if not campaign_ids:
+            return {}
+        return await self._count_by_campaigns(
+            campaign_ids, (SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED)
+        )
+
+    async def _count_by_campaigns(
+        self, campaign_ids: list[UUID], statuses: tuple[SuggestionStatus, ...]
+    ) -> dict[UUID, int]:
         str_ids = [str(value) for value in campaign_ids]
         result = await self.session.execute(
             select(SuggestionModel.campaign_id, func.count())
             .where(SuggestionModel.campaign_id.in_(str_ids))
-            .where(SuggestionModel.status == SuggestionStatus.PENDING)
+            .where(SuggestionModel.status.in_(statuses))
             .where(SuggestionModel.deleted_at.is_(None))
             .group_by(SuggestionModel.campaign_id)
         )

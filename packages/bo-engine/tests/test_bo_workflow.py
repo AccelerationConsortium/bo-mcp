@@ -29,7 +29,10 @@ from bo_engine import (
     generate_next_batch,
 )
 from bo_engine.benchmarks import branin_currin
+from bo_engine.constants.numerical import SAFE_DIVISION_EPSILON
 from bo_engine.types import (
+    ConstraintSpec,
+    ConstraintType,
     ObjectiveSpec,
     ObservationData,
     OptimizationSpec,
@@ -148,6 +151,312 @@ class TestInitialDesign:
             tuple(sorted(suggestion.parameter_values.items())) not in pending_points
             for suggestion in suggestions
         )
+
+    def test_initial_design_history_gives_rewind_proof_continuation(self):
+        """The durable issuance history advances the Sobol cursor to the exact next block.
+
+        Regression for the mutable-state rewind: the offset is the *length of the
+        issued history*, not the observation count.
+        Passing zero observations alongside a non-empty history simulates results
+        that were submitted and then soft-deleted; the cursor must stay past every
+        issued position instead of rewinding to zero.
+        """
+        spec = replace(create_branin_currin_spec(), random_seed=17)
+        history = generate_initial_design(spec, n_points=4)
+
+        suggestions, _ = generate_next_batch(
+            spec=spec,
+            observations=[],
+            batch_size=2,
+            iteration=1,
+            initial_design_history=history,
+        )
+        got = [s.parameter_values for s in suggestions]
+
+        # Exact continuation: equals Sobol positions 4..5 (n_drawn == len(history)).
+        expected_next = generate_initial_design(spec, n_points=2, n_drawn=len(history))
+        assert len(got) == 2
+        for produced, expected in zip(got, expected_next, strict=True):
+            for key in expected:
+                assert produced[key] == pytest.approx(expected[key])
+
+        # And crucially NOT the rewound position-0 block that a mutable
+        # observation-count offset would have produced.
+        rewound = generate_initial_design(spec, n_points=2, n_drawn=0)
+        assert got[0] != rewound[0]
+
+    def test_observed_point_excluded_even_when_absent_from_history(self):
+        """A freestanding observation is excluded from the batch and generation advances.
+
+        The exclusion set is the union of issuance history, observations, and
+        pending — not history alone. A manually imported / freestanding result
+        (no issued suggestion, so absent from ``initial_design_history``) equal to
+        Sobol position 0 must not be handed back as a fresh suggestion; with the
+        history empty the cursor sits at position 0, so the generator must skip
+        the colliding draw and advance to the next unused positions.
+        """
+        spec = replace(create_branin_currin_spec(), random_seed=17)
+        pos0 = generate_initial_design(spec, n_points=1)[0]
+        freestanding = ObservationData(
+            parameter_values=pos0,
+            objective_values={"branin": 1.0, "currin": 1.0},
+        )
+
+        suggestions, _ = generate_next_batch(
+            spec=spec,
+            observations=[freestanding],
+            batch_size=2,
+            iteration=1,
+            initial_design_history=[],  # no issued suggestion consumed a position
+        )
+
+        produced = {tuple(sorted(s.parameter_values.items())) for s in suggestions}
+        assert tuple(sorted(pos0.items())) not in produced
+        # Batch is still filled (advanced past the collision) rather than short.
+        assert len(suggestions) == 2
+
+    def test_empty_initial_design_raises_explicitly(self, monkeypatch):
+        """A non-exhaustible initial-design path returning no point fails loudly.
+
+        Covers the InitialDesignGenerationError guard. With the durable offset a
+        continuous space essentially never empties
+        naturally, so the only reliable way to reach the branch is to force
+        ``generate_initial_design`` to return nothing.
+        """
+        from bo_engine import suggestions as suggestions_mod
+        from bo_engine.suggestions import InitialDesignGenerationError
+
+        spec = replace(create_branin_currin_spec(), random_seed=17)
+        monkeypatch.setattr(
+            suggestions_mod, "generate_initial_design_indexed", lambda *_a, **_k: ([], [])
+        )
+
+        with pytest.raises(InitialDesignGenerationError):
+            generate_next_batch(spec=spec, observations=[], batch_size=2, iteration=1)
+
+    def test_clustered_exclusions_do_not_cause_false_exhaustion(self):
+        """A cluster of excluded points larger than the base window still fills the batch.
+
+        Regression: a fixed ``FACTOR * batch_size`` draw window can be entirely
+        consumed by excluded points at the start of the sequence, wrongly
+        returning nothing even though fresh Sobol points exist immediately after
+        it. Here five excluded points (positions 0..4) exceed the base window for
+        ``batch_size=1``; the generator must advance to position 5 rather than
+        report exhaustion.
+        """
+        spec = replace(create_branin_currin_spec(), random_seed=17)
+        early = generate_initial_design(spec, n_points=5)  # Sobol positions 0..4
+
+        got = generate_initial_design(spec, n_points=1, excluded_points=early)
+
+        assert len(got) == 1
+        excluded_keys = {tuple(sorted(p.items())) for p in early}
+        assert tuple(sorted(got[0].items())) not in excluded_keys
+        # Exactly the first fresh position after the excluded prefix (position 5).
+        expected = generate_initial_design(spec, n_points=1, n_drawn=5)[0]
+        for key in expected:
+            assert got[0][key] == pytest.approx(expected[key])
+
+    def test_clustered_exclusions_fill_full_batch_in_mixed_space(self):
+        """Mixed spaces also fill a full batch past a large excluded prefix."""
+        spec = replace(
+            create_branin_currin_spec(),
+            parameters=[
+                ParameterSpec(name="x0", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="x1", type=ParameterType.DISCRETE, values=[0.0, 0.5, 1.0]),
+            ],
+            random_seed=23,
+        )
+        early = generate_initial_design(spec, n_points=6)
+
+        got = generate_initial_design(spec, n_points=3, excluded_points=early)
+
+        assert len(got) == 3
+        excluded_keys = {tuple(sorted(p.items())) for p in early}
+        assert all(tuple(sorted(p.items())) not in excluded_keys for p in got)
+
+    @staticmethod
+    def _constrained_spec(constraint_type: ConstraintType, value: float) -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            constraints=[ConstraintSpec(type=constraint_type, parameters=["x"], value=value)],
+            batch_size=1,
+            random_seed=17,
+        )
+
+    @staticmethod
+    def _assert_pairwise_unique(points: list[dict]) -> None:
+        """Assert no two points collide within the engine's dedup tolerance.
+
+        A plain ``!=`` is not enough: constraint projection can emit values that
+        differ by ~1e-18 (e.g. 0.00999... vs 0.01) yet are the same experiment
+        under the engine's ``SAFE_DIVISION_EPSILON`` duplicate tolerance.
+        """
+        values = [point["x"] for point in points]
+        for i in range(len(values)):
+            for j in range(i + 1, len(values)):
+                assert abs(values[i] - values[j]) > SAFE_DIVISION_EPSILON
+
+    def test_constraint_projection_onto_excluded_boundary_fills_batch(self):
+        """Projection collapsing most draws onto an excluded atom must not exhaust.
+
+        ``SUM_LESS_THAN(x <= 0.01)`` projects ~99% of Sobol draws onto the
+        feasibility bound ``x = 0.01``; excluding that boundary atom leaves only
+        the ~1% naturally-interior samples, which can be hundreds of positions
+        apart. A bounded prefix window gives up prematurely — the incremental scan
+        must keep going and return genuine interior points, and a ``batch_size=2``
+        request must return a *full* batch, not silently one.
+        """
+        spec = self._constrained_spec(ConstraintType.SUM_LESS_THAN, 0.01)
+
+        one = generate_initial_design(spec, n_points=1, excluded_points=[{"x": 0.01}])
+        assert len(one) == 1
+        assert one[0]["x"] < 0.01
+        assert abs(one[0]["x"] - 0.01) > 1e-9
+
+        two = generate_initial_design(spec, n_points=2, excluded_points=[{"x": 0.01}])
+        assert len(two) == 2
+        assert all(point["x"] < 0.01 for point in two)
+        self._assert_pairwise_unique(two)
+
+    def test_constraint_projection_greater_than_boundary_fills_batch(self):
+        """The mirror case: SUM_GREATER_THAN projects onto an excluded upper bound."""
+        spec = self._constrained_spec(ConstraintType.SUM_GREATER_THAN, 0.99)
+
+        two = generate_initial_design(spec, n_points=2, excluded_points=[{"x": 0.99}])
+
+        assert len(two) == 2
+        assert all(point["x"] > 0.99 for point in two)
+        self._assert_pairwise_unique(two)
+
+    def test_constraint_projection_with_unrelated_exclusion_has_no_duplicates(self):
+        """Projected boundary points must be deduplicated even when not excluded.
+
+        With ``x <= 0.01`` and an *unrelated* exclusion ``x = 0.005``, the batch
+        used to return ``[0.00999...998, 0.01]`` — two values ~1e-18 apart, i.e.
+        the same boundary experiment — because continuous survivors were appended
+        without deduplication. They must now be collapsed.
+        """
+        spec = self._constrained_spec(ConstraintType.SUM_LESS_THAN, 0.01)
+
+        two = generate_initial_design(spec, n_points=2, excluded_points=[{"x": 0.005}])
+
+        assert len(two) == 2
+        self._assert_pairwise_unique(two)
+
+    def test_constraint_projection_first_batch_has_no_duplicates(self):
+        """The no-exclusion first batch is deduplicated too (same projection risk)."""
+        spec = self._constrained_spec(ConstraintType.SUM_LESS_THAN, 0.01)
+
+        batch = generate_initial_design(spec, n_points=3)
+
+        assert len(batch) == 3
+        self._assert_pairwise_unique(batch)
+
+    def test_filter_first_chunk_scales_with_batch_not_history(self, monkeypatch):
+        """The first filtered draw is batch-sized, not exclusion/history-sized.
+
+        Regression for ~quadratic warm-up cost: sizing the initial chunk to
+        ``len(excluded)`` made a one-point request draw and compare thousands of
+        candidates when a large issued history sits harmlessly *before* the
+        continuation cursor. The scan must start batch-sized and still return the
+        exact next point. Non-timing check per review guidance.
+        """
+        from bo_engine import initial_design as initial_design_mod
+        from bo_engine.initial_design import SOBOL_EXCLUSION_OVERSAMPLE_FACTOR
+
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            batch_size=1,
+            random_seed=17,
+        )
+        history = generate_initial_design(spec, n_points=1000)  # positions 0..999
+
+        draw_counts: list[int] = []
+        original = initial_design_mod._draw_sobol_designs
+
+        def spy(spec_arg, n_dims, draw_count, *, n_drawn):
+            draw_counts.append(draw_count)
+            return original(spec_arg, n_dims, draw_count, n_drawn=n_drawn)
+
+        monkeypatch.setattr(initial_design_mod, "_draw_sobol_designs", spy)
+
+        got = generate_initial_design(spec, n_points=1, n_drawn=1000, excluded_points=history)
+
+        assert len(got) == 1
+        # First (and only needed) draw is proportional to the batch, not history.
+        assert draw_counts[0] == 1 * SOBOL_EXCLUSION_OVERSAMPLE_FACTOR
+        assert draw_counts[0] < len(history)
+        # Still the exact next Sobol position (1000), which the direct-draw path
+        # produces for the same continuation with no exclusions.
+        expected = generate_initial_design(spec, n_points=1, n_drawn=1000)[0]
+        assert got[0]["x"] == pytest.approx(expected["x"])
+
+    def test_constraint_projection_through_generate_next_batch_no_error(self):
+        """The full engine path returns an exact batch, never a sampling error, here."""
+        spec = replace(
+            self._constrained_spec(ConstraintType.SUM_LESS_THAN, 0.01),
+            initial_design_size=10,  # stay in warm-up
+            batch_size=2,
+        )
+
+        suggestions, _ = generate_next_batch(
+            spec=spec,
+            observations=[],
+            batch_size=2,
+            iteration=1,
+            initial_design_history=[{"x": 0.01}],
+        )
+
+        assert len(suggestions) == 2
+        assert all(s.parameter_values["x"] < 0.01 for s in suggestions)
+
+    def test_tight_constraint_repeated_rejection_does_not_stall(self):
+        """Repeated generate+retire under a tight constraint must never stall.
+
+        ``x <= 0.0001`` projects ~99.99% of draws onto the excluded boundary, so
+        each candidate costs many raw Sobol positions. Persisting the *raw* cursor
+        (``sobol_index + 1``) — not the issued-point count — lets every call resume
+        past the region already scanned. With the issue-count offset the window is
+        rescanned each call and the ninth generation raises
+        ``InitialDesignSamplingError`` despite infinitely many feasible points.
+        This test drives the exact loop the BoTorch backend runs.
+        """
+        spec = replace(
+            self._constrained_spec(ConstraintType.SUM_LESS_THAN, 0.0001),
+            initial_design_size=50,  # keep every call in warm-up
+        )
+
+        history: list[dict] = []
+        cursor: int | None = None
+        issued: list[dict] = []
+        indices: list[int] = []
+        for _ in range(9):
+            suggestions, _state = generate_next_batch(
+                spec=spec,
+                observations=[],
+                batch_size=1,
+                iteration=1,
+                initial_design_history=list(history),
+                sobol_cursor=cursor,
+            )
+            assert len(suggestions) == 1
+            result = suggestions[0]
+            # Feasible (the boundary x == 0.0001 is itself allowed by ``<=``).
+            assert result.parameter_values["x"] <= 0.0001 + 1e-9
+            assert result.sobol_index is not None
+            issued.append(result.parameter_values)
+            history.append(result.parameter_values)  # retire → stays excluded
+            indices.append(result.sobol_index)
+            cursor = result.sobol_index + 1  # persist raw cursor (as the backend does)
+
+        # Nine distinct feasible points, and the cursor advanced monotonically —
+        # by far more than one per call, since projected duplicates are skipped.
+        self._assert_pairwise_unique(issued)
+        assert indices == sorted(indices)
+        assert max(indices) > len(indices)  # not a mere issue-count advance
 
     def test_default_initial_design_size_formula(self):
         """Default initial design size is 2 × n_params + 1.

@@ -622,8 +622,14 @@ class BaseBackend(ABC):
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
+        initial_design_history: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
-        """Concrete backends must implement model-guided suggestion generation."""
+        """Concrete backends must implement model-guided suggestion generation.
+
+        See :meth:`bo_engine.backend.BOBackend.generate_suggestions` for the
+        parameter contract, including the strictly-actionable ``pending_points``
+        and the durable ``initial_design_history`` continuation source.
+        """
 
     # -- Metrics & diagnostics --------------------------------------------
 

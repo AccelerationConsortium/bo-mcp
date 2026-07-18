@@ -56,6 +56,7 @@ from bo_engine.initial_design import (
     _apply_constraints_to_samples,
     _guard_categorical_space_exhaustion,
     generate_initial_design,
+    generate_initial_design_indexed,
 )
 from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 from bo_engine.suggestions_common import (
@@ -218,6 +219,86 @@ def _resolve_acquisition_seed(
     return draw_fallback_seed()
 
 
+def _build_initial_design_suggestions(
+    spec: OptimizationSpec,
+    batch_size: int,
+    *,
+    iteration: int,
+    random_seed: int,
+    observations: list[ObservationData],
+    pending_points: list[dict[str, Any]] | None,
+    initial_design_history: list[dict[str, Any]] | None,
+    sobol_cursor: int | None = None,
+) -> list[SuggestionResult]:
+    """Build the Sobol initial-design batch for the warm-up phase.
+
+    The Sobol continuation *offset* is chosen with the precedence
+    ``sobol_cursor`` → ``len(initial_design_history)`` → ``len(observations) +
+    len(pending)``. The persisted ``sobol_cursor`` (a raw Sobol index) is the
+    authoritative source: the issue-count fallbacks only approximate consumed
+    positions and, under a tight constraint where each candidate costs many raw
+    draws, would rescan the same window every call and eventually stall. Each
+    returned suggestion is stamped with its raw ``sobol_index`` so the caller can
+    persist ``max(sobol_index) + 1`` as the next cursor.
+
+    The exclusion set is *always* the union of the issuance history, the current
+    observations, and the actionable pending points, so a point that has already
+    been observed or is in flight — including a manually imported / freestanding
+    result that never drew a Sobol position, and therefore is not in the history —
+    is never re-issued. See :func:`generate_next_batch` for the full contract.
+    """
+    pending = pending_points or []
+    observed = [obs.parameter_values for obs in observations]
+    if initial_design_history is not None:
+        excluded = [*initial_design_history, *observed, *pending]
+        history_offset = len(initial_design_history)
+    else:
+        # Direct-caller fallback: approximate consumed positions from current
+        # state (pending initial-design points have consumed positions too).
+        excluded = [*observed, *pending]
+        history_offset = len(observations) + len(pending)
+
+    # The persisted raw cursor wins when present; otherwise fall back to the
+    # issue-count approximation.
+    n_drawn = sobol_cursor if sobol_cursor is not None else history_offset
+
+    designs, positions = generate_initial_design_indexed(
+        spec,
+        batch_size,
+        n_drawn=n_drawn,
+        excluded_points=excluded,
+    )
+    # Contract: an *empty* return is a hard failure (a non-exhaustible path
+    # produced nothing to suggest). A *short* batch is not — for continuous /
+    # mixed spaces the space is effectively infinite, and generate_initial_design
+    # already logs a warning and returns the smaller batch; purely-categorical
+    # exhaustion raises SearchSpaceExhaustedError upstream instead of returning
+    # empty.
+    if not designs:
+        msg = (
+            "Continuous or mixed initial-design generation returned no points for "
+            f"a batch of {batch_size} after excluding {len(excluded)} issued points."
+        )
+        raise InitialDesignGenerationError(msg)
+
+    return [
+        SuggestionResult(
+            parameter_values=design,
+            iteration=iteration,
+            batch_index=i,
+            generation_method="initial_design",
+            random_seed=random_seed,
+            sobol_index=positions[i],
+            explanation=(
+                f"Initial design point {i + 1}/{len(designs)} using Sobol sequence. "
+                "Initial designs explore the parameter space before "
+                "model-guided suggestions."
+            ),
+        )
+        for i, design in enumerate(designs)
+    ]
+
+
 def generate_next_batch(
     spec: OptimizationSpec,
     observations: list[ObservationData],
@@ -226,6 +307,8 @@ def generate_next_batch(
     turbo_state: TurboState | None = None,
     rng: np.random.Generator | None = None,
     pending_points: list[dict[str, Any]] | None = None,
+    initial_design_history: list[dict[str, Any]] | None = None,
+    sobol_cursor: int | None = None,
 ) -> tuple[list[SuggestionResult], TurboState | None]:
     """Generate next batch of suggestions using Bayesian Optimization.
 
@@ -241,13 +324,40 @@ def generate_next_batch(
         turbo_state: Optional TuRBO state for trust region optimization
         rng: Optional NumPy random generator for deterministic behavior.
             Create with np.random.default_rng(seed) for reproducibility.
-        pending_points: In-flight suggestions (parameter-value dicts) that
-            have not yet been observed.  When supplied they are
-            (a) excluded from the initial-design fallback so Sobol does
-            not re-issue a pending combination, and (b) forwarded to the
-            acquisition optimizer as ``X_pending`` so parallel / batch BO
-            conditions new candidates on the in-flight batch instead of
-            silently clustering around it.
+        pending_points: Genuinely actionable in-flight suggestions
+            (parameter-value dicts) that have not yet been observed.
+            Forwarded to the acquisition optimizer as ``X_pending`` so
+            parallel / batch BO conditions new candidates on the in-flight
+            batch instead of silently clustering around it. During the
+            initial-design phase they are additionally used as the Sobol
+            continuation/exclusion source **only when**
+            ``initial_design_history`` is not supplied (direct-caller
+            fallback); a server that tracks issuance passes the authoritative
+            history separately (see below) and keeps ``pending_points``
+            strictly actionable.
+        initial_design_history: Parameter-value dicts of *every* initial-design
+            point already issued for this campaign — observed, actionable,
+            rejected, expired, stale, and even soft-deleted rows. Its length is a
+            monotonic initial-design *issue count*, used only as a legacy
+            continuation approximation when no persisted ``sobol_cursor`` exists.
+            It is not necessarily the raw Sobol position: exclusions, constraint
+            projection, and finite/mixed-space deduplication can consume multiple
+            raw draws for one issued point.
+            Together with ``observations`` and ``pending_points`` it forms the
+            exclusion set, so no issued or observed point is re-issued. It remains
+            the durable audit/exclusion set even when ``sobol_cursor`` supplies the
+            offset. ``None`` recovers the legacy behavior of deriving the offset
+            from ``observations`` + ``pending_points``.
+        sobol_cursor: Persisted raw Sobol continuation index (the authoritative
+            offset). When supplied it overrides the issue-count derived from
+            ``initial_design_history``: the accumulator can consume many raw
+            positions to yield one candidate under a tight constraint, so resuming
+            from the raw cursor — rather than the issued-point *count* — is what
+            stops a repeatedly-rejected constrained campaign from rescanning the
+            same window and permanently stalling. Each returned initial-design
+            :class:`SuggestionResult` carries its ``sobol_index``; the backend
+            persists ``max(sobol_index) + 1`` as the next cursor. ``None`` (legacy
+            state / first call) falls back to the issue count.
 
     Reproducibility:
         The acquisition seed is resolved with the following precedence:
@@ -358,40 +468,16 @@ def generate_next_batch(
         # resolve_initial_design_size for the floor this applies.
         min_data = resolve_initial_design_size(spec.n_parameters, spec.initial_design_size)
         if len(observations) < min_data:
-            pending = pending_points or []
-            excluded = [obs.parameter_values for obs in observations] + list(pending)
-            designs = generate_initial_design(
+            suggestions = _build_initial_design_suggestions(
                 spec,
                 batch_size,
-                # Pending initial-design suggestions have already consumed Sobol
-                # positions even though they are not observations yet. Advancing
-                # past every issued point prevents a deterministic campaign from
-                # redrawing the pending batch and filtering itself down to zero.
-                n_drawn=len(observations) + len(pending),
-                excluded_points=excluded,
+                iteration=iteration,
+                random_seed=random_seed,
+                observations=observations,
+                pending_points=pending_points,
+                initial_design_history=initial_design_history,
+                sobol_cursor=sobol_cursor,
             )
-            if not designs:
-                msg = (
-                    "Continuous or mixed initial-design generation returned no points for "
-                    f"a batch of {batch_size} after "
-                    f"excluding {len(excluded)} issued points."
-                )
-                raise InitialDesignGenerationError(msg)
-            suggestions = [
-                SuggestionResult(
-                    parameter_values=design,
-                    iteration=iteration,
-                    batch_index=i,
-                    generation_method="initial_design",
-                    random_seed=random_seed,
-                    explanation=(
-                        f"Initial design point {i + 1}/{len(designs)} using Sobol sequence. "
-                        "Initial designs explore the parameter space before "
-                        "model-guided suggestions."
-                    ),
-                )
-                for i, design in enumerate(designs)
-            ]
             return suggestions, turbo_state
 
         # Determine if single or multi-objective

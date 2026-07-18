@@ -245,6 +245,7 @@ class BOBackend(Protocol):
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
+        initial_design_history: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
         """Generate model-guided suggestions.
 
@@ -254,16 +255,29 @@ class BOBackend(Protocol):
             batch_size: How many suggestions to generate.
             iteration: Current iteration number.
             backend_state: Opaque state from a prior call (e.g. TuRBO).
-            pending_points: Parameter-value dicts for in-flight suggestions
-                that have not yet produced a result.  Backends that support
-                batch / parallel acquisition (e.g. BoTorch) should forward
-                these to the acquisition optimizer as ``X_pending`` so new
-                candidates do not cluster around the pending batch.
+            pending_points: Parameter-value dicts for **genuinely actionable**
+                in-flight suggestions that have not yet produced a result.
+                Backends that support batch / parallel acquisition (e.g.
+                BoTorch) should forward these to the acquisition optimizer as
+                ``X_pending`` so new candidates do not cluster around the
+                pending batch. This list must stay strictly actionable —
+                rejected / expired / stale points do not belong here, or a
+                model-guided backend would condition acquisition on abandoned
+                experiments.
             progress_callback: Optional synchronous hook invoked at coarse
                 milestones (GP fit start, acquisition start/done, etc.).
                 See :class:`bo_engine.progress.ProgressEvent` for the
                 contract. Backends are free to ignore the callback —
                 ``None`` is the default and recovers the silent behavior.
+            initial_design_history: Parameter-value dicts of *every*
+                initial-design point already issued for this campaign
+                (observed, actionable, rejected, expired, stale, soft-deleted).
+                Backends whose warm-up is a deterministic sequence (e.g.
+                BoTorch's Sobol design) use its length as the continuation
+                offset and its members as the exclusion set so the sequence
+                cannot rewind or re-issue a consumed position. Backends that
+                track their own warm-up continuation internally (e.g. BayBE)
+                ignore it. ``None`` means "not supplied".
 
         Returns:
             SuggestionBatch with suggestions and updated state.

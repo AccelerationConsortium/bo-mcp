@@ -12,6 +12,7 @@ MCP event loop while other requests are served concurrently.
 """
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Awaitable
@@ -615,7 +616,7 @@ class _GenerationPreflight:
     """Read-only outcome of the budget/stopping/pending checks.
 
     Surfaces every signal a dry-run needs to report — actionable
-    pending count, stale-pending count, retired initial-design history,
+    pending count, stale-pending count, initial-design issuance history,
     observation-budget clamp, next iteration / planned batch — without
     writing any ``EXPIRED`` rows or running the BO algorithm.
     """
@@ -626,7 +627,7 @@ class _GenerationPreflight:
     observations: list[ObservationData]
     valid_pending: list[Suggestion]
     stale_pending: list[Suggestion]
-    retired_initial_design: list[Suggestion]
+    initial_design_history: list[dict[str, Any]]
     budget_remaining: int | None
     batch_clamped: bool
 
@@ -652,8 +653,10 @@ class _GenerationSnapshot:
 
     ``stale_pending`` carries the rows that the phase-3 writer will
     mark ``EXPIRED``; phase 1 only classifies them and never writes.
-    ``retired_initial_design`` preserves already-rejected or expired Sobol
-    positions while the backend is still collecting its initial design.
+    ``initial_design_history`` holds the parameter dicts of *every*
+    initial-design point already issued (observed, actionable, rejected,
+    expired, stale, soft-deleted) so a deterministic warm-up backend can
+    continue its Sobol sequence past them without rewinding.
     """
 
     campaign: Campaign
@@ -664,7 +667,7 @@ class _GenerationSnapshot:
     observations: list[ObservationData]
     valid_pending: list[Suggestion]
     stale_pending: list[Suggestion]
-    retired_initial_design: list[Suggestion]
+    initial_design_history: list[dict[str, Any]]
     pending_info: dict[str, Any] | None
     result_count: int
 
@@ -689,7 +692,7 @@ def _compute_preflight(
     spec: CampaignSpec,
     results: list[Any],
     pending: list[Suggestion],
-    retired_initial_design: list[Suggestion],
+    initial_design_history: list[dict[str, Any]],
     batch_size: int | None,
 ) -> _GenerationPreflight | dict[str, Any]:
     """Run the budget / stopping / pending preflight in read-only form.
@@ -757,7 +760,7 @@ def _compute_preflight(
         observations=observations,
         valid_pending=valid_pending,
         stale_pending=stale_pending,
-        retired_initial_design=retired_initial_design,
+        initial_design_history=initial_design_history,
         budget_remaining=budget_remaining,
         batch_clamped=clamped,
     )
@@ -772,15 +775,24 @@ async def _load_preflight_inputs(
         CampaignSpec,
         list[Any],
         list[Suggestion],
-        list[Suggestion],
+        list[dict[str, Any]],
     ]
     | dict[str, Any]
 ):
     """Fetch the read-only inputs the preflight needs in a single session.
 
-    Returns ``(campaign, spec, results, pending, retired_initial_design)``
+    Returns ``(campaign, spec, results, pending, initial_design_history)``
     on success, or the structured error envelope the real path would emit
     for a missing campaign/spec or an invalid state transition.
+
+    ``initial_design_history`` is the parameter dicts of *every* initial-design
+    point ever issued for the campaign (any status, **including soft-deleted
+    rows**), collected only while the campaign is still in its warm-up window
+    (``len(results) < min_data``). It is the durable, monotonic record of
+    consumed Sobol positions — sourced from immutable suggestion issuance
+    rather than mutable observations — so a soft-deleted result/suggestion
+    cannot rewind a deterministic backend's continuation and a freestanding
+    result cannot inflate it.
     """
     async with session_scope(None) as db:
         repos = _init_repositories(db)
@@ -818,21 +830,27 @@ async def _load_preflight_inputs(
             return response
         results = await repos.result.list_by_campaign(campaign_uuid)
         pending = await repos.suggestion.list_actionable_by_campaign(campaign_uuid)
-        retired_initial_design: list[Suggestion] = []
+        initial_design_history: list[dict[str, Any]] = []
         opt_spec = campaign_spec_to_optimization_spec(spec)
         min_data = resolve_initial_design_size(
             opt_spec.n_parameters,
             opt_spec.initial_design_size,
         )
+        # Only while still in warm-up does a deterministic backend need the
+        # issuance history; once model-guided BO begins the Sobol offset is
+        # irrelevant, so we skip the hydration entirely. ``include_deleted=True``
+        # keeps the count monotonic: a soft-deleted suggestion still consumed a
+        # Sobol position and must not reappear as a fresh candidate.
         if len(results) < min_data:
-            all_suggestions = await repos.suggestion.list_by_campaign(campaign_uuid)
-            retired_initial_design = [
-                suggestion
+            all_suggestions = await repos.suggestion.list_by_campaign(
+                campaign_uuid, include_deleted=True
+            )
+            initial_design_history = [
+                suggestion.parameter_values
                 for suggestion in all_suggestions
-                if suggestion.status in (SuggestionStatus.REJECTED, SuggestionStatus.EXPIRED)
-                and suggestion.provenance.generation_method == "initial_design"
+                if suggestion.provenance.generation_method == "initial_design"
             ]
-    return campaign, spec, results, pending, retired_initial_design
+    return campaign, spec, results, pending, initial_design_history
 
 
 async def _preview_generation(
@@ -855,14 +873,14 @@ async def _preview_generation(
     loaded = await _load_preflight_inputs(campaign_id, campaign_uuid)
     if isinstance(loaded, dict):
         return loaded
-    campaign, spec, results, pending, retired_initial_design = loaded
+    campaign, spec, results, pending, initial_design_history = loaded
 
     preflight = _compute_preflight(
         campaign,
         spec,
         results,
         pending,
-        retired_initial_design,
+        initial_design_history,
         batch_size,
     )
     if not isinstance(preflight, _GenerationPreflight):
@@ -961,14 +979,14 @@ async def _load_generation_snapshot(
     loaded = await _load_preflight_inputs(campaign_id, campaign_uuid)
     if isinstance(loaded, dict):
         return loaded
-    campaign, spec, results, pending, retired_initial_design = loaded
+    campaign, spec, results, pending, initial_design_history = loaded
 
     preflight = _compute_preflight(
         campaign,
         spec,
         results,
         pending,
-        retired_initial_design,
+        initial_design_history,
         batch_size,
     )
     if not isinstance(preflight, _GenerationPreflight):
@@ -995,7 +1013,7 @@ async def _load_generation_snapshot(
         observations=preflight.observations,
         valid_pending=preflight.valid_pending,
         stale_pending=preflight.stale_pending,
-        retired_initial_design=preflight.retired_initial_design,
+        initial_design_history=preflight.initial_design_history,
         pending_info=pending_info,
         result_count=preflight.n_results,
     )
@@ -1071,24 +1089,15 @@ async def _compute_generation_batch(
     DB locks while the GP fit + acquisition optimization is running.
     """
     opt_spec = campaign_spec_to_optimization_spec(snapshot.spec)
+    # X_pending must stay strictly actionable. Rejected / expired / stale
+    # initial points also consumed Sobol positions, but they are *not*
+    # in-flight experiments: routing them through X_pending would make a
+    # model-guided backend (e.g. BayBE, which switches to model-guided
+    # independently of our initial-design threshold) condition acquisition on
+    # abandoned points. Their effect on Sobol continuation is carried instead
+    # by ``snapshot.initial_design_history``, which only a deterministic
+    # warm-up backend consumes.
     pending_parameter_values = [p.parameter_values for p in snapshot.valid_pending]
-    if len(snapshot.observations) < resolve_initial_design_size(
-        opt_spec.n_parameters,
-        opt_spec.initial_design_size,
-    ):
-        # Rejected, expired, and automatically stale initial suggestions
-        # have consumed Sobol positions even though they will never become
-        # observations. Include them only while the engine is still in its
-        # initial-design path so sequence continuation cannot rewind. Once
-        # model-guided BO begins, only genuinely actionable suggestions are
-        # forwarded as X_pending.
-        pending_parameter_values.extend(
-            suggestion.parameter_values
-            for suggestion in (
-                *snapshot.stale_pending,
-                *snapshot.retired_initial_design,
-            )
-        )
 
     suggestion_data, new_backend_state, warnings, live_method_info = await _generate_via_backend(
         backend,
@@ -1098,6 +1107,7 @@ async def _compute_generation_batch(
         snapshot.new_iteration,
         prior_backend_state,
         pending_parameter_values,
+        initial_design_history=snapshot.initial_design_history,
         progress_callback=progress_callback,
     )
 
@@ -1287,6 +1297,26 @@ async def _persist_generation_batch(
     return format_suggestions_response(full_response, verbosity_level)
 
 
+def _backend_accepts_initial_design_history(backend: BOBackend) -> bool:
+    """Whether ``backend.generate_suggestions`` accepts ``initial_design_history``.
+
+    Guards backward compatibility for third-party backend plugins written
+    against the pre-``initial_design_history`` protocol: passing an unexpected
+    keyword to such a backend would raise a raw ``TypeError`` outside the typed
+    backend-error path. A backend qualifies if it names the parameter explicitly
+    or accepts arbitrary ``**kwargs``. If the signature cannot be introspected
+    (e.g. a C-implemented callable), assume the current contract and forward it.
+    """
+    try:
+        signature = inspect.signature(backend.generate_suggestions)
+    except (TypeError, ValueError):
+        return True
+    parameters = signature.parameters.values()
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
+        return True
+    return "initial_design_history" in signature.parameters
+
+
 async def _generate_via_backend(
     backend: BOBackend,
     opt_spec: OptimizationSpec,
@@ -1295,6 +1325,7 @@ async def _generate_via_backend(
     iteration: int,
     prior_backend_state: dict[str, Any] | None,
     pending_parameter_values: list[dict[str, Any]] | None = None,
+    initial_design_history: list[dict[str, Any]] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[
     SuggestionDataList,
@@ -1312,15 +1343,16 @@ async def _generate_via_backend(
     when to reseed as well, so the two gates disagreed on which Sobol
     stream to continue.  Routing every call through
     ``backend.generate_suggestions`` makes the engine the single source of
-    truth for the initial-design threshold, the Sobol continuation past
-    observed, actionable, rejected, expired, and stale initial points,
-    and the exhaustion check for finite categorical spaces.
+    truth for the initial-design threshold, the Sobol continuation, and the
+    exhaustion check for finite categorical spaces.
 
-    ``pending_parameter_values`` normally carries actionable suggestions
-    that are not yet observed. During initial design it additionally carries
-    rejected, expired, or stale initial points so the Sobol sequence cannot
-    rewind; after initial design only actionable points reach the backend as
-    ``X_pending`` for parallel / batch BO.
+    ``pending_parameter_values`` carries **only genuinely actionable**
+    suggestions that are not yet observed; they reach the backend as
+    ``X_pending`` for parallel / batch BO. The Sobol continuation history —
+    every issued initial-design point, including rejected / expired / stale /
+    soft-deleted ones — travels separately as ``initial_design_history`` so a
+    deterministic warm-up backend cannot rewind while a model-guided backend's
+    acquisition stays free of abandoned points.
 
     Both paths are CPU-bound (Sobol sampling, GP fitting, acquisition
     optimization, MCMC) and are offloaded via ``asyncio.to_thread`` so
@@ -1339,17 +1371,26 @@ async def _generate_via_backend(
     # ``pending`` row alive past the default 10-min reservation TTL so
     # legitimately-slow runs (SAASBO MCMC, large batches) finish
     # without surrendering their slot to a concurrent retry storm.
+    call_kwargs: dict[str, Any] = {
+        "spec": opt_spec,
+        "observations": observations,
+        "batch_size": batch_size,
+        "iteration": iteration,
+        "backend_state": prior_backend_state,
+        "pending_points": pending_parameter_values,
+        "progress_callback": progress_callback,
+    }
+    # ``initial_design_history`` was added to the backend contract after the
+    # first public ``BOBackend`` protocol. A third-party plugin compiled against
+    # the older signature would raise a raw ``TypeError`` (unexpected keyword)
+    # that escapes the structured backend-error path, so only forward the
+    # keyword to backends that actually accept it. Backends that do not are still
+    # driven correctly for continuous warm-up via observation/pending exclusion;
+    # they simply forgo the durable-history refinement.
+    if _backend_accepts_initial_design_history(backend):
+        call_kwargs["initial_design_history"] = initial_design_history
     async with reservation_heartbeat():
-        compute = asyncio.to_thread(
-            backend.generate_suggestions,
-            spec=opt_spec,
-            observations=observations,
-            batch_size=batch_size,
-            iteration=iteration,
-            backend_state=prior_backend_state,
-            pending_points=pending_parameter_values,
-            progress_callback=progress_callback,
-        )
+        compute = asyncio.to_thread(backend.generate_suggestions, **call_kwargs)
         batch = await _await_compute_with_timeout(compute)
     # Re-validate the batch shape against the documented contract.
     # ``bo-engine`` is Pydantic-free for third-party backend plugins, so

@@ -171,6 +171,10 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
         "initial_design_size": 2,
         "random_seed": 42,
         "batch_size": 2,
+        # Explicit BoTorch so the "fresh Sobol point" assertion below exercises
+        # the engine's deterministic continuation rather than the default
+        # (auto -> BayBE), which manages its own warm-up.
+        "backend": "botorch",
     }
     create_result = await create_campaign(intake, owner_id)
     campaign_id = create_result["campaign_id"]
@@ -178,7 +182,7 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
     # First batch of 2 suggestions; submit only the first to leave the
     # second PENDING. Now: 1 submitted + 1 pending = 2 reserved out of 3.
     gen1 = await generate_suggestions(campaign_id)
-    first, _ = gen1["suggestions"]
+    first, still_pending = gen1["suggestions"]
     await submit_results_operation(
         campaign_id=campaign_id,
         results=_to_result_inputs(
@@ -194,15 +198,19 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
     )
 
     # Generate again. Remaining = 3 - 1 - 1 = 1, so a batch_size=2 request
-    # must be clamped to 1. Pending initial-design points have consumed Sobol
-    # positions, so the engine must advance to a fresh point rather than
-    # redrawing and filtering the pending point into an empty batch.
+    # must be clamped to 1. The second point is still PENDING and has consumed a
+    # Sobol position, so the engine must advance to a *fresh* point rather than
+    # redrawing the pending point and filtering the batch down to empty. Assert
+    # against the actually-pending point (not the completed first) — that is the
+    # collision the fix prevents.
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="bo_mcp_server.operations.generate_suggestions"):
         gen2 = await generate_suggestions(campaign_id)
     assert gen2["success"] is True
     assert len(gen2["suggestions"]) == 1
-    assert gen2["suggestions"][0]["parameter_values"] != first["parameter_values"]
+    fresh = gen2["suggestions"][0]["parameter_values"]
+    assert fresh != still_pending["parameter_values"]
+    assert fresh != first["parameter_values"]
     clamp_logs = [r.getMessage() for r in caplog.records if "Clamping batch_size" in r.getMessage()]
     assert clamp_logs, "Generation must clamp batch when pending consumes budget"
     assert "n_pending=1" in clamp_logs[0]

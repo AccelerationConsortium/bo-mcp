@@ -54,10 +54,21 @@ from bo_engine.types import (
 
 logger = logging.getLogger(__name__)
 
-# Oversampling factor used when filtering Sobol draws against a non-empty
-# exclusion set — draw ~OVERSAMPLE_FACTOR * n_points candidates so the
-# post-filter still leaves enough unique designs for the requested batch.
+# Initial chunk multiplier used when filtering or deduplicating Sobol draws. The
+# chunk is batch-sized (independent of history length) and grows only when
+# collisions leave the requested batch short.
 SOBOL_EXCLUSION_OVERSAMPLE_FACTOR = 4
+
+# Absolute ceiling on Sobol draws consumed by the incremental filter scan for an
+# infinite (continuous / mixed) space. The scan advances a cursor through
+# contiguous chunks, *accumulating* survivors, so it can keep going far past a
+# dense excluded prefix — the key case being constraint projection (e.g.
+# ``SUM_LESS_THAN``) collapsing almost every draw onto an excluded boundary atom,
+# where an interior feasible point may be hundreds of positions apart. Low-
+# dimensional Sobol sampling is cheap, so this ceiling is set high; reaching it
+# means the feasible region is degenerately small and is reported explicitly via
+# :class:`InitialDesignSamplingError`, never treated as silent exhaustion.
+SOBOL_FILTER_MAX_DRAWS = 1 << 16  # 65536
 
 
 class SearchSpaceExhaustedError(RuntimeError):
@@ -110,6 +121,34 @@ class SearchSpaceExhaustedError(RuntimeError):
         self.subsampled = subsampled
         self.n_full_combinations = n_full_combinations
         self.max_candidates = max_candidates
+
+
+class InitialDesignSamplingError(RuntimeError):
+    """Raised when filtered Sobol sampling exhausts its draw budget unfilled.
+
+    Distinct from :class:`SearchSpaceExhaustedError`, which reports a *finite*
+    space with no unseen combinations. Here the space is effectively infinite
+    (continuous / mixed), but the feasible region left too few interior
+    candidates within :data:`SOBOL_FILTER_MAX_DRAWS` draws — typically because an
+    over-tight constraint projects almost every Sobol draw onto an excluded
+    boundary atom. Carrying explicit counts lets the caller distinguish this
+    tuning problem from genuine exhaustion instead of silently persisting an
+    under-filled batch.
+    """
+
+    def __init__(self, *, n_requested: int, n_found: int, n_excluded: int) -> None:
+        """Build a sampling error referencing the requested, found and excluded counts."""
+        self.n_requested = n_requested
+        self.n_found = n_found
+        self.n_excluded = n_excluded
+        super().__init__(
+            f"Initial-design sampling produced only {n_found} of {n_requested} "
+            f"requested points after exhausting the Sobol draw budget "
+            f"({SOBOL_FILTER_MAX_DRAWS} draws) while filtering against {n_excluded} "
+            "excluded points. The feasible region is likely too small — for "
+            "example an over-tight constraint projecting most draws onto an "
+            "excluded boundary. Loosen the constraints or reduce the batch size."
+        )
 
 
 def _values_match(
@@ -283,6 +322,36 @@ def generate_initial_design(
         SearchSpaceExhaustedError: Purely-categorical space whose remaining
             unseen combinations are fewer than ``n_points``.
     """
+    designs, _positions = generate_initial_design_indexed(
+        spec,
+        n_points,
+        n_drawn=n_drawn,
+        excluded_points=excluded_points,
+        dedup_tolerance=dedup_tolerance,
+    )
+    return designs
+
+
+def generate_initial_design_indexed(
+    spec: OptimizationSpec,
+    n_points: int | None = None,
+    *,
+    n_drawn: int = 0,
+    excluded_points: list[dict[str, Any]] | None = None,
+    dedup_tolerance: float = SAFE_DIVISION_EPSILON,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Like :func:`generate_initial_design` but also returns raw Sobol positions.
+
+    Returns ``(designs, positions)`` where ``positions[i]`` is the raw Sobol
+    sequence index that produced ``designs[i]``. A deterministic backend persists
+    ``max(positions) + 1`` as the continuation cursor so the next warm-up call
+    resumes past the positions actually consumed rather than merely past the
+    issued-point *count* — the latter rescans the same window each call and, under
+    a tight constraint where each candidate costs many raw draws, eventually
+    stalls permanently. For the direct-draw and categorical routes positions are
+    contiguous from ``n_drawn`` (those routes cannot stall); the accumulate route
+    reports the true scanned positions.
+    """
     n_dims = get_n_dims(spec)
 
     if n_points is None:
@@ -297,56 +366,164 @@ def generate_initial_design(
     # nothing and changes user-visible output for existing unseeded tests.
     effective_n_drawn = n_drawn if spec.random_seed is not None else 0
 
-    # Oversample Sobol draws only when we actually need to filter — for
-    # continuous campaigns with no exclusion the extra draws would be wasted
-    # and (worse) would shift the position-0 point, regressing deterministic
-    # tutorial-style tests that pin specific Sobol outputs.
     space_type = classify_search_space(spec)
     is_finite_space = space_type != SearchSpaceType.CONTINUOUS
-    need_filter = bool(excluded) and is_finite_space
-    draw_count = (
-        max(n_points, n_points * SOBOL_EXCLUSION_OVERSAMPLE_FACTOR) if need_filter else n_points
-    )
-    designs = _draw_sobol_designs(spec, n_dims, draw_count, n_drawn=effective_n_drawn)
+    is_purely_categorical = space_type == SearchSpaceType.PURELY_CATEGORICAL
+    # Constraint projection (e.g. ``SUM_LESS_THAN`` clipping onto the feasibility
+    # bound) collapses many distinct Sobol draws onto the *same* boundary point,
+    # so even a continuous space can yield duplicate candidates. That makes the
+    # accumulate-and-deduplicate path — not the plain direct draw — the correct
+    # route whenever the space is constrained, exactly as when an exclusion set
+    # is present.
+    has_constraints = bool(spec.constraints)
+    used_accumulate = not is_purely_categorical and (bool(excluded) or has_constraints)
 
+    if used_accumulate:
+        # Continuous / mixed with exclusions and/or constraints: accumulate
+        # deduplicated survivors across contiguous chunks, tracking the true Sobol
+        # position of each so the cursor can resume past the scanned region.
+        designs, positions = _accumulate_filtered_designs(
+            spec,
+            n_dims,
+            n_points,
+            n_drawn=effective_n_drawn,
+            excluded=excluded,
+            dedup_tolerance=dedup_tolerance,
+        )
+        if len(designs) < n_points:
+            # The scan consumed its full draw budget without filling the batch — a
+            # sampling failure for an infinite space (e.g. an over-tight constraint
+            # projecting almost every draw onto an excluded boundary), not
+            # exhaustion. Fail explicitly rather than persist a short batch.
+            raise InitialDesignSamplingError(
+                n_requested=n_points,
+                n_found=len(designs),
+                n_excluded=len(excluded),
+            )
+        return designs[:n_points], positions[:n_points]
+
+    if is_purely_categorical:
+        designs = _categorical_candidate_designs(
+            spec, n_dims, n_points, effective_n_drawn, excluded, dedup_tolerance
+        )
+    else:
+        # Unconstrained, unexcluded continuous / mixed: Sobol draws are distinct,
+        # so a single ``n_points`` draw preserves the deterministic position-0
+        # prefix tutorial tests pin.
+        designs = _draw_sobol_designs(spec, n_dims, n_points, n_drawn=effective_n_drawn)
+        if is_finite_space:
+            designs = _deduplicate_designs(designs, spec, dedup_tolerance)
+        if len(designs) < n_points:
+            logger.warning(
+                "Sobol drew %d unique designs for a batch of %d; returning the smaller batch.",
+                len(designs),
+                n_points,
+            )
+
+    designs = designs[:n_points]
+    positions = list(range(effective_n_drawn, effective_n_drawn + len(designs)))
+    return designs, positions
+
+
+def _categorical_candidate_designs(
+    spec: OptimizationSpec,
+    n_dims: int,
+    n_points: int,
+    effective_n_drawn: int,
+    excluded: list[dict[str, Any]],
+    dedup_tolerance: float,
+) -> list[dict[str, Any]]:
+    """Draw a purely-categorical initial design, enumerating to certify exhaustion.
+
+    A bounded oversample is enough (no constraint projection collapses draws onto
+    an excluded atom here); if Sobol cannot supply enough unique combinations the
+    remaining unseen combinations are enumerated deterministically, and a genuinely
+    exhausted space raises :class:`SearchSpaceExhaustedError`.
+    """
+    draw_count = max(n_points, (n_points + len(excluded)) * SOBOL_EXCLUSION_OVERSAMPLE_FACTOR)
+    designs = _draw_sobol_designs(spec, n_dims, draw_count, n_drawn=effective_n_drawn)
     if excluded:
         designs = _exclude_known_designs(designs, excluded, spec, dedup_tolerance)
-    if is_finite_space:
-        designs = _deduplicate_designs(designs, spec, dedup_tolerance)
-
+    designs = _deduplicate_designs(designs, spec, dedup_tolerance)
     if len(designs) >= n_points:
-        return designs[:n_points]
+        return designs
 
-    # Sobol alone could not supply enough unique designs.  For purely
-    # categorical spaces, fall back to deterministic enumeration — this
-    # is the only way to certify exhaustion.
-    space_type = classify_search_space(spec)
-    if space_type == SearchSpaceType.PURELY_CATEGORICAL:
-        already_selected = list(excluded) + list(designs)
-        extra = _enumerate_unobserved_categorical_combinations(
-            spec, already_selected, dedup_tolerance
+    already_selected = list(excluded) + list(designs)
+    extra = _enumerate_unobserved_categorical_combinations(spec, already_selected, dedup_tolerance)
+    designs = _deduplicate_designs(designs + extra, spec, dedup_tolerance)
+    if len(designs) < n_points:
+        total = count_categorical_combinations(spec) or None
+        raise SearchSpaceExhaustedError(
+            n_requested=n_points,
+            n_available=len(designs),
+            n_total_combinations=total,
         )
-        designs = designs + extra
-        designs = _deduplicate_designs(designs, spec, dedup_tolerance)
-        if len(designs) < n_points:
-            total = count_categorical_combinations(spec) or None
-            raise SearchSpaceExhaustedError(
-                n_requested=n_points,
-                n_available=len(designs),
-                n_total_combinations=total,
-            )
-        return designs[:n_points]
-
-    # Continuous / mixed spaces are effectively infinite; surface a warning
-    # but return what we have so downstream callers can decide.
-    logger.warning(
-        "Sobol continuation produced %d unique designs for a batch of %d "
-        "after filtering against %d excluded points; returning the smaller batch.",
-        len(designs),
-        n_points,
-        len(excluded),
-    )
     return designs
+
+
+def _accumulate_filtered_designs(
+    spec: OptimizationSpec,
+    n_dims: int,
+    n_points: int,
+    *,
+    n_drawn: int,
+    excluded: list[dict[str, Any]],
+    dedup_tolerance: float,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Accumulate deduplicated survivors across growing *contiguous* Sobol chunks.
+
+    A fixed (or merely geometrically-regrown) prefix can be entirely consumed by
+    excluded points — most acutely when a constraint projects a large fraction of
+    draws onto a single excluded boundary atom (``SUM_LESS_THAN`` clips almost
+    every sample onto the feasibility bound), so an interior feasible point can be
+    hundreds of positions away. This routine instead advances a cursor through
+    contiguous chunks and *keeps every survivor*, so it can scan arbitrarily far
+    without re-inspecting the same prefix, bounded only by
+    :data:`SOBOL_FILTER_MAX_DRAWS`.
+
+    Survivors are **always** deduplicated (not only for finite spaces): constraint
+    projection can collapse several distinct draws onto the same near-identical
+    boundary point in a continuous space too, and those must not be emitted as
+    duplicate suggestions.
+
+    The first chunk is sized to the *requested batch*, not the exclusion count, so
+    a large issued history (which sits before the continuation cursor and does not
+    collide) is compared against only a batch-sized draw rather than an
+    ``O(history)``-sized one; the chunk doubles only if collisions leave the batch
+    short.
+
+    Returns ``(survivors, positions)`` where ``positions[i]`` is the raw Sobol
+    index of ``survivors[i]``. Filtering is done per draw so each survivor's exact
+    position is known — the scan stops at the last accepted candidate, so the
+    caller's cursor (``max(positions) + 1``) never skips unused Sobol points past
+    it. Determinism: chunks are contiguous and inspected in order, so the first
+    ``n_points`` survivors (and their positions) are stable regardless of chunking.
+    """
+    max_draws = max(SOBOL_FILTER_MAX_DRAWS, n_points * SOBOL_EXCLUSION_OVERSAMPLE_FACTOR)
+    survivors: list[dict[str, Any]] = []
+    positions: list[int] = []
+    cursor = n_drawn
+    drawn = 0
+    chunk = max(n_points, n_points * SOBOL_EXCLUSION_OVERSAMPLE_FACTOR)
+    while len(survivors) < n_points and drawn < max_draws:
+        take = min(chunk, max_draws - drawn)
+        raw = _draw_sobol_designs(spec, n_dims, take, n_drawn=cursor)
+        for offset, design in enumerate(raw):
+            if len(survivors) >= n_points:
+                break
+            if any(_design_matches(design, other, spec, dedup_tolerance) for other in excluded):
+                continue
+            # Dedup against the accumulated survivors so a point that recurs in a
+            # later chunk (or a projection-collapsed boundary neighbour) is not
+            # double-counted.
+            if any(_design_matches(design, kept, spec, dedup_tolerance) for kept in survivors):
+                continue
+            survivors.append(design)
+            positions.append(cursor + offset)
+        cursor += take
+        drawn += take
+        chunk = min(chunk * 2, max_draws)
+    return survivors, positions
 
 
 def _draw_sobol_designs(

@@ -146,9 +146,10 @@ class TestEndToEndBackstopWiring:
                 backend_state=None,
                 pending_points=None,
                 progress_callback=None,
+                initial_design_history=None,
             ) -> SuggestionBatch:
                 _ = (spec, observations, batch_size, backend_state, pending_points)
-                _ = progress_callback
+                _ = (progress_callback, initial_design_history)
                 provenance = dict(_PROVENANCE)
                 provenance["iteration"] = iteration
                 return SuggestionBatch(

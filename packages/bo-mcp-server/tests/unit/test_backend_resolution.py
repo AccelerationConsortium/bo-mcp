@@ -64,6 +64,7 @@ class _RejectingBackend(BaseBackend):
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback=None,
+        initial_design_history: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:  # pragma: no cover — never invoked for rejected spec
         _ = (
             spec,
@@ -73,6 +74,7 @@ class _RejectingBackend(BaseBackend):
             backend_state,
             pending_points,
             progress_callback,
+            initial_design_history,
         )
         msg = "rejected backend should not be invoked"
         raise AssertionError(msg)

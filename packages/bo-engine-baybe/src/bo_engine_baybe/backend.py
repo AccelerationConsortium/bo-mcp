@@ -967,13 +967,26 @@ class BayBEBackend(BaseBackend):
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
+        initial_design_history: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
         """Recommend the next batch and translate BayBE/BoTorch errors to backend exceptions.
 
         The whole call runs inside :func:`_baybe_rng_scope` so a set
         ``spec.random_seed`` makes the batch reproducible without leaking
         seeded RNG state into the rest of the process.
+
+        ``initial_design_history`` is intentionally ignored: BayBE owns its
+        warm-up continuation through the persisted campaign in ``backend_state``
+        and decides its own initial-vs-model phase (``switch_after``). Feeding
+        it the caller's Sobol-issuance history would be meaningless (BayBE does
+        not consume a BoTorch Sobol cursor), and routing those non-actionable
+        points through ``pending_experiments`` would distort acquisition. Only
+        ``pending_points`` — kept strictly actionable by the caller — reaches
+        BayBE's recommender as pending experiments.
         """
+        # Explicitly discard: see docstring. Named for signature/contract
+        # parity with BOBackend; BayBE tracks its own continuation.
+        del initial_design_history
         try:
             with _baybe_rng_scope(
                 spec, _SEED_CONTEXT_ITERATION_TEMPLATE.format(iteration=iteration)

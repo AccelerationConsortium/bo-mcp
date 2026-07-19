@@ -82,6 +82,7 @@ from bo_engine.types import (
     ObservationData,
     OptimizationSpec,
     ScalarizationMode,
+    SuggestionResult,
     TargetMode,
 )
 
@@ -147,6 +148,88 @@ def _turbo_state_to_dict(state: TurboState) -> dict[str, Any]:
         "best_value": state.best_value,
         "restart_triggered": state.restart_triggered,
     }
+
+
+# State-payload keys. New writes keep legacy TurboState fields at the top level
+# and add ``sobol_cursor`` alongside them. Once TuRBO state exists, that additive
+# shape lets an older worker continue deserializing it during a rolling deployment
+# because ``_dict_to_turbo_state`` reads only its known keys. A cursor-only warm-up
+# payload still requires draining old workers before enabling this version for an
+# explicit/high-dimensional TuRBO campaign: an old worker mistakes any non-empty
+# payload for a complete TurboState. ``turbo_state`` is retained as a read-only
+# compatibility key for the short-lived nested development format.
+_TURBO_STATE_KEY = "turbo_state"
+_SOBOL_CURSOR_KEY = "sobol_cursor"
+
+
+def _validate_sobol_cursor(value: object) -> int | None:
+    """Return a non-negative integer cursor or reject corrupted state."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        msg = "sobol_cursor must be a non-negative integer or null"
+        raise ValueError(msg)
+    return value
+
+
+def _unpack_backend_payload(
+    inner_state: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Return ``(turbo_dict, sobol_cursor)`` from an unwrapped backend payload.
+
+    New writes are additive: ``{<legacy TurboState fields>, "sobol_cursor": int}``,
+    or cursor-only when TuRBO has not started. Legacy payloads are the bare
+    TurboState dict, so a missing cursor degrades gracefully to ``None`` and the
+    engine falls back to the issue-count offset. The former nested development
+    shape is still accepted so no locally persisted state is stranded.
+    """
+    if inner_state is None:
+        return None, None
+    if _TURBO_STATE_KEY in inner_state:
+        turbo_dict = inner_state.get(_TURBO_STATE_KEY)
+        if turbo_dict is not None and not isinstance(turbo_dict, dict):
+            msg = "turbo_state must be an object or null"
+            raise TypeError(msg)
+        return turbo_dict, _validate_sobol_cursor(inner_state.get(_SOBOL_CURSOR_KEY))
+
+    has_cursor = _SOBOL_CURSOR_KEY in inner_state
+    cursor = _validate_sobol_cursor(inner_state.get(_SOBOL_CURSOR_KEY))
+    turbo_dict = {key: value for key, value in inner_state.items() if key != _SOBOL_CURSOR_KEY}
+    if turbo_dict:
+        return turbo_dict, cursor
+    # Cursor-only is a valid warm-up payload with no TuRBO state. A genuinely
+    # empty legacy payload remains ``{}`` so a TuRBO-enabled campaign rejects it
+    # as corrupted instead of silently treating it as absent state.
+    return (None if has_cursor else inner_state), cursor
+
+
+def _pack_backend_payload(
+    turbo_dict: dict[str, Any] | None,
+    sobol_cursor: int | None,
+) -> dict[str, Any] | None:
+    """Add a validated cursor to the legacy-compatible flat TuRBO payload."""
+    cursor = _validate_sobol_cursor(sobol_cursor)
+    if turbo_dict is None and sobol_cursor is None:
+        return None
+    payload = dict(turbo_dict or {})
+    if cursor is not None:
+        payload[_SOBOL_CURSOR_KEY] = cursor
+    return payload
+
+
+def _next_sobol_cursor(results: list[SuggestionResult], previous: int | None) -> int | None:
+    """Advance the persisted Sobol cursor past the positions this batch consumed.
+
+    Uses ``max(sobol_index) + 1`` over the batch's initial-design suggestions so
+    the next warm-up call resumes just after the last accepted candidate (never
+    skipping unused Sobol points, never rescanning). A model-guided batch stamps
+    no ``sobol_index`` and leaves the cursor unchanged.
+    """
+    indices = [sr.sobol_index for sr in results if sr.sobol_index is not None]
+    if not indices:
+        return previous
+    next_cursor = max(indices) + 1
+    return next_cursor if previous is None else max(previous, next_cursor)
 
 
 # BayBE roles encoding a representation BoTorch cannot reproduce: substance
@@ -643,18 +726,27 @@ class BoTorchBackend(BaseBackend):
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback: ProgressCallback | None = None,
+        initial_design_history: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
-        """Build a GP, optimize the acquisition function and return the next batch."""
+        """Build a GP, optimize the acquisition function and return the next batch.
+
+        ``initial_design_history`` (when supplied) is the authoritative set of
+        Sobol positions already consumed by this campaign's warm-up; it drives
+        the deterministic continuation so the sequence cannot rewind, while
+        ``pending_points`` stays strictly actionable and is forwarded as
+        ``X_pending``.
+        """
         # Accept either the new envelope or a legacy bare payload. State
         # restoration runs inside the typed-error boundary: a corrupted
         # persisted envelope (foreign backend, missing TurboState keys)
         # must surface as a typed BackendError, not a raw KeyError.
         try:
             inner_state = self.unwrap_state(backend_state)
+            turbo_dict, sobol_cursor = _unpack_backend_payload(inner_state)
             turbo_state = None
             use_turbo = spec.use_turbo or should_use_turbo(spec.n_parameters)
-            if use_turbo and spec.n_objectives == 1 and inner_state is not None:
-                turbo_state = _dict_to_turbo_state(inner_state)
+            if use_turbo and spec.n_objectives == 1 and turbo_dict is not None:
+                turbo_state = _dict_to_turbo_state(turbo_dict)
         except (KeyError, TypeError, ValueError) as exc:
             raise _corrupted_state_error(exc, self.name) from exc
 
@@ -683,6 +775,8 @@ class BoTorchBackend(BaseBackend):
                 iteration=iteration,
                 turbo_state=turbo_state,
                 pending_points=pending_points,
+                initial_design_history=initial_design_history,
+                sobol_cursor=sobol_cursor,
             )
         except SearchSpaceExhaustedError:
             raise
@@ -721,8 +815,9 @@ class BoTorchBackend(BaseBackend):
             for sr in results
         ]
 
-        new_payload = _turbo_state_to_dict(new_turbo) if new_turbo else None
-        new_state = self.wrap_state(new_payload)
+        new_turbo_dict = _turbo_state_to_dict(new_turbo) if new_turbo else None
+        new_cursor = _next_sobol_cursor(results, sobol_cursor)
+        new_state = self.wrap_state(_pack_backend_payload(new_turbo_dict, new_cursor))
         method_info = self.select_methods(spec, len(observations))
 
         batch_warnings: list[str] = []
@@ -779,9 +874,13 @@ class BoTorchBackend(BaseBackend):
         # persisted state must not leak raw KeyError/ValueError.
         try:
             inner = self.unwrap_state(backend_state)
-            if inner is None:
+            turbo_dict, sobol_cursor = _unpack_backend_payload(inner)
+            if turbo_dict is None:
+                # No TuRBO state to advance (e.g. still in warm-up). Return None so
+                # the caller keeps the existing persisted state — which may carry
+                # the Sobol continuation cursor — rather than wiping it.
                 return None
-            turbo_state = _dict_to_turbo_state(inner)
+            turbo_state = _dict_to_turbo_state(turbo_dict)
         except (KeyError, TypeError, ValueError) as exc:
             raise _corrupted_state_error(exc, self.name) from exc
         new_turbo = update_turbo_after_evaluation(
@@ -789,7 +888,8 @@ class BoTorchBackend(BaseBackend):
             new_observations=new_observations,
             spec=spec,
         )
-        return self.wrap_state(_turbo_state_to_dict(new_turbo))
+        # Preserve the Sobol cursor alongside the advanced TuRBO state.
+        return self.wrap_state(_pack_backend_payload(_turbo_state_to_dict(new_turbo), sobol_cursor))
 
     def select_methods(
         self,

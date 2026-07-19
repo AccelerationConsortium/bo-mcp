@@ -92,8 +92,15 @@ class _FakeBackend(BaseBackend):
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback=None,
+        initial_design_history: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
-        _ = observations, backend_state, pending_points, progress_callback
+        _ = (
+            observations,
+            backend_state,
+            pending_points,
+            progress_callback,
+            initial_design_history,
+        )
         return SuggestionBatch(
             suggestions=[
                 {
@@ -158,8 +165,15 @@ class _ProtocolOnlyBackend:
         backend_state: dict[str, Any] | None = None,
         pending_points: list[dict[str, Any]] | None = None,
         progress_callback=None,
+        initial_design_history: list[dict[str, Any]] | None = None,
     ) -> SuggestionBatch:
-        _ = observations, backend_state, pending_points, progress_callback
+        _ = (
+            observations,
+            backend_state,
+            pending_points,
+            progress_callback,
+            initial_design_history,
+        )
         return SuggestionBatch(
             suggestions=[
                 {

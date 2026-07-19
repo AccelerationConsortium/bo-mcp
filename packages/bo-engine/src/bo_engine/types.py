@@ -772,6 +772,13 @@ class SuggestionResult:
     predicted_objectives: dict[str, float] | None = None  # Posterior mean per objective
     predicted_std: dict[str, float] | None = None  # Posterior std per objective
     model_warnings: tuple[str, ...] = ()
+    # Raw Sobol sequence position this initial-design point was drawn from. ``None``
+    # for model-guided suggestions. A deterministic backend persists
+    # ``max(sobol_index) + 1`` as the continuation cursor so the next warm-up call
+    # resumes past the positions this call actually consumed — not merely past the
+    # issued-point count, which would rescan (and eventually permanently stall) when
+    # a tight constraint makes each candidate cost many raw draws.
+    sobol_index: int | None = None
 
 
 @dataclass

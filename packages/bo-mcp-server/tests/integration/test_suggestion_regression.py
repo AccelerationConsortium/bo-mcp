@@ -78,6 +78,333 @@ class TestSuggestionReproducibility:
             for param in ["x1", "x2"]:
                 assert abs(s1["parameter_values"][param] - s2["parameter_values"][param]) < 1e-10
 
+    @pytest.mark.parametrize("retired_status", ["rejected", "expired"])
+    @pytest.mark.asyncio
+    async def test_retired_initial_suggestions_give_exact_sobol_continuation(
+        self, retired_status: str
+    ):
+        """Rejected/expired initial points advance BoTorch's Sobol cursor exactly.
+
+        Explicit ``backend=botorch`` so this actually exercises the engine's Sobol
+        continuation (the default ``auto`` resolves to BayBE, which owns its own
+        warm-up state and would not test this path).
+
+        ``initial_design_size`` is set well above the batch so both campaigns stay
+        in the warm-up phase throughout. A *control* campaign with the same seed
+        draws the first six Sobol points in one batch; after the primary campaign
+        retires its first three, its next batch must equal the control's points
+        3..5 exactly — not a rewound or reseeded block, which mere disjointness
+        would not catch.
+        """
+        from bo_mcp_server.operations.update_suggestion_status import (
+            update_suggestion_status_operation,
+        )
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+
+        owner_id = await seed_owner()
+
+        def _intake(name: str, batch_size: int) -> dict:
+            return {
+                "name": name,
+                "parameters": [
+                    {"name": "x1", "type": "continuous", "bounds": [0.0, 1.0]},
+                    {"name": "x2", "type": "continuous", "bounds": [0.0, 1.0]},
+                ],
+                "objectives": [{"name": "f", "direction": "minimize"}],
+                "batch_size": batch_size,
+                "initial_design_size": 10,
+                "random_seed": 17,
+                "backend": "botorch",
+            }
+
+        # Control: six Sobol points (positions 0..5) in one warm-up batch.
+        control = await create_campaign(_intake("Sobol Control", batch_size=6), owner_id)
+        control_gen = await generate_suggestions(control["campaign_id"])
+        assert control_gen["success"] is True
+        control_points = [s["parameter_values"] for s in control_gen["suggestions"]]
+        assert len(control_points) == 6
+
+        # Primary: draw three, retire all three, draw three more.
+        primary = await create_campaign(
+            _intake(f"Retired Initial Design {retired_status}", batch_size=3), owner_id
+        )
+        campaign_id = primary["campaign_id"]
+
+        first = await generate_suggestions(campaign_id)
+        assert first["success"] is True
+        for suggestion in first["suggestions"]:
+            updated = await update_suggestion_status_operation(suggestion["id"], retired_status)
+            assert updated["success"] is True
+
+        second = await generate_suggestions(campaign_id)
+        assert second["success"] is True
+
+        first_points = {tuple(sorted(s["parameter_values"].items())) for s in first["suggestions"]}
+        second_batch = [s["parameter_values"] for s in second["suggestions"]]
+        second_points = {tuple(sorted(p.items())) for p in second_batch}
+
+        # No rewind onto the retired positions ...
+        assert first_points.isdisjoint(second_points)
+        # ... and exact continuation: positions 3..5 of the same Sobol stream.
+        assert len(second_batch) == 3
+        for produced, expected in zip(second_batch, control_points[3:6], strict=True):
+            for param in ["x1", "x2"]:
+                assert produced[param] == pytest.approx(expected[param], abs=1e-9)
+
+    @pytest.mark.asyncio
+    async def test_baybe_warmup_receives_only_actionable_pending(self, monkeypatch):
+        """BayBE's recommender must never see retired points as pending experiments.
+
+        BayBE switches to model-guided after one observation, independently of the
+        server's BoTorch-shaped warm-up threshold. Injecting rejected/expired Sobol
+        points into ``pending_points`` would let them contaminate BayBE's
+        acquisition as in-flight experiments. The Sobol issuance history travels
+        separately via ``initial_design_history`` (which
+        BayBE ignores), so only genuinely actionable points reach the backend.
+        """
+        from bo_engine_baybe.backend import BayBEBackend
+        from bo_mcp_server.operations.submit_results import submit_results_operation
+        from bo_mcp_server.operations.update_suggestion_status import (
+            update_suggestion_status_operation,
+        )
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+
+        captured: dict = {}
+        original = BayBEBackend.generate_suggestions
+
+        def spy(self, *args, **kwargs):
+            captured["pending_points"] = kwargs.get("pending_points")
+            captured["initial_design_history"] = kwargs.get("initial_design_history")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(BayBEBackend, "generate_suggestions", spy)
+
+        owner_id = await seed_owner()
+        # No initial_design_size: the server threshold is max(2, n_params+1) == 3,
+        # while BayBE's default switch_after is 1. One observation therefore lands
+        # in the mismatch window — server still in warm-up, BayBE already
+        # model-guided — which is exactly where a leaked retired point would
+        # contaminate BayBE's acquisition.
+        created = await create_campaign(
+            {
+                "name": "BayBE Actionable Pending",
+                "parameters": [
+                    {"name": "x1", "type": "continuous", "bounds": [0.0, 1.0]},
+                    {"name": "x2", "type": "continuous", "bounds": [0.0, 1.0]},
+                ],
+                "objectives": [{"name": "f", "direction": "minimize"}],
+                "batch_size": 3,
+                "random_seed": 17,
+                "backend": "baybe",
+            },
+            owner_id,
+        )
+        campaign_id = created["campaign_id"]
+
+        first = await generate_suggestions(campaign_id)
+        assert first["success"] is True
+        s_observed, s_rejected, s_actionable = first["suggestions"]
+
+        await submit_results_operation(
+            campaign_id=campaign_id,
+            results=_to_result_inputs(
+                [
+                    {
+                        "suggestion_id": s_observed["id"],
+                        "parameter_values": s_observed["parameter_values"],
+                        "objective_values": {"f": 0.5},
+                    }
+                ]
+            ),
+            submitted_by=owner_id,
+        )
+        rejected = await update_suggestion_status_operation(s_rejected["id"], "rejected")
+        assert rejected["success"] is True
+        # s_actionable stays PENDING.
+
+        captured.clear()
+        second = await generate_suggestions(campaign_id)
+        assert second["success"] is True
+
+        # Confirm BayBE really is model-guided here (GP phase, not random warm-up),
+        # otherwise the pending-experiments contamination path would not be live.
+        assert second["suggestions"][0]["provenance"]["generation_method"] == "bo"
+
+        pending_seen = {tuple(sorted(p.items())) for p in (captured["pending_points"] or [])}
+        history_seen = {
+            tuple(sorted(p.items())) for p in (captured["initial_design_history"] or [])
+        }
+        actionable = tuple(sorted(s_actionable["parameter_values"].items()))
+        retired = tuple(sorted(s_rejected["parameter_values"].items()))
+
+        # The retired point must NOT reach BayBE's acquisition as a pending
+        # experiment, while the genuinely actionable in-flight point must.
+        assert retired not in pending_seen
+        assert actionable in pending_seen
+        # The retired point is still tracked — it rides the separate
+        # initial_design_history channel, which BayBE ignores.
+        assert retired in history_seen
+
+    @pytest.mark.asyncio
+    async def test_imported_freestanding_results_are_not_reissued(self):
+        """Several imported results before first generation are skipped, not re-drawn.
+
+        Regression for the fixed-window false-exhaustion bug: five freestanding
+        results equal to early Sobol positions exceed the base draw window. The
+        engine must advance past them and return the next fresh point rather than
+        rejecting the batch with E107. Explicit BoTorch + a high
+        ``initial_design_size`` keeps the campaign in warm-up past the imports.
+        """
+        from bo_mcp_server.operations.submit_results import submit_results_operation
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+
+        owner_id = await seed_owner()
+
+        def _intake(name: str, batch_size: int) -> dict:
+            return {
+                "name": name,
+                "parameters": [
+                    {"name": "x1", "type": "continuous", "bounds": [0.0, 1.0]},
+                    {"name": "x2", "type": "continuous", "bounds": [0.0, 1.0]},
+                ],
+                "objectives": [{"name": "f", "direction": "minimize"}],
+                "batch_size": batch_size,
+                "initial_design_size": 10,
+                "random_seed": 17,
+                "backend": "botorch",
+            }
+
+        # Control campaign supplies the first six Sobol positions (0..5).
+        control = await create_campaign(_intake("Freestanding Control", 6), owner_id)
+        control_gen = await generate_suggestions(control["campaign_id"])
+        assert control_gen["success"] is True
+        control_points = [s["parameter_values"] for s in control_gen["suggestions"]]
+        assert len(control_points) == 6
+
+        primary = await create_campaign(_intake("Freestanding Import", 1), owner_id)
+        campaign_id = primary["campaign_id"]
+
+        # Import positions 0..4 as freestanding results (no originating suggestion).
+        imported = await submit_results_operation(
+            campaign_id=campaign_id,
+            results=_to_result_inputs(
+                [
+                    {"parameter_values": point, "objective_values": {"f": 0.1}}
+                    for point in control_points[:5]
+                ]
+            ),
+            submitted_by=owner_id,
+        )
+        assert imported["success"] is True
+
+        gen = await generate_suggestions(campaign_id)
+        assert gen["success"] is True
+        got = gen["suggestions"][0]["parameter_values"]
+
+        excluded = {tuple(sorted(p.items())) for p in control_points[:5]}
+        assert tuple(sorted(got.items())) not in excluded
+        # Advanced to the first fresh position (position 5 of the shared stream).
+        for param in ["x1", "x2"]:
+            assert got[param] == pytest.approx(control_points[5][param], abs=1e-9)
+
+    @pytest.mark.asyncio
+    async def test_constraint_projection_boundary_exclusion_still_generates(self):
+        """A tight constraint whose projected boundary is excluded still fills the batch.
+
+        ``sum_less_than(x <= 0.01)`` projects almost every Sobol draw onto
+        ``x = 0.01``; once that boundary atom is an observation (excluded), naive
+        fixed-window filtering would fail with E107. The engine must scan past the
+        collapsed prefix and return a full, feasible batch. Explicit BoTorch.
+        """
+        from bo_mcp_server.operations.submit_results import submit_results_operation
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+
+        owner_id = await seed_owner()
+        created = await create_campaign(
+            {
+                "name": "Constraint Projection",
+                "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+                "objectives": [{"name": "y", "direction": "minimize"}],
+                "constraints": [
+                    {"type": "sum_less_than", "parameters": ["x"], "value": 0.01},
+                ],
+                "batch_size": 2,
+                "initial_design_size": 10,
+                "random_seed": 17,
+                "backend": "botorch",
+            },
+            owner_id,
+        )
+        campaign_id = created["campaign_id"]
+
+        # Import the projected boundary atom as a freestanding result so it is
+        # excluded from subsequent generation.
+        imported = await submit_results_operation(
+            campaign_id=campaign_id,
+            results=_to_result_inputs(
+                [{"parameter_values": {"x": 0.01}, "objective_values": {"y": 0.5}}]
+            ),
+            submitted_by=owner_id,
+        )
+        assert imported["success"] is True
+
+        gen = await generate_suggestions(campaign_id)
+
+        assert gen["success"] is True  # not E107
+        assert len(gen["suggestions"]) == 2
+        for suggestion in gen["suggestions"]:
+            assert suggestion["parameter_values"]["x"] < 0.01
+
+    @pytest.mark.asyncio
+    async def test_tight_constraint_repeated_rejection_does_not_stall(self):
+        """Repeated generate+reject under a tight constraint must never return E107.
+
+        ``x <= 0.0001`` makes each feasible candidate cost many raw Sobol draws.
+        The persisted raw cursor rides in the campaign's ``backend_state``, which
+        the server round-trips between calls, so nine reject cycles all succeed —
+        whereas an issue-count offset would rescan the exhausted window and fail
+        around the ninth call. Explicit BoTorch.
+        """
+        from bo_mcp_server.operations.update_suggestion_status import (
+            update_suggestion_status_operation,
+        )
+        from bo_mcp_server.tools.create_campaign import create_campaign
+        from bo_mcp_server.tools.generate_suggestions import generate_suggestions
+
+        owner_id = await seed_owner()
+        created = await create_campaign(
+            {
+                "name": "Tight Constraint Rejection Loop",
+                "parameters": [{"name": "x", "type": "continuous", "bounds": [0.0, 1.0]}],
+                "objectives": [{"name": "y", "direction": "minimize"}],
+                "constraints": [{"type": "sum_less_than", "parameters": ["x"], "value": 0.0001}],
+                "batch_size": 1,
+                "initial_design_size": 50,
+                "random_seed": 17,
+                "backend": "botorch",
+            },
+            owner_id,
+        )
+        campaign_id = created["campaign_id"]
+
+        xs: list[float] = []
+        for _ in range(9):
+            gen = await generate_suggestions(campaign_id)
+            assert gen["success"] is True  # never E107
+            suggestion = gen["suggestions"][0]
+            xs.append(suggestion["parameter_values"]["x"])
+            rejected = await update_suggestion_status_operation(suggestion["id"], "rejected")
+            assert rejected["success"] is True
+
+        assert len(xs) == 9
+        for i in range(len(xs)):
+            for j in range(i + 1, len(xs)):
+                assert abs(xs[i] - xs[j]) > 1e-6
+
     @pytest.mark.asyncio
     async def test_suggestion_provenance_includes_seed(self):
         """Suggestion provenance includes random_seed for reproducibility.

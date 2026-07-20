@@ -103,6 +103,32 @@ def _simple_spec_dict() -> dict:
     }
 
 
+def _direct_arylation_shaped_spec_dict() -> dict:
+    return {
+        "name": "Direct arylation shaped",
+        "parameters": [
+            {
+                "name": "base",
+                "type": "categorical",
+                "categories": [f"base_{index}" for index in range(4)],
+            },
+            {
+                "name": "ligand",
+                "type": "categorical",
+                "categories": [f"ligand_{index}" for index in range(12)],
+            },
+            {
+                "name": "solvent",
+                "type": "categorical",
+                "categories": [f"solvent_{index}" for index in range(4)],
+            },
+            {"name": "concentration", "type": "discrete", "values": [0.1, 0.2, 0.3]},
+            {"name": "temperature", "type": "discrete", "values": [80.0, 100.0, 120.0]},
+        ],
+        "objectives": [{"name": "yield", "direction": "maximize"}],
+    }
+
+
 @pytest.mark.usefixtures("patched_backend_cache")
 def test_auto_resolution_consults_validate_capabilities(caplog):
     """When every candidate reports unsupported, auto falls back to the env default.
@@ -224,6 +250,15 @@ def test_auto_routes_substance_to_baybe(monkeypatch):
         "objectives": [{"name": "y", "direction": "minimize"}],
     }
     resolved = resolve_backend_name("auto", spec_dict)
+    assert resolved == "baybe"
+
+
+def test_auto_routes_large_mixed_space_to_baybe(monkeypatch):
+    """BoTorch rejects the 192 categorical combinations before selection."""
+    monkeypatch.setenv("BO_BACKEND", "botorch")
+
+    resolved = resolve_backend_name("auto", _direct_arylation_shaped_spec_dict())
+
     assert resolved == "baybe"
 
 

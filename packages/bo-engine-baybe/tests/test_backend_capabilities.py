@@ -47,6 +47,41 @@ def _continuous_x() -> list[ParameterSpec]:
     return [ParameterSpec(name="x", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0))]
 
 
+def test_direct_arylation_shaped_space_is_compatible() -> None:
+    """BayBE accepts the 192-category, 1,728-point benchmark shape."""
+    spec = _make_spec(
+        parameters=[
+            ParameterSpec(
+                name="base",
+                type=ParameterType.CATEGORICAL,
+                categories=[f"base_{index}" for index in range(4)],
+            ),
+            ParameterSpec(
+                name="ligand",
+                type=ParameterType.CATEGORICAL,
+                categories=[f"ligand_{index}" for index in range(12)],
+            ),
+            ParameterSpec(
+                name="solvent",
+                type=ParameterType.CATEGORICAL,
+                categories=[f"solvent_{index}" for index in range(4)],
+            ),
+            ParameterSpec(
+                name="concentration",
+                type=ParameterType.DISCRETE,
+                values=[0.1, 0.2, 0.3],
+            ),
+            ParameterSpec(
+                name="temperature",
+                type=ParameterType.DISCRETE,
+                values=[80.0, 100.0, 120.0],
+            ),
+        ],
+    )
+
+    assert BayBEBackend().validate_capabilities(spec).is_compatible
+
+
 class TestConstraintCapability:
     def test_continuous_only_sum_is_supported(self) -> None:
         spec = _make_spec(

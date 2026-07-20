@@ -40,6 +40,7 @@ from bo_engine.constants import (
     MIN_DATA_ABSOLUTE,
     MIN_DATA_PARAM_MULTIPLIER,
     MIN_OBSERVATIONS_FOR_LOO_CV,
+    MIXED_CATEGORICAL_COMBO_THRESHOLD,
     OUTLIER_DETECTION_MIN_OBSERVATIONS,
 )
 from bo_engine.diagnostics import (
@@ -72,7 +73,13 @@ from bo_engine.suggestions import (
     update_turbo_after_evaluation,
 )
 from bo_engine.suggestions_training import resolve_model_options
-from bo_engine.transforms import encode_categorical, get_bounds_tensor
+from bo_engine.transforms import (
+    SearchSpaceType,
+    classify_search_space,
+    count_categorical_combinations,
+    encode_categorical,
+    get_bounds_tensor,
+)
 from bo_engine.turbo import TurboState, should_use_turbo
 from bo_engine.types import (
     SINGLE_OBJECTIVE_ONLY_ACQUISITION,
@@ -709,6 +716,21 @@ class BoTorchBackend(BaseBackend):
         option_reports.extend(_constraint_surface_reports(spec))
         option_reports.extend(_log_transform_direction_reports(spec))
         option_reports.extend(_substance_parameter_reports(spec))
+        if classify_search_space(spec) == SearchSpaceType.MIXED:
+            categorical_combinations = count_categorical_combinations(spec)
+            if categorical_combinations > MIXED_CATEGORICAL_COMBO_THRESHOLD:
+                option_reports.append(
+                    CapabilityReport(
+                        key="parameters",
+                        status=CapabilityStatus.UNSUPPORTED,
+                        reason=(
+                            "BoTorch mixed-space acquisition supports at most "
+                            f"{MIXED_CATEGORICAL_COMBO_THRESHOLD} categorical "
+                            f"combinations; this search space has "
+                            f"{categorical_combinations}. Select another backend."
+                        ),
+                    )
+                )
         return BackendValidationResult(
             backend=self.name,
             feature_reports=tuple(feature_reports),

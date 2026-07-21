@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bo_mcp_server.idempotency import apply_idempotency
 from bo_mcp_server.operations.generate_suggestions import (
+    ensure_canonical_suggestion_keys,
     generate_suggestions_operation,
 )
 from bo_mcp_server.operations.idempotency_wrapper import (
@@ -40,6 +41,11 @@ async def generate_suggestions(
     Workflow: Call after bo_create_campaign (first batch) or after
     bo_submit_results (subsequent batches). Check results with
     bo_get_diagnostics afterward.
+
+    Each suggestion carries its identity under ``suggestion_id`` — the
+    same key ``bo_list_suggestions`` emits and ``bo_submit_results``
+    consumes, so copy its value into the ``suggestion_id`` field when
+    submitting results. ``id`` holds the same value and is deprecated.
 
     Args:
         campaign_id: UUID of the campaign.
@@ -106,13 +112,18 @@ async def generate_suggestions(
             )
 
         try:
+            # Normalize after the idempotency layer: cache entries
+            # persisted before ``suggestion_id`` existed replay with
+            # ``id`` only for the cache lifetime.
             return cast(
                 GenerateSuggestionsResponse,
-                await apply_idempotency(
-                    tool_name="bo_generate_suggestions",
-                    idempotency_key=idempotency_key,
-                    request_payload=request_payload,
-                    executor=run,
+                ensure_canonical_suggestion_keys(
+                    await apply_idempotency(
+                        tool_name="bo_generate_suggestions",
+                        idempotency_key=idempotency_key,
+                        request_payload=request_payload,
+                        executor=run,
+                    )
                 ),
             )
         finally:

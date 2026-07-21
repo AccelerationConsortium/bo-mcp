@@ -523,7 +523,7 @@ def format_suggestions_response(
             SuggestionsMinimalResponse(
                 success=full_response.get("success"),
                 iteration=full_response.get("iteration"),
-                suggestion_ids=[s.get("id") for s in suggestions],
+                suggestion_ids=[s.get("suggestion_id") or s.get("id") for s in suggestions],
                 method=method_selection.get("acquisition_function"),
                 errors=full_response.get("errors", []),
             )

@@ -105,6 +105,7 @@ from bo_mcp_server.operations.compare_campaigns import compare_campaigns_operati
 from bo_mcp_server.operations.create_campaign import create_campaign_operation
 from bo_mcp_server.operations.export_campaign import export_campaign_operation
 from bo_mcp_server.operations.generate_suggestions import (
+    ensure_canonical_suggestion_keys,
     generate_suggestions_operation,
 )
 from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
@@ -217,6 +218,7 @@ __all__ = [
     "compare_campaigns_operation",
     "create_campaign_operation",
     "discover_transfer_candidates_operation",
+    "ensure_canonical_suggestion_keys",
     "ensure_dev_user",
     "ensure_mcp_startup_user",
     "ensure_owned_campaigns",

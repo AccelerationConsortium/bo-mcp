@@ -34,9 +34,22 @@ class SuggestionProvenance(BaseModel):
 
 
 class SuggestionResponse(BaseModel):
-    """Suggestion response schema."""
+    """Suggestion response schema.
 
-    id: str
+    ``suggestion_id`` is the canonical identity key: it is the same key
+    the suggestion-query endpoint emits and the one result submission
+    consumes, so its value can be copied into a
+    ``POST /api/v1/results/{campaign_id}`` request without renaming.
+    (Only the key copies over — the result request schema rejects the
+    other suggestion fields.) ``id`` carries the same value and is
+    deprecated; it will be removed in the next major API version.
+    """
+
+    id: str = Field(
+        deprecated=True,
+        description="Deprecated alias of suggestion_id; will be removed.",
+    )
+    suggestion_id: str
     campaign_id: str
     parameter_values: dict[str, Any]
     status: str
@@ -97,14 +110,62 @@ class SuggestionQueryRequest(BaseModel):
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD
 
 
+class SuggestionSummary(BaseModel):
+    """One ``suggestions[]`` entry from the suggestion query endpoint.
+
+    Superset of the minimal / standard / detailed projections built by
+    the shared list-suggestions operation. ``suggestion_id`` and
+    ``status`` are required — they are present at every verbosity —
+    while the tier-dependent fields are optional.
+
+    ``extra="allow"`` keeps the historical passthrough behaviour: keys
+    the operation adds later still reach clients instead of being
+    silently dropped, while the declared fields pin the identity key so
+    a rename breaks loudly in tests.
+
+    The query route serializes with ``response_model_exclude_unset``,
+    so each verbosity keeps its exact historical wire shape instead of
+    gaining ``null`` entries for every declared-but-absent optional
+    field. A custom set-fields-only serializer is not an option here:
+    a ``model_serializer`` replaces the model's serialization JSON
+    schema with a bare object, erasing the ``required`` markers from
+    OpenAPI.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    suggestion_id: str
+    status: str
+    parameter_values: dict[str, Any] | None = None
+    iteration: int | None = None
+    generation_method: str | None = None
+    created_at: str | None = None
+    batch_index: int | None = None
+    acquisition_function: str | None = None
+    acquisition_value: float | None = None
+    model_uncertainty: float | None = None
+    model_type: str | None = None
+    confidence_level: str | None = None
+    predicted_objectives: dict[str, Any] | None = None
+    predicted_std: dict[str, Any] | None = None
+    updated_at: str | None = None
+
+
 class SuggestionQueryResponse(ResponseEnvelope):
-    """Suggestion query response with pagination envelope."""
+    """Suggestion query response with pagination envelope.
+
+    Serialized with ``response_model_exclude_unset``, so the route
+    must set every field it wants on the wire — including
+    ``schema_version``, which would otherwise be dropped as an unset
+    default.
+    """
 
     success: bool
-    suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    suggestions: list[SuggestionSummary] = Field(default_factory=list)
     total_count: int = 0
     limit: int | None = None
     offset: int = 0
+    next_cursor: str | None = None
     errors: list[str] = Field(default_factory=list)
 
 

@@ -36,19 +36,14 @@ class SuggestionProvenance(BaseModel):
 class SuggestionResponse(BaseModel):
     """Suggestion response schema.
 
-    ``suggestion_id`` is the canonical identity key: it is the same key
-    the suggestion-query endpoint emits and the one result submission
+    ``suggestion_id`` is the identity key: it is the same key the
+    suggestion-query endpoint emits and the one result submission
     consumes, so its value can be copied into a
     ``POST /api/v1/results/{campaign_id}`` request without renaming.
     (Only the key copies over — the result request schema rejects the
-    other suggestion fields.) ``id`` carries the same value and is
-    deprecated; it will be removed in the next major API version.
+    other suggestion fields.)
     """
 
-    id: str = Field(
-        deprecated=True,
-        description="Deprecated alias of suggestion_id; will be removed.",
-    )
     suggestion_id: str
     campaign_id: str
     parameter_values: dict[str, Any]

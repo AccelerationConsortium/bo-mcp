@@ -52,17 +52,17 @@ class TestSubmitResultsFieldErrors:
             {
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
             },
             {
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
             },
             {
                 "parameter_values": suggestions[2]["parameter_values"],
                 "objective_values": {"wrong_name": 0.3},
-                "suggestion_id": suggestions[2]["id"],
+                "suggestion_id": suggestions[2]["suggestion_id"],
             },
         ]
         result = await submit_results_operation(
@@ -90,13 +90,13 @@ class TestSubmitResultsFieldErrors:
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
                 "measurement_uncertainty": {"y": 0.05},
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
             },
             {
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
                 "measurement_uncertainty": {"y": -0.1},
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
             },
         ]
         result = await submit_results_operation(
@@ -130,7 +130,7 @@ class TestSubmitResultsFieldErrors:
             {
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"wrong": 0.0},
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
             },
         ]
         result = await submit_results_operation(

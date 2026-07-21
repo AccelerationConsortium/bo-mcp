@@ -132,7 +132,7 @@ async def main():
                     {
                         "parameter_values": params,
                         "objective_values": objectives,
-                        "suggestion_id": s["id"],
+                        "suggestion_id": s["suggestion_id"],
                     }
                 )
                 print(f"  Result: yield={objectives['yield']:.1f}%, cost=${objectives['cost']:.0f}")

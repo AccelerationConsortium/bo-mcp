@@ -1,22 +1,16 @@
 """Contract tests for the suggestion identity key across shared operations.
 
-``suggestion_id`` is the canonical identity key for a suggestion: the
+``suggestion_id`` is the only identity key for a suggestion: the
 generate and list surfaces both emit it and result submission consumes
 it, so its value can be copied into a submission without renaming.
-``id`` is a deprecated alias that the generate surface keeps emitting
-for existing clients; removing it is a deliberate contract change that
-must fail these tests first.
+The retired ``id`` alias must not reappear on any surface —
+reintroducing it is a deliberate contract change that must fail these
+tests first.
 """
-
-from uuid import uuid4
 
 import pytest
 
 from bo_mcp_server.domain import ResultSubmissionInput
-from bo_mcp_server.idempotency import apply_idempotency
-from bo_mcp_server.operations.idempotency_wrapper import (
-    canonical_generate_suggestions_payload,
-)
 from bo_mcp_server.operations.list_suggestions import list_suggestions_operation
 from bo_mcp_server.operations.submit_results import submit_results_operation
 from bo_mcp_server.tools.create_campaign import create_campaign
@@ -42,7 +36,7 @@ async def _create_campaign(owner_id: str, name: str) -> str:
 @pytest.mark.usefixtures("setup_database")
 class TestSuggestionIdentityKey:
     @pytest.mark.asyncio
-    async def test_generate_emits_canonical_key_and_deprecated_alias(self):
+    async def test_generate_emits_only_the_canonical_key(self):
         owner_id = await seed_owner()
         campaign_id = await _create_campaign(owner_id, "Identity Key Generate")
 
@@ -51,7 +45,8 @@ class TestSuggestionIdentityKey:
         assert generated["success"] is True
         assert generated["suggestions"]
         for suggestion in generated["suggestions"]:
-            assert suggestion["suggestion_id"] == suggestion["id"]
+            assert suggestion["suggestion_id"]
+            assert "id" not in suggestion
 
     @pytest.mark.asyncio
     async def test_generate_and_list_agree_on_identity(self):
@@ -199,75 +194,18 @@ class TestSuggestionIdentityKey:
         assert submitted["success"] is True, submitted["errors"]
         assert not any(UNLINKED_WARNING_MARKER in w for w in submitted["warnings"])
 
-    @pytest.mark.asyncio
-    async def test_legacy_idempotency_replay_gains_suggestion_id(self):
-        """Cache entries persisted before ``suggestion_id`` are normalized.
-
-        The idempotency cache is DB-backed and outlives a deployment,
-        so for the cache lifetime a retry can replay a response whose
-        suggestions only carry ``id``. The MCP tool must backfill
-        ``suggestion_id`` on the replay.
-        """
-        campaign_id = str(uuid4())
-        idempotency_key = str(uuid4())
-        legacy_response = {
-            "success": True,
-            "suggestions": [
-                {
-                    "id": str(uuid4()),
-                    "parameter_values": {"x": 0.5},
-                    "provenance": {
-                        "iteration": 1,
-                        "batch_index": 0,
-                        "generation_method": "sobol",
-                    },
-                    "created_at": "2026-01-01T00:00:00+00:00",
-                }
-            ],
-            "iteration": 1,
-            "errors": [],
-            "warnings": [],
-            "method_selection": {},
-        }
-
-        async def seed_legacy(_session):
-            return legacy_response
-
-        seeded = await apply_idempotency(
-            tool_name="bo_generate_suggestions",
-            idempotency_key=idempotency_key,
-            request_payload=canonical_generate_suggestions_payload(
-                campaign_id=campaign_id,
-                batch_size=None,
-                verbosity="standard",
-            ),
-            executor=seed_legacy,
-        )
-        assert seeded["success"] is True
-
-        replayed = await generate_suggestions(campaign_id, idempotency_key=idempotency_key)
-
-        assert replayed["idempotency_replay"] is True
-        assert replayed["suggestions"]
-        for suggestion in replayed["suggestions"]:
-            assert suggestion["suggestion_id"] == suggestion["id"]
-
 
 class TestGenerateSuggestionsOutputSchema:
-    def test_schema_declares_canonical_identity_key(self):
+    def test_schema_declares_only_the_canonical_identity_key(self):
         """Schema-driven MCP clients must be able to discover the key.
 
         The generated-suggestion item must declare ``suggestion_id``
-        as required and keep the deprecated ``id`` alias visible.
-        ``id`` is required too: the compatibility contract promises it
-        on every generated suggestion until its scheduled removal, so
-        dropping it early must fail here first.
+        as required, and the retired ``id`` alias must not reappear in
+        the schema.
         """
         schema = GenerateSuggestionsResponse.model_json_schema()
         item_schema = schema["$defs"]["GeneratedSuggestionItem"]
 
         assert "suggestion_id" in item_schema["properties"]
-        assert "id" in item_schema["properties"]
         assert "suggestion_id" in item_schema["required"]
-        assert "id" in item_schema["required"]
-        assert item_schema["properties"]["id"].get("deprecated") is True
+        assert "id" not in item_schema["properties"]

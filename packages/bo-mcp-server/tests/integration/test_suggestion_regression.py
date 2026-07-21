@@ -134,7 +134,9 @@ class TestSuggestionReproducibility:
         first = await generate_suggestions(campaign_id)
         assert first["success"] is True
         for suggestion in first["suggestions"]:
-            updated = await update_suggestion_status_operation(suggestion["id"], retired_status)
+            updated = await update_suggestion_status_operation(
+                suggestion["suggestion_id"], retired_status
+            )
             assert updated["success"] is True
 
         second = await generate_suggestions(campaign_id)
@@ -212,7 +214,7 @@ class TestSuggestionReproducibility:
             results=_to_result_inputs(
                 [
                     {
-                        "suggestion_id": s_observed["id"],
+                        "suggestion_id": s_observed["suggestion_id"],
                         "parameter_values": s_observed["parameter_values"],
                         "objective_values": {"f": 0.5},
                     }
@@ -220,7 +222,7 @@ class TestSuggestionReproducibility:
             ),
             submitted_by=owner_id,
         )
-        rejected = await update_suggestion_status_operation(s_rejected["id"], "rejected")
+        rejected = await update_suggestion_status_operation(s_rejected["suggestion_id"], "rejected")
         assert rejected["success"] is True
         # s_actionable stays PENDING.
 
@@ -397,7 +399,9 @@ class TestSuggestionReproducibility:
             assert gen["success"] is True  # never E107
             suggestion = gen["suggestions"][0]
             xs.append(suggestion["parameter_values"]["x"])
-            rejected = await update_suggestion_status_operation(suggestion["id"], "rejected")
+            rejected = await update_suggestion_status_operation(
+                suggestion["suggestion_id"], "rejected"
+            )
             assert rejected["success"] is True
 
         assert len(xs) == 9
@@ -579,7 +583,7 @@ class TestInitialDesignNoDuplicates:
         # Feed the results back so call 2 enters the partial-data fallback.
         results = [
             {
-                "suggestion_id": s["id"],
+                "suggestion_id": s["suggestion_id"],
                 "parameter_values": s["parameter_values"],
                 "objective_values": {"score": float(idx + 1)},
             }
@@ -629,7 +633,7 @@ class TestInitialDesignNoDuplicates:
             assert gen["success"], gen
             results = [
                 {
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                     "parameter_values": s["parameter_values"],
                     "objective_values": {"score": float(iteration_idx + 1)},
                 }

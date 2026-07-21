@@ -36,7 +36,6 @@ from bo_mcp_server.client import (
     NotFoundError,
     SuggestionStatus,
     canonical_generate_suggestions_payload,
-    ensure_canonical_suggestion_keys,
     generate_suggestions_operation,
     get_suggestion_explanation_operation,
     http_status_for_error,
@@ -82,7 +81,7 @@ async def generate_campaign_suggestions(
     Each suggestion's identity is ``suggestion_id`` — the same key the
     query endpoint emits and result submission consumes, so its value
     can be copied into a ``POST /api/v1/results/{campaign_id}`` request
-    without renaming. ``id`` holds the same value and is deprecated.
+    without renaming.
 
     Returns ``201 Created`` with a ``Location`` header pointing at
     :func:`list_campaign_suggestions_route` for the freshly-created
@@ -143,12 +142,8 @@ async def generate_campaign_suggestions(
             idempotency_replay=idempotency_replay,
         )
 
-    # Idempotency replays may serve batches cached before
-    # "suggestion_id" was added; the shared normalizer backfills it.
-    ensure_canonical_suggestion_keys(result)
     suggestions = [
         SuggestionResponse(
-            id=s["id"],
             suggestion_id=s["suggestion_id"],
             campaign_id=campaign_id,
             parameter_values=s["parameter_values"],
@@ -288,7 +283,6 @@ async def list_campaign_suggestions_route(
 
     return [
         SuggestionResponse(
-            id=str(s.id),
             suggestion_id=str(s.id),
             campaign_id=str(s.campaign_id),
             parameter_values=s.parameter_values,

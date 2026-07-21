@@ -59,7 +59,7 @@ async def test_acquisition_optimization_overrides_round_trip() -> None:
     assert init_gen["success"] is True
     submissions = [
         {
-            "suggestion_id": s["id"],
+            "suggestion_id": s["suggestion_id"],
             "parameter_values": s["parameter_values"],
             "objective_values": {"y": float(s["parameter_values"]["x"])},
         }
@@ -128,7 +128,7 @@ async def test_intake_without_override_uses_dimension_adaptive_defaults() -> Non
     init_gen = await generate_suggestions(campaign_id, batch_size=2)
     submissions = [
         {
-            "suggestion_id": s["id"],
+            "suggestion_id": s["suggestion_id"],
             "parameter_values": s["parameter_values"],
             "objective_values": {"y": float(s["parameter_values"]["x"])},
         }

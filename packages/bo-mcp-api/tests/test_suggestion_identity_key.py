@@ -1,24 +1,17 @@
 """REST contract tests for the suggestion identity key.
 
-``suggestion_id`` is the canonical identity key: the generate endpoint,
-the list endpoint, and the query endpoint all emit it, and result
+``suggestion_id`` is the only identity key: the generate endpoint, the
+list endpoint, and the query endpoint all emit it, and result
 submission consumes it, so its value read from any of them can be
 copied into a ``POST /api/results/{campaign_id}`` request without
-renaming. ``id`` carries the same value on the typed endpoints and is
-deprecated.
+renaming. The retired ``id`` alias must not reappear on any surface.
 """
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 
-from bo_mcp_server.client import (
-    canonical_generate_suggestions_payload,
-    list_suggestions_operation,
-)
-from bo_mcp_server.idempotency import apply_idempotency
+from bo_mcp_server.client import list_suggestions_operation
 from bo_mcp_server.tools.create_campaign import create_campaign
 
 UNLINKED_WARNING_MARKER = "without suggestion_id"
@@ -38,7 +31,7 @@ async def _create_campaign_for_owner(owner_id: str, name: str) -> str:
 
 class TestSuggestionIdentityKeyRest:
     @pytest.mark.asyncio
-    async def test_generate_emits_canonical_key_and_deprecated_alias(
+    async def test_generate_emits_only_the_canonical_key(
         self, api_client, auth_headers, persisted_user
     ) -> None:
         owner_id = str(persisted_user.id)
@@ -52,7 +45,8 @@ class TestSuggestionIdentityKeyRest:
         suggestions = response.json()["suggestions"]
         assert suggestions
         for suggestion in suggestions:
-            assert suggestion["suggestion_id"] == suggestion["id"]
+            assert suggestion["suggestion_id"]
+            assert "id" not in suggestion
 
     @pytest.mark.asyncio
     async def test_list_and_query_agree_with_generate(
@@ -190,63 +184,4 @@ class TestSuggestionIdentityKeyRest:
 
         response_model = components["SuggestionResponse"]
         assert "suggestion_id" in response_model["required"]
-        assert response_model["properties"]["id"].get("deprecated") is True
-
-    @pytest.mark.asyncio
-    async def test_legacy_idempotency_replay_gains_suggestion_id(
-        self, api_client, auth_headers, persisted_user
-    ) -> None:
-        """Pre-migration cache entries must replay with both keys.
-
-        The idempotency cache is DB-backed and outlives a deployment;
-        a retry within the cache lifetime replays a response whose
-        suggestions only carry ``id``. The route must backfill
-        ``suggestion_id`` before responding.
-        """
-        owner_id = str(persisted_user.id)
-        campaign_id = await _create_campaign_for_owner(owner_id, "Identity Key REST Replay")
-        idempotency_key = str(uuid4())
-        legacy_response = {
-            "success": True,
-            "suggestions": [
-                {
-                    "id": str(uuid4()),
-                    "parameter_values": {"x": 0.5},
-                    "provenance": {
-                        "iteration": 1,
-                        "batch_index": 0,
-                        "generation_method": "sobol",
-                    },
-                    "created_at": "2026-01-01T00:00:00+00:00",
-                }
-            ],
-            "iteration": 1,
-            "errors": [],
-            "warnings": [],
-            "method_selection": {},
-        }
-
-        async def seed_legacy(_session):
-            return legacy_response
-
-        await apply_idempotency(
-            tool_name="bo_generate_suggestions",
-            idempotency_key=idempotency_key,
-            request_payload=canonical_generate_suggestions_payload(
-                campaign_id=campaign_id,
-                batch_size=None,
-            ),
-            executor=seed_legacy,
-        )
-
-        replayed = await api_client.post(
-            f"/api/suggestions/{campaign_id}/generate",
-            headers={**auth_headers, "Idempotency-Key": idempotency_key},
-        )
-
-        assert replayed.status_code == 201, replayed.text
-        body = replayed.json()
-        assert body["idempotency_replay"] is True
-        assert body["suggestions"]
-        for suggestion in body["suggestions"]:
-            assert suggestion["suggestion_id"] == suggestion["id"]
+        assert "id" not in response_model["properties"]

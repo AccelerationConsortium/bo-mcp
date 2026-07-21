@@ -129,7 +129,7 @@ class TestAPIEndpoints:
         data = response.json()
         assert data["success"] is True, f"Generation failed: {data.get('errors')}"
         assert len(data["suggestions"]) > 0
-        TestAPIEndpoints.suggestion_id = data["suggestions"][0]["id"]
+        TestAPIEndpoints.suggestion_id = data["suggestions"][0]["suggestion_id"]
         print(f"✓ Generate suggestions passed (count={len(data['suggestions'])})")
 
     def test_07_get_suggestions(self):

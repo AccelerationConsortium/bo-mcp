@@ -97,7 +97,7 @@ class TestFragmentLifecycleE2E:
                 observed.append((donor, acceptor, gap_e_v))
                 results.append(
                     {
-                        "suggestion_id": suggestion["id"],
+                        "suggestion_id": suggestion["suggestion_id"],
                         "parameter_values": params,
                         "objective_values": {"gap_eV": gap_e_v},
                     }

@@ -374,27 +374,17 @@ class GetDiagnosticsResponse(_PermissiveResponse):
 class GeneratedSuggestionItem(_PermissiveResponse):
     """One ``suggestions[]`` entry from ``bo_generate_suggestions``.
 
-    ``suggestion_id`` is the canonical identity key — the same key
+    ``suggestion_id`` is the identity key — the same key
     ``bo_list_suggestions`` emits and ``bo_submit_results`` consumes,
     so its value can be copied into a result submission without
-    renaming. It is required: replays of cache entries that predate
-    the key are normalized before they reach this model.
-
-    ``id`` is also required: the compatibility contract promises the
-    deprecated alias on every generated suggestion until its removal
-    in the next major version, so dropping it early must fail loudly
-    here rather than surprise clients.
+    renaming.
     """
 
     suggestion_id: str = Field(
         description=(
-            "Canonical suggestion identity; copy its value into the "
+            "Suggestion identity; copy its value into the "
             "suggestion_id field when submitting results."
         ),
-    )
-    id: str = Field(
-        deprecated=True,
-        description="Deprecated alias of suggestion_id; will be removed.",
     )
     parameter_values: dict[str, Any] | None = None
     provenance: dict[str, Any] | None = None

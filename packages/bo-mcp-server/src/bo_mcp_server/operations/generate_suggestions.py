@@ -275,24 +275,6 @@ def classify_pending_suggestions(
     return valid, stale
 
 
-def ensure_canonical_suggestion_keys(response: dict[str, Any]) -> dict[str, Any]:
-    """Backfill ``suggestion_id`` on suggestion dicts that only carry ``id``.
-
-    Idempotency-cache entries persisted before ``suggestion_id`` became
-    the canonical key replay verbatim for the cache lifetime, so every
-    transport must normalize replayed responses before returning them.
-    Mutates ``response`` in place and returns it for call-site chaining.
-    """
-    for suggestion in response.get("suggestions", []):
-        if (
-            isinstance(suggestion, dict)
-            and "suggestion_id" not in suggestion
-            and "id" in suggestion
-        ):
-            suggestion["suggestion_id"] = suggestion["id"]
-    return response
-
-
 def _build_success_response(
     suggestions: list[Suggestion],
     iteration: int,
@@ -302,12 +284,8 @@ def _build_success_response(
     diversity_info: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Build the full success response dict."""
-    # "suggestion_id" is the canonical identity key (matches the key
-    # result submission consumes); "id" is a deprecated alias kept so
-    # existing clients keep working.
     suggestion_dicts = [
         {
-            "id": str(s.id),
             "suggestion_id": str(s.id),
             "parameter_values": s.parameter_values,
             "provenance": s.provenance.model_dump(),

@@ -481,7 +481,7 @@ async def test_create_campaign_in_progress_reservation_returns_409(
 
 
 def _suggestion_ids(body: dict[str, Any]) -> list[str]:
-    return [s["id"] for s in body["suggestions"]]
+    return [s["suggestion_id"] for s in body["suggestions"]]
 
 
 @pytest.mark.asyncio
@@ -525,7 +525,7 @@ async def test_generate_suggestions_idempotency_key_replays_response(
     # original suggestions.
     listing = await api_client.get(f"/api/suggestions/{campaign_id}", headers=auth_headers)
     assert listing.status_code == 200
-    assert sorted(s["id"] for s in listing.json()) == sorted(first_ids)
+    assert sorted(s["suggestion_id"] for s in listing.json()) == sorted(first_ids)
 
 
 @pytest.mark.asyncio
@@ -570,7 +570,7 @@ async def test_mcp_then_rest_generate_replays_across_transports(
         idempotency_key=key,
     )
     assert mcp_result["success"] is True, mcp_result
-    mcp_ids = [s["id"] for s in mcp_result["suggestions"]]
+    mcp_ids = [s["suggestion_id"] for s in mcp_result["suggestions"]]
 
     rest_response = await api_client.post(
         f"/api/suggestions/{campaign_id}/generate",

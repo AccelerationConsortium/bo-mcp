@@ -147,6 +147,7 @@ async def submit_campaign_results(
             results=results_data,
             submitted_by=submitted_by,
             source=request.source,
+            force=request.force,
             session=session,
         )
 
@@ -161,6 +162,7 @@ async def submit_campaign_results(
             results=results_data,
             submitted_by=submitted_by,
             source=request.source,
+            force=request.force,
         ),
         executor=run,
     )

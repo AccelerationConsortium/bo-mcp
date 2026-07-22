@@ -46,12 +46,19 @@ class ResultBatchCreate(BaseModel):
     ``results`` is bounded by :data:`api.limits.MAX_BATCH_RESULTS` so a
     single POST cannot pin a worker behind validating tens of
     thousands of rows.
+
+    ``force`` mirrors the MCP ``bo_submit_results`` tool's override:
+    when ``True`` it bypasses the exact-duplicate-coordinate check so
+    an optimizer-requested replicate can be submitted without first
+    rejecting the suggestion (which would not exclude the coordinates
+    from future generation).
     """
 
     model_config = _FORBID_EXTRA
 
     results: list[ResultCreate] = Field(..., min_length=1, max_length=MAX_BATCH_RESULTS)
     source: str = Field(default="api", pattern="^(gui|file_upload|api)$")
+    force: bool = False
 
 
 class ResultResponse(BaseModel):

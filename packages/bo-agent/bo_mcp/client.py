@@ -186,12 +186,19 @@ class BoMcpClient:
         *,
         results: list[dict[str, Any]],
         idempotency_key: str,
+        force: bool = False,
     ) -> dict[str, Any]:
-        """Submit externally evaluated candidate results to BO-MCP."""
+        """Submit externally evaluated candidate results to BO-MCP.
+
+        ``force=True`` bypasses the exact-duplicate-coordinate check so an
+        optimizer-requested replicate can be submitted -- rejecting the
+        suggestion instead only retires that suggestion record and does not
+        exclude the coordinates from future generation.
+        """
         return self._json_request(
             "POST",
             f"/api/v1/results/{campaign_id}",
-            json={"results": results, "source": "api"},
+            json={"results": results, "source": "api", "force": force},
             headers={"Idempotency-Key": idempotency_key},
         )
 

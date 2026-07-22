@@ -197,7 +197,11 @@ async def update_suggestion_status(
     request: SuggestionStatusUpdateRequest,
     current_user: CurrentUser,
 ) -> SuggestionStatusUpdateResponse:
-    """Update the status of a suggestion (accept, reject, or expire)."""
+    """Update the status of a suggestion (accept, reject, or expire).
+
+    Rejecting declines this suggestion instance only; the parameter
+    values are not excluded from future recommendations.
+    """
     await get_authorized_suggestion(suggestion_id, current_user)
 
     result = await update_suggestion_status_operation(

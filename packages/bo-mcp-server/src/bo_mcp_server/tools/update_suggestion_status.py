@@ -35,6 +35,10 @@ async def update_suggestion_status(
     Use this to accept, reject, or expire a suggestion. The "completed"
     status is set automatically when results are submitted via bo_submit_results.
 
+    "rejected" declines this suggestion instance only -- it does not
+    exclude the parameter values from future suggestion generation. The
+    optimizer may propose the same coordinates again in a later batch.
+
     Valid transitions:
         - pending -> accepted (mark for execution)
         - pending -> rejected (skip this suggestion)

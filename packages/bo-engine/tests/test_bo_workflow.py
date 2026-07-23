@@ -76,7 +76,8 @@ class TestInitialDesign:
 
     Reference:
         - TOOL_SCHEMAS.md: Initial Design Phase section
-        - AGENT_COOKBOOK.md: Initial Design Size Guidance
+        - MANPAGE.md §5.6 "Initial design and convergence"
+          (bo_mcp_server/docs/MANPAGE.md, served at /manpage)
         - Formula: 2 × n_parameters + 1 (from INITIAL_DESIGN_MULTIPLIER constant)
     """
 
@@ -504,7 +505,7 @@ class TestInitialDesign:
         """Verify initial design works for various problem dimensions.
 
         Reference:
-            - AGENT_COOKBOOK.md: Initial Design Size Guidance table
+            - MANPAGE.md §5.6 "Initial design and convergence" table
               | Parameters | Default Initial Points |
               | 2-5        | 5-11                   |
               | 6-10       | 13-21                  |

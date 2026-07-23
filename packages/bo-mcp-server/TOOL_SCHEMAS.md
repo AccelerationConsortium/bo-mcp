@@ -3,7 +3,7 @@
 This document provides detailed schema documentation for all MCP tools exposed by the `bo-mcp-server` package.
 
 **Related Documentation:**
-- [AGENT_COOKBOOK.md](AGENT_COOKBOOK.md) - Quick reference for AI agents with decision trees and common patterns
+- The BO-MCP operating manual — the canonical narrative guide (call order, state ownership, continuation, error recovery): MCP resource `docs://manpage`, REST `/manpage`, source [src/bo_mcp_server/docs/MANPAGE.md](src/bo_mcp_server/docs/MANPAGE.md)
 
 ---
 
@@ -942,6 +942,10 @@ Example error response:
 
 ## Version History
 
+- Retired AGENT_COOKBOOK.md: its narrative content (decision trees, error
+  recovery, verbosity guide, suggestion-status lifecycle, subscriptions)
+  moved into the canonical operating manual served at `/manpage` and as the
+  MCP resource `docs://manpage`
 - Added Agent Efficiency improvements:
   - `bo_list_campaigns` - Tool-based campaign listing with filters
   - `bo_batch_get_status` - Multi-campaign status in one call (now also carries

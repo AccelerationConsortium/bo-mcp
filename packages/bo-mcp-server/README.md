@@ -2,6 +2,16 @@
 
 MCP (Model Context Protocol) server for Bayesian Optimization. Exposes a full BO workflow as MCP tools for use with Claude, other AI agents, or any MCP-compatible client.
 
+## Documentation
+
+- `docs://manpage` — the BO-MCP operating manual as an MCP resource: the
+  canonical narrative guide to call order, state ownership, continuation,
+  and error recovery. Read it before operating campaigns. The REST API
+  serves the same text at `/manpage` (HTML) and `/manpage.md` (Markdown);
+  source: [src/bo_mcp_server/docs/MANPAGE.md](src/bo_mcp_server/docs/MANPAGE.md).
+- [TOOL_SCHEMAS.md](TOOL_SCHEMAS.md) — per-tool input/output schemas (the
+  MCP analog of the REST OpenAPI document).
+
 ## Scope
 
 - 22 MCP tools covering the complete optimization lifecycle (create, suggest, submit, diagnose, compare)

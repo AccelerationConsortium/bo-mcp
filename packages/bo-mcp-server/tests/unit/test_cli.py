@@ -263,7 +263,7 @@ def test_import_time_startup_logs_honor_log_format() -> None:
     a fresh interpreter's import sequence.
     """
     env = {**os.environ, "LOG_FORMAT": "json", "BO_MCP_LOG_LEVEL": "INFO"}
-    result = subprocess.run(  # noqa: S603 - fixed argv, trusted interpreter path
+    result = subprocess.run(
         [sys.executable, "-c", "import bo_mcp_server.cli"],
         capture_output=True,
         text=True,

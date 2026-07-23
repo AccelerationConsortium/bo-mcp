@@ -2,6 +2,14 @@
 
 REST API layer for the Bayesian Optimization MCP server. Provides HTTP endpoints for web frontends and scripts that prefer REST over the MCP protocol.
 
+## Documentation
+
+- `/manpage` — the BO-MCP operating manual: the canonical narrative guide to
+  call order, state ownership, continuation, and error recovery (fetch
+  `/manpage.md` for raw Markdown; agents should read this first)
+- `/docs`, `/redoc`, `/openapi.json` — field-level request/response schemas
+- `docs://manpage` — the same manual as an MCP resource on the MCP transport
+
 ## Scope
 
 - FastAPI-based REST proxy over `bo-mcp-server` operations

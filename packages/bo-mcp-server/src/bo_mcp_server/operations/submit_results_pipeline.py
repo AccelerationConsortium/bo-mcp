@@ -43,6 +43,16 @@ from bo_mcp_server.storage import (
     SuggestionRepository,
 )
 
+# Statuses a suggestion may hold when a submitted result row completes it
+# automatically. The manual's suggestion-status transition table cites
+# exactly this edge set (pending → completed, accepted → completed); the
+# drift test in ``tests/unit/test_manpage_resource.py`` compares the two,
+# so widening or narrowing this tuple without updating the manual fails CI.
+AUTO_COMPLETE_SOURCE_STATUSES: tuple[SuggestionStatus, ...] = (
+    SuggestionStatus.PENDING,
+    SuggestionStatus.ACCEPTED,
+)
+
 
 def _check_duplicates_for_result(
     index: int,
@@ -209,7 +219,7 @@ async def _resolve_suggestion_id(
     # ``continue_on_error=True``.
     if not dry_run and not await suggestion_repo.transition_status(
         suggestion_id,
-        (SuggestionStatus.PENDING, SuggestionStatus.ACCEPTED),
+        AUTO_COMPLETE_SOURCE_STATUSES,
         SuggestionStatus.COMPLETED,
     ):
         msg = "Suggestion"

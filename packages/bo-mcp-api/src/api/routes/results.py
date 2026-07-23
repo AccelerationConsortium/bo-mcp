@@ -1,9 +1,10 @@
 """Results routes."""
 
 import logging
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import CurrentUser, IdempotencyKey, get_authorized_campaign
@@ -56,6 +57,30 @@ def _results_location(campaign_id: str) -> str:
     collection that contains every result row produced by the call.
     """
     return f"/api/v1/results/{campaign_id}"
+
+
+def _build_submit_response(result: dict) -> ResultSubmitResponse:
+    """Map a submit-results operation envelope onto the REST model.
+
+    Handles every envelope the operation emits — fresh insert, cached
+    replay, ``success=false`` rejection (with the structured ``error``
+    forwarded verbatim), per-row ``partial_results``, and dry-run
+    previews — so the submit and upload routes stay in lockstep.
+    """
+    return ResultSubmitResponse(
+        success=result["success"],
+        result_ids=result.get("result_ids", []),
+        errors=result.get("errors", []),
+        warnings=result.get("warnings", []),
+        field_errors=result.get("field_errors", {}),
+        # Forward the wrapper's replay marker so REST clients can
+        # distinguish a cached batch from a fresh insert.
+        idempotency_replay=bool(result.get("idempotency_replay", False)),
+        partial_results=result.get("partial_results"),
+        error=result.get("error"),
+        dry_run=bool(result.get("dry_run", False)),
+        preview=result.get("preview"),
+    )
 
 
 async def _read_upload_bounded(file: UploadFile) -> bytes:
@@ -125,7 +150,8 @@ async def submit_campaign_results(
     Honours the ``Idempotency-Key`` request header (same cache
     namespace as the MCP ``bo_submit_results`` tool) so a retry
     replays the cached response instead of persisting the batch
-    twice.
+    twice. ``dry_run`` requests bypass the idempotency cache and
+    return a preview — mirroring the MCP tool.
     """
     await get_authorized_campaign(campaign_id, current_user)
 
@@ -141,12 +167,30 @@ async def submit_campaign_results(
     ]
     submitted_by = str(current_user.id)
 
+    if request.dry_run:
+        result = await submit_results_operation(
+            campaign_id=campaign_id,
+            results=results_data,
+            submitted_by=submitted_by,
+            source=request.source,
+            force=request.force,
+            atomic=request.atomic,
+            continue_on_error=request.continue_on_error,
+            dry_run=True,
+        )
+        # Nothing was persisted, so 201 would mislead clients.
+        response.status_code = status.HTTP_200_OK
+        return _build_submit_response(result)
+
     async def run(session: AsyncSession) -> dict:
         return await submit_results_operation(
             campaign_id=campaign_id,
             results=results_data,
             submitted_by=submitted_by,
             source=request.source,
+            force=request.force,
+            atomic=request.atomic,
+            continue_on_error=request.continue_on_error,
             session=session,
         )
 
@@ -161,6 +205,9 @@ async def submit_campaign_results(
             results=results_data,
             submitted_by=submitted_by,
             source=request.source,
+            force=request.force,
+            atomic=request.atomic,
+            continue_on_error=request.continue_on_error,
         ),
         executor=run,
     )
@@ -178,16 +225,7 @@ async def submit_campaign_results(
     else:
         response.status_code = status.HTTP_200_OK
 
-    return ResultSubmitResponse(
-        success=result["success"],
-        result_ids=result["result_ids"],
-        errors=result["errors"],
-        warnings=result["warnings"],
-        field_errors=result.get("field_errors", {}),
-        # Forward the wrapper's replay marker so REST clients can
-        # distinguish a cached batch from a fresh insert.
-        idempotency_replay=bool(result.get("idempotency_replay", False)),
-    )
+    return _build_submit_response(result)
 
 
 async def _resolve_upload_spec(campaign_id: str, user_id: UUID) -> CampaignSpec:
@@ -248,8 +286,14 @@ async def upload_results_file(
     file: UploadFile,
     current_user: CurrentUser,
     response: Response,
+    dry_run: Annotated[bool, Query()] = False,
 ) -> ResultSubmitResponse:
     """Upload results from CSV or Excel file.
+
+    ``dry_run=true`` (query parameter — the body is multipart) parses
+    and validates the file and returns a preview of what would persist
+    without writing anything — same semantics as the MCP
+    ``bo_upload_results_file`` tool.
 
     Streams the upload through :func:`_read_upload_bounded` (refusing
     over :data:`api.limits.MAX_UPLOAD_FILE_SIZE_BYTES`) and parses
@@ -334,20 +378,17 @@ async def upload_results_file(
         results=results_data,
         submitted_by=str(current_user.id),
         source="file_upload",
+        dry_run=dry_run,
     )
 
-    if result.get("success"):
+    if result.get("success") and not dry_run:
         response.headers["Location"] = _results_location(campaign_id)
     else:
+        # Rejected, or a dry run that persisted nothing — either way a
+        # 201 would mislead clients.
         response.status_code = status.HTTP_200_OK
 
-    return ResultSubmitResponse(
-        success=result["success"],
-        result_ids=result["result_ids"],
-        errors=result["errors"],
-        warnings=result["warnings"],
-        field_errors=result.get("field_errors", {}),
-    )
+    return _build_submit_response(result)
 
 
 @router.post("/{campaign_id}/query")

@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_RESULTS
-from api.schemas.common import ResponseEnvelope, VerbosityLevel
+from api.schemas.common import MutationEnvelope, ResponseEnvelope, VerbosityLevel
 from bo_mcp_server.client import FiniteFloat, ResultMetadata
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
@@ -46,12 +46,45 @@ class ResultBatchCreate(BaseModel):
     ``results`` is bounded by :data:`api.limits.MAX_BATCH_RESULTS` so a
     single POST cannot pin a worker behind validating tens of
     thousands of rows.
+
+    ``force`` / ``atomic`` / ``continue_on_error`` / ``dry_run``
+    mirror the MCP ``bo_submit_results`` tool parameters one-to-one —
+    both transports call the same
+    :func:`bo_mcp_server.operations.submit_results.submit_results_operation`.
     """
 
     model_config = _FORBID_EXTRA
 
     results: list[ResultCreate] = Field(..., min_length=1, max_length=MAX_BATCH_RESULTS)
     source: str = Field(default="api", pattern="^(gui|file_upload|api)$")
+    force: bool = Field(
+        default=False,
+        description=(
+            "Override duplicate detection and persist rows whose parameter "
+            "values match an existing result (intentional re-measurement)."
+        ),
+    )
+    atomic: bool = Field(
+        default=True,
+        description=(
+            "When true (default) the whole batch succeeds or fails together: "
+            "any invalid row rejects the batch before anything is persisted."
+        ),
+    )
+    continue_on_error: bool = Field(
+        default=False,
+        description=(
+            "With atomic=false, process rows independently and report a "
+            "per-row partial_results mapping instead of failing the batch."
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Validate the batch and return a preview of what would persist "
+            "without writing anything. Dry runs bypass the idempotency cache."
+        ),
+    )
 
 
 class ResultResponse(BaseModel):
@@ -93,7 +126,7 @@ class ResultQueryResponse(ResponseEnvelope):
     errors: list[str] = Field(default_factory=list)
 
 
-class ResultSubmitResponse(ResponseEnvelope):
+class ResultSubmitResponse(MutationEnvelope):
     """Response for result submission.
 
     ``field_errors`` mirrors the MCP envelope so REST callers can
@@ -106,6 +139,10 @@ class ResultSubmitResponse(ResponseEnvelope):
     used an Idempotency-Key on a retry could not tell the cached
     reply from a brand-new insert and would have no way to surface
     that distinction to their users.
+
+    ``partial_results`` is populated for ``atomic=false`` +
+    ``continue_on_error=true`` submissions: a per-row mapping of input
+    index to the persisted result id or the row's error.
     """
 
     success: bool
@@ -114,3 +151,4 @@ class ResultSubmitResponse(ResponseEnvelope):
     warnings: list[str]
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
     idempotency_replay: bool = False
+    partial_results: dict[int, str | dict[str, str]] | None = None

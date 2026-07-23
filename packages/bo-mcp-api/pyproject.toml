@@ -23,6 +23,10 @@ dependencies = [
     "pandas>=2.0",
     "openpyxl>=3.1",
     "prometheus-client>=0.20",
+    # /manpage HTML rendering (CommonMark + tables + heading anchors);
+    # the MCP server serves raw Markdown and never needs these.
+    "markdown-it-py>=3.0",
+    "mdit-py-plugins>=0.4",
 ]
 
 [project.optional-dependencies]

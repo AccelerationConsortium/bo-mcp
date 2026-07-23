@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.schemas.common import ResponseEnvelope, VerbosityLevel
+from api.schemas.common import MutationEnvelope, ResponseEnvelope, VerbosityLevel
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
@@ -44,7 +44,7 @@ class SuggestionResponse(BaseModel):
     created_at: datetime
 
 
-class SuggestionsGenerateResponse(ResponseEnvelope):
+class SuggestionsGenerateResponse(MutationEnvelope):
     """Response for suggestion generation.
 
     ``idempotency_replay`` is ``True`` when the response was served
@@ -54,7 +54,7 @@ class SuggestionsGenerateResponse(ResponseEnvelope):
     """
 
     success: bool
-    suggestions: list[SuggestionResponse]
+    suggestions: list[SuggestionResponse] = Field(default_factory=list)
     iteration: int | None = None
     errors: list[str]
     idempotency_replay: bool = False
@@ -74,9 +74,17 @@ class SuggestionStatusUpdateRequest(BaseModel):
         ),
         examples=["accepted", "rejected", "expired"],
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Validate the transition and return a preview (from/to status) "
+            "without committing — same semantics as the MCP "
+            "bo_update_suggestion_status tool."
+        ),
+    )
 
 
-class SuggestionStatusUpdateResponse(ResponseEnvelope):
+class SuggestionStatusUpdateResponse(MutationEnvelope):
     """Response for suggestion status update."""
 
     success: bool

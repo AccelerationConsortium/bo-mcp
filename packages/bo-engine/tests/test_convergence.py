@@ -370,7 +370,8 @@ class TestIntegrationWithConstants:
     """Integration tests verifying behavior matches documented constants.
 
     Reference:
-        - AGENT_COOKBOOK.md convergence guidance
+        - MANPAGE.md §5.6 "Initial design and convergence"
+          (bo_mcp_server/docs/MANPAGE.md, served at /manpage)
         - TOOL_SCHEMAS.md convergence field documentation
     """
 
@@ -401,9 +402,10 @@ class TestIntegrationWithConstants:
         assert CONVERGENCE_IMPROVEMENT_THRESHOLD == 0.01
 
     def test_documented_agent_guidance_scenario(self) -> None:
-        """Test scenario from AGENT_COOKBOOK: converged with <20 results = early warning.
+        """Test scenario from the manual: converged with <20 results = early warning.
 
-        Reference: AGENT_COOKBOOK.md - Early Convergence Warning section
+        Reference: MANPAGE.md §5.6 "Initial design and convergence",
+        early-convergence-warning paragraph
         "If converged=true BUT n_results < 20: Warn user..."
         """
         # Simulate early convergence: only 12 results but stagnant

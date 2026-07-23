@@ -17,6 +17,33 @@ BASE_URL = os.environ.get("BO_MCP_API_BASE_URL", "http://localhost:8000")
 API_KEY = "dev-api-key-12345"
 HEADERS = {"X-API-Key": API_KEY}
 
+# Upper bound for the one-off backend import triggered by the warmup
+# fixture below — covers a cold container on a slow CI runner.
+BACKEND_WARMUP_TIMEOUT_SECONDS = 300.0
+
+
+@pytest.fixture(scope="module", autouse=True)
+def warm_backend_stack() -> None:
+    """Load the api container's lazy backend chain before timed requests.
+
+    The container's health check does not touch the optimization
+    backends, so a stack that just reported healthy has not yet paid
+    for ``bo_mcp_server.backend.get_backend`` — whose cache miss
+    imports torch / BayBE and takes far longer than httpx's 5 s
+    default read timeout. Without this warmup the first
+    backend-touching test times out on a cold stack and every
+    dependent test in the shared-state sequence cascades. The
+    capabilities endpoint performs exactly that import server-side,
+    so one generous-timeout call makes all subsequent
+    default-timeout requests run against a warm backend.
+    """
+    response = httpx.get(
+        f"{BASE_URL}/api/capabilities",
+        headers=HEADERS,
+        timeout=BACKEND_WARMUP_TIMEOUT_SECONDS,
+    )
+    assert response.status_code == 200, f"Backend warmup failed: {response.text}"
+
 
 class TestAPIEndpoints:
     """Test all API endpoints in sequence to verify full workflow."""

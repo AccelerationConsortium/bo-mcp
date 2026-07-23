@@ -31,6 +31,7 @@ from bo_mcp_server.domain.field_docs import (
     MAX_ITERATIONS_DOC,
     MAX_OBSERVATIONS_DOC,
     RANDOM_SEED_DOC,
+    SCALARIZER_DOC,
     USE_COST_AWARE_DOC,
     USE_INPUT_WARPING_DOC,
 )
@@ -117,7 +118,7 @@ class CampaignIntakeInput(BaseModel):
     # Multi-objective combination strategy + desirability scalarizer flavor;
     # cross-field rules enforced by CampaignSpec.
     scalarization: ScalarizationMode = ScalarizationMode.PARETO
-    scalarizer: ScalarizerKind | None = None
+    scalarizer: ScalarizerKind | None = Field(default=None, description=SCALARIZER_DOC)
     use_input_warping: bool = Field(default=False, description=USE_INPUT_WARPING_DOC)
     use_cost_aware: bool = Field(default=False, description=USE_COST_AWARE_DOC)
     turbo_config: TurboConfig | None = None

@@ -80,6 +80,11 @@ ACQUISITION_BETA_DOC = (
     "acquisition_method='upper_confidence_bound'; rejected otherwise."
 )
 
+SCALARIZER_DOC = (
+    "Use 'mean' for arithmetic mean or 'geom_mean' for geometric mean; "
+    "only valid with scalarization='desirability'. Null uses 'geom_mean'."
+)
+
 USE_INPUT_WARPING_DOC = (
     "Input warping for non-stationary objectives. BoTorch-only — "
     "reported UNSUPPORTED on the BayBE backend by default (see "

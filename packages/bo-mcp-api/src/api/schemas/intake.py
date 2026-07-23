@@ -112,7 +112,10 @@ class IntakeData(BaseModel):
     # Multi-objective combination strategy + desirability scalarizer flavor;
     # cross-field rules enforced by CampaignSpec.
     scalarization: ScalarizationMode = ScalarizationMode.PARETO
-    scalarizer: ScalarizerKind | None = None
+    scalarizer: ScalarizerKind | None = Field(
+        default=None,
+        description=field_docs.SCALARIZER_DOC,
+    )
     use_input_warping: bool = Field(default=False, description=field_docs.USE_INPUT_WARPING_DOC)
     use_cost_aware: bool = Field(default=False, description=field_docs.USE_COST_AWARE_DOC)
     turbo_config: TurboConfig | None = None

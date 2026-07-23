@@ -79,7 +79,9 @@ class SuggestionStatusUpdateRequest(BaseModel):
             'Manual suggestion status transition. Use "accepted", "rejected", '
             'or "expired" here. Do not set "completed" directly; a suggestion '
             "becomes completed automatically when a result is submitted with "
-            "its suggestion_id."
+            'its suggestion_id. "rejected" declines this suggestion instance '
+            "only -- it does not exclude the parameter values from future "
+            "recommendations."
         ),
         examples=["accepted", "rejected", "expired"],
     )

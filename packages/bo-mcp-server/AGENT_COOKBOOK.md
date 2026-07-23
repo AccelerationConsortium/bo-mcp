@@ -309,7 +309,9 @@ written by the server when results are submitted.
 - `ACCEPTED` — explicitly approved (e.g. queued for an experimental run).
 - `REJECTED` — operator declined; suggestion is dropped from the active queue
   but *retained* in storage so future calls to `bo_list_suggestions` can show
-  it for audit purposes. **Rejected suggestions are not re-issued.**
+  it for audit purposes. **Declines this suggestion instance only.** The row
+  itself is terminal, but the parameter values are not excluded — the
+  optimizer may generate a new suggestion at the same coordinates later.
 - `EXPIRED` — suggestion is no longer relevant (e.g. instrument changed).
   Same persistence semantics as `REJECTED`; the distinction is *intent* —
   `REJECTED` is "I evaluated this and said no", `EXPIRED` is "context changed

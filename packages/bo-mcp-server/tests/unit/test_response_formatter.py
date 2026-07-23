@@ -170,13 +170,13 @@ class TestFormatSuggestionsResponse:
             "success": True,
             "suggestions": [
                 {
-                    "id": "uuid-1",
+                    "suggestion_id": "uuid-1",
                     "parameter_values": {"x": 0.5, "y": 0.3},
                     "provenance": {"iteration": 3, "method": "hypervolume_improvement"},
                     "created_at": "2025-01-01T00:00:00Z",
                 },
                 {
-                    "id": "uuid-2",
+                    "suggestion_id": "uuid-2",
                     "parameter_values": {"x": 0.7, "y": 0.9},
                     "provenance": {"iteration": 3, "method": "hypervolume_improvement"},
                     "created_at": "2025-01-01T00:00:01Z",
@@ -487,7 +487,7 @@ class TestTokenEstimation:
         full_response = {
             "success": True,
             "suggestions": [
-                {"id": f"uuid-{i}", "parameter_values": {"x": i}, "provenance": {}}
+                {"suggestion_id": f"uuid-{i}", "parameter_values": {"x": i}, "provenance": {}}
                 for i in range(10)
             ],
             "iteration": 5,

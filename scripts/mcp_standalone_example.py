@@ -151,7 +151,7 @@ async def main():
                 {
                     "parameter_values": params,
                     "objective_values": objectives,
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
 

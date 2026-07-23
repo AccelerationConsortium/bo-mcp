@@ -138,7 +138,7 @@ async def run_bi_objective_demo(owner_id: str) -> None:
                 {
                     "parameter_values": params,
                     "objective_values": {"f1_branin": f1, "f2_currin": f2},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
             print(f"    x1={x1:.3f}, x2={x2:.3f} -> f1={f1:.2f}, f2={f2:.2f}")
@@ -246,7 +246,7 @@ async def run_tri_objective_demo(owner_id: str) -> None:
                 {
                     "parameter_values": params,
                     "objective_values": {"obj1": f1, "obj2": f2, "obj3": f3},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
             print(f"    x=({x1:.2f},{x2:.2f},{x3:.2f}) -> ({f1:.3f},{f2:.3f},{f3:.3f})")

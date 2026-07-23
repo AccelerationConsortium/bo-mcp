@@ -212,7 +212,9 @@ async def main() -> None:
                 results_to_submit = []
                 for suggestion in suggestions:
                     params = suggestion["parameter_values"]
-                    result_entry = _result_for(experiment_index, params, suggestion["id"])
+                    result_entry = _result_for(
+                        experiment_index, params, suggestion["suggestion_id"]
+                    )
                     experiment_index += 1
                     gap_e_v = result_entry.objective_values["gap_eV"]
 

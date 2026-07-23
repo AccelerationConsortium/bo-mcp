@@ -186,7 +186,7 @@ async def run_alloy_demo(owner_id: str) -> None:
                 {
                     "parameter_values": params,
                     "objective_values": {"strength": strength},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
 
@@ -305,7 +305,7 @@ async def run_paint_demo(owner_id: str) -> None:
                 {
                     "parameter_values": params,
                     "objective_values": {"coverage": coverage},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
 

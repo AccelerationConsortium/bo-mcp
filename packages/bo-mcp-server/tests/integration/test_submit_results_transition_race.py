@@ -134,11 +134,11 @@ class TestSubmitResultsTransitionRace:
         )
 
         campaign_id, suggestions, owner_id = await _build_campaign_with_suggestions(batch_size=2)
-        _patch_transition_to_fail_for(monkeypatch, {suggestions[0]["id"]})
+        _patch_transition_to_fail_for(monkeypatch, {suggestions[0]["suggestion_id"]})
 
         rows = [
             {
-                "suggestion_id": s["id"],
+                "suggestion_id": s["suggestion_id"],
                 "parameter_values": s["parameter_values"],
                 "objective_values": {"y": 0.5},
             }
@@ -176,13 +176,13 @@ class TestSubmitResultsTransitionRace:
         )
 
         campaign_id, suggestions, owner_id = await _build_campaign_with_suggestions(batch_size=2)
-        racing_id = suggestions[0]["id"]
-        winning_id = suggestions[1]["id"]
+        racing_id = suggestions[0]["suggestion_id"]
+        winning_id = suggestions[1]["suggestion_id"]
         _patch_transition_to_fail_for(monkeypatch, {racing_id})
 
         rows = [
             {
-                "suggestion_id": s["id"],
+                "suggestion_id": s["suggestion_id"],
                 "parameter_values": s["parameter_values"],
                 "objective_values": {"y": 0.5},
             }
@@ -234,11 +234,11 @@ class TestSubmitResultsSoftDeleteBetweenPhases:
         )
 
         campaign_id, suggestions, owner_id = await _build_campaign_with_suggestions(batch_size=2)
-        _patch_get_to_simulate_soft_delete(monkeypatch, {suggestions[0]["id"]})
+        _patch_get_to_simulate_soft_delete(monkeypatch, {suggestions[0]["suggestion_id"]})
 
         rows = [
             {
-                "suggestion_id": s["id"],
+                "suggestion_id": s["suggestion_id"],
                 "parameter_values": s["parameter_values"],
                 "objective_values": {"y": 0.5},
             }
@@ -277,13 +277,13 @@ class TestSubmitResultsSoftDeleteBetweenPhases:
         )
 
         campaign_id, suggestions, owner_id = await _build_campaign_with_suggestions(batch_size=2)
-        vanished_id = suggestions[0]["id"]
-        winning_id = suggestions[1]["id"]
+        vanished_id = suggestions[0]["suggestion_id"]
+        winning_id = suggestions[1]["suggestion_id"]
         _patch_get_to_simulate_soft_delete(monkeypatch, {vanished_id})
 
         rows = [
             {
-                "suggestion_id": s["id"],
+                "suggestion_id": s["suggestion_id"],
                 "parameter_values": s["parameter_values"],
                 "objective_values": {"y": 0.5},
             }

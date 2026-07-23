@@ -100,7 +100,7 @@ class TestCategoricalCampaignLifecycle:
                 key = (pv["material"], pv["coating"])
                 results_to_submit.append(
                     {
-                        "suggestion_id": s["id"],
+                        "suggestion_id": s["suggestion_id"],
                         "parameter_values": pv,
                         "objective_values": {"strength": strength_map[key]},
                     }
@@ -174,7 +174,7 @@ class TestCategoricalCampaignLifecycle:
             pv = s["parameter_values"]
             results_to_submit.append(
                 {
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                     "parameter_values": pv,
                     "objective_values": {"yield": 50.0},
                 }
@@ -240,7 +240,7 @@ class TestCategoricalCampaignLifecycle:
             pv = s["parameter_values"]
             results_to_submit.append(
                 {
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                     "parameter_values": pv,
                     "objective_values": {"score": float(idx + 1)},
                 }

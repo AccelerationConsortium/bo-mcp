@@ -77,12 +77,13 @@ async def example(session: ClientSession):
 ```json
 // Tool: bo_generate_suggestions
 {"campaign_id": "abc-123-..."}
-// Response: {"suggestions": [{"id": "...", "parameter_values": {"x": 5.2}}]}
+// Response: {"suggestions": [{"suggestion_id": "...", "parameter_values": {"x": 5.2}}]}
 
-// Tool: bo_submit_results
+// Tool: bo_submit_results — copy suggestion_id from the suggestion so the
+// result links to it and completes it
 {
   "campaign_id": "abc-123-...",
-  "results": [{"parameter_values": {"x": 5.2}, "objective_values": {"y": 12.3}}]
+  "results": [{"suggestion_id": "...", "parameter_values": {"x": 5.2}, "objective_values": {"y": 12.3}}]
 }
 
 // Tool: bo_get_diagnostics (use verbosity=minimal for tight loops)

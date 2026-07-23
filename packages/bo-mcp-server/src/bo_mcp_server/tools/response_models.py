@@ -50,6 +50,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Defined in ``response_formatter`` (not here) so the client facade can
+# re-export it without importing the MCP tool layer; re-exported here to
+# keep the summary-item trio importable from one module.
+from bo_mcp_server.response_formatter import SuggestionSummaryItem
+
 
 class _PermissiveResponse(BaseModel):
     """Base for tool-level response models: always tolerates unknown keys."""
@@ -77,30 +82,6 @@ class CampaignSummaryItem(_PermissiveResponse):
     spec_summary: dict[str, Any] | None = None
     has_hypervolume_history: bool | None = None
     has_backend_state: bool | None = None
-
-
-class SuggestionSummaryItem(_PermissiveResponse):
-    """One ``suggestions[]`` entry from ``bo_list_suggestions``.
-
-    Superset of the MINIMAL / STANDARD / DETAILED per-item projections
-    built by ``operations.list_suggestions._serialize_suggestion``.
-    """
-
-    suggestion_id: str | None = None
-    status: str | None = None
-    parameter_values: dict[str, Any] | None = None
-    iteration: int | None = None
-    generation_method: str | None = None
-    created_at: str | None = None
-    batch_index: int | None = None
-    acquisition_function: str | None = None
-    acquisition_value: float | None = None
-    model_uncertainty: float | None = None
-    model_type: str | None = None
-    confidence_level: float | None = None
-    predicted_objectives: dict[str, Any] | None = None
-    predicted_std: dict[str, Any] | None = None
-    updated_at: str | None = None
 
 
 class ResultSummaryItem(_PermissiveResponse):
@@ -369,6 +350,26 @@ class GetDiagnosticsResponse(_PermissiveResponse):
     warnings: list[str] = Field(default_factory=list)
 
 
+class GeneratedSuggestionItem(_PermissiveResponse):
+    """One ``suggestions[]`` entry from ``bo_generate_suggestions``.
+
+    ``suggestion_id`` is the identity key — the same key
+    ``bo_list_suggestions`` emits and ``bo_submit_results`` consumes,
+    so its value can be copied into a result submission without
+    renaming.
+    """
+
+    suggestion_id: str = Field(
+        description=(
+            "Suggestion identity; copy its value into the "
+            "suggestion_id field when submitting results."
+        ),
+    )
+    parameter_values: dict[str, Any] | None = None
+    provenance: dict[str, Any] | None = None
+    created_at: str | None = None
+
+
 class GenerateSuggestionsResponse(_PermissiveResponse):
     """Response shape for ``bo_generate_suggestions``.
 
@@ -378,7 +379,7 @@ class GenerateSuggestionsResponse(_PermissiveResponse):
     """
 
     success: bool | None = None
-    suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    suggestions: list[GeneratedSuggestionItem] = Field(default_factory=list)
     suggestion_ids: list[str | None] = Field(default_factory=list)
     iteration: int | None = None
     method: str | None = None

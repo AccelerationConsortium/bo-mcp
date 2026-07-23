@@ -66,7 +66,7 @@ async def test_max_iterations_stops_after_budget() -> None:
         assert gen["success"] is True, f"Cycle {cycle} unexpectedly errored: {gen['errors']}"
         results = [
             {
-                "suggestion_id": s["id"],
+                "suggestion_id": s["suggestion_id"],
                 "parameter_values": s["parameter_values"],
                 "objective_values": {"y": float(s["parameter_values"]["x"])},
             }
@@ -120,7 +120,7 @@ async def test_max_observations_stops_at_cap() -> None:
     assert gen["success"] is True
     results = [
         {
-            "suggestion_id": s["id"],
+            "suggestion_id": s["suggestion_id"],
             "parameter_values": s["parameter_values"],
             "objective_values": {"y": float(s["parameter_values"]["x"])},
         }
@@ -188,7 +188,7 @@ async def test_pending_suggestions_count_against_max_observations(caplog) -> Non
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": first["id"],
+                    "suggestion_id": first["suggestion_id"],
                     "parameter_values": first["parameter_values"],
                     "objective_values": {"y": float(first["parameter_values"]["x"])},
                 }
@@ -265,7 +265,7 @@ async def test_submit_results_rejects_overflow_in_atomic_mode() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": first_gen["suggestions"][0]["id"],
+                    "suggestion_id": first_gen["suggestions"][0]["suggestion_id"],
                     "parameter_values": first_gen["suggestions"][0]["parameter_values"],
                     "objective_values": {
                         "y": float(first_gen["suggestions"][0]["parameter_values"]["x"])
@@ -282,7 +282,7 @@ async def test_submit_results_rejects_overflow_in_atomic_mode() -> None:
     # second freestanding submission that pushes us over.
     overflow_rows = [
         {
-            "suggestion_id": second_gen["suggestions"][0]["id"],
+            "suggestion_id": second_gen["suggestions"][0]["suggestion_id"],
             "parameter_values": second_gen["suggestions"][0]["parameter_values"],
             "objective_values": {"y": 0.5},
         },
@@ -333,7 +333,7 @@ async def test_submit_results_keeps_in_budget_rows_in_non_atomic_mode() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": seed_gen["suggestions"][0]["id"],
+                    "suggestion_id": seed_gen["suggestions"][0]["suggestion_id"],
                     "parameter_values": seed_gen["suggestions"][0]["parameter_values"],
                     "objective_values": {
                         "y": float(seed_gen["suggestions"][0]["parameter_values"]["x"])
@@ -347,7 +347,7 @@ async def test_submit_results_keeps_in_budget_rows_in_non_atomic_mode() -> None:
     follow = await generate_suggestions(campaign_id, batch_size=1)
     rows = [
         {
-            "suggestion_id": follow["suggestions"][0]["id"],
+            "suggestion_id": follow["suggestions"][0]["suggestion_id"],
             "parameter_values": follow["suggestions"][0]["parameter_values"],
             "objective_values": {"y": 0.5},
         },
@@ -406,7 +406,7 @@ async def test_submit_protects_pending_reservation_atomic() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": first["id"],
+                    "suggestion_id": first["suggestion_id"],
                     "parameter_values": first["parameter_values"],
                     "objective_values": {"y": float(first["parameter_values"]["x"])},
                 }
@@ -444,7 +444,7 @@ async def test_submit_protects_pending_reservation_atomic() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": second["id"],
+                    "suggestion_id": second["suggestion_id"],
                     "parameter_values": second["parameter_values"],
                     "objective_values": {"y": float(second["parameter_values"]["x"])},
                 }
@@ -484,7 +484,7 @@ async def test_submit_protects_pending_reservation_non_atomic() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": first["id"],
+                    "suggestion_id": first["suggestion_id"],
                     "parameter_values": first["parameter_values"],
                     "objective_values": {"y": float(first["parameter_values"]["x"])},
                 }
@@ -542,7 +542,7 @@ async def test_submit_pending_suggestion_consumes_its_reservation() -> None:
     gen = await generate_suggestions(campaign_id)
     rows = [
         {
-            "suggestion_id": s["id"],
+            "suggestion_id": s["suggestion_id"],
             "parameter_values": s["parameter_values"],
             "objective_values": {"y": float(s["parameter_values"]["x"])},
         }
@@ -616,7 +616,7 @@ async def test_stale_pending_suggestion_does_not_budget_reject_free_floating_sub
     async with get_session() as session:
         await session.execute(
             update(SuggestionModel)
-            .where(SuggestionModel.id == suggestion["id"])
+            .where(SuggestionModel.id == suggestion["suggestion_id"])
             .values(created_at=aged)
         )
 
@@ -671,7 +671,7 @@ async def test_submit_protects_accepted_reservation() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": first["id"],
+                    "suggestion_id": first["suggestion_id"],
                     "parameter_values": first["parameter_values"],
                     "objective_values": {"y": float(first["parameter_values"]["x"])},
                 }
@@ -679,7 +679,9 @@ async def test_submit_protects_accepted_reservation() -> None:
         ),
         submitted_by=owner_id,
     )
-    accept = await update_suggestion_status_operation(suggestion_id=second["id"], status="accepted")
+    accept = await update_suggestion_status_operation(
+        suggestion_id=second["suggestion_id"], status="accepted"
+    )
     assert accept["success"] is True
 
     # Atomic flood attempt: existing=1, accepted_reserved=1, slack=1, so two
@@ -710,7 +712,7 @@ async def test_submit_protects_accepted_reservation() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": second["id"],
+                    "suggestion_id": second["suggestion_id"],
                     "parameter_values": second["parameter_values"],
                     "objective_values": {"y": float(second["parameter_values"]["x"])},
                 }
@@ -758,7 +760,7 @@ async def test_budget_stop_surfaces_pending_vs_accepted_breakdown() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": first["id"],
+                    "suggestion_id": first["suggestion_id"],
                     "parameter_values": first["parameter_values"],
                     "objective_values": {"y": float(first["parameter_values"]["x"])},
                 }
@@ -766,7 +768,9 @@ async def test_budget_stop_surfaces_pending_vs_accepted_breakdown() -> None:
         ),
         submitted_by=owner_id,
     )
-    await update_suggestion_status_operation(suggestion_id=second["id"], status="accepted")
+    await update_suggestion_status_operation(
+        suggestion_id=second["suggestion_id"], status="accepted"
+    )
 
     blocked = await generate_suggestions(campaign_id)
     details = blocked["error"]["details"]
@@ -806,7 +810,7 @@ async def test_generate_treats_accepted_suggestions_as_reservations() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": first["id"],
+                    "suggestion_id": first["suggestion_id"],
                     "parameter_values": first["parameter_values"],
                     "objective_values": {"y": float(first["parameter_values"]["x"])},
                 }
@@ -814,7 +818,9 @@ async def test_generate_treats_accepted_suggestions_as_reservations() -> None:
         ),
         submitted_by=owner_id,
     )
-    await update_suggestion_status_operation(suggestion_id=second["id"], status="accepted")
+    await update_suggestion_status_operation(
+        suggestion_id=second["suggestion_id"], status="accepted"
+    )
 
     blocked = await generate_suggestions(campaign_id)
     assert blocked["success"] is False
@@ -860,7 +866,7 @@ async def test_mixed_batch_protects_reservation_regardless_of_order_atomic() -> 
         {"parameter_values": {"x": 0.42}, "objective_values": {"y": 0.42}},
         # Actionable row SECOND.
         {
-            "suggestion_id": first["id"],
+            "suggestion_id": first["suggestion_id"],
             "parameter_values": first["parameter_values"],
             "objective_values": {"y": float(first["parameter_values"]["x"])},
         },
@@ -908,7 +914,7 @@ async def test_mixed_batch_protects_reservation_regardless_of_order_non_atomic()
     rows = [
         {"parameter_values": {"x": 0.42}, "objective_values": {"y": 0.42}},
         {
-            "suggestion_id": first["id"],
+            "suggestion_id": first["suggestion_id"],
             "parameter_values": first["parameter_values"],
             "objective_values": {"y": float(first["parameter_values"]["x"])},
         },
@@ -936,7 +942,7 @@ async def test_mixed_batch_protects_reservation_regardless_of_order_non_atomic()
         campaign_id=campaign_id, verbosity="minimal"
     )
     statuses = {s["suggestion_id"]: s["status"] for s in listed_suggestions["suggestions"]}
-    assert statuses[first["id"]] == "completed"
+    assert statuses[first["suggestion_id"]] == "completed"
 
 
 @pytest.mark.asyncio
@@ -972,7 +978,7 @@ async def test_batch_size_clamps_to_remaining_observation_budget() -> None:
     assert len(gen1["suggestions"]) == 2
     results = [
         {
-            "suggestion_id": s["id"],
+            "suggestion_id": s["suggestion_id"],
             "parameter_values": s["parameter_values"],
             "objective_values": {"y": float(s["parameter_values"]["x"])},
         }
@@ -1020,7 +1026,7 @@ async def test_no_budget_runs_indefinitely() -> None:
         assert gen["success"] is True
         results = [
             {
-                "suggestion_id": s["id"],
+                "suggestion_id": s["suggestion_id"],
                 "parameter_values": s["parameter_values"],
                 "objective_values": {"y": float(s["parameter_values"]["x"])},
             }

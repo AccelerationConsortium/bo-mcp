@@ -78,6 +78,11 @@ async def generate_campaign_suggestions(
 ) -> SuggestionsGenerateResponse:
     """Generate new suggestions for a campaign.
 
+    Each suggestion's identity is ``suggestion_id`` — the same key the
+    query endpoint emits and result submission consumes, so its value
+    can be copied into a ``POST /api/v1/results/{campaign_id}`` request
+    without renaming.
+
     Returns ``201 Created`` with a ``Location`` header pointing at
     :func:`list_campaign_suggestions_route` for the freshly-created
     batch. Operation-level rejections (stopping criteria triggered,
@@ -137,10 +142,9 @@ async def generate_campaign_suggestions(
             idempotency_replay=idempotency_replay,
         )
 
-    # Convert to response format
     suggestions = [
         SuggestionResponse(
-            id=s["id"],
+            suggestion_id=s["suggestion_id"],
             campaign_id=campaign_id,
             parameter_values=s["parameter_values"],
             status="pending",
@@ -172,13 +176,19 @@ async def get_campaign_suggestion_explanation(
     return SuggestionExplanationResponse(**result)
 
 
-@router.post("/{campaign_id}/query")
+@router.post("/{campaign_id}/query", response_model_exclude_unset=True)
 async def query_campaign_suggestions(
     campaign_id: str,
     request: SuggestionQueryRequest,
     current_user: CurrentUser,
 ) -> SuggestionQueryResponse:
-    """Query suggestions for a campaign with filtering, pagination, and verbosity control."""
+    """Query suggestions for a campaign with filtering, pagination, and verbosity control.
+
+    ``response_model_exclude_unset`` keeps each verbosity's exact wire
+    shape (no ``null`` backfill for absent optional fields), which is
+    why ``schema_version`` is set explicitly below — as an unset
+    default it would be dropped from the response.
+    """
     await get_authorized_campaign(campaign_id, current_user)
 
     result = await list_suggestions_operation(
@@ -188,7 +198,20 @@ async def query_campaign_suggestions(
         offset=request.offset,
         verbosity=request.verbosity.value,
     )
-    return SuggestionQueryResponse(**result)
+    # Operation error envelopes omit the pagination keys; set them
+    # explicitly so exclude_unset does not drop them from the
+    # historical error-response shape.
+    envelope: dict = {
+        "schema_version": API_RESPONSE_SCHEMA_VERSION,
+        "suggestions": [],
+        "total_count": 0,
+        "limit": None,
+        "offset": 0,
+        "next_cursor": None,
+        "errors": [],
+        **result,
+    }
+    return SuggestionQueryResponse(**envelope)
 
 
 @router.post("/{suggestion_id}/status")
@@ -260,7 +283,7 @@ async def list_campaign_suggestions_route(
 
     return [
         SuggestionResponse(
-            id=str(s.id),
+            suggestion_id=str(s.id),
             campaign_id=str(s.campaign_id),
             parameter_values=s.parameter_values,
             status=s.status.value,

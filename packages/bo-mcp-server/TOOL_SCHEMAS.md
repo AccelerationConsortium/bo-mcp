@@ -482,7 +482,7 @@ Generates the next batch of experiment suggestions for a campaign.
   "success": "boolean",
   "suggestions": [
     {
-      "id": "string (UUID)",
+      "suggestion_id": "string (UUID)",
       "parameter_values": {
         "param_name": "number | string"
       },

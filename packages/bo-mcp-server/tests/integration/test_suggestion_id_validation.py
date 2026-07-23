@@ -57,12 +57,12 @@ class TestDuplicateSuggestionIdWithinBatch:
         # duplicate detector does not preempt the suggestion-id validator.
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
             },
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": {"x": 0.97},
                 "objective_values": {"y": 0.2},
             },
@@ -81,7 +81,7 @@ class TestDuplicateSuggestionIdWithinBatch:
         # The suggestion stays PENDING (no row leaked through to phase 2).
         listed = await list_suggestions_operation(campaign_id=campaign_id, verbosity="minimal")
         statuses = {s["suggestion_id"]: s["status"] for s in listed["suggestions"]}
-        assert statuses[suggestions[0]["id"]] == "pending"
+        assert statuses[suggestions[0]["suggestion_id"]] == "pending"
 
     @pytest.mark.asyncio
     async def test_non_atomic_keeps_first_drops_duplicate(self) -> None:
@@ -93,12 +93,12 @@ class TestDuplicateSuggestionIdWithinBatch:
         # Distinct parameter values to isolate the suggestion-id validator.
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
             },
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": {"x": 0.97},
                 "objective_values": {"y": 0.2},
             },
@@ -204,7 +204,7 @@ class TestNonActionableRepeatedReference:
 
         # Build campaign A and grab its suggestion id.
         _, suggestions_a, _ = await _build_campaign_with_suggestions()
-        foreign_id = suggestions_a[0]["id"]
+        foreign_id = suggestions_a[0]["suggestion_id"]
 
         # Build campaign B; submit two rows referencing campaign A's id.
         campaign_b, _suggestions_b, owner_id_b = await _build_campaign_with_suggestions()
@@ -251,12 +251,12 @@ class TestStaleSuggestionReference:
 
         campaign_id, suggestions, owner_id = await _build_campaign_with_suggestions()
         await update_suggestion_status_operation(
-            suggestion_id=suggestions[0]["id"], status=stale_status
+            suggestion_id=suggestions[0]["suggestion_id"], status=stale_status
         )
 
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
             },
@@ -275,7 +275,7 @@ class TestStaleSuggestionReference:
         # Suggestion status is preserved.
         listed = await list_suggestions_operation(campaign_id=campaign_id, verbosity="minimal")
         statuses = {s["suggestion_id"]: s["status"] for s in listed["suggestions"]}
-        assert statuses[suggestions[0]["id"]] == stale_status
+        assert statuses[suggestions[0]["suggestion_id"]] == stale_status
         assert (await list_results_operation(campaign_id=campaign_id))["total_count"] == 0
 
     @pytest.mark.asyncio
@@ -292,7 +292,7 @@ class TestStaleSuggestionReference:
             results=_to_result_inputs(
                 [
                     {
-                        "suggestion_id": suggestions[0]["id"],
+                        "suggestion_id": suggestions[0]["suggestion_id"],
                         "parameter_values": suggestions[0]["parameter_values"],
                         "objective_values": {"y": 0.1},
                     }
@@ -311,7 +311,7 @@ class TestStaleSuggestionReference:
             results=_to_result_inputs(
                 [
                     {
-                        "suggestion_id": suggestions[0]["id"],
+                        "suggestion_id": suggestions[0]["suggestion_id"],
                         "parameter_values": {"x": 0.93},
                         "objective_values": {"y": 0.2},
                     }

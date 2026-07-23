@@ -56,13 +56,13 @@ class TestAtomicRejection:
         campaign_id, suggestions, owner_id = await _build_campaign()
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
                 "measurement_uncertainty": {"y": 0.05},
             },
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
                 "measurement_uncertainty": {"y": bad_value},
@@ -96,13 +96,13 @@ class TestNonAtomicRejection:
         campaign_id, suggestions, owner_id = await _build_campaign()
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
                 "measurement_uncertainty": {"y": 0.05},
             },
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
                 "measurement_uncertainty": {"y": -0.1},
@@ -145,7 +145,7 @@ class TestUnknownObjectiveKeysStillWarn:
         campaign_id, suggestions, owner_id = await _build_campaign(batch_size=1)
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
                 # ``y`` is declared (good value); ``stray`` is unknown.

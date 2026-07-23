@@ -172,6 +172,17 @@ MCP SSE:  http://127.0.0.1:8301/sse
 Containers on the shared network can reach BO-MCP by Docker service name:
 `api:8000`, `mcp:8001`, `frontend:80`, and `db:5432`.
 
+## API stability
+
+The REST prefix `/api/v1` and the MCP tool contracts carry **no
+backward-compatibility guarantee** while this project is pre-1.0 with no
+external consumers. Breaking payload changes land directly on `/api/v1`;
+the signal for them is the `schema_version` integer in every envelope
+response (see the version history at `RESPONSE_SCHEMA_VERSION` in
+`bo_mcp_server/response_formatter.py`). Bundled clients (demo scripts,
+frontend) are expected to move atomically with the server — there is no
+migration window.
+
 ## MCP Tools
 
 22 tools grouped by workflow stage:

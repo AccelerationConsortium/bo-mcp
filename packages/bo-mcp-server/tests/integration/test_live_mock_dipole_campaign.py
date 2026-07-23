@@ -10,6 +10,7 @@ Run with:
     packages/bo-mcp-server/tests/integration/test_live_mock_dipole_campaign.py
 """
 
+import os
 from statistics import mean
 from uuid import uuid4
 
@@ -18,7 +19,10 @@ import pytest
 
 pytestmark = pytest.mark.docker
 
-BASE_URL = "http://localhost:8000"
+# BO_MCP_API_BASE_URL overrides the API base URL for hosts where the
+# default port is already occupied (e.g. compose started with a custom
+# BO_MCP_API_PORT).
+BASE_URL = os.getenv("BO_MCP_API_BASE_URL", "http://localhost:8000")
 API_KEY = "dev-api-key-12345"
 HEADERS = {"X-API-Key": API_KEY}
 

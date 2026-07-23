@@ -191,7 +191,7 @@ async def test_forced_replicate_completes_pending_suggestion(
 
     observed = dict(suggestion["parameter_values"])
     free_row = {"parameter_values": observed, "objective_values": {"y": 1.0}}
-    linked_row = {**free_row, "suggestion_id": suggestion["id"]}
+    linked_row = {**free_row, "suggestion_id": suggestion["suggestion_id"]}
 
     seeded = await api_client.post(
         f"/api/results/{campaign_id}", json={"results": [free_row]}, headers=auth_headers
@@ -214,8 +214,8 @@ async def test_forced_replicate_completes_pending_suggestion(
 
     listed = await api_client.get(f"/api/suggestions/{campaign_id}", headers=auth_headers)
     assert listed.status_code == 200, listed.text
-    statuses = {s["id"]: s["status"] for s in listed.json()}
-    assert statuses[suggestion["id"]] == "completed"
+    statuses = {s["suggestion_id"]: s["status"] for s in listed.json()}
+    assert statuses[suggestion["suggestion_id"]] == "completed"
 
 
 @pytest.mark.asyncio

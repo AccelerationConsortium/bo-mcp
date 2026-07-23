@@ -2,10 +2,6 @@
 
 These tests require the API server to be running locally.
 Run with: pytest -m docker
-
-``BO_MCP_API_BASE_URL`` overrides the API base URL for hosts where the
-default port is already occupied (e.g. compose started with a custom
-``BO_MCP_API_PORT``).
 """
 
 import os
@@ -15,7 +11,9 @@ import pytest
 
 pytestmark = pytest.mark.docker  # Mark all tests in this module
 
-BASE_URL = os.getenv("BO_MCP_API_BASE_URL", "http://localhost:8000")
+# Overridable so the stack can run on an alternate port when 8000 is
+# taken by another local service.
+BASE_URL = os.environ.get("BO_MCP_API_BASE_URL", "http://localhost:8000")
 API_KEY = "dev-api-key-12345"
 HEADERS = {"X-API-Key": API_KEY}
 
@@ -131,7 +129,7 @@ class TestAPIEndpoints:
         data = response.json()
         assert data["success"] is True, f"Generation failed: {data.get('errors')}"
         assert len(data["suggestions"]) > 0
-        TestAPIEndpoints.suggestion_id = data["suggestions"][0]["id"]
+        TestAPIEndpoints.suggestion_id = data["suggestions"][0]["suggestion_id"]
         print(f"✓ Generate suggestions passed (count={len(data['suggestions'])})")
 
     def test_07_get_suggestions(self):

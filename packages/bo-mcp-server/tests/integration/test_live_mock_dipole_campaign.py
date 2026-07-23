@@ -19,10 +19,9 @@ import pytest
 
 pytestmark = pytest.mark.docker
 
-# BO_MCP_API_BASE_URL overrides the API base URL for hosts where the
-# default port is already occupied (e.g. compose started with a custom
-# BO_MCP_API_PORT).
-BASE_URL = os.getenv("BO_MCP_API_BASE_URL", "http://localhost:8000")
+# Overridable so the stack can run on an alternate port when 8000 is
+# taken by another local service.
+BASE_URL = os.environ.get("BO_MCP_API_BASE_URL", "http://localhost:8000")
 API_KEY = "dev-api-key-12345"
 HEADERS = {"X-API-Key": API_KEY}
 
@@ -197,7 +196,7 @@ class TestLiveMockDipoleCampaign:
             results_payload = {
                 "results": [
                     {
-                        "suggestion_id": suggestion["id"],
+                        "suggestion_id": suggestion["suggestion_id"],
                         "parameter_values": suggestion["parameter_values"],
                         "objective_values": {
                             OBJECTIVE_NAME: _dipole_value(*_combo_key(suggestion))

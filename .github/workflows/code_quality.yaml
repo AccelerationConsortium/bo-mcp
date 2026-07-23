@@ -183,6 +183,18 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
+      - name: Free runner disk space
+        # This job materializes the torch/CUDA dependency chain twice —
+        # once in the host uv environment (the docker-marked tests import
+        # bo_mcp_server) and once inside the api/mcp image build — which
+        # together exceed the stock runner's free space (the image build
+        # dies with ENOSPC in `uv sync`). Drop preinstalled toolchains
+        # this job never uses (~25 GB) before installing anything.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
       - name: Set up Python 3.13
         uses: actions/setup-python@v6
         with:

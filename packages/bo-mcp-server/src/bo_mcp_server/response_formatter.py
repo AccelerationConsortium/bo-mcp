@@ -224,6 +224,52 @@ class _PassthroughResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
 
 
+# ---------- Shared list-item projections ----------
+
+
+class SuggestionSummaryItem(BaseModel):
+    """One ``suggestions[]`` entry from ``bo_list_suggestions``.
+
+    Superset of the MINIMAL / STANDARD / DETAILED per-item projections
+    built by ``operations.list_suggestions._serialize_suggestion``.
+    Every field is ``None``-defaulted because which keys are present
+    depends on the requested verbosity.
+
+    Defined here rather than in :mod:`bo_mcp_server.tools.response_models`
+    so the client facade can re-export it without importing the MCP tool
+    layer (``bo_mcp_server.tools`` registers every tool against the
+    FastMCP server at import time): the REST ``SuggestionSummary`` schema
+    subclasses it to pin the identity fields as required, while
+    ``tools.response_models.SuggestionListResponse`` types its list items
+    with it for the ``bo_list_suggestions`` ``outputSchema``.
+
+    Not one of the projection bases above: unlike the frozen
+    per-(operation, verbosity) models, this item model keeps the
+    tool-response convention of ``extra="allow"`` alone so unknown keys
+    pass through and subclasses stay mutable.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    suggestion_id: str | None = None
+    status: str | None = None
+    parameter_values: dict[str, Any] | None = None
+    iteration: int | None = None
+    generation_method: str | None = None
+    created_at: str | None = None
+    batch_index: int | None = None
+    acquisition_function: str | None = None
+    acquisition_value: float | None = None
+    model_uncertainty: float | None = None
+    model_type: str | None = None
+    # Qualitative bucket ("high" / "medium" / "low"), matching the
+    # domain provenance model — not a numeric confidence score.
+    confidence_level: str | None = None
+    predicted_objectives: dict[str, Any] | None = None
+    predicted_std: dict[str, Any] | None = None
+    updated_at: str | None = None
+
+
 # ---------- Diagnostics ----------
 
 

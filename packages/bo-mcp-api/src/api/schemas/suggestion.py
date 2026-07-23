@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.schemas.common import ResponseEnvelope, VerbosityLevel
+from bo_mcp_server.client import SuggestionSummaryItem
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
@@ -105,18 +106,18 @@ class SuggestionQueryRequest(BaseModel):
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD
 
 
-class SuggestionSummary(BaseModel):
+class SuggestionSummary(SuggestionSummaryItem):
     """One ``suggestions[]`` entry from the suggestion query endpoint.
 
-    Superset of the minimal / standard / detailed projections built by
-    the shared list-suggestions operation. ``suggestion_id`` and
-    ``status`` are required — they are present at every verbosity —
-    while the tier-dependent fields are optional.
+    Subclasses the facade's :class:`SuggestionSummaryItem` so the
+    tier-dependent optional fields are declared once, in the server
+    package that both transports serve. Only the identity fields are
+    re-declared here — required rather than optional, because they are
+    present at every verbosity — so OpenAPI pins them and a rename
+    breaks loudly in tests.
 
-    ``extra="allow"`` keeps the historical passthrough behaviour: keys
-    the operation adds later still reach clients instead of being
-    silently dropped, while the declared fields pin the identity key so
-    a rename breaks loudly in tests.
+    ``extra="allow"`` is inherited from the base: keys the operation
+    adds later still reach clients instead of being silently dropped.
 
     The query route serializes with ``response_model_exclude_unset``,
     so each verbosity keeps its exact historical wire shape instead of
@@ -127,23 +128,8 @@ class SuggestionSummary(BaseModel):
     OpenAPI.
     """
 
-    model_config = ConfigDict(extra="allow")
-
     suggestion_id: str
     status: str
-    parameter_values: dict[str, Any] | None = None
-    iteration: int | None = None
-    generation_method: str | None = None
-    created_at: str | None = None
-    batch_index: int | None = None
-    acquisition_function: str | None = None
-    acquisition_value: float | None = None
-    model_uncertainty: float | None = None
-    model_type: str | None = None
-    confidence_level: str | None = None
-    predicted_objectives: dict[str, Any] | None = None
-    predicted_std: dict[str, Any] | None = None
-    updated_at: str | None = None
 
 
 class SuggestionQueryResponse(ResponseEnvelope):

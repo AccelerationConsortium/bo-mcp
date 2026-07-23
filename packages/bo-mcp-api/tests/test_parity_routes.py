@@ -331,7 +331,7 @@ class TestSuggestionParityRoutes:
             "Explanation API Test",
         )
         generated = await generate_suggestions(campaign_id)
-        suggestion_id = generated["suggestions"][0]["id"]
+        suggestion_id = generated["suggestions"][0]["suggestion_id"]
 
         response = await api_client.get(
             f"/api/suggestions/{suggestion_id}/explanation",
@@ -356,7 +356,7 @@ class TestSuggestionParityRoutes:
             "Foreign Explanation API Test",
         )
         generated = await generate_suggestions(campaign_id)
-        suggestion_id = generated["suggestions"][0]["id"]
+        suggestion_id = generated["suggestions"][0]["suggestion_id"]
 
         response = await api_client.get(
             f"/api/suggestions/{suggestion_id}/explanation",
@@ -468,7 +468,7 @@ class TestSuggestionStatusRoute:
         owner_id = str(persisted_user.id)
         campaign_id = await _create_campaign_for_owner(owner_id, "Status Route Test")
         generated = await generate_suggestions(campaign_id)
-        suggestion_id = generated["suggestions"][0]["id"]
+        suggestion_id = generated["suggestions"][0]["suggestion_id"]
 
         response = await api_client.post(
             f"/api/suggestions/{suggestion_id}/status",
@@ -490,7 +490,7 @@ class TestSuggestionStatusRoute:
             str(persisted_another_user.id), "Foreign Status Test"
         )
         generated = await generate_suggestions(foreign_campaign_id)
-        suggestion_id = generated["suggestions"][0]["id"]
+        suggestion_id = generated["suggestions"][0]["suggestion_id"]
 
         response = await api_client.post(
             f"/api/suggestions/{suggestion_id}/status",
@@ -505,7 +505,7 @@ class TestSuggestionStatusRoute:
         owner_id = str(persisted_user.id)
         campaign_id = await _create_campaign_for_owner(owner_id, "Invalid Status Test")
         generated = await generate_suggestions(campaign_id)
-        suggestion_id = generated["suggestions"][0]["id"]
+        suggestion_id = generated["suggestions"][0]["suggestion_id"]
 
         response = await api_client.post(
             f"/api/suggestions/{suggestion_id}/status",
@@ -810,7 +810,7 @@ class TestGetEndpointBackwardCompat:
         assert isinstance(data, list)
         assert len(data) > 0
         suggestion = data[0]
-        for field in ("id", "campaign_id", "parameter_values", "status", "provenance"):
+        for field in ("suggestion_id", "campaign_id", "parameter_values", "status", "provenance"):
             assert field in suggestion, f"Missing field: {field}"
 
 
@@ -889,8 +889,8 @@ class TestMcpHttpParity:
         campaign_b = await _create_campaign_for_owner(owner_id, "Parity Status B")
         gen_a = await generate_suggestions(campaign_a)
         gen_b = await generate_suggestions(campaign_b)
-        suggestion_a = gen_a["suggestions"][0]["id"]
-        suggestion_b = gen_b["suggestions"][0]["id"]
+        suggestion_a = gen_a["suggestions"][0]["suggestion_id"]
+        suggestion_b = gen_b["suggestions"][0]["suggestion_id"]
 
         # MCP path (operation directly)
         mcp_result = await update_suggestion_status_operation(suggestion_a, "accepted")

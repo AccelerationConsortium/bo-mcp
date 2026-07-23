@@ -153,7 +153,7 @@ class TestDryRunParity:
         generated = await api_client.post(
             f"/api/v1/suggestions/{campaign_id}/generate", headers=auth_headers
         )
-        suggestion_id = generated.json()["suggestions"][0]["id"]
+        suggestion_id = generated.json()["suggestions"][0]["suggestion_id"]
 
         response = await api_client.post(
             f"/api/v1/suggestions/{suggestion_id}/status",

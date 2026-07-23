@@ -51,6 +51,18 @@ class ResultBatchCreate(BaseModel):
     mirror the MCP ``bo_submit_results`` tool parameters one-to-one —
     both transports call the same
     :func:`bo_mcp_server.operations.submit_results.submit_results_operation`.
+
+    ``force`` bypasses the exact-duplicate-coordinate check so an
+    optimizer-requested replicate can be submitted without first
+    rejecting the suggestion (which would not exclude the coordinates
+    from future generation).
+
+    ``force`` participates in the idempotency request hash, and a
+    duplicate rejection is a terminal (non-retryable) outcome that the
+    idempotency cache stores. A forced retry of a rejected submission
+    must therefore be sent under a *new* ``Idempotency-Key`` — reusing
+    the key that produced the rejection returns a 409 idempotency
+    conflict instead of running the forced submission.
     """
 
     model_config = _FORBID_EXTRA
@@ -60,8 +72,13 @@ class ResultBatchCreate(BaseModel):
     force: bool = Field(
         default=False,
         description=(
-            "Override duplicate detection and persist rows whose parameter "
-            "values match an existing result (intentional re-measurement)."
+            "Bypass the exact-duplicate-coordinate check so an "
+            "optimizer-requested replicate can be submitted (same semantics "
+            "as the MCP bo_submit_results force flag). Note: force is part "
+            "of the idempotency request hash and duplicate rejections are "
+            "cached, so a forced retry of a rejected submission must use a "
+            "new Idempotency-Key; reusing the rejected key returns a 409 "
+            "idempotency conflict."
         ),
     )
     atomic: bool = Field(
@@ -143,6 +160,18 @@ class ResultSubmitResponse(MutationEnvelope):
     ``partial_results`` is populated for ``atomic=false`` +
     ``continue_on_error=true`` submissions: a per-row mapping of input
     index to the persisted result id or the row's error.
+
+    ``error_code`` carries the structured
+    :class:`bo_mcp_server.errors.ErrorCode` value (e.g. ``"E004"`` for
+    a duplicate-result rejection) when the operation failed, so REST
+    clients can dispatch on the machine-readable code instead of
+    string-matching ``errors`` — the same contract MCP clients get
+    from the tool envelope's ``error.code``.
+
+    ``duplicates_detected`` mirrors the MCP envelope's duplicate
+    diagnostics: one entry per detected exact/near duplicate with the
+    conflicting row index and whether the match is against a stored
+    result or another row in the same batch.
     """
 
     success: bool
@@ -152,3 +181,5 @@ class ResultSubmitResponse(MutationEnvelope):
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
     idempotency_replay: bool = False
     partial_results: dict[int, str | dict[str, str]] | None = None
+    error_code: str | None = None
+    duplicates_detected: list[dict[str, Any]] = Field(default_factory=list)

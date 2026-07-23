@@ -340,7 +340,7 @@ class TestGenerateSuggestions:
         assert result["iteration"] == 1
         # Verify suggestions have required fields
         for sugg in result["suggestions"]:
-            assert "id" in sugg
+            assert "suggestion_id" in sugg
             assert "parameter_values" in sugg
             assert "x" in sugg["parameter_values"]
             assert 0.0 <= sugg["parameter_values"]["x"] <= 1.0
@@ -1070,7 +1070,7 @@ class TestGetSuggestionExplanation:
         create_result = await create_campaign(intake_data, owner_id)
         gen_result = await generate_suggestions(create_result["campaign_id"])
 
-        suggestion_id = gen_result["suggestions"][0]["id"]
+        suggestion_id = gen_result["suggestions"][0]["suggestion_id"]
         result = await get_suggestion_explanation(suggestion_id)
 
         assert result["success"] is True

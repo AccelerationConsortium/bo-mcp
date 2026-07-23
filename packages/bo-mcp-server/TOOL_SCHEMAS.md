@@ -42,7 +42,7 @@ bo_create_campaign → [bo_generate_suggestions → bo_submit_results]* → bo_g
 |-------|-------|----------|
 | "Campaign not found" | Invalid UUID or deleted campaign | Verify `campaign_id` format (UUID v4), check `campaigns://list` |
 | "Invalid state transition" | Wrong campaign status | Check status with `campaign://{id}`, use appropriate lifecycle tool |
-| "Duplicate result detected" | Same parameters submitted twice | Use `force: true` parameter to override, or skip |
+| "Duplicate result detected" | Same parameters submitted twice | Intentional replicate: `bo_submit_results` with `force: true` under a **fresh** `idempotency_key` (the rejection is cached under the old one). `bo_upload_results_file` has no `force` — resubmit the replicate rows via `bo_submit_results`. Accidental: skip |
 | "Validation failed" | Invalid intake configuration | Review `errors` array, fix the intake, and retry `bo_create_campaign` |
 
 ---
@@ -178,7 +178,7 @@ Tools return structured errors with recovery guidance:
 | E001 | Invalid campaign_id format | Verify UUID v4 format. Use campaigns://list for valid IDs. |
 | E002 | Campaign not found | Use campaigns://list to verify campaign exists. |
 | E003 | Invalid state transition | Check status with campaign://{id}. See valid transitions. |
-| E004 | Duplicate result detected | Use force=True to override, or skip result. |
+| E004 | Duplicate result detected | Intentional replicate: `bo_submit_results` with `force: true` under a fresh `idempotency_key` — never via `bo_upload_results_file`, which has no `force` (see Common Error Recovery above). Accidental: skip. |
 | E005 | Validation failed | Review errors array, fix issues, retry. |
 | E006 | Missing parameters | Add at least one parameter to intake_data.parameters. |
 | E007 | Missing objectives | Add at least one objective to intake_data.objectives. |
@@ -482,7 +482,7 @@ Generates the next batch of experiment suggestions for a campaign.
   "success": "boolean",
   "suggestions": [
     {
-      "id": "string (UUID)",
+      "suggestion_id": "string (UUID)",
       "parameter_values": {
         "param_name": "number | string"
       },
@@ -583,11 +583,18 @@ Submits experimental results for a campaign.
         "obj_name": "number"
       },
       "suggestion_id": "string (UUID, optional)",
+      "measurement_uncertainty": "object {obj_name: number} (optional)",
       "metadata": "object (optional)"
     }
   ],
   "source": "gui | file_upload | api (default: api)",
-  "force": "boolean (default: false) - Override duplicate detection"
+  "force": "boolean (default: false) - Override duplicate detection; a forced retry of a cached duplicate rejection needs a fresh idempotency_key",
+  "atomic": "boolean (default: true) - Whole batch succeeds or fails together",
+  "continue_on_error": "boolean (default: false) - With atomic=false, process rows independently and report per-row partial_results",
+  "verbosity": "minimal | standard | detailed (default: standard)",
+  "idempotency_key": "string (optional) - Retry-safe replay key",
+  "dry_run": "boolean (default: false) - Preview without persisting",
+  "trace_id": "string (optional) - Workflow correlation id"
 }
 ```
 
@@ -619,9 +626,17 @@ Uploads experimental results from a CSV file.
 {
   "campaign_id": "string (UUID)",
   "file_content": "string (CSV content)",
-  "file_format": "csv (default: csv)"
+  "file_format": "csv (default: csv)",
+  "idempotency_key": "string (optional) - Retry-safe replay key",
+  "dry_run": "boolean (default: false) - Parse and validate without persisting",
+  "trace_id": "string (optional) - Workflow correlation id"
 }
 ```
+
+There is no `force` override on this tool: an upload containing an
+intentional replicate of already-measured coordinates is rejected as a
+duplicate — resubmit those rows via `bo_submit_results` with
+`force: true`.
 
 **CSV Format:**
 - Parameter columns: `param_<name>` (e.g., `param_temperature`, `param_pressure`)
@@ -942,6 +957,12 @@ Example error response:
 
 ## Version History
 
+- Corrected the `bo_submit_results` / `bo_upload_results_file` input schemas
+  to match the registered tools (batch controls, idempotency, dry-run,
+  tracing, per-row measurement uncertainty) and split the duplicate-result
+  recovery advice per transport; a unit test now guards these two entries
+  against drift. The authoritative machine-readable contract remains the
+  live `inputSchema`/`outputSchema` each tool advertises over MCP.
 - Retired AGENT_COOKBOOK.md: its narrative content (decision trees, error
   recovery, verbosity guide, suggestion-status lifecycle, subscriptions)
   moved into the canonical operating manual served at `/manpage` and as the

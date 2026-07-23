@@ -55,7 +55,7 @@ class TestMeasurementUncertaintyRoundTrip:
                     {
                         "parameter_values": suggestion["parameter_values"],
                         "objective_values": {"y": 0.4},
-                        "suggestion_id": suggestion["id"],
+                        "suggestion_id": suggestion["suggestion_id"],
                         "measurement_uncertainty": {"y": 0.05},
                     }
                 ],
@@ -85,7 +85,7 @@ class TestMeasurementUncertaintyRoundTrip:
                     {
                         "parameter_values": suggestion["parameter_values"],
                         "objective_values": {"y": 0.4},
-                        "suggestion_id": suggestion["id"],
+                        "suggestion_id": suggestion["suggestion_id"],
                         "measurement_uncertainty": {"y": 0.07},
                     }
                 ],
@@ -118,7 +118,7 @@ class TestMeasurementUncertaintyRoundTrip:
                     {
                         "parameter_values": suggestion["parameter_values"],
                         "objective_values": {"y": 0.4},
-                        "suggestion_id": suggestion["id"],
+                        "suggestion_id": suggestion["suggestion_id"],
                         "measurement_uncertainty": {"y": 0.03},
                     }
                 ],
@@ -160,7 +160,7 @@ class TestMeasurementUncertaintyValidation:
                     {
                         "parameter_values": suggestion["parameter_values"],
                         "objective_values": {"y": 0.4},
-                        "suggestion_id": suggestion["id"],
+                        "suggestion_id": suggestion["suggestion_id"],
                         "measurement_uncertainty": {"y": -0.1},
                     }
                 ],
@@ -197,7 +197,7 @@ class TestMeasurementUncertaintyValidation:
                     {
                         "parameter_values": suggestion["parameter_values"],
                         "objective_values": {"y": 0.4},
-                        "suggestion_id": suggestion["id"],
+                        "suggestion_id": suggestion["suggestion_id"],
                         "measurement_uncertainty": {"y": 0.05, "stray": 0.0},
                     }
                 ],

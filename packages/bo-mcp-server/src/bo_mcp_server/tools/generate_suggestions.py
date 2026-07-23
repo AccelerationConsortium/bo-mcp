@@ -41,6 +41,11 @@ async def generate_suggestions(
     bo_submit_results (subsequent batches). Check results with
     bo_get_diagnostics afterward.
 
+    Each suggestion carries its identity under ``suggestion_id`` — the
+    same key ``bo_list_suggestions`` emits and ``bo_submit_results``
+    consumes, so copy its value into the ``suggestion_id`` field when
+    submitting results.
+
     Args:
         campaign_id: UUID of the campaign.
         batch_size: Number of suggestions (default: campaign's batch_size).

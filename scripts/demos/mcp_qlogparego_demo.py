@@ -146,7 +146,7 @@ async def run_parego_demo(owner_id: str) -> tuple[str, dict[str, float]]:
                 {
                     "parameter_values": params,
                     "objective_values": {"f1": f1, "f2": f2},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
             print(f"    x1={x1:.3f}, x2={x2:.3f} -> f1={f1:.2f}, f2={f2:.2f}")
@@ -239,7 +239,7 @@ async def run_nehvi_demo(owner_id: str) -> tuple[str, dict[str, float]]:
                 {
                     "parameter_values": params,
                     "objective_values": {"f1": f1, "f2": f2},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
             print(f"    x1={x1:.3f}, x2={x2:.3f} -> f1={f1:.2f}, f2={f2:.2f}")

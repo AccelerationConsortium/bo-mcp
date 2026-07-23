@@ -59,7 +59,7 @@ async def test_measurement_uncertainty_drives_fixed_noise_likelihood() -> None:
     init_gen = await generate_suggestions(campaign_id, batch_size=2)
     submissions = [
         {
-            "suggestion_id": s["id"],
+            "suggestion_id": s["suggestion_id"],
             "parameter_values": s["parameter_values"],
             "objective_values": {"y": float(s["parameter_values"]["x"])},
             "measurement_uncertainty": {"y": 0.05},
@@ -81,7 +81,7 @@ async def test_measurement_uncertainty_drives_fixed_noise_likelihood() -> None:
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                     "parameter_values": s["parameter_values"],
                     "objective_values": {"y": float(s["parameter_values"]["x"])},
                     "measurement_uncertainty": {"y": 0.05},
@@ -142,14 +142,14 @@ async def test_partial_measurement_uncertainty_falls_back_to_trainable_noise() -
     init_gen = await generate_suggestions(campaign_id, batch_size=2)
     submissions = [
         {
-            "suggestion_id": init_gen["suggestions"][0]["id"],
+            "suggestion_id": init_gen["suggestions"][0]["suggestion_id"],
             "parameter_values": init_gen["suggestions"][0]["parameter_values"],
             "objective_values": {"y": float(init_gen["suggestions"][0]["parameter_values"]["x"])},
             "measurement_uncertainty": {"y": 0.05},
         },
         # Second result has NO uncertainty -> full-coverage check fails.
         {
-            "suggestion_id": init_gen["suggestions"][1]["id"],
+            "suggestion_id": init_gen["suggestions"][1]["suggestion_id"],
             "parameter_values": init_gen["suggestions"][1]["parameter_values"],
             "objective_values": {"y": float(init_gen["suggestions"][1]["parameter_values"]["x"])},
         },
@@ -167,7 +167,7 @@ async def test_partial_measurement_uncertainty_falls_back_to_trainable_noise() -
         results=_to_result_inputs(
             [
                 {
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                     "parameter_values": s["parameter_values"],
                     "objective_values": {"y": float(s["parameter_values"]["x"])},
                 }

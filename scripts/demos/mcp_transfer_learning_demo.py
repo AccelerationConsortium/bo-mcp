@@ -114,7 +114,7 @@ async def create_prior_campaign(owner_id: str, name: str, shift: float = 0.0) ->
                 {
                     "parameter_values": {"x1": x1, "x2": x2},
                     "objective_values": {"f": obj_value},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             ],
             submitted_by=owner_id,
@@ -272,7 +272,7 @@ async def main() -> None:
                 {
                     "parameter_values": params,
                     "objective_values": {"f": obj_value},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
 

@@ -172,6 +172,17 @@ MCP SSE:  http://127.0.0.1:8301/sse
 Containers on the shared network can reach BO-MCP by Docker service name:
 `api:8000`, `mcp:8001`, `frontend:80`, and `db:5432`.
 
+## API stability
+
+The REST prefix `/api/v1` and the MCP tool contracts carry **no
+backward-compatibility guarantee** while this project is pre-1.0 with no
+external consumers. Breaking payload changes land directly on `/api/v1`;
+the signal for them is the `schema_version` integer in every envelope
+response (see the version history at `RESPONSE_SCHEMA_VERSION` in
+`bo_mcp_server/response_formatter.py`). Bundled clients (demo scripts,
+frontend) are expected to move atomically with the server — there is no
+migration window.
+
 ## MCP Tools
 
 22 tools grouped by workflow stage:
@@ -201,9 +212,9 @@ Containers on the shared network can reach BO-MCP by Docker service name:
 | | `bo_reopen_campaign` | Reopen a completed/terminated campaign |
 | **Transfer** | `bo_discover_transfer_candidates` | Find campaigns suitable for transfer learning |
 
-8 MCP resources: `campaign://{campaign_id}`, `campaigns://recent`, `campaigns://recent/{filters}`, `campaigns://list`, `campaigns://list/{filters}`, `suggestions://{campaign_id}`, `suggestion://{suggestion_id}`, `events://{campaign_id}`.
+9 MCP resources: `campaign://{campaign_id}`, `campaigns://recent`, `campaigns://recent/{filters}`, `campaigns://list`, `campaigns://list/{filters}`, `suggestions://{campaign_id}`, `suggestion://{suggestion_id}`, `events://{campaign_id}`, `docs://manpage` (the operating manual).
 
-See [TOOL_SCHEMAS.md](packages/bo-mcp-server/TOOL_SCHEMAS.md) for full input/output schemas.
+See [TOOL_SCHEMAS.md](packages/bo-mcp-server/TOOL_SCHEMAS.md) for a narrative per-tool schema reference; the authoritative machine-readable contract is the live `inputSchema`/`outputSchema` each tool advertises over MCP (`tools/list`).
 
 ## Multi-Backend Architecture
 

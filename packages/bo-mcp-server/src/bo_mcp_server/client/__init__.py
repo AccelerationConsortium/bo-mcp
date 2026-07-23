@@ -140,6 +140,7 @@ from bo_mcp_server.operations.validate_intake import (
 )
 from bo_mcp_server.response_formatter import (
     RESPONSE_SCHEMA_VERSION,
+    SuggestionSummaryItem,
     ValidateIntakeSpecSummary,
     VerbosityLevel,
     format_validate_intake_response,
@@ -199,6 +200,7 @@ __all__ = [
     "SuggestionProvenance",
     "SuggestionSnapshot",
     "SuggestionStatus",
+    "SuggestionSummaryItem",
     "TransferLearningConfig",
     "TurboConfig",
     "User",

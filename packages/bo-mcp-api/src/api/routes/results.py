@@ -78,6 +78,8 @@ def _build_submit_response(result: dict) -> ResultSubmitResponse:
         idempotency_replay=bool(result.get("idempotency_replay", False)),
         partial_results=result.get("partial_results"),
         error=result.get("error"),
+        error_code=(result.get("error") or {}).get("code"),
+        duplicates_detected=result.get("duplicates_detected", []),
         dry_run=bool(result.get("dry_run", False)),
         preview=result.get("preview"),
     )
@@ -152,6 +154,12 @@ async def submit_campaign_results(
     replays the cached response instead of persisting the batch
     twice. ``dry_run`` requests bypass the idempotency cache and
     return a preview — mirroring the MCP tool.
+
+    A duplicate rejection is terminal and cached under the submitted
+    key, and ``force`` is part of the request hash — so a client that
+    follows the rejection's "Use force=True" recovery hint must send
+    the forced retry under a fresh ``Idempotency-Key``; reusing the
+    rejected key yields a 409 idempotency conflict.
     """
     await get_authorized_campaign(campaign_id, current_user)
 
@@ -287,6 +295,17 @@ async def upload_results_file(
     current_user: CurrentUser,
     response: Response,
     dry_run: Annotated[bool, Query()] = False,
+    force: Annotated[
+        bool,
+        Query(
+            description=(
+                "Bypass the exact-duplicate-coordinate check so a file "
+                "containing an optimizer-requested replicate can be "
+                "uploaded — same semantics as the JSON submission body's "
+                "force field."
+            ),
+        ),
+    ] = False,
 ) -> ResultSubmitResponse:
     """Upload results from CSV or Excel file.
 
@@ -294,6 +313,11 @@ async def upload_results_file(
     and validates the file and returns a preview of what would persist
     without writing anything — same semantics as the MCP
     ``bo_upload_results_file`` tool.
+
+    ``force`` matches the JSON route's override: without it a file
+    carrying an intentional replicate is rejected with a "Use
+    force=True" hint that would otherwise be unactionable on this
+    transport.
 
     Streams the upload through :func:`_read_upload_bounded` (refusing
     over :data:`api.limits.MAX_UPLOAD_FILE_SIZE_BYTES`) and parses
@@ -378,6 +402,7 @@ async def upload_results_file(
         results=results_data,
         submitted_by=str(current_user.id),
         source="file_upload",
+        force=force,
         dry_run=dry_run,
     )
 

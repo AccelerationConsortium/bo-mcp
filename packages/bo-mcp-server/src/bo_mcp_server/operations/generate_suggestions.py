@@ -286,7 +286,7 @@ def _build_success_response(
     """Build the full success response dict."""
     suggestion_dicts = [
         {
-            "id": str(s.id),
+            "suggestion_id": str(s.id),
             "parameter_values": s.parameter_values,
             "provenance": s.provenance.model_dump(),
             "created_at": s.created_at.isoformat(),

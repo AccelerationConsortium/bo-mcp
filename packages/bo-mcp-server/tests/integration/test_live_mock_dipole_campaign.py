@@ -196,7 +196,7 @@ class TestLiveMockDipoleCampaign:
             results_payload = {
                 "results": [
                     {
-                        "suggestion_id": suggestion["id"],
+                        "suggestion_id": suggestion["suggestion_id"],
                         "parameter_values": suggestion["parameter_values"],
                         "objective_values": {
                             OBJECTIVE_NAME: _dipole_value(*_combo_key(suggestion))

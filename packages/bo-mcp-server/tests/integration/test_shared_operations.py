@@ -176,7 +176,7 @@ class TestSharedOperations:
             "Explanation Shared Op Test",
         )
         generated = await generate_suggestions(campaign_id)
-        suggestion_id = generated["suggestions"][0]["id"]
+        suggestion_id = generated["suggestions"][0]["suggestion_id"]
 
         operation_result = await get_suggestion_explanation_operation(suggestion_id)
         tool_result = await get_suggestion_explanation(suggestion_id)
@@ -216,7 +216,7 @@ class TestSharedOperations:
         campaign_id = result["campaign_id"]
 
         gen = await generate_suggestions(campaign_id)
-        suggestion_id = gen["suggestions"][0]["id"]
+        suggestion_id = gen["suggestions"][0]["suggestion_id"]
         accepted = await update_suggestion_status_operation(suggestion_id, "accepted")
         assert accepted["success"] is True
 
@@ -248,7 +248,7 @@ class TestSharedOperations:
         campaign_id = result["campaign_id"]
 
         gen = await generate_suggestions(campaign_id)
-        suggestion_id = gen["suggestions"][0]["id"]
+        suggestion_id = gen["suggestions"][0]["suggestion_id"]
         accepted = await update_suggestion_status_operation(suggestion_id, "accepted")
         assert accepted["success"] is True
 
@@ -419,8 +419,8 @@ class TestSharedOperations:
         campaign_b = await _create_single_objective_campaign(owner_id, "Status Op Test B")
         gen_a = await generate_suggestions(campaign_a)
         gen_b = await generate_suggestions(campaign_b)
-        suggestion_a = gen_a["suggestions"][0]["id"]
-        suggestion_b = gen_b["suggestions"][0]["id"]
+        suggestion_a = gen_a["suggestions"][0]["suggestion_id"]
+        suggestion_b = gen_b["suggestions"][0]["suggestion_id"]
 
         operation_result = await update_suggestion_status_operation(suggestion_a, "accepted")
         tool_result = await update_suggestion_status_tool(suggestion_b, "accepted")
@@ -438,7 +438,7 @@ class TestSharedOperations:
         async def _fresh_suggestion() -> str:
             cid = await _create_single_objective_campaign(owner_id, f"Trans {uuid4().hex[:6]}")
             gen = await generate_suggestions(cid)
-            return gen["suggestions"][0]["id"]
+            return gen["suggestions"][0]["suggestion_id"]
 
         # Valid: pending -> accepted
         sid = await _fresh_suggestion()
@@ -500,7 +500,7 @@ class TestSharedOperations:
         owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Status")
         generated = await generate_suggestions(campaign_id)
-        suggestion_id = generated["suggestions"][0]["id"]
+        suggestion_id = generated["suggestions"][0]["suggestion_id"]
 
         preview = await update_suggestion_status_operation(
             suggestion_id,
@@ -692,7 +692,7 @@ class TestSharedOperations:
         owner_id = await seed_owner()
         campaign_id = await _create_single_objective_campaign(owner_id, "Trace Audit")
         generated = await generate_suggestions(campaign_id)
-        suggestion_id = generated["suggestions"][0]["id"]
+        suggestion_id = generated["suggestions"][0]["suggestion_id"]
 
         result = await update_suggestion_status_real_tool(
             suggestion_id,
@@ -723,7 +723,7 @@ class TestSharedOperations:
         campaign_id = await _create_single_objective_campaign(owner_id, "Dry Run Submit")
         generated = await generate_suggestions(campaign_id)
         suggestion = generated["suggestions"][0]
-        suggestion_id = suggestion["id"]
+        suggestion_id = suggestion["suggestion_id"]
         param_value = suggestion["parameter_values"]["x"]
 
         preview = await submit_results_operation(

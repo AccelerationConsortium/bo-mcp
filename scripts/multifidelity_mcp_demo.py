@@ -181,7 +181,7 @@ async def main():
                 {
                     "parameter_values": {**params, "fidelity": fidelity},
                     "objective_values": {"f": obj_value},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                     "metadata": {"cost": cost, "fidelity": fidelity},
                 }
             )

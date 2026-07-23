@@ -9,13 +9,15 @@ MCP (Model Context Protocol) server for Bayesian Optimization. Exposes a full BO
   and error recovery. Read it before operating campaigns. The REST API
   serves the same text at `/manpage` (HTML) and `/manpage.md` (Markdown);
   source: [src/bo_mcp_server/docs/MANPAGE.md](src/bo_mcp_server/docs/MANPAGE.md).
-- [TOOL_SCHEMAS.md](TOOL_SCHEMAS.md) — per-tool input/output schemas (the
-  MCP analog of the REST OpenAPI document).
+- [TOOL_SCHEMAS.md](TOOL_SCHEMAS.md) — narrative per-tool schema reference
+  with examples. The authoritative machine-readable contract is the live
+  `inputSchema`/`outputSchema` each tool advertises over MCP
+  (`tools/list`).
 
 ## Scope
 
 - 22 MCP tools covering the complete optimization lifecycle (create, suggest, submit, diagnose, compare)
-- 8 MCP resources for campaign, suggestion, and audit event inspection
+- 9 MCP resources for campaign, suggestion, and audit event inspection, plus the operating manual (`docs://manpage`)
 - SQLAlchemy ORM with PostgreSQL and SQLite support
 - Protocol-neutral operations layer reusable by REST, CLI, or direct Python import
 - Pluggable backend via `BOBackend` protocol (defaults to BayBE; BoTorch is the legacy fallback)

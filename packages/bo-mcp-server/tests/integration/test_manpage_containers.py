@@ -165,6 +165,6 @@ class TestManpageTranscriptExecution:
 
         suggestions = httpx.get(f"{API_BASE_URL}/api/v1/suggestions/{campaign_id}", headers=headers)
         assert suggestions.status_code == 200, suggestions.text
-        by_id = {row["id"]: row for row in suggestions.json()}
+        by_id = {row["suggestion_id"]: row for row in suggestions.json()}
         assert by_id[suggestion_id]["status"] == "completed"
         print("✓ §2.3 transcript executed end to end with replay proofs")

@@ -109,8 +109,8 @@ class TestGenerateSuggestionsStatusCode:
 
         follow_up = await api_client.get(location, headers=auth_headers)
         assert follow_up.status_code == 200
-        listed_ids = {row["id"] for row in follow_up.json()}
-        produced_ids = {s["id"] for s in response.json()["suggestions"]}
+        listed_ids = {row["suggestion_id"] for row in follow_up.json()}
+        produced_ids = {s["suggestion_id"] for s in response.json()["suggestions"]}
         assert produced_ids.issubset(listed_ids)
 
 

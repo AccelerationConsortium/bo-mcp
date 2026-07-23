@@ -581,6 +581,35 @@ def _apply_dup_and_budget_filter(
     return sorted(state.kept, key=lambda pair: pair[0])
 
 
+def _warn_unlinked_rows(
+    results: list[ResultSubmissionInput],
+    result_source: ResultSource,
+    actionable_ids: set[str],
+    tracking: _SubmitTracking,
+) -> None:
+    """Warn once per batch when API rows skip open suggestions.
+
+    Scoped to plausible mistakes only: programmatic (``api``) sources
+    are the ones that read suggestion payloads and forward them, and
+    the warning only fires while actionable suggestions exist —
+    seed-data submissions before any generation stay silent, as do GUI
+    and file-upload sources whose rows are legitimately unlinked. It
+    exists because a caller that *meant* to link a result but dropped
+    the key gets no error — the result is accepted and the originating
+    suggestion silently stays pending — so the mistake must be visible
+    at submit time.
+    """
+    if result_source != ResultSource.API or not actionable_ids:
+        return
+    unlinked_count = sum(1 for r in results if not r.suggestion_id)
+    if unlinked_count:
+        tracking.warnings.append(
+            f"{unlinked_count} result(s) submitted without suggestion_id while "
+            f"{len(actionable_ids)} open suggestion(s) exist; they will be stored "
+            "unlinked and will not complete any suggestion"
+        )
+
+
 async def _validate_and_create_results(
     results: list[ResultSubmissionInput],
     spec: CampaignSpec,
@@ -619,6 +648,7 @@ async def _validate_and_create_results(
     # inline suggestion-reference check below *and* the budget guard later.
     actionable_suggestions = await suggestion_repo.list_actionable_by_campaign(campaign_uuid)
     actionable_ids = {str(s.id) for s in actionable_suggestions}
+    _warn_unlinked_rows(results, result_source, actionable_ids, tracking)
     # Budget slots use the same staleness classification as generate:
     # aged-out PENDING rows would be expired by the next generate, so
     # they must not budget-reject a free-floating submit. They stay in

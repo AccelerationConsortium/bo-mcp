@@ -83,19 +83,19 @@ class TestSubmitResultsAtomicPreValidation:
             {
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
             },
             {
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
             },
             {
                 "parameter_values": suggestions[2]["parameter_values"],
                 # Wrong objective name — passes Pydantic, fails operation-level
                 # validation: spec requires "y".
                 "objective_values": {"wrong_name": 0.3},
-                "suggestion_id": suggestions[2]["id"],
+                "suggestion_id": suggestions[2]["suggestion_id"],
             },
         ]
 
@@ -123,9 +123,9 @@ class TestSubmitResultsAtomicPreValidation:
         )
         statuses = {s["suggestion_id"]: s["status"] for s in listed_suggestions["suggestions"]}
         for suggestion in suggestions:
-            assert statuses[suggestion["id"]] == "pending", (
+            assert statuses[suggestion["suggestion_id"]] == "pending", (
                 "Atomic batch failure must not leak COMPLETED updates for "
-                f"suggestion {suggestion['id']}"
+                f"suggestion {suggestion['suggestion_id']}"
             )
 
     @pytest.mark.asyncio
@@ -146,12 +146,12 @@ class TestSubmitResultsAtomicPreValidation:
             {
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
             },
             {
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
             },
         ]
 
@@ -173,7 +173,7 @@ class TestSubmitResultsAtomicPreValidation:
         )
         statuses = {s["suggestion_id"]: s["status"] for s in listed_suggestions["suggestions"]}
         for suggestion in suggestions:
-            assert statuses[suggestion["id"]] == "completed"
+            assert statuses[suggestion["suggestion_id"]] == "completed"
 
     @pytest.mark.asyncio
     async def test_non_atomic_without_continue_on_error_does_not_persist_partial_data(
@@ -195,7 +195,7 @@ class TestSubmitResultsAtomicPreValidation:
             {
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
             },
             # Duplicate suggestion_id reference -- phase-1 validator records
             # a row error. With continue_on_error=False this must abort the
@@ -203,7 +203,7 @@ class TestSubmitResultsAtomicPreValidation:
             {
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
             },
         ]
         result = await submit_results_operation(
@@ -241,7 +241,7 @@ class TestSubmitResultsAtomicPreValidation:
         # duplicate detector can match against.
         seed_rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
             },
@@ -260,7 +260,7 @@ class TestSubmitResultsAtomicPreValidation:
         # validator -- is the rejection path.
         dup_rows = [
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.2},
             },
@@ -300,7 +300,7 @@ class TestSubmitResultsAtomicPreValidation:
             results=_to_result_inputs(
                 [
                     {
-                        "suggestion_id": suggestions[0]["id"],
+                        "suggestion_id": suggestions[0]["suggestion_id"],
                         "parameter_values": suggestions[0]["parameter_values"],
                         "objective_values": {"y": 0.1},
                     }
@@ -313,12 +313,12 @@ class TestSubmitResultsAtomicPreValidation:
         # Submit two more rows: one fresh, one exact duplicate of the seed.
         rows = [
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
             },
             {
-                "suggestion_id": suggestions[2]["id"],
+                "suggestion_id": suggestions[2]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],  # duplicate
                 "objective_values": {"y": 0.3},
             },
@@ -361,7 +361,7 @@ class TestSubmitResultsAtomicPreValidation:
             results=_to_result_inputs(
                 [
                     {
-                        "suggestion_id": suggestions[0]["id"],
+                        "suggestion_id": suggestions[0]["suggestion_id"],
                         "parameter_values": suggestions[0]["parameter_values"],
                         "objective_values": {"y": 0.1},
                     }
@@ -373,12 +373,12 @@ class TestSubmitResultsAtomicPreValidation:
 
         rows = [
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[1]["parameter_values"],
                 "objective_values": {"y": 0.2},
             },
             {
-                "suggestion_id": suggestions[2]["id"],
+                "suggestion_id": suggestions[2]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],  # duplicate
                 "objective_values": {"y": 0.3},
             },
@@ -415,7 +415,7 @@ class TestSubmitResultsAtomicPreValidation:
             results=_to_result_inputs(
                 [
                     {
-                        "suggestion_id": suggestions[0]["id"],
+                        "suggestion_id": suggestions[0]["suggestion_id"],
                         "parameter_values": suggestions[0]["parameter_values"],
                         "objective_values": {"y": 0.1},
                     }
@@ -430,7 +430,7 @@ class TestSubmitResultsAtomicPreValidation:
             results=_to_result_inputs(
                 [
                     {
-                        "suggestion_id": suggestions[1]["id"],
+                        "suggestion_id": suggestions[1]["suggestion_id"],
                         "parameter_values": suggestions[0]["parameter_values"],
                         "objective_values": {"y": 0.4},
                     }
@@ -461,7 +461,7 @@ class TestSubmitResultsAtomicPreValidation:
         campaign_id, suggestions, owner_id = await _build_campaign_with_suggestions(batch_size=2)
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
             },
@@ -469,7 +469,7 @@ class TestSubmitResultsAtomicPreValidation:
             # suggestion_id. Without the in-batch baseline, both would
             # land in storage.
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.2},
             },
@@ -507,12 +507,12 @@ class TestSubmitResultsAtomicPreValidation:
         campaign_id, suggestions, owner_id = await _build_campaign_with_suggestions(batch_size=2)
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
             },
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.2},
             },
@@ -540,12 +540,12 @@ class TestSubmitResultsAtomicPreValidation:
         campaign_id, suggestions, owner_id = await _build_campaign_with_suggestions(batch_size=2)
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
             },
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.2},
             },
@@ -585,18 +585,18 @@ class TestSubmitResultsAtomicPreValidation:
         # Mark the first suggestion REJECTED so row 0 will fail the
         # suggestion-reference check.
         await update_suggestion_status_operation(
-            suggestion_id=suggestions[0]["id"], status="rejected"
+            suggestion_id=suggestions[0]["suggestion_id"], status="rejected"
         )
 
         rows = [
             {
-                "suggestion_id": suggestions[0]["id"],  # stale (REJECTED)
+                "suggestion_id": suggestions[0]["suggestion_id"],  # stale (REJECTED)
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
             },
             # Same parameter values as row 0 but a valid PENDING id.
             {
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.2},
             },
@@ -665,7 +665,7 @@ class TestSubmitResultsAtomicPreValidation:
             results=_to_result_inputs(
                 [
                     {
-                        "suggestion_id": seed["id"],
+                        "suggestion_id": seed["suggestion_id"],
                         "parameter_values": seed["parameter_values"],
                         "objective_values": {"y": float(seed["parameter_values"]["x"])},
                     }
@@ -685,7 +685,7 @@ class TestSubmitResultsAtomicPreValidation:
             # Actionable row with the same params; consumes ``target``'s
             # reservation.
             {
-                "suggestion_id": target["id"],
+                "suggestion_id": target["suggestion_id"],
                 "parameter_values": target["parameter_values"],
                 "objective_values": {"y": float(target["parameter_values"]["x"])},
             },
@@ -812,7 +812,7 @@ class TestSubmitResultsAtomicPreValidation:
                 "objective_values": {"y": 0.42},
             },
             {
-                "suggestion_id": target["id"],
+                "suggestion_id": target["suggestion_id"],
                 "parameter_values": target["parameter_values"],
                 "objective_values": {"y": float(target["parameter_values"]["x"])},
             },
@@ -839,7 +839,7 @@ class TestSubmitResultsAtomicPreValidation:
         # The reservation completed cleanly -- target -> COMPLETED.
         listed = await list_suggestions_operation(campaign_id=campaign_id, verbosity="minimal")
         statuses = {s["suggestion_id"]: s["status"] for s in listed["suggestions"]}
-        assert statuses[target["id"]] == "completed"
+        assert statuses[target["suggestion_id"]] == "completed"
 
     @pytest.mark.asyncio
     async def test_non_atomic_continues_on_error(self) -> None:
@@ -860,18 +860,18 @@ class TestSubmitResultsAtomicPreValidation:
             {
                 "parameter_values": suggestions[0]["parameter_values"],
                 "objective_values": {"y": 0.1},
-                "suggestion_id": suggestions[0]["id"],
+                "suggestion_id": suggestions[0]["suggestion_id"],
             },
             {
                 "parameter_values": suggestions[1]["parameter_values"],
                 # Invalid objective key — only this row must be skipped.
                 "objective_values": {"wrong_name": 0.2},
-                "suggestion_id": suggestions[1]["id"],
+                "suggestion_id": suggestions[1]["suggestion_id"],
             },
             {
                 "parameter_values": suggestions[2]["parameter_values"],
                 "objective_values": {"y": 0.3},
-                "suggestion_id": suggestions[2]["id"],
+                "suggestion_id": suggestions[2]["suggestion_id"],
             },
         ]
 
@@ -896,8 +896,8 @@ class TestSubmitResultsAtomicPreValidation:
             campaign_id=campaign_id, verbosity="minimal"
         )
         statuses = {s["suggestion_id"]: s["status"] for s in listed_suggestions["suggestions"]}
-        assert statuses[suggestions[0]["id"]] == "completed"
-        assert statuses[suggestions[2]["id"]] == "completed"
+        assert statuses[suggestions[0]["suggestion_id"]] == "completed"
+        assert statuses[suggestions[2]["suggestion_id"]] == "completed"
         # The skipped row's suggestion must remain PENDING because its result
         # was rejected.
-        assert statuses[suggestions[1]["id"]] == "pending"
+        assert statuses[suggestions[1]["suggestion_id"]] == "pending"

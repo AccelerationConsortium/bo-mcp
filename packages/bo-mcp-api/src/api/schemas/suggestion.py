@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.schemas.common import MutationEnvelope, ResponseEnvelope, VerbosityLevel
+from bo_mcp_server.client import SuggestionSummaryItem
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
 # keys raise 422 instead of being silently dropped. Response schemas remain
@@ -34,9 +35,17 @@ class SuggestionProvenance(BaseModel):
 
 
 class SuggestionResponse(BaseModel):
-    """Suggestion response schema."""
+    """Suggestion response schema.
 
-    id: str
+    ``suggestion_id`` is the identity key: it is the same key the
+    suggestion-query endpoint emits and the one result submission
+    consumes, so its value can be copied into a
+    ``POST /api/v1/results/{campaign_id}`` request without renaming.
+    (Only the key copies over — the result request schema rejects the
+    other suggestion fields.)
+    """
+
+    suggestion_id: str
     campaign_id: str
     parameter_values: dict[str, Any]
     status: str
@@ -70,7 +79,9 @@ class SuggestionStatusUpdateRequest(BaseModel):
             'Manual suggestion status transition. Use "accepted", "rejected", '
             'or "expired" here. Do not set "completed" directly; a suggestion '
             "becomes completed automatically when a result is submitted with "
-            "its suggestion_id."
+            'its suggestion_id. "rejected" declines this suggestion instance '
+            "only -- it does not exclude the parameter values from future "
+            "recommendations."
         ),
         examples=["accepted", "rejected", "expired"],
     )
@@ -105,14 +116,47 @@ class SuggestionQueryRequest(BaseModel):
     verbosity: VerbosityLevel = VerbosityLevel.STANDARD
 
 
+class SuggestionSummary(SuggestionSummaryItem):
+    """One ``suggestions[]`` entry from the suggestion query endpoint.
+
+    Subclasses the facade's :class:`SuggestionSummaryItem` so the
+    tier-dependent optional fields are declared once, in the server
+    package that both transports serve. Only the identity fields are
+    re-declared here — required rather than optional, because they are
+    present at every verbosity — so OpenAPI pins them and a rename
+    breaks loudly in tests.
+
+    ``extra="allow"`` is inherited from the base: keys the operation
+    adds later still reach clients instead of being silently dropped.
+
+    The query route serializes with ``response_model_exclude_unset``,
+    so each verbosity keeps its exact historical wire shape instead of
+    gaining ``null`` entries for every declared-but-absent optional
+    field. A custom set-fields-only serializer is not an option here:
+    a ``model_serializer`` replaces the model's serialization JSON
+    schema with a bare object, erasing the ``required`` markers from
+    OpenAPI.
+    """
+
+    suggestion_id: str
+    status: str
+
+
 class SuggestionQueryResponse(ResponseEnvelope):
-    """Suggestion query response with pagination envelope."""
+    """Suggestion query response with pagination envelope.
+
+    Serialized with ``response_model_exclude_unset``, so the route
+    must set every field it wants on the wire — including
+    ``schema_version``, which would otherwise be dropped as an unset
+    default.
+    """
 
     success: bool
-    suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    suggestions: list[SuggestionSummary] = Field(default_factory=list)
     total_count: int = 0
     limit: int | None = None
     offset: int = 0
+    next_cursor: str | None = None
     errors: list[str] = Field(default_factory=list)
 
 

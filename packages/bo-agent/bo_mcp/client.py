@@ -186,12 +186,35 @@ class BoMcpClient:
         *,
         results: list[dict[str, Any]],
         idempotency_key: str,
+        force: bool = False,
     ) -> dict[str, Any]:
-        """Submit externally evaluated candidate results to BO-MCP."""
+        """Submit externally evaluated candidate results to BO-MCP.
+
+        ``force=True`` bypasses the exact-duplicate-coordinate check so an
+        optimizer-requested replicate can be submitted -- rejecting the
+        suggestion instead only retires that suggestion record and does not
+        exclude the coordinates from future generation.
+
+        A duplicate rejection is cached by the server under the submitted
+        ``idempotency_key``, and ``force`` is part of the request hash: a
+        forced retry of a rejected submission MUST use a fresh
+        ``idempotency_key`` (see ``make_idempotency_key``) — reusing the
+        rejected key raises ``BoMcpClientError`` from the server's 409
+        idempotency-conflict response instead of submitting the replicate.
+        """
+        payload: dict[str, Any] = {"results": results, "source": "api"}
+        # Only sent when requested: API servers that predate the ``force``
+        # field reject unknown keys (``extra="forbid"``), so an
+        # unconditional ``"force": false`` would 422 every ordinary
+        # submission during a client/server version skew. Omission and
+        # ``false`` are equivalent on current servers, including in the
+        # idempotency request hash.
+        if force:
+            payload["force"] = True
         return self._json_request(
             "POST",
             f"/api/v1/results/{campaign_id}",
-            json={"results": results, "source": "api"},
+            json=payload,
             headers={"Idempotency-Key": idempotency_key},
         )
 

@@ -265,7 +265,7 @@ async def run_optimization(
                 {
                     "parameter_values": params,
                     "objective_values": obj_values,
-                    "suggestion_id": suggestion["id"],
+                    "suggestion_id": suggestion["suggestion_id"],
                 }
             )
 

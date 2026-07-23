@@ -197,7 +197,7 @@ async def main() -> None:
                 {
                     "parameter_values": params,
                     "objective_values": {"yield": yield_val, "purity": purity_val},
-                    "suggestion_id": s["id"],
+                    "suggestion_id": s["suggestion_id"],
                 }
             )
 

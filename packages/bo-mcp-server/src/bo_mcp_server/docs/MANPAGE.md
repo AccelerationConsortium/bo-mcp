@@ -1,6 +1,6 @@
 # BO-MCP Operating Manual
 
-Last updated: 2026-07-22 · verified against BO MCP API version 0.1.0.
+Last updated: 2026-07-23 · verified against BO MCP API version 0.1.0.
 
 This is the canonical, narrative manual for operating BO-MCP — the Bayesian
 Optimization service behind this API. It tells you **what order to call things
@@ -140,7 +140,9 @@ complete edge set — no other transition exists:
 - `pending` — generated, awaiting execution or review.
 - `accepted` — explicitly approved (e.g. queued for an experimental run).
 - `rejected` — operator declined ("I evaluated this and said no"). Retained
-  in storage for audit; never re-issued.
+  in storage for audit. Rejection retires **this suggestion instance only**:
+  the parameter values are not excluded from future generation, and the
+  optimizer may propose the same coordinates again in a later batch.
 - `expired` — superseded or no longer applicable ("context changed out from
   under it" — instrument swapped, batch superseded). Same persistence
   semantics as `rejected`; the distinction is intent.
@@ -151,10 +153,11 @@ Terminal statuses (`rejected`, `expired`, `completed`) are **absorbing**: the
 same suggestion cannot be revived. If you change your mind, generate a fresh
 batch — the prior row remains queryable but inactive.
 
-Note on field naming: suggestion records expose their identifier as `id` in
-list/generate responses; result rows reference it as `suggestion_id`. They
-are the same value — `id` in a suggestion record is what you pass as
-`suggestion_id` when submitting the result or updating the status.
+Note on field naming: a suggestion's identity key is `suggestion_id`, and it
+is the same key everywhere the value appears — generate, list, and query
+responses, result rows, and status updates. Copy it verbatim when submitting
+a result; only the key copies over (the result row schema rejects the
+suggestion's other fields).
 
 ### 1.5 Conventions
 
@@ -164,7 +167,9 @@ are the same value — `id` in a suggestion record is what you pass as
 - **Versioned paths** — all operational endpoints live under `/api/v1/`.
   This manual documents only `/api/v1/*` paths.
 - **Response envelope** — campaign-operation responses carry
-  `schema_version`, a boolean `success`, and on operation-level failure
+  `schema_version` (the breaking-change signal: pre-1.0, payload changes
+  land directly on `/api/v1` and increment this integer — currently `2`),
+  a boolean `success`, and on operation-level failure
   `errors` plus a structured `error` object with `code`, `message`,
   `recovery_action`, `retryable`, and `retry_after`. Over REST, some
   rejections surface instead as an HTTP error status whose `detail` body
@@ -218,6 +223,13 @@ MCP tool names in parentheses; the full map is in [§6](#6-endpoint-map).
    must be finite numbers; link each row to its suggestion via
    `suggestion_id` where one exists. Bulk historical data can go through
    `POST /api/v1/results/{campaign_id}/upload` (`bo_upload_results_file`).
+   An intentional replicate of already-measured coordinates needs
+   `force=true`: a body field on JSON submission (REST and the MCP
+   `bo_submit_results` tool — pair it with a fresh idempotency key,
+   [§4.1](#41-idempotency-keys)), or a query parameter on the REST upload
+   route, which is not idempotency-cached. The MCP
+   `bo_upload_results_file` tool has no `force` override — submit an
+   intentional replicate through `bo_submit_results` instead.
 8. **Retire unusable suggestions** —
    `POST /api/v1/suggestions/{suggestion_id}/status`
    (`bo_update_suggestion_status`) with `rejected` (evaluated and declined,
@@ -255,7 +267,7 @@ while invocation_budget_remaining():      # bounds THIS PROCESS, not the campaig
 
     outcomes = evaluate_externally(batch)         # caller-owned
     submit_results(campaign_id, outcomes,         # POST /api/v1/results/{campaign_id}
-                   idempotency_key=new_uuid())    #   rows carry suggestion_id = suggestion.id
+                   idempotency_key=new_uuid())    #   rows carry the suggestion's suggestion_id
     reject_unusable(batch, outcomes)              # POST /api/v1/suggestions/{suggestion_id}/status
 
 diagnostics(campaign_id, generous_timeout)        # GET /api/v1/diagnostics/{campaign_id}
@@ -305,7 +317,7 @@ curl --fail-with-body -sS $BASE/health
 
 # 1. Discover capabilities
 curl --fail-with-body -sS -H "X-API-Key: $KEY" $BASE/api/v1/capabilities
-# {"schema_version":1,"backend":"baybe","supported_features":["categorical",
+# {"schema_version":2,"backend":"baybe","supported_features":["categorical",
 #  "mixed_search_space","multi_objective"],"conditional_features":{...},
 #  "available_backends":["botorch","baybe"],"default_backend":"baybe",
 #  "server_version":"0.1.0"}
@@ -313,7 +325,7 @@ curl --fail-with-body -sS -H "X-API-Key: $KEY" $BASE/api/v1/capabilities
 # 2. Dry-run validation (creates nothing)
 curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
   -d "$INTAKE" $BASE/api/v1/campaigns/validate
-# {"schema_version":1,"valid":true,"errors":[],"warnings":[],
+# {"schema_version":2,"valid":true,"errors":[],"warnings":[],
 #  "spec_summary":{"name":"Manpage demo","n_parameters":1,"n_objectives":1,...}}
 
 # 3. Create, with the saved idempotency key
@@ -321,7 +333,7 @@ CID=$(curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" -H 'Content-Type: a
   -H "Idempotency-Key: $CREATE_KEY" -d "$INTAKE" \
   $BASE/api/v1/campaigns | json "['campaign_id']")
 echo "campaign: $CID"
-# {"schema_version":1,"success":true,"campaign_id":"1e5480ef-...","spec_id":"...",
+# {"schema_version":2,"success":true,"campaign_id":"1e5480ef-...","spec_id":"...",
 #  "warnings":[],"errors":[],"error":null,"idempotency_replay":false,...}
 
 # 3b. Retry-safety proof: the SAME key + byte-identical payload replays the
@@ -334,7 +346,7 @@ curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" -H 'Content-Type: applica
 curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
   -d "{\"campaign_ids\":[\"$CID\"],\"verbosity\":\"minimal\"}" \
   $BASE/api/v1/campaigns/status/batch
-# {"schema_version":1,"success":true,"campaigns":{"1e5480ef-...":{
+# {"schema_version":2,"success":true,"campaigns":{"1e5480ef-...":{
 #   "name":"Manpage demo","status":"created","iteration":0,"n_results":0,
 #   "next_action_recommendation":{"action":"bo_generate_suggestions",
 #     "reason":"No results yet — generate initial suggestions to start
@@ -343,10 +355,10 @@ curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" -H 'Content-Type: applica
 # 5. Generate a suggestion batch (auto-transitions created -> running)
 GEN=$(curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" \
   "$BASE/api/v1/suggestions/$CID/generate?batch_size=1")
-SID=$(echo "$GEN" | json "['suggestions'][0]['id']")
+SID=$(echo "$GEN" | json "['suggestions'][0]['suggestion_id']")
 XVAL=$(echo "$GEN" | json "['suggestions'][0]['parameter_values']['x']")
 echo "suggestion: $SID  x=$XVAL"
-# {"schema_version":1,"success":true,"suggestions":[{"id":"246b2534-...",
+# {"schema_version":2,"success":true,"suggestions":[{"suggestion_id":"246b2534-...",
 #   "campaign_id":"1e5480ef-...","parameter_values":{"x":4.0290},
 #   "status":"pending","provenance":{"iteration":1,
 #     "generation_method":"initial_design",...}}],...}
@@ -356,7 +368,7 @@ echo "suggestion: $SID  x=$XVAL"
 RESULTS="{\"results\":[{\"parameter_values\":{\"x\":$XVAL},\"objective_values\":{\"y\":12.3},\"suggestion_id\":\"$SID\"}],\"source\":\"api\"}"
 curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
   -H "Idempotency-Key: $SUBMIT_KEY" -d "$RESULTS" $BASE/api/v1/results/$CID
-# {"schema_version":1,"success":true,"result_ids":["aa5ded40-..."],"errors":[],
+# {"schema_version":2,"success":true,"result_ids":["aa5ded40-..."],"errors":[],
 #  "warnings":[],"field_errors":{},"error":null,"idempotency_replay":false,...}
 
 # 7b. Uncertain whether the submit landed? Retry with the SAME key:
@@ -366,7 +378,7 @@ curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" -H 'Content-Type: applica
 
 # 8. End-of-invocation diagnostics (generous timeout on grown campaigns)
 curl --fail-with-body -sS -H "X-API-Key: $KEY" "$BASE/api/v1/diagnostics/$CID?verbosity=minimal"
-# {"schema_version":1,"success":true,"iteration":1,"n_results":1,
+# {"schema_version":2,"success":true,"iteration":1,"n_results":1,
 #  "status":"running","health":"healthy","progress":"stable",
 #  "key_metric":{"best_value":12.3},"converged":false,
 #  "next_action":{"action":"bo_generate_suggestions","reason":"Campaign healthy
@@ -375,7 +387,7 @@ curl --fail-with-body -sS -H "X-API-Key: $KEY" "$BASE/api/v1/diagnostics/$CID?ve
 # 9. Pause — the campaign continues in a later invocation with action=resume
 curl --fail-with-body -sS -X POST -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
   -d '{"action":"pause"}' $BASE/api/v1/campaigns/$CID/lifecycle
-# {"schema_version":1,"success":true,"campaign_id":"1e5480ef-...",
+# {"schema_version":2,"success":true,"campaign_id":"1e5480ef-...",
 #  "status":"paused","previous_status":"running","errors":[],"error":null,...}
 ```
 
@@ -446,7 +458,10 @@ Do not hard-penalize an isolated failed experiment (e.g. by fabricating a
 terrible objective value). Isolated failures are usually noise — equipment
 hiccups, transient numerical issues. Reject the suggestion
 (`POST /api/v1/suggestions/{suggestion_id}/status`, status `rejected`) and
-move on. Only when failures are *systematic* in a region of the search space
+move on — rejection does not fence off the region, so the optimizer may
+revisit those coordinates later, which is exactly right for a transient
+failure ([§1.4](#14-suggestion-status-machine)). Only when failures are
+*systematic* in a region of the search space
 do they carry signal worth encoding — and then prefer declaring the region
 infeasible via intake constraints on a new campaign, or discuss with the
 campaign owner, over inventing sentinel objective values.
@@ -470,6 +485,12 @@ Semantics:
   verbatim, flagged `idempotency_replay: true`.
 - The same key with a *different* payload is rejected (`E015`,
   idempotency conflict): generate a fresh key for a genuinely new request.
+- Rejections are cached too. Concretely for result submission: a
+  duplicate-result rejection (`E004`) is stored under the submitted key as
+  a terminal outcome, and `force` participates in the request hash — so
+  following the rejection's "use `force=true`" recovery hint requires a
+  **fresh** key. Reusing the rejected key returns `E015` instead of
+  running the forced submission.
 - While the original call is still executing, a concurrent retry gets
   `E014` (in progress): wait briefly and retry with the same key.
 - The cache namespace is **shared across REST and MCP** — a retry on either
@@ -535,7 +556,7 @@ recovery column below summarizes the server's own guidance.
 | E001 | Invalid campaign id | no | The id is not a valid UUID. List campaigns to recover the real id. |
 | E002 | Campaign not found | no | List campaigns (`GET /api/v1/campaigns`) to verify the id; recover from a mistyped or hallucinated id. |
 | E003 | Invalid state transition | no | Read the campaign's current status; pick a legal action from the matrix in [§1.3](#13-campaign-lifecycle-state-machine). |
-| E004 | Duplicate result | no | Re-submit with `force=true` if the repeat measurement is intentional; otherwise drop the row. |
+| E004 | Duplicate result | no | Intentional replicate → re-submit with `force=true`: JSON submit needs a fresh idempotency key ([§4.1](#41-idempotency-keys)); REST upload takes `?force=` with no key involved; MCP upload has no `force` — switch to `bo_submit_results`. Accidental → drop the row. |
 | E005 | Validation failed | no | Inspect `errors` / `field_errors`, fix the named fields, resend. |
 | E006 | Missing parameters | no | Intake needs at least one entry in `parameters`. |
 | E007 | Missing objectives | no | Intake needs at least one entry in `objectives`. |
@@ -687,7 +708,8 @@ campaign with a different seed), or an over-constrained search space
 |---|---|
 | Cannot generate suggestions | Campaign status first: `paused` → resume; `completed` → reopen; `failed` → new campaign. Status fine? With < 2 results generation uses Sobol sampling and should work — re-check intake validation warnings. With ≥ 2 results, a fitting problem: see E101/E104 in [§4.5](#45-error-code-catalog). |
 | Suggestions repeat or campaign refuses to continue | You may be replaying results into a fresh campaign, or a fossilized `max_iterations` cap is set ([§3.2](#32-invocation-budgets-are-not-campaign-budgets)). |
-| Duplicate result rejected (E004) | Intentional re-measurement → `force=true`; accidental → drop the row. |
+| Duplicate result rejected (E004) | Intentional re-measurement → `force=true`; the mechanics differ per transport — see the E004 row in [§4.5](#45-error-code-catalog). Accidental → drop the row. |
+| Results accepted but suggestions stay `pending` | Rows submitted without `suggestion_id` are stored unlinked and complete nothing. Copy each suggestion's `suggestion_id` into its result row ([§1.4](#14-suggestion-status-machine)). `source="api"` submissions get a response warning when open suggestions exist; GUI and file-upload rows are legitimately unlinked, so no warning fires there. |
 | Model fitting failed (E101) | NaN/Inf rows? Extreme outliers? < 2 valid observations? Diagnostics names the culprit. |
 | Version conflict (E010) | Another writer won the race: re-read, rebuild, retry ([§4.4](#44-concurrent-modification-and-version-conflicts)). |
 | Converged suspiciously early (few results) | May be a simple objective (fine), a local optimum, or an over-constrained space. Confirm with `detailed` diagnostics before stopping. |

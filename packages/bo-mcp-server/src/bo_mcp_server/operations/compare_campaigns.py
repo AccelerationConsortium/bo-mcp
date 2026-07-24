@@ -15,6 +15,7 @@ from bo_engine.diagnostics import (
     compute_single_objective_improvement_rate,
 )
 from bo_mcp_server.backend import get_backend_async
+from bo_mcp_server.backend_context import with_campaign_backend_scope
 from bo_mcp_server.converters import campaign_spec_to_optimization_spec
 from bo_mcp_server.domain import CampaignSpec, Result
 from bo_mcp_server.errors import ErrorCode, make_error_response
@@ -321,6 +322,7 @@ def _validate_compare_inputs(
     return verbosity_result, campaign_uuids
 
 
+@with_campaign_backend_scope
 async def compare_campaigns_operation(
     campaign_ids: list[str],
     verbosity: str = "standard",

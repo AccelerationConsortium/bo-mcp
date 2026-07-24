@@ -191,12 +191,15 @@ def main() -> int:
         print("\nNext steps:")
         print("  1. Verify installation: uv run bo-mcp-server --verify")
         print("  2. Run MCP server: uv run bo-mcp-server")
-        print("  3. Or with SSE transport: uv run bo-mcp-server --transport sse --port 8001")
+        print(
+            "  3. Or with HTTP transport: "
+            "uv run bo-mcp-server --transport streamable-http --port 8001"
+        )
         return 0
     if all_passed:
         print(f"{YELLOW}Core checks passed with warnings{RESET}")
         print("\nYou can proceed, but some ports may be in use.")
-        print("If running SSE transport, ensure ports are free or use --port.")
+        print("If running an HTTP transport, ensure ports are free or use --port.")
         return 0
     print(f"{RED}Some checks failed - please fix issues above{RESET}")
     print("\nCommon fixes:")

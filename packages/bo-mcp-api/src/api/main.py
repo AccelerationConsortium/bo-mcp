@@ -35,6 +35,7 @@ from bo_mcp_server.client import (  # noqa: E402
     CorruptedJsonColumnError,
     augment_backend_options,
     augment_parameter_options,
+    bind_protocol,
     bind_trace_id,
     campaign_backend_scope,
     ensure_dev_user,
@@ -199,7 +200,10 @@ def create_app() -> FastAPI:
         try:
             # campaign_backend_scope isolates the ``_metadata.backend``
             # binding per request, mirroring the trace-id binding.
-            with bind_trace_id(trace_id), campaign_backend_scope():
+            # bind_protocol marks the transport so shared operations
+            # stamp ``_metadata.protocol: "rest"`` instead of their
+            # in-process "mcp" default (issue #82 follow-up review).
+            with bind_trace_id(trace_id), campaign_backend_scope(), bind_protocol("rest"):
                 try:
                     response = await call_next(request)
                 except CorruptedJsonColumnError as exc:

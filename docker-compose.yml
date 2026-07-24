@@ -56,7 +56,7 @@ services:
       dockerfile: Dockerfile.api
       target: dev
     working_dir: /workspace
-    command: ["bo-mcp-server", "--transport", "sse", "--host", "0.0.0.0", "--port", "8001"]
+    command: ["bo-mcp-server", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8001"]
     volumes:
       - .:/workspace
     ports:
@@ -78,11 +78,12 @@ services:
       # credential can never ship to prod.
       - DEV_AUTH=${DEV_AUTH:-1}
     healthcheck:
-      # Use /health (non-streaming JSON) — /sse is a Server-Sent Events
-      # stream that never closes, so plain curl would block until this
-      # 10s timeout fires and the container would always be unhealthy.
-      # --max-time is belt-and-suspenders: if /health ever regresses to
-      # a streaming response, the probe still fails fast.
+      # Use /health (non-streaming JSON) — the /mcp streamable-http
+      # endpoint holds streaming responses open, so plain curl would
+      # block until this 10s timeout fires and the container would
+      # always be unhealthy. --max-time is belt-and-suspenders: if
+      # /health ever regresses to a streaming response, the probe
+      # still fails fast.
       test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://localhost:8001/health"]
       interval: 30s
       timeout: 10s

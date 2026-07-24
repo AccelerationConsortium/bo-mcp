@@ -64,7 +64,7 @@ async def list_campaigns(
             one of the two values win.
         verbosity: Response verbosity level. Options:
             - "minimal": ~50 tokens - campaign_id, name, status only
-            - "standard": ~200 tokens - includes iteration, n_results, created_at
+            - "standard": ~200 tokens - adds backend, iteration, n_results, created_at
             - "detailed": ~500+ tokens - includes full spec summary and metrics
         cursor: Opaque cursor from a previous call's ``next_cursor``
             field. When supplied, pagination walks the keyset on

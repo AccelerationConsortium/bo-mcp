@@ -43,7 +43,7 @@ def _list_item_properties(tool_name: str, list_field: str) -> set[str]:
 
 def test_list_campaigns_items_are_typed() -> None:
     properties = _list_item_properties("bo_list_campaigns", "campaigns")
-    assert {"campaign_id", "name", "status", "iteration", "created_at"} <= properties
+    assert {"campaign_id", "name", "status", "backend", "iteration", "created_at"} <= properties
 
 
 def test_list_suggestions_items_are_typed() -> None:

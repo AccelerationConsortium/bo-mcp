@@ -17,6 +17,11 @@ from uuid import uuid4
 
 import pytest
 
+from bo_mcp_server.backend_context import (
+    campaign_backend_var,
+    get_campaign_backend,
+    set_campaign_backend,
+)
 from bo_mcp_server.operations.export_campaign import export_campaign_operation
 from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
 from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
@@ -34,6 +39,48 @@ pytestmark = pytest.mark.usefixtures("setup_database")
 async def test_list_campaigns_operation_carries_schema_version() -> None:
     response = await list_campaigns_operation(owner_id=uuid4())
     assert "schema_version" in response
+
+
+@pytest.mark.asyncio
+async def test_list_campaigns_metadata_survives_leaked_campaign_binding() -> None:
+    """Cross-campaign list stamps the server default despite a same-task bind.
+
+    In-process callers (client facade, scripts) can invoke operations
+    without the transports' ``campaign_backend_scope``; a binding left by
+    e.g. ``create_campaign`` must not mislabel ``bo_list_campaigns``'
+    envelope as campaign-scoped (issue #82 follow-up review).
+    """
+    set_campaign_backend("botorch")
+    try:
+        response = await list_campaigns_operation(owner_id=uuid4())
+        assert response["_metadata"]["backend_source"] == "server_default"
+        # The operation must restore the caller's binding on exit.
+        assert get_campaign_backend() == "botorch"
+    finally:
+        campaign_backend_var.set(None)
+
+
+def test_list_capabilities_metadata_survives_leaked_campaign_binding() -> None:
+    """Capability listing is campaign-agnostic even after a same-task bind."""
+    set_campaign_backend("botorch")
+    try:
+        response = list_capabilities_operation()
+        assert response["_metadata"]["backend_source"] == "server_default"
+        assert get_campaign_backend() == "botorch"
+    finally:
+        campaign_backend_var.set(None)
+
+
+@pytest.mark.asyncio
+async def test_health_check_metadata_survives_leaked_campaign_binding() -> None:
+    """Health check is campaign-agnostic even after a same-task bind."""
+    set_campaign_backend("botorch")
+    try:
+        response = await health_check()
+        assert response["_metadata"]["backend_source"] == "server_default"
+        assert get_campaign_backend() == "botorch"
+    finally:
+        campaign_backend_var.set(None)
 
 
 @pytest.mark.asyncio

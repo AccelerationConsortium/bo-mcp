@@ -6,7 +6,7 @@ Bayesian Optimization engine built on BoTorch. Provides the core optimization al
 
 - Pure optimization library with no server, database, or network dependencies
 - Defines the `BOBackend` protocol that all backends (BoTorch, BayBE, etc.) implement
-- Provides `BoTorchBackend` as the default, full-featured backend
+- Provides `BoTorchBackend`, the full-featured legacy backend (BO-MCP defaults to BayBE via `bo-engine-baybe`)
 - All functions accept and return plain Python types (dicts, dataclasses) — no framework lock-in at the API boundary
 
 ## Installation
@@ -73,7 +73,7 @@ batch = backend.generate_suggestions(spec, observations, batch_size=2, iteration
 ### Multi-Backend Protocol
 
 - `BOBackend` protocol in `bo_engine.backend` defines the interface
-- `BoTorchBackend` in `bo_engine.botorch_backend` is the default implementation
+- `BoTorchBackend` in `bo_engine.botorch_backend` is the reference implementation (legacy fallback; BayBE is BO-MCP's default)
 - `Feature` enum for capability advertisement (10 features)
 - Third-party backends implement the same protocol (see `bo-engine-baybe`)
 
@@ -82,7 +82,7 @@ batch = backend.generate_suggestions(spec, observations, batch_size=2, iteration
 ```text
 bo_engine/
     backend.py           # BOBackend protocol, Feature enum, SuggestionBatch
-    botorch_backend.py   # Default BoTorch backend implementation
+    botorch_backend.py   # BoTorch backend implementation (legacy fallback)
     types.py             # OptimizationSpec, ObservationData, ParameterSpec, etc.
     suggestions.py       # Core suggestion generation
     acquisition.py       # Acquisition function creation

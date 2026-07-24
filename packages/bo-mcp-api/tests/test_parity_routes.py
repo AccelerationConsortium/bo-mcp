@@ -28,6 +28,23 @@ def _to_result_inputs(rows: list[dict]) -> list[ResultSubmissionInput]:
     ]
 
 
+def _assert_bodies_match_across_transports(http_result: dict, mcp_result: dict) -> None:
+    """Exact parity modulo transport provenance.
+
+    ``_metadata.protocol`` is the one field that MUST differ across
+    transports — the REST middleware binds ``"rest"``, the in-process
+    operation call keeps the ``"mcp"`` default (issue #82 follow-up
+    review). Everything else must be byte-equal, so this asserts both
+    protocol values explicitly and then compares the bodies with only
+    that field removed.
+    """
+    http_md = dict(http_result["_metadata"])
+    mcp_md = dict(mcp_result["_metadata"])
+    assert http_md.pop("protocol") == "rest"
+    assert mcp_md.pop("protocol") == "mcp"
+    assert {**http_result, "_metadata": http_md} == {**mcp_result, "_metadata": mcp_md}
+
+
 async def _create_campaign_for_owner(owner_id: str, name: str) -> str:
     result = await create_campaign(
         {
@@ -989,8 +1006,9 @@ class TestMcpHttpParity:
         assert "schema_version" in http_result
         assert http_result["success"] is True
         assert "_metadata" in http_result
-        # No dropped passthrough, no injected defaults — exact parity.
-        assert http_result == mcp_result
+        # No dropped passthrough, no injected defaults — exact parity
+        # modulo transport provenance.
+        _assert_bodies_match_across_transports(http_result, mcp_result)
 
     @pytest.mark.parametrize("verbosity", ["minimal", "standard", "detailed"])
     @pytest.mark.asyncio
@@ -1032,7 +1050,7 @@ class TestMcpHttpParity:
 
         assert "schema_version" in http_result
         assert "_metadata" in http_result
-        assert http_result == mcp_result
+        _assert_bodies_match_across_transports(http_result, mcp_result)
 
     @pytest.mark.parametrize("verbosity", ["minimal", "standard", "detailed"])
     @pytest.mark.asyncio
@@ -1101,7 +1119,44 @@ class TestMcpHttpParity:
 
         assert "schema_version" in http_result
         assert "_metadata" in http_result
-        assert http_result == mcp_result
+        _assert_bodies_match_across_transports(http_result, mcp_result)
+
+    @pytest.mark.parametrize("verbosity", ["minimal", "standard", "detailed"])
+    @pytest.mark.asyncio
+    async def test_campaign_query_body_matches_mcp_exactly(
+        self, api_client, auth_headers, persisted_user, verbosity
+    ):
+        """REST campaign-query body is byte-equal to the MCP operation.
+
+        Regression for the issue #82 follow-up review:
+        ``CampaignQueryResponse`` inherited pydantic's default
+        ``extra="ignore"`` and silently dropped the operation's
+        ``_metadata``, so REST clients never received the
+        ``backend_source`` discriminator. ``ResponseEnvelope`` now
+        forwards extras for every envelope. Also pins the per-campaign
+        ``backend`` field on standard/detailed rows.
+        """
+        owner_id = str(persisted_user.id)
+        await _create_campaign_for_owner(owner_id, f"Query A {verbosity}")
+        await _create_campaign_for_owner(owner_id, f"Query B {verbosity}")
+
+        from bo_mcp_server.operations.list_campaigns import list_campaigns_operation
+
+        mcp_result = await list_campaigns_operation(owner_id=persisted_user.id, verbosity=verbosity)
+        http_response = await api_client.post(
+            "/api/campaigns/query",
+            json={"verbosity": verbosity},
+            headers=auth_headers,
+        )
+        assert http_response.status_code == 200
+        http_result = http_response.json()
+
+        metadata = http_result["_metadata"]
+        assert metadata["backend_source"] == "server_default"
+        if verbosity in ("standard", "detailed"):
+            assert http_result["campaigns"]
+            assert all("backend" in row for row in http_result["campaigns"])
+        _assert_bodies_match_across_transports(http_result, mcp_result)
 
     @pytest.mark.parametrize("verbosity", ["minimal", "standard", "detailed"])
     @pytest.mark.asyncio
@@ -1137,4 +1192,4 @@ class TestMcpHttpParity:
 
         assert "schema_version" in http_result
         assert "_metadata" in http_result
-        assert http_result == mcp_result
+        _assert_bodies_match_across_transports(http_result, mcp_result)

@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from bo_mcp_server import __version__
 from bo_mcp_server.backend import get_backend_capabilities
+from bo_mcp_server.backend_context import campaign_backend_scope
 from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.server import create_mcp_server, mcp
 from bo_mcp_server.storage.database import get_session
@@ -87,16 +88,20 @@ async def health_check() -> HealthCheckResponse:
         sorted(backends),
     )
 
-    return cast(
-        HealthCheckResponse,
-        attach_response_metadata(
-            {
-                "healthy": healthy,
-                "version": __version__,
-                "database": db_status,
-                "tools_available": tools_count,
-                "uptime_seconds": uptime,
-                "backends": backends,
-            }
-        ),
-    )
+    # Campaign-agnostic stamp: shield ``_metadata`` from a binding leaked
+    # by a previous same-task operation — in-process callers may bypass
+    # the transports' campaign_backend_scope (issue #82).
+    with campaign_backend_scope():
+        return cast(
+            HealthCheckResponse,
+            attach_response_metadata(
+                {
+                    "healthy": healthy,
+                    "version": __version__,
+                    "database": db_status,
+                    "tools_available": tools_count,
+                    "uptime_seconds": uptime,
+                    "backends": backends,
+                }
+            ),
+        )

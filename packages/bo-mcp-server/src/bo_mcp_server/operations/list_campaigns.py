@@ -4,6 +4,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from bo_mcp_server.backend_context import with_campaign_backend_scope
 from bo_mcp_server.domain import Campaign, CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
 from bo_mcp_server.pagination import build_page_cursor, parse_optional_cursor
@@ -28,15 +29,32 @@ def _build_minimal_summary(campaign: Campaign, name: str) -> dict[str, Any]:
     }
 
 
-def _build_standard_summary(campaign: Campaign, name: str, n_results: int) -> dict[str, Any]:
+def _build_standard_summary(
+    campaign: Campaign, name: str, n_results: int, backend: str | None
+) -> dict[str, Any]:
     return {
         "campaign_id": str(campaign.id),
         "name": name,
         "status": campaign.status.value,
+        "backend": backend,
         "iteration": campaign.iteration,
         "n_results": n_results,
         "created_at": campaign.created_at.isoformat(),
     }
+
+
+def _build_summary(
+    campaign: Campaign,
+    name: str,
+    n_results: int,
+    spec: CampaignSpec | None,
+    verbosity_level: VerbosityLevel,
+) -> dict[str, Any]:
+    if verbosity_level == VerbosityLevel.MINIMAL:
+        return _build_minimal_summary(campaign, name)
+    if verbosity_level == VerbosityLevel.STANDARD:
+        return _build_standard_summary(campaign, name, n_results, spec.backend if spec else None)
+    return _build_detailed_summary(campaign, name, n_results, spec)
 
 
 def _build_detailed_summary(
@@ -59,6 +77,7 @@ def _build_detailed_summary(
         "campaign_id": str(campaign.id),
         "name": name,
         "status": campaign.status.value,
+        "backend": spec.backend if spec else None,
         "iteration": campaign.iteration,
         "n_results": n_results,
         "created_at": campaign.created_at.isoformat(),
@@ -132,6 +151,7 @@ def _validate_list_campaigns_inputs(
     return verbosity_level, status_filter, cursor_parsed[0], cursor_parsed[1]
 
 
+@with_campaign_backend_scope
 @with_response_metadata
 async def list_campaigns_operation(
     owner_id: UUID | None = None,
@@ -222,13 +242,9 @@ async def list_campaigns_operation(
             spec = specs.get(campaign.spec_id)
             name = spec.name if spec else "Unknown"
             n_results = result_counts.get(campaign.id, 0)
-
-            if verbosity_level == VerbosityLevel.MINIMAL:
-                campaign_summaries.append(_build_minimal_summary(campaign, name))
-            elif verbosity_level == VerbosityLevel.STANDARD:
-                campaign_summaries.append(_build_standard_summary(campaign, name, n_results))
-            else:
-                campaign_summaries.append(_build_detailed_summary(campaign, name, n_results, spec))
+            campaign_summaries.append(
+                _build_summary(campaign, name, n_results, spec, verbosity_level)
+            )
 
     logger.info(
         "Listed %d campaigns (total matching: %d)",

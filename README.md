@@ -29,27 +29,43 @@ provenance) so that tools stay thin (~30 lines each).
 
 ### Path 1: Claude Code (recommended)
 
-The repository ships a `.mcp.json` that auto-configures the MCP server.
+Start the Docker stack (Postgres + REST API + MCP server), then launch Claude
+Code from the repo:
 
 ```bash
+./dev-up-bo-mcp 0 up -d      # slot 0 → MCP endpoint at http://127.0.0.1:8001/mcp
 cd bo-mcp-ui && claude
 ```
 
-Claude Code will detect the server and expose all of its BO tools automatically.
+The repository ships a `.mcp.json` that connects Claude Code to the stack's
+streamable-http MCP endpoint on the vanilla port (8001). Every MCP client and
+the REST API share one server and one Postgres database — no per-session
+side databases.
+
+Running the stack on a non-default slot (`./dev-up-bo-mcp <slot>`, host port
+`8001 + slot*100`)? Override the endpoint for your checkout only — local scope
+takes precedence over the committed `.mcp.json`:
+
+```bash
+claude mcp add --transport http --scope local bo-mcp http://127.0.0.1:8301/mcp   # slot 3
+```
 
 ### Path 2: Standalone MCP server
 
 ```bash
 pip install ./packages/bo-mcp-server   # or: uv pip install ./packages/bo-mcp-server
 bo-mcp-server                          # stdio transport (default)
-bo-mcp-server --transport sse --port 8001  # network transport (binds 127.0.0.1)
+bo-mcp-server --transport streamable-http --port 8001  # HTTP transport (binds 127.0.0.1)
 ```
 
-The SSE transport binds loopback by default; pass `--host 0.0.0.0` explicitly to
-expose it on the network. Note that SSE itself is currently **unauthenticated**
-and not tenant-isolated (tracked as a known gap) — a non-loopback bind exposes
-every tool to anyone who can reach the port, so keep it loopback or front it
-with an authenticating proxy.
+(`--transport sse` still exists for legacy clients but the SSE transport is
+deprecated by the MCP spec.)
+
+The HTTP transports bind loopback by default; pass `--host 0.0.0.0` explicitly
+to expose one on the network. Note that the MCP HTTP transports are currently
+**unauthenticated** and not tenant-isolated (tracked as a known gap) — a
+non-loopback bind exposes every tool to anyone who can reach the port, so keep
+it loopback or front it with an authenticating proxy.
 
 Add to any MCP client config (Claude Desktop, custom agent, etc.):
 
@@ -57,13 +73,16 @@ Add to any MCP client config (Claude Desktop, custom agent, etc.):
 {
   "mcpServers": {
     "bo-mcp": {
-      "command": "uv",
-      "args": ["run", "bo-mcp-server"],
-      "cwd": "/absolute/path/to/bo-mcp-ui"
+      "type": "http",
+      "url": "http://127.0.0.1:8001/mcp"
     }
   }
 }
 ```
+
+A standalone stdio server (`"command": "bo-mcp-server"`) also works for
+isolated experiments — it defaults to a private SQLite database, so it will
+not see the Docker stack's campaigns.
 
 ### Path 3: BO engine as a library
 
@@ -166,7 +185,7 @@ With slot `3`, host access is:
 ```text
 Frontend: http://127.0.0.1:3301
 API:      http://127.0.0.1:8300
-MCP SSE:  http://127.0.0.1:8301/sse
+MCP:      http://127.0.0.1:8301/mcp
 ```
 
 Containers on the shared network can reach BO-MCP by Docker service name:

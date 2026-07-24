@@ -7,7 +7,9 @@ dry-run, and the backend-aware capabilities listing.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
+from uuid import uuid4
 
 import pytest
 
@@ -16,12 +18,15 @@ from bo_mcp_server.backend_context import (
     campaign_backend_var,
     get_campaign_backend,
     set_campaign_backend,
+    with_campaign_backend_scope,
 )
-from bo_mcp_server.domain import CampaignSpec
+from bo_mcp_server.domain import Campaign, CampaignSpec
 from bo_mcp_server.operations.diagnostics.enrichment import get_model_info
+from bo_mcp_server.operations.list_campaigns import _build_summary
 from bo_mcp_server.operations.list_capabilities import list_capabilities_operation
 from bo_mcp_server.operations.validate_intake import validate_intake_with_capabilities
-from bo_mcp_server.response_formatter import get_response_metadata
+from bo_mcp_server.protocol_context import bind_protocol
+from bo_mcp_server.response_formatter import VerbosityLevel, get_response_metadata
 
 
 def _make_intake(**overrides) -> dict:
@@ -39,6 +44,17 @@ def _make_intake(**overrides) -> dict:
 
 def _make_spec(backend: str = "baybe") -> CampaignSpec:
     return CampaignSpec.model_validate(_make_intake(backend=backend))
+
+
+def test_campaign_spec_default_backend_is_baybe() -> None:
+    """The domain default matches the project-wide BayBE default.
+
+    Aligned with migration ``016_default_backend_baybe`` (DB server
+    default) and the ``BO_BACKEND`` settings default. Historical rows are
+    safe: the column-adding migration backfilled them to ``"botorch"`` in
+    the database, so this literal cannot relabel them.
+    """
+    assert CampaignSpec.model_validate(_make_intake()).backend == "baybe"
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +98,61 @@ def test_metadata_falls_back_to_default_backend(monkeypatch: pytest.MonkeyPatch)
     assert contextvars.copy_context().run(run) == "default-backend"
 
 
+def test_metadata_backend_source_names_campaign_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``backend_source`` discloses that ``backend`` is the campaign's own.
+
+    ``_metadata.backend`` is polysemous by design (campaign backend on
+    campaign-scoped calls, server default otherwise — issue #57). Issue
+    #82 showed adjacent responses can disagree without the reader being
+    able to tell which meaning each carries; the discriminator makes the
+    stamp self-describing.
+    """
+    _patch_default_backend(monkeypatch)
+
+    def run() -> tuple[str, str]:
+        set_campaign_backend("baybe")
+        metadata = get_response_metadata()
+        return metadata.backend, metadata.backend_source
+
+    assert contextvars.copy_context().run(run) == ("baybe", "campaign")
+
+
+def test_metadata_backend_source_names_server_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Campaign-agnostic calls disclose default provenance (issue #82)."""
+    _patch_default_backend(monkeypatch)
+
+    def run() -> tuple[str, str]:
+        metadata = get_response_metadata()
+        return metadata.backend, metadata.backend_source
+
+    assert contextvars.copy_context().run(run) == ("default-backend", "server_default")
+
+
+def test_metadata_protocol_defaults_to_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a bound transport, the in-process default stays "mcp"."""
+    _patch_default_backend(monkeypatch)
+    assert get_response_metadata().protocol == "mcp"
+
+
+def test_metadata_protocol_prefers_bound_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transport bound at the dispatch boundary wins over the default.
+
+    Regression (issue #82 follow-up review): once REST envelopes started
+    forwarding ``_metadata``, the shared operations' ``protocol="mcp"``
+    default surfaced in REST bodies as false transport provenance. The
+    REST middleware now binds ``"rest"`` via
+    :mod:`bo_mcp_server.protocol_context`.
+    """
+    _patch_default_backend(monkeypatch)
+    with bind_protocol("rest"):
+        assert get_response_metadata().protocol == "rest"
+    assert get_response_metadata().protocol == "mcp"
+
+
 def test_set_campaign_backend_ignores_empty() -> None:
     def run() -> str | None:
         set_campaign_backend(None)
@@ -117,6 +188,30 @@ def test_scope_isolates_sequential_operations() -> None:
     assert after is None
 
 
+def test_cross_campaign_scope_neutralizes_leaked_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cross-campaign operations stamp the default even after a same-task bind.
+
+    Regression for the REST↔MCP parity break surfaced by ``backend_source``:
+    ``batch_get_status`` / ``compare_campaigns`` called in-process right
+    after ``create_campaign`` inherited the created campaign's binding and
+    mislabeled their multi-campaign envelope as campaign-scoped (issue #82).
+    """
+    _patch_default_backend(monkeypatch)
+
+    @with_campaign_backend_scope
+    async def probe() -> tuple[str, str]:
+        metadata = get_response_metadata()
+        return metadata.backend, metadata.backend_source
+
+    def run() -> tuple[str, str]:
+        set_campaign_backend("baybe")  # binding leaked by a previous operation
+        return asyncio.run(probe())
+
+    assert contextvars.copy_context().run(run) == ("default-backend", "server_default")
+
+
 def test_scope_restores_outer_binding() -> None:
     def run() -> tuple[str | None, str | None]:
         set_campaign_backend("botorch")
@@ -127,6 +222,46 @@ def test_scope_restores_outer_binding() -> None:
     restored, raw = contextvars.copy_context().run(run)
     assert restored == "botorch"
     assert raw == "botorch"
+
+
+# ---------------------------------------------------------------------------
+# Per-campaign backend in bo_list_campaigns summaries (issue #82)
+# ---------------------------------------------------------------------------
+
+
+def _make_campaign() -> Campaign:
+    return Campaign(spec_id=uuid4(), owner_id=uuid4())
+
+
+def test_standard_summary_names_campaign_backend() -> None:
+    """STANDARD list items say which backend runs each campaign.
+
+    Issue #82: the list envelope's ``_metadata.backend`` stamps the
+    server default, so a mixed-backend deployment had no truthful
+    per-row backend signal at all.
+    """
+    spec = _make_spec(backend="baybe")
+    summary = _build_summary(_make_campaign(), spec.name, 0, spec, VerbosityLevel.STANDARD)
+    assert summary["backend"] == "baybe"
+
+
+def test_detailed_summary_names_campaign_backend() -> None:
+    spec = _make_spec(backend="botorch")
+    summary = _build_summary(_make_campaign(), spec.name, 0, spec, VerbosityLevel.DETAILED)
+    assert summary["backend"] == "botorch"
+
+
+def test_minimal_summary_stays_minimal() -> None:
+    """MINIMAL keeps its documented three-key shape (~50-token budget)."""
+    spec = _make_spec()
+    summary = _build_summary(_make_campaign(), spec.name, 0, spec, VerbosityLevel.MINIMAL)
+    assert set(summary) == {"campaign_id", "name", "status"}
+
+
+def test_summary_backend_is_null_without_spec() -> None:
+    """A missing spec degrades to ``backend: null``, never a crash."""
+    summary = _build_summary(_make_campaign(), "Unknown", 0, None, VerbosityLevel.STANDARD)
+    assert summary["backend"] is None
 
 
 # ---------------------------------------------------------------------------

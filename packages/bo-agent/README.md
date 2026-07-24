@@ -42,7 +42,7 @@ stack, the BO-MCP settings should be:
 ```env
 BO_MCP_API_URL=http://127.0.0.1:8000
 BO_MCP_OPENAPI_URL=http://127.0.0.1:8000/openapi.json
-BO_MCP_SSE_URL=http://127.0.0.1:8001/sse
+BO_MCP_URL=http://127.0.0.1:8001/mcp
 BO_MCP_API_KEY=dev-api-key-12345
 ```
 

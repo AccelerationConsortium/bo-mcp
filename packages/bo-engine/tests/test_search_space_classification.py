@@ -13,13 +13,18 @@ References:
 import pytest
 import torch
 
-from bo_engine.constants import DISCRETE_ENUMERATION_MAX_POINTS
+from bo_engine.constants import (
+    DISCRETE_ENUMERATION_MAX_POINTS,
+    MIXED_CATEGORICAL_COMBO_THRESHOLD,
+)
 from bo_engine.transforms import (
     SearchSpaceType,
     build_fixed_features_list,
     classify_search_space,
     count_categorical_combinations,
     enumerate_discrete_choices,
+    mixed_space_combo_limit_message,
+    mixed_space_combo_overflow,
 )
 from bo_engine.types import (
     ObjectiveSpec,
@@ -225,6 +230,79 @@ class TestCountCategoricalCombinations:
     def test_mixed_counts_only_categoricals(self, mixed_spec: OptimizationSpec) -> None:
         """Mixed spec should count only the categorical combos (3)."""
         assert count_categorical_combinations(mixed_spec) == 3
+
+
+# =============================================================================
+# TestMixedSpaceComboOverflow
+# =============================================================================
+
+
+def _mixed_spec_with_category_count(category_count: int) -> OptimizationSpec:
+    return OptimizationSpec(
+        parameters=[
+            ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ParameterSpec(
+                name="catalyst",
+                type=ParameterType.CATEGORICAL,
+                categories=[f"c{i}" for i in range(category_count)],
+            ),
+        ],
+        objectives=[ObjectiveSpec(name="y", minimize=True)],
+    )
+
+
+class TestMixedSpaceComboOverflow:
+    """mixed_space_combo_overflow is the shared intake/acquisition limit check.
+
+    Both ``BoTorchBackend.validate_capabilities`` and ``optimize_acquisition``
+    consume this helper, so its boundary defines where a mixed space flips
+    from accepted to rejected on both surfaces at once.
+    """
+
+    def test_at_threshold_is_accepted(self) -> None:
+        """Exactly MIXED_CATEGORICAL_COMBO_THRESHOLD combos remain optimizable."""
+        spec = _mixed_spec_with_category_count(MIXED_CATEGORICAL_COMBO_THRESHOLD)
+        assert mixed_space_combo_overflow(spec) is None
+
+    def test_first_value_above_threshold_is_rejected(self) -> None:
+        """The exact boundary: threshold + 1 combos overflow."""
+        spec = _mixed_spec_with_category_count(MIXED_CATEGORICAL_COMBO_THRESHOLD + 1)
+        assert mixed_space_combo_overflow(spec) == MIXED_CATEGORICAL_COMBO_THRESHOLD + 1
+
+    def test_non_mixed_spaces_never_overflow(
+        self,
+        continuous_spec: OptimizationSpec,
+        categorical_spec: OptimizationSpec,
+    ) -> None:
+        """The limit applies to BoTorch's mixed path only.
+
+        Purely categorical spaces route to optimize_acqf_discrete, which is
+        bounded by DISCRETE_ENUMERATION_MAX_POINTS instead.
+        """
+        assert mixed_space_combo_overflow(continuous_spec) is None
+        assert mixed_space_combo_overflow(categorical_spec) is None
+
+    def test_categorical_without_categories_returns_none(self) -> None:
+        """A malformed categorical (categories=None) must not raise here.
+
+        The helper feeds ``validate_capabilities``, a reporting API that must
+        never raise; the canonical error for the malformed parameter is
+        raised by the parameter builders.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="broken", type=ParameterType.CATEGORICAL, categories=None),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        assert mixed_space_combo_overflow(spec) is None
+
+    def test_message_names_threshold_and_actual_count(self) -> None:
+        """The canonical message carries both the limit and the observed count."""
+        message = mixed_space_combo_limit_message(192)
+        assert str(MIXED_CATEGORICAL_COMBO_THRESHOLD) in message
+        assert "192" in message
 
 
 # =============================================================================

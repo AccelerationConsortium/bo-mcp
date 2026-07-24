@@ -52,7 +52,6 @@ from bo_engine.constants import (
     ACQF_LBFGS_MAXITER,
     COST_AWARE_MIN_EXPECTED_COST,
     DEFAULT_UCB_BETA,
-    MIXED_CATEGORICAL_COMBO_THRESHOLD,
     NUMERICAL_EPSILON,
     RESTART_WARN_TOLERANCE,
 )
@@ -61,8 +60,9 @@ from bo_engine.transforms import (
     SearchSpaceType,
     build_fixed_features_list,
     classify_search_space,
-    count_categorical_combinations,
     enumerate_discrete_choices,
+    mixed_space_combo_limit_message,
+    mixed_space_combo_overflow,
 )
 from bo_engine.types import (
     SINGLE_OBJECTIVE_ONLY_ACQUISITION,
@@ -1190,16 +1190,9 @@ def optimize_acquisition(
         merged_avoid = _merge_avoid_tensors(x_avoid, X_pending)
         return _optimize_discrete(acqf, spec, batch_size, merged_avoid)
     if space_type == SearchSpaceType.MIXED:
-        n_combos = count_categorical_combinations(spec)
-        if n_combos > MIXED_CATEGORICAL_COMBO_THRESHOLD:
-            msg = (
-                f"Mixed spaces with more than {MIXED_CATEGORICAL_COMBO_THRESHOLD} "
-                f"categorical combinations are not yet supported (this space has "
-                f"{n_combos}). Consider reducing the number of categories. "
-                "A future version will support optimize_acqf_mixed_alternating "
-                "with integer encoding for larger mixed spaces."
-            )
-            raise NotImplementedError(msg)
+        combo_overflow = mixed_space_combo_overflow(spec)
+        if combo_overflow is not None:
+            raise NotImplementedError(mixed_space_combo_limit_message(combo_overflow))
         _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_mixed(
             acqf,

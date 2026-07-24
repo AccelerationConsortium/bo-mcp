@@ -42,6 +42,33 @@ def _baybe_incompatible_intake() -> dict:
     }
 
 
+def _botorch_incompatible_mixed_intake() -> dict:
+    return {
+        "name": "Direct arylation shaped",
+        "parameters": [
+            {
+                "name": "base",
+                "type": "categorical",
+                "categories": [f"base_{index}" for index in range(4)],
+            },
+            {
+                "name": "ligand",
+                "type": "categorical",
+                "categories": [f"ligand_{index}" for index in range(12)],
+            },
+            {
+                "name": "solvent",
+                "type": "categorical",
+                "categories": [f"solvent_{index}" for index in range(4)],
+            },
+            {"name": "concentration", "type": "discrete", "values": [0.1, 0.2, 0.3]},
+            {"name": "temperature", "type": "discrete", "values": [80.0, 100.0, 120.0]},
+        ],
+        "objectives": [{"name": "yield", "direction": "maximize"}],
+        "backend": "botorch",
+    }
+
+
 @pytest.mark.asyncio
 async def test_create_and_validate_render_identical_rejection(
     setup_database: None,
@@ -58,6 +85,17 @@ async def test_create_and_validate_render_identical_rejection(
     assert create_response["errors"]
     assert create_response["errors"] == validate_response["errors"]
     assert create_response["field_errors"] == validate_response["field_errors"]
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_large_mixed_space_pinned_to_botorch() -> None:
+    """The intake check reports the late-acquisition failure before creation."""
+    response = await validate_intake_with_capabilities(_botorch_incompatible_mixed_intake())
+
+    assert response["valid"] is False
+    assert response["backend"] == "botorch"
+    assert "parameters" in response["field_errors"]
+    assert any("192" in error for error in response["errors"])
 
 
 class TestCapabilityRejectionErrors:

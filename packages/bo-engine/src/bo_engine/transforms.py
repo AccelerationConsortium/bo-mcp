@@ -10,6 +10,7 @@ from torch import Tensor
 
 from bo_engine.constants import (
     DISCRETE_ENUMERATION_MAX_POINTS,
+    MIXED_CATEGORICAL_COMBO_THRESHOLD,
     NUMERICAL_EPSILON,
     SAFE_DIVISION_EPSILON,
 )
@@ -73,6 +74,42 @@ def count_categorical_combinations(spec: OptimizationSpec) -> int:
             product *= len(param.categories)
 
     return product if has_categorical else 0
+
+
+def mixed_space_combo_overflow(spec: OptimizationSpec) -> int | None:
+    """Categorical-combination count when a mixed space exceeds the BoTorch limit.
+
+    Single source of truth for the two surfaces that enforce
+    ``MIXED_CATEGORICAL_COMBO_THRESHOLD`` — intake capability validation
+    (``BoTorchBackend.validate_capabilities``) and the acquisition guard in
+    ``optimize_acquisition`` — so the limit reported at intake and the limit
+    enforced at runtime cannot drift apart.
+
+    Returns ``None`` for any space the mixed optimizer accepts. Specs whose
+    categorical parameters lack ``categories`` also return ``None``: this is
+    a reporting helper, and the canonical error for that malformed shape is
+    raised by the parameter builders, not here.
+    """
+    if classify_search_space(spec) != SearchSpaceType.MIXED:
+        return None
+    if any(p.type == ParameterType.CATEGORICAL and p.categories is None for p in spec.parameters):
+        return None
+    n_combos = count_categorical_combinations(spec)
+    return n_combos if n_combos > MIXED_CATEGORICAL_COMBO_THRESHOLD else None
+
+
+def mixed_space_combo_limit_message(n_combinations: int) -> str:
+    """Canonical message for a mixed space above the combination limit.
+
+    Shared verbatim by the intake capability report and the acquisition-time
+    ``NotImplementedError`` so both surfaces describe the same limit.
+    """
+    return (
+        f"Mixed spaces with more than {MIXED_CATEGORICAL_COMBO_THRESHOLD} "
+        f"categorical combinations are not yet supported by BoTorch acquisition "
+        f"(this space has {n_combinations}). Consider reducing the number of "
+        "categories or selecting another backend."
+    )
 
 
 def _enumerable_choice_count(param: ParameterSpec) -> int | None:

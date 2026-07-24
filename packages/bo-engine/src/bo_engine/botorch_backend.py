@@ -72,7 +72,12 @@ from bo_engine.suggestions import (
     update_turbo_after_evaluation,
 )
 from bo_engine.suggestions_training import resolve_model_options
-from bo_engine.transforms import encode_categorical, get_bounds_tensor
+from bo_engine.transforms import (
+    encode_categorical,
+    get_bounds_tensor,
+    mixed_space_combo_limit_message,
+    mixed_space_combo_overflow,
+)
 from bo_engine.turbo import TurboState, should_use_turbo
 from bo_engine.types import (
     SINGLE_OBJECTIVE_ONLY_ACQUISITION,
@@ -709,6 +714,15 @@ class BoTorchBackend(BaseBackend):
         option_reports.extend(_constraint_surface_reports(spec))
         option_reports.extend(_log_transform_direction_reports(spec))
         option_reports.extend(_substance_parameter_reports(spec))
+        combo_overflow = mixed_space_combo_overflow(spec)
+        if combo_overflow is not None:
+            option_reports.append(
+                CapabilityReport(
+                    key="parameters",
+                    status=CapabilityStatus.UNSUPPORTED,
+                    reason=mixed_space_combo_limit_message(combo_overflow),
+                )
+            )
         return BackendValidationResult(
             backend=self.name,
             feature_reports=tuple(feature_reports),

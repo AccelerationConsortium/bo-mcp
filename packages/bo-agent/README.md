@@ -1,7 +1,7 @@
 # BO Agent
 
 This package runs the BO-MCP conversational agent locally. The agent expects the
-repository's database, REST API, and MCP SSE server to be running first.
+repository's database, REST API, and MCP HTTP server to be running first.
 
 ## 1. Start the required Docker services
 
@@ -25,7 +25,7 @@ With the default port configuration, the agent uses:
 
 - REST API: `http://127.0.0.1:8000`
 - OpenAPI schema: `http://127.0.0.1:8000/openapi.json`
-- MCP SSE endpoint: `http://127.0.0.1:8001/sse`
+- MCP endpoint (streamable HTTP): `http://127.0.0.1:8001/mcp`
 
 ## 2. Configure the agent
 
@@ -42,7 +42,7 @@ stack, the BO-MCP settings should be:
 ```env
 BO_MCP_API_URL=http://127.0.0.1:8000
 BO_MCP_OPENAPI_URL=http://127.0.0.1:8000/openapi.json
-BO_MCP_SSE_URL=http://127.0.0.1:8001/sse
+BO_MCP_URL=http://127.0.0.1:8001/mcp
 BO_MCP_API_KEY=dev-api-key-12345
 ```
 

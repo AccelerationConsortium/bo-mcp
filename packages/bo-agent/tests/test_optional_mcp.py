@@ -12,10 +12,10 @@ from specialist import build_bo_specialist_subagent
 
 
 def test_specialist_run_survives_unreachable_mcp_server() -> None:
-    """An unavailable optional SSE endpoint must not abort specialist startup."""
+    """An unavailable optional MCP endpoint must not abort specialist startup."""
     with patch.dict(
         os.environ,
-        {"BO_MCP_SSE_URL": "http://127.0.0.1:1/sse"},
+        {"BO_MCP_URL": "http://127.0.0.1:1/mcp"},
         clear=True,
     ):
         specialist_config = build_bo_specialist_subagent(TestModel())
@@ -35,7 +35,7 @@ def test_optional_mcp_toolset_is_registered_on_specialist() -> None:
     """Interactive BO-MCP guidance and its optional toolset target the specialist."""
     with patch.dict(
         os.environ,
-        {"BO_MCP_SSE_URL": "http://127.0.0.1:8001/sse"},
+        {"BO_MCP_URL": "http://127.0.0.1:8001/mcp"},
         clear=True,
     ):
         specialist_config = build_bo_specialist_subagent(TestModel())

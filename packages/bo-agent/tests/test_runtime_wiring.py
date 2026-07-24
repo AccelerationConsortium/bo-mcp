@@ -28,6 +28,7 @@ def agent_module(compiled_subagents: dict[str, Any]) -> Iterator[ModuleType]:
     """Import the web entrypoint with a local model and no telemetry export."""
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    monkeypatch.delenv("BO_MCP_URL", raising=False)
     monkeypatch.delenv("BO_MCP_SSE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)

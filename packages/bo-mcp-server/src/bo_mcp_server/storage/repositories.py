@@ -398,9 +398,12 @@ class CampaignSpecRepository:
             acquisition_optimization=acquisition_optimization,
             initial_design_size=model.initial_design_size,
             random_seed=model.random_seed,
-            # Legacy fallback: rows created before the backend column existed
-            # ran on BoTorch. New rows always store an explicit backend.
-            backend=getattr(model, "backend", "botorch"),
+            # Rows always store an explicit backend since the column was
+            # added (the migration backfilled it); this fallback only fires
+            # against a pre-column model class and follows the project-wide
+            # BayBE default. Pre-column archives ran on BoTorch — relabel
+            # explicitly if one is ever restored.
+            backend=getattr(model, "backend", "baybe"),
             backend_options=backend_options,
             **_advanced_options_kwargs(advanced),
         )

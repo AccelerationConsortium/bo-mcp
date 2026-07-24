@@ -33,7 +33,7 @@ Usage:
 import functools
 from collections.abc import Callable, Coroutine
 from enum import StrEnum
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -71,6 +71,12 @@ class ResponseMetadata(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     backend: str
+    # ``backend`` is polysemous by design (issue #57): campaign-scoped
+    # operations stamp the campaign's own backend, campaign-agnostic ones
+    # the server-wide default. ``backend_source`` says which meaning this
+    # response carries so mixed-backend deployments are not left guessing
+    # (issue #82).
+    backend_source: Literal["campaign", "server_default"]
     protocol: str
     server_version: str
     # ``trace_id`` is echoed only when the caller bound one via
@@ -89,20 +95,28 @@ def get_response_metadata(protocol: str = "mcp") -> ResponseMetadata:
     (:func:`bo_mcp_server.backend.warm_default_backend`), so the lookup
     here is a cache hit and safe to run on the event loop.
 
+    A transport bound via :mod:`bo_mcp_server.protocol_context` (the
+    REST request middleware binds ``"rest"``) takes precedence over the
+    ``protocol`` parameter: shared operations call this with the
+    default, and only the dispatch boundary knows the real transport.
+
     Args:
-        protocol: The transport protocol ("mcp" or "rest").
+        protocol: Fallback transport protocol when none is bound
+            ("mcp" or "rest").
 
     Returns:
         Metadata with backend, protocol, and server version.
     """
     from bo_mcp_server.backend import get_backend
     from bo_mcp_server.backend_context import get_campaign_backend
+    from bo_mcp_server.protocol_context import get_bound_protocol
     from bo_mcp_server.trace_context import get_trace_id
 
-    backend_name = get_campaign_backend() or get_backend().name
+    campaign_backend = get_campaign_backend()
     return ResponseMetadata(
-        backend=backend_name,
-        protocol=protocol,
+        backend=campaign_backend or get_backend().name,
+        backend_source="campaign" if campaign_backend else "server_default",
+        protocol=get_bound_protocol() or protocol,
         server_version=__version__,
         trace_id=get_trace_id(),
     )

@@ -18,9 +18,11 @@ default backend.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import functools
+from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import Any
 
 campaign_backend_var: ContextVar[str | None] = ContextVar("bo_mcp_campaign_backend", default=None)
 
@@ -54,3 +56,27 @@ def campaign_backend_scope() -> Iterator[None]:
         yield
     finally:
         campaign_backend_var.reset(token)
+
+
+def with_campaign_backend_scope[**P, R](
+    fn: Callable[P, Coroutine[Any, Any, R]],
+) -> Callable[P, Coroutine[Any, Any, R]]:
+    """Async decorator that runs an operation inside :func:`campaign_backend_scope`.
+
+    For cross-campaign operations (batch status, compare): their envelope
+    must stamp the server default, never whichever campaign a previous
+    operation in the same context happened to bind. Transports enter the
+    scope per dispatch, but in-process callers (client facade, scripts,
+    tests) may not — without this, a leaked binding mislabels a
+    multi-campaign response as campaign-scoped (issue #82).
+
+    Stack it outermost (above ``with_response_metadata``) so the scope
+    still covers the decorator's own metadata-attach step.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        with campaign_backend_scope():
+            return await fn(*args, **kwargs)
+
+    return wrapper

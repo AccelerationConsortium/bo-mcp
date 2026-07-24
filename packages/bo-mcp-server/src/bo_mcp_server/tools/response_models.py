@@ -74,6 +74,7 @@ class CampaignSummaryItem(_PermissiveResponse):
     campaign_id: str | None = None
     name: str | None = None
     status: str | None = None
+    backend: str | None = None
     iteration: int | None = None
     n_results: int | None = None
     created_at: str | None = None

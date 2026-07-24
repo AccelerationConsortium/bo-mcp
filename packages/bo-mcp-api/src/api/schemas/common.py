@@ -2,7 +2,7 @@
 
 from typing import Final
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from bo_mcp_server.client import RESPONSE_SCHEMA_VERSION, VerbosityLevel
 
@@ -48,7 +48,17 @@ class ResponseEnvelope(BaseModel):
 
     * additive fields → keep the version unchanged (forward-compatible);
     * removed / renamed / re-typed fields → bump and document.
+
+    ``extra="allow"``: envelopes are constructed from the shared
+    operation's result dict and must forward the keys the operation
+    attaches — notably ``_metadata`` (backend / backend_source) — to
+    keep REST byte-parity with the MCP tool output. Pydantic's default
+    ``extra="ignore"`` silently dropped ``_metadata`` from six envelopes
+    (issue #82 follow-up). Subclasses that want strictness must opt into
+    ``forbid`` explicitly; ``ignore`` would reintroduce silent drops.
     """
+
+    model_config = ConfigDict(extra="allow")
 
     schema_version: int = Field(default=API_RESPONSE_SCHEMA_VERSION)
 

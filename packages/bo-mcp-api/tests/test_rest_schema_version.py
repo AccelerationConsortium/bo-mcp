@@ -14,6 +14,8 @@ both bump in lockstep.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from bo_mcp_server.tools.create_campaign import create_campaign
@@ -289,3 +291,49 @@ async def test_resource_get_responses_omit_schema_version(
     response = await api_client.get(f"/api/v1/campaigns/{campaign_id}", headers=auth_headers)
     assert response.status_code == 200, response.text
     assert "schema_version" not in response.json()
+
+
+def test_envelopes_never_silently_ignore_extras() -> None:
+    """Every ``ResponseEnvelope`` subclass forwards or rejects unknown keys.
+
+    Pydantic's default ``extra="ignore"`` silently dropped the shared
+    operation's ``_metadata`` from six REST envelopes (issue #82
+    follow-up review). The base now sets ``extra="allow"``; envelopes
+    wanting strictness must opt into ``forbid`` explicitly — ``ignore``
+    would reintroduce silent drops, invisible to exact-parity tests
+    that do not cover the affected route.
+    """
+    # Import for the side effect of registering every envelope subclass.
+    import api.schemas.campaign
+    import api.schemas.diagnostics
+    import api.schemas.result
+    import api.schemas.suggestion  # noqa: F401
+    from api.schemas.common import ResponseEnvelope
+
+    def _subclasses(cls: type[ResponseEnvelope]) -> set[type[ResponseEnvelope]]:
+        found: set[type[ResponseEnvelope]] = set()
+        for sub in cls.__subclasses__():
+            found.add(sub)
+            found |= _subclasses(sub)
+        return found
+
+    envelopes = _subclasses(ResponseEnvelope)
+    assert envelopes, "no envelope subclasses discovered — import wiring broken?"
+    for cls in envelopes:
+        assert cls.model_config.get("extra") in ("allow", "forbid"), (
+            f"{cls.__name__} neither forwards nor rejects extra keys; "
+            "it would silently drop operation metadata"
+        )
+
+
+def test_response_envelope_forwards_metadata_extra() -> None:
+    """The envelope base retains ``_metadata`` passed as an extra key.
+
+    Mirrors how routes construct envelopes — ``Model(**result)`` from the
+    shared operation's dict — rather than a literal keyword.
+    """
+    from api.schemas.common import ResponseEnvelope
+
+    result: dict[str, Any] = {"_metadata": {"backend": "baybe", "backend_source": "server_default"}}
+    dumped = ResponseEnvelope(**result).model_dump()
+    assert dumped["_metadata"] == {"backend": "baybe", "backend_source": "server_default"}

@@ -29,6 +29,7 @@ contexts (startup, worker threads).
 
 import asyncio
 import logging
+import os
 import threading
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
@@ -421,5 +422,9 @@ async def warm_default_backend() -> BOBackend:
     at boot, not deep inside the first suggestion call.
     """
     backend = await get_backend_async()
-    logger.info("Warmed default backend at startup: %s", backend.name)
+    # Name the provenance so a frozen environment (long-lived stdio server,
+    # container created before a .env edit) is diagnosable from the log
+    # alone instead of via process archaeology (issue #82).
+    source = "BO_BACKEND environment/.env" if "BO_BACKEND" in os.environ else "built-in default"
+    logger.info("Warmed default backend at startup: %s (from %s)", backend.name, source)
     return backend

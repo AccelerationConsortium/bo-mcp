@@ -4,6 +4,7 @@ from typing import Any
 
 from bo_mcp_server import __version__
 from bo_mcp_server.backend import get_backend, list_available_backends
+from bo_mcp_server.backend_context import campaign_backend_scope
 from bo_mcp_server.response_formatter import attach_response_metadata
 from bo_mcp_server.settings import get_default_backend_name
 
@@ -37,13 +38,17 @@ def list_capabilities_operation(backend_name: str | None = None) -> dict[str, An
         str(feature): reason
         for feature, reason in (getattr(backend, "conditional_features", {}) or {}).items()
     }
-    return attach_response_metadata(
-        {
-            "backend": backend.name,
-            "supported_features": sorted(backend.supported_features),
-            "conditional_features": conditional,
-            "available_backends": list_available_backends(),
-            "default_backend": get_default_backend_name(),
-            "server_version": __version__,
-        }
-    )
+    # Campaign-agnostic stamp: shield ``_metadata`` from a binding leaked
+    # by a previous same-task operation — in-process callers may bypass
+    # the transports' campaign_backend_scope (issue #82).
+    with campaign_backend_scope():
+        return attach_response_metadata(
+            {
+                "backend": backend.name,
+                "supported_features": sorted(backend.supported_features),
+                "conditional_features": conditional,
+                "available_backends": list_available_backends(),
+                "default_backend": get_default_backend_name(),
+                "server_version": __version__,
+            }
+        )

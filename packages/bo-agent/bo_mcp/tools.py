@@ -7,7 +7,7 @@ import os
 from typing import Any, Self
 
 from pydantic_ai import FunctionToolset, RunContext, Tool
-from pydantic_ai.mcp import MCPToolset, SSETransport
+from pydantic_ai.mcp import MCPToolset, StreamableHttpTransport
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 
 from bo_mcp.openapi import (
@@ -21,25 +21,47 @@ BO_MCP_OPENAPI_TOOLSET_ID = "bo_mcp_openapi_toolset"
 logger = logging.getLogger(__name__)
 
 
-def _bo_mcp_sse_url() -> str:
-    sse_url = os.getenv("BO_MCP_SSE_URL", "").strip()
-    if not sse_url:
-        message = "BO_MCP_SSE_URL is not set; configure the BO-MCP SSE endpoint."
+def _read_bo_mcp_url() -> str:
+    """Return the configured MCP endpoint URL, or an empty string when unset.
+
+    The server moved from the deprecated SSE transport to streamable-http;
+    a leftover ``BO_MCP_SSE_URL`` cannot work against the new transport, so
+    it is ignored with a loud migration hint instead of failing obscurely
+    at connect time.
+    """
+    url = os.getenv("BO_MCP_URL", "").strip()
+    if not url and os.getenv("BO_MCP_SSE_URL", "").strip():
+        logger.warning(
+            "BO_MCP_SSE_URL is set but no longer used: the BO-MCP server "
+            "moved from the deprecated SSE transport to streamable-http. "
+            "Set BO_MCP_URL to the /mcp endpoint "
+            "(e.g. http://127.0.0.1:8001/mcp)."
+        )
+    return url
+
+
+def _bo_mcp_url() -> str:
+    url = _read_bo_mcp_url()
+    if not url:
+        message = (
+            "BO_MCP_URL is not set; configure the BO-MCP streamable-http "
+            "endpoint (e.g. http://127.0.0.1:8001/mcp)."
+        )
         raise ValueError(message)
-    return sse_url
+    return url
 
 
 def build_bo_mcp_toolset() -> MCPToolset[Any]:
     """Build the BO MCP client used by the chat runtime."""
-    return MCPToolset(SSETransport(_bo_mcp_sse_url()), id=BO_MCP_TOOLSET_ID)
+    return MCPToolset(StreamableHttpTransport(_bo_mcp_url()), id=BO_MCP_TOOLSET_ID)
 
 
 class OptionalBoMcpToolset(AbstractToolset[Any]):
-    """Expose BO-MCP tools when SSE is available without aborting the agent run."""
+    """Expose BO-MCP tools when the endpoint is reachable without aborting the run."""
 
-    def __init__(self, sse_url: str) -> None:
-        """Configure a per-run connection to the optional SSE endpoint."""
-        self._sse_url = sse_url
+    def __init__(self, url: str) -> None:
+        """Configure a per-run connection to the optional MCP endpoint."""
+        self._url = url
         self._mcp_toolset: MCPToolset[Any] | None = None
 
     @property
@@ -50,18 +72,18 @@ class OptionalBoMcpToolset(AbstractToolset[Any]):
     async def for_run(self, ctx: RunContext[Any]) -> AbstractToolset[Any]:
         """Return isolated connection state for each specialist run."""
         del ctx
-        return OptionalBoMcpToolset(self._sse_url)
+        return OptionalBoMcpToolset(self._url)
 
     async def __aenter__(self) -> Self:
         """Connect when possible, otherwise continue with no MCP tools."""
-        mcp_toolset = MCPToolset(SSETransport(self._sse_url), id=BO_MCP_TOOLSET_ID)
+        mcp_toolset = MCPToolset(StreamableHttpTransport(self._url), id=BO_MCP_TOOLSET_ID)
         try:
             await mcp_toolset.__aenter__()
         except Exception as exc:  # noqa: BLE001 — optional service failures must degrade safely
             logger.warning(
-                "BO-MCP SSE unavailable; continuing without interactive MCP tools",
+                "BO-MCP endpoint unavailable; continuing without interactive MCP tools",
                 extra={
-                    "sse_url": self._sse_url,
+                    "url": self._url,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 },
@@ -95,19 +117,19 @@ class OptionalBoMcpToolset(AbstractToolset[Any]):
     ) -> Any:  # noqa: ANN401 — tool return values are defined by the remote MCP server
         """Delegate calls to the connected MCP toolset."""
         if self._mcp_toolset is None:
-            message = "BO-MCP SSE toolset is unavailable"
+            message = "BO-MCP toolset is unavailable"
             raise RuntimeError(message)
         return await self._mcp_toolset.call_tool(name, tool_args, ctx, tool)
 
 
 def build_optional_bo_mcp_toolset() -> OptionalBoMcpToolset | None:
-    """Build a fail-soft SSE toolset when the endpoint is configured."""
-    sse_url = os.getenv("BO_MCP_SSE_URL", "").strip()
-    if not sse_url:
-        logger.info("BO_MCP_SSE_URL is unset; interactive BO-MCP tools are disabled")
+    """Build a fail-soft MCP toolset when the endpoint is configured."""
+    url = _read_bo_mcp_url()
+    if not url:
+        logger.info("BO_MCP_URL is unset; interactive BO-MCP tools are disabled")
         return None
 
-    return OptionalBoMcpToolset(sse_url)
+    return OptionalBoMcpToolset(url)
 
 
 def build_bo_mcp_openapi_toolset() -> FunctionToolset[object]:

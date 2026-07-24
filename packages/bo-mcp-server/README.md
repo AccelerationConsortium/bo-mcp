@@ -26,9 +26,12 @@ Requires Python >= 3.13.
 
 ### With Claude Code
 
-The `.mcp.json` at the repo root auto-configures Claude Code:
+The `.mcp.json` at the repo root points Claude Code at the local MCP server
+over streamable HTTP (`http://127.0.0.1:8001/mcp`). Start the server first
+(e.g. via Docker, see below), then launch Claude Code:
 
 ```bash
+docker compose up -d mcp db
 cd bo-mcp-ui && claude
 ```
 
@@ -38,8 +41,8 @@ cd bo-mcp-ui && claude
 # stdio transport (for Claude Desktop / agent integration)
 bo-mcp-server
 
-# SSE transport (for network access)
-bo-mcp-server --transport sse --host 0.0.0.0 --port 8001
+# Streamable HTTP transport (serves http://127.0.0.1:8001/mcp)
+bo-mcp-server --transport streamable-http --port 8001
 ```
 
 ### Docker

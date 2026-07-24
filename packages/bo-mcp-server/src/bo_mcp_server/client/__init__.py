@@ -137,6 +137,7 @@ from bo_mcp_server.operations.validate_intake import (
     validate_intake_operation,
     validate_intake_with_capabilities,
 )
+from bo_mcp_server.protocol_context import bind_protocol
 from bo_mcp_server.response_formatter import (
     RESPONSE_SCHEMA_VERSION,
     SuggestionSummaryItem,
@@ -211,6 +212,7 @@ __all__ = [
     "authorize_suggestion",
     # Operations
     "batch_get_status_operation",
+    "bind_protocol",
     "bind_trace_id",
     "campaign_backend_scope",
     "canonical_create_campaign_payload",

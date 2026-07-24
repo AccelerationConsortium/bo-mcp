@@ -12,7 +12,7 @@ same external Docker network contract used by gpu4pyscf.
 The slot must be an integer from 0 to 99. Host ports are shifted by slot * 100:
   frontend: 3001 + slot * 100
   api:      8000 + slot * 100
-  mcp sse:  8001 + slot * 100
+  mcp http: 8001 + slot * 100
 
 Example:
   ./dev-up-bo-mcp 3 up --build
@@ -48,7 +48,7 @@ Compose slot: ${slot}
 Project: ${COMPOSE_PROJECT_NAME}
 BO-MCP frontend: http://127.0.0.1:${BO_MCP_FRONTEND_PORT}
 BO-MCP API: http://127.0.0.1:${BO_MCP_API_PORT}
-BO-MCP SSE: http://127.0.0.1:${BO_MCP_SSE_PORT}/sse
+BO-MCP MCP endpoint: http://127.0.0.1:${BO_MCP_SSE_PORT}/mcp
 Docker network: ${BO_MCP_NETWORK_NAME}
 EOF
 

@@ -5,6 +5,7 @@ import math
 from typing import Any
 from uuid import UUID
 
+from bo_mcp_server.backend_context import with_campaign_backend_scope
 from bo_mcp_server.constants import HYPERVOLUME_STABILITY_THRESHOLD
 from bo_mcp_server.domain import Campaign, CampaignSpec, CampaignStatus
 from bo_mcp_server.errors import ErrorCode, make_error_response
@@ -256,6 +257,7 @@ def _build_campaign_info(
     return _build_detailed_info(name, campaign, n_results, n_pending, spec)
 
 
+@with_campaign_backend_scope
 @with_response_metadata
 async def batch_get_status_operation(
     campaign_ids: list[str],

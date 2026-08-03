@@ -18,12 +18,23 @@ import logging
 
 import pytest
 import torch
+from botorch.acquisition import AcquisitionFunction
 
 from bo_engine.acquisition import (
     _log_restart_diagnostics,
     optimize_acquisition,
 )
 from bo_engine.constants import RESTART_WARN_TOLERANCE
+
+
+class _SumAcquisition(AcquisitionFunction):
+    """Simple acquisition used to exercise the unseen-candidate fallback."""
+
+    def __init__(self) -> None:
+        super().__init__(model=None)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:  # noqa: N803
+        return X.sum(dim=(-1, -2))
 
 
 @pytest.fixture
@@ -181,3 +192,64 @@ class TestOptimizeAcquisitionExposesDiagnostics:
         assert candidates.shape == (2, 2)
         restart_logs = [r for r in caplog.records if "Acquisition restart rank" in r.message]
         assert restart_logs == []
+
+    def test_q1_skips_best_restart_when_it_matches_x_avoid(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The highest-valued restart is ineligible after it was evaluated."""
+        restart_candidates = torch.tensor(
+            [
+                [[0.0, 1.0]],
+                [[0.25, 0.75]],
+                [[0.8, 0.2]],
+            ],
+            dtype=torch.float64,
+        )
+        restart_values = torch.tensor([10.0, 9.0, 8.0], dtype=torch.float64)
+
+        def fake_optimize_acqf(**_kwargs):
+            return restart_candidates, restart_values
+
+        monkeypatch.setattr("bo_engine.acquisition.optimize_acqf", fake_optimize_acqf)
+
+        candidates, values = optimize_acquisition(
+            acqf=object(),
+            bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+            batch_size=1,
+            num_restarts=3,
+            raw_samples=16,
+            x_avoid=restart_candidates[0],
+        )
+
+        assert torch.equal(candidates, restart_candidates[1])
+        assert torch.equal(values, restart_values[1:2])
+
+    def test_q1_falls_back_to_an_unseen_point_when_all_restarts_match(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Collapsed restarts must not send the evaluated maximizer again."""
+        duplicate = torch.tensor([[[1.0, 1.0]]], dtype=torch.float64)
+
+        def fake_optimize_acqf(**kwargs):
+            repeats = kwargs["num_restarts"]
+            return duplicate.repeat(repeats, 1, 1), torch.ones(repeats, dtype=torch.float64)
+
+        monkeypatch.setattr("bo_engine.acquisition.optimize_acqf", fake_optimize_acqf)
+        torch.manual_seed(7)
+
+        candidates, values = optimize_acquisition(
+            acqf=_SumAcquisition(),
+            bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+            batch_size=1,
+            num_restarts=3,
+            raw_samples=16,
+            x_avoid=duplicate[0],
+        )
+
+        assert candidates.shape == (1, 2)
+        assert values.shape == (1,)
+        assert not torch.equal(candidates, duplicate[0])
+        assert torch.all(candidates >= 0.0)
+        assert torch.all(candidates <= 1.0)

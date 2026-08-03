@@ -1127,7 +1127,10 @@ def optimize_acquisition(
         spec: Optimization specification for discrete/mixed dispatch.
             If None, falls back to continuous optimization.
         x_avoid: Points to avoid (e.g., already-evaluated training data).
-            Used by optimize_acqf_discrete to exclude known points.
+            Continuous optimization selects the best unseen restart, with an
+            acquisition-ranked random fallback if every restart collapses onto
+            an avoided point. Discrete optimization excludes these points from
+            its enumerated choice set.
         inequality_constraints: BoTorch linear inequality constraints. Each
             tuple is (indices, coefficients, rhs) enforcing
             ``sum_i X[indices[i]] * coefficients[i] >= rhs`` (BoTorch's
@@ -1161,6 +1164,8 @@ def optimize_acquisition(
 
     if X_pending is not None:
         X_pending = to_device(X_pending)
+    if x_avoid is not None:
+        x_avoid = to_device(x_avoid)
 
     effective_restarts, effective_samples = _resolve_restart_budget(
         spec, bounds, num_restarts, raw_samples
@@ -1180,6 +1185,7 @@ def optimize_acquisition(
             batch_size,
             effective_restarts,
             effective_samples,
+            x_avoid=_merge_avoid_tensors(x_avoid, X_pending),
             inequality_constraints=inequality_constraints,
             equality_constraints=equality_constraints,
         )
@@ -1211,6 +1217,7 @@ def optimize_acquisition(
         batch_size,
         effective_restarts,
         effective_samples,
+        x_avoid=_merge_avoid_tensors(x_avoid, X_pending),
         inequality_constraints=inequality_constraints,
         equality_constraints=equality_constraints,
     )
@@ -1278,6 +1285,7 @@ def _optimize_continuous(
     batch_size: int,
     num_restarts: int,
     raw_samples: int,
+    x_avoid: Tensor | None = None,
     inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
 ) -> tuple[Tensor, Tensor]:
@@ -1289,6 +1297,7 @@ def _optimize_continuous(
         batch_size: Number of candidates to generate
         num_restarts: Number of optimization restarts
         raw_samples: Number of raw samples for initialization
+        x_avoid: Previously evaluated or pending points that cannot be returned
         inequality_constraints: BoTorch linear inequality constraints
             (``coefficients @ X[indices] >= rhs``)
         equality_constraints: BoTorch linear equality constraints
@@ -1324,10 +1333,94 @@ def _optimize_continuous(
 
     if capture_restarts:
         _log_restart_diagnostics(acq_values, candidates)
-        best_idx = int(acq_values.argmax().item())
-        candidates = candidates[best_idx]
-        acq_values = acq_values[best_idx : best_idx + 1]
+        eligible = ~_matches_avoided_points(candidates[:, 0, :], x_avoid)
+        if bool(eligible.any()):
+            eligible_values = acq_values.masked_fill(~eligible, -torch.inf)
+            best_idx = int(eligible_values.argmax().item())
+            candidates = candidates[best_idx]
+            acq_values = acq_values[best_idx : best_idx + 1]
+        else:
+            candidates, acq_values = _continuous_unseen_fallback(
+                acqf,
+                bounds,
+                x_avoid=x_avoid,
+                sample_count=max(raw_samples, 64),
+                inequality_constraints=inequality_constraints,
+                equality_constraints=equality_constraints,
+            )
     return candidates, acq_values
+
+
+def _matches_avoided_points(points: Tensor, x_avoid: Tensor | None) -> Tensor:
+    """Return one boolean per point using the engine's numerical equality tolerance."""
+    flat_points = points.reshape(-1, points.shape[-1])
+    if x_avoid is None or x_avoid.numel() == 0:
+        return torch.zeros(flat_points.shape[0], dtype=torch.bool, device=flat_points.device)
+    avoided = x_avoid.to(device=flat_points.device, dtype=flat_points.dtype).reshape(
+        -1, flat_points.shape[-1]
+    )
+    equal_coordinates = torch.isclose(
+        flat_points[:, None, :],
+        avoided[None, :, :],
+        rtol=0.0,
+        atol=NUMERICAL_EPSILON,
+    )
+    return equal_coordinates.all(dim=-1).any(dim=-1)
+
+
+def _continuous_unseen_fallback(
+    acqf: AcquisitionFunction,
+    bounds: Tensor,
+    *,
+    x_avoid: Tensor | None,
+    sample_count: int,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+) -> tuple[Tensor, Tensor]:
+    """Choose the best unseen point from a random continuous candidate cloud.
+
+    This path is used only when every L-BFGS-B restart converges to an already
+    evaluated point. Random sampling supplies a finite alternative set without
+    perturbing or silently resubmitting that maximizer. Equality-constrained
+    spaces cannot be sampled this way because their feasible region has zero
+    volume; the explicit error keeps such campaigns from receiving an invalid
+    suggestion.
+    """
+    if equality_constraints:
+        msg = (
+            "All continuous acquisition restarts matched avoided points, and "
+            "the unseen-point fallback does not support equality constraints."
+        )
+        raise RuntimeError(msg)
+
+    unit = torch.rand(
+        sample_count,
+        bounds.shape[-1],
+        device=bounds.device,
+        dtype=bounds.dtype,
+    )
+    choices = bounds[0] + (bounds[1] - bounds[0]) * unit
+    eligible = ~_matches_avoided_points(choices, x_avoid)
+    for indices, coefficients, rhs in inequality_constraints or []:
+        lhs = (choices[:, indices] * coefficients).sum(dim=-1)
+        eligible &= lhs >= rhs - NUMERICAL_EPSILON
+    choices = choices[eligible]
+    if choices.shape[0] == 0:
+        msg = (
+            "All continuous acquisition restarts matched avoided points, and "
+            "the unseen-point fallback found no feasible alternative."
+        )
+        raise RuntimeError(msg)
+
+    with torch.no_grad():
+        values = acqf(choices.unsqueeze(-2)).reshape(-1)
+    best_idx = int(values.argmax().item())
+    logger.warning(
+        "All continuous acquisition restarts matched previously evaluated or "
+        "pending points; selected the best of %d unseen fallback candidates.",
+        int(choices.shape[0]),
+    )
+    return choices[best_idx : best_idx + 1], values[best_idx : best_idx + 1]
 
 
 def _log_restart_diagnostics(acq_values: Tensor, candidates: Tensor) -> None:

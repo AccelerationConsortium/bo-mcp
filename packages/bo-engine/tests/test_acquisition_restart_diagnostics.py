@@ -19,6 +19,7 @@ import logging
 import pytest
 import torch
 from botorch.acquisition import AcquisitionFunction
+from botorch.models.deterministic import GenericDeterministicModel
 
 from bo_engine.acquisition import (
     _log_restart_diagnostics,
@@ -31,7 +32,8 @@ class _SumAcquisition(AcquisitionFunction):
     """Simple acquisition used to exercise the unseen-candidate fallback."""
 
     def __init__(self) -> None:
-        super().__init__(model=None)
+        model = GenericDeterministicModel(lambda x: x.sum(dim=-1, keepdim=True))
+        super().__init__(model=model)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:  # noqa: N803
         return X.sum(dim=(-1, -2))
@@ -214,7 +216,7 @@ class TestOptimizeAcquisitionExposesDiagnostics:
         monkeypatch.setattr("bo_engine.acquisition.optimize_acqf", fake_optimize_acqf)
 
         candidates, values = optimize_acquisition(
-            acqf=object(),
+            acqf=_SumAcquisition(),
             bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
             batch_size=1,
             num_restarts=3,

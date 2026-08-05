@@ -19,7 +19,10 @@ v2.3: Added GPU auto-detection and acceleration
 
 from __future__ import annotations
 
+import itertools
 import logging
+import math
+import random
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -41,13 +44,18 @@ from botorch.acquisition.multi_objective.monte_carlo import (
 from botorch.acquisition.multi_objective.objective import IdentityMCMultiOutputObjective
 from botorch.acquisition.multi_objective.parego import qLogNParEGO
 from botorch.acquisition.objective import GenericMCObjective
+from botorch.exceptions.errors import InfeasibilityError
 from botorch.models import SingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.optim import optimize_acqf
 from botorch.optim.optimize import optimize_acqf_discrete, optimize_acqf_mixed
+from botorch.utils.sampling import get_polytope_samples
 from torch import Tensor
 
 from bo_engine.constants import (
+    ACQF_FALLBACK_MAX_ASSIGNMENTS,
+    ACQF_FALLBACK_MIN_SAMPLES,
+    ACQF_FALLBACK_SAMPLE_SEED,
     ACQF_LBFGS_BATCH_LIMIT,
     ACQF_LBFGS_MAXITER,
     COST_AWARE_MIN_EXPECTED_COST,
@@ -56,13 +64,19 @@ from bo_engine.constants import (
     RESTART_WARN_TOLERANCE,
 )
 from bo_engine.device import ensure_device, to_device
+from bo_engine.initial_design import SearchSpaceExhaustedError
+from bo_engine.reproducibility import create_reproducible_sobol
+from bo_engine.result_validation import duplicate_row_mask
 from bo_engine.transforms import (
     SearchSpaceType,
     build_fixed_features_list,
     classify_search_space,
     enumerate_discrete_choices,
+    enumerate_numeric_discrete_grid,
     mixed_space_combo_limit_message,
     mixed_space_combo_overflow,
+    numeric_discrete_axes,
+    snap_discrete_columns,
 )
 from bo_engine.types import (
     SINGLE_OBJECTIVE_ONLY_ACQUISITION,
@@ -70,6 +84,7 @@ from bo_engine.types import (
     AcquisitionConfig,
     AcquisitionMethod,
     OptimizationSpec,
+    ParameterType,
 )
 
 logger = logging.getLogger(__name__)
@@ -1104,6 +1119,8 @@ def optimize_acquisition(
     inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     X_pending: Tensor | None = None,  # noqa: N803
+    random_seed: int | None = None,
+    domain_bounds: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Optimize acquisition function to find next candidates.
 
@@ -1127,7 +1144,22 @@ def optimize_acquisition(
         spec: Optimization specification for discrete/mixed dispatch.
             If None, falls back to continuous optimization.
         x_avoid: Points to avoid (e.g., already-evaluated training data).
-            Used by optimize_acqf_discrete to exclude known points.
+            Matching uses the engine's duplicate-detection tolerance on
+            canonical coordinates (numeric-discrete columns snapped to their
+            grids first). Enforcement is per space type:
+
+            - Continuous, ``batch_size == 1``: the highest-valued unseen
+              restart is selected, with a seeded, acquisition-ranked sampling
+              fallback if every restart collapses onto an avoided point.
+              When the spec has numeric-discrete parameters, candidates are
+              returned in canonical (grid-snapped) coordinates and ranked by
+              the acquisition value at those coordinates, so the reported
+              value describes the experiment that will actually run.
+            - Continuous, ``batch_size > 1``: not enforced (logged at debug
+              level); sequential greedy optimization has no per-restart
+              selection point to filter.
+            - Purely categorical: excluded from the enumerated choice set.
+            - Mixed: not enforced (logged at debug level).
         inequality_constraints: BoTorch linear inequality constraints. Each
             tuple is (indices, coefficients, rhs) enforcing
             ``sum_i X[indices[i]] * coefficients[i] >= rhs`` (BoTorch's
@@ -1145,7 +1177,19 @@ def optimize_acquisition(
             is forwarded to the acquisition via ``set_X_pending`` (consumed
             by the MC acquisition's joint optimization).  For purely
             categorical spaces the pending rows are concatenated into
-            ``x_avoid`` so the discrete optimizer excludes them.
+            ``x_avoid`` so the discrete optimizer excludes them; the
+            continuous path merges them into ``x_avoid`` as well, so the
+            ``batch_size == 1`` selection cannot return a pending point.
+        random_seed: Seed for the continuous unseen-candidate fallback
+            sampler. ``None`` falls back to a fixed default seed so
+            suggestions stay reproducible run-to-run.
+        domain_bounds: Full campaign bounds of shape ``(2, n_dims)`` when
+            ``bounds`` is a narrowed optimization region (e.g. a TuRBO trust
+            region). Canonical candidates are validated — and search-space
+            exhaustion is judged — against this domain, never against the
+            local region: a trust region that happens to contain no grid
+            point must not terminate a viable campaign. Defaults to
+            ``bounds``.
 
     Returns:
         Tuple of (candidates, acquisition_values) where:
@@ -1161,6 +1205,9 @@ def optimize_acquisition(
 
     if X_pending is not None:
         X_pending = to_device(X_pending)
+    if x_avoid is not None:
+        x_avoid = to_device(x_avoid)
+    domain_bounds = to_device(domain_bounds) if domain_bounds is not None else bounds
 
     effective_restarts, effective_samples = _resolve_restart_budget(
         spec, bounds, num_restarts, raw_samples
@@ -1180,6 +1227,10 @@ def optimize_acquisition(
             batch_size,
             effective_restarts,
             effective_samples,
+            spec=None,
+            x_avoid=_merge_avoid_tensors(x_avoid, X_pending),
+            random_seed=random_seed,
+            domain_bounds=domain_bounds,
             inequality_constraints=inequality_constraints,
             equality_constraints=equality_constraints,
         )
@@ -1193,6 +1244,12 @@ def optimize_acquisition(
         combo_overflow = mixed_space_combo_overflow(spec)
         if combo_overflow is not None:
             raise NotImplementedError(mixed_space_combo_limit_message(combo_overflow))
+        if x_avoid is not None and x_avoid.numel() > 0:
+            logger.debug(
+                "x_avoid is not enforced for mixed-space acquisition optimization; "
+                "%d avoided point(s) are ignored.",
+                int(x_avoid.shape[0]),
+            )
         _apply_pending_to_acqf(acqf, X_pending)
         return _optimize_mixed(
             acqf,
@@ -1211,6 +1268,10 @@ def optimize_acquisition(
         batch_size,
         effective_restarts,
         effective_samples,
+        spec=spec,
+        x_avoid=_merge_avoid_tensors(x_avoid, X_pending),
+        random_seed=random_seed,
+        domain_bounds=domain_bounds,
         inequality_constraints=inequality_constraints,
         equality_constraints=equality_constraints,
     )
@@ -1278,6 +1339,10 @@ def _optimize_continuous(
     batch_size: int,
     num_restarts: int,
     raw_samples: int,
+    spec: OptimizationSpec | None = None,
+    x_avoid: Tensor | None = None,
+    random_seed: int | None = None,
+    domain_bounds: Tensor | None = None,
     inequality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
     equality_constraints: list[tuple[Tensor, Tensor, float]] | None = None,
 ) -> tuple[Tensor, Tensor]:
@@ -1285,10 +1350,19 @@ def _optimize_continuous(
 
     Args:
         acqf: Acquisition function to optimize
-        bounds: Parameter bounds of shape (2, n_dims)
+        bounds: Parameter bounds of shape (2, n_dims) used by the optimizer
+            (possibly a narrowed trust region)
         batch_size: Number of candidates to generate
         num_restarts: Number of optimization restarts
         raw_samples: Number of raw samples for initialization
+        spec: Optimization specification; supplies the numeric-discrete grids
+            used to canonicalize coordinates before avoided-point matching
+        x_avoid: Previously evaluated or pending points. Enforced only for
+            ``batch_size == 1`` (see ``optimize_acquisition``); larger batches
+            log the dropped points at debug level
+        random_seed: Seed for the unseen-candidate fallback sampler
+        domain_bounds: Full campaign bounds used to validate canonical
+            candidates and judge exhaustion; defaults to ``bounds``
         inequality_constraints: BoTorch linear inequality constraints
             (``coefficients @ X[indices] >= rhs``)
         equality_constraints: BoTorch linear equality constraints
@@ -1324,10 +1398,515 @@ def _optimize_continuous(
 
     if capture_restarts:
         _log_restart_diagnostics(acq_values, candidates)
-        best_idx = int(acq_values.argmax().item())
-        candidates = candidates[best_idx]
-        acq_values = acq_values[best_idx : best_idx + 1]
+        domain = domain_bounds if domain_bounds is not None else bounds
+        avoid_canonical = snap_discrete_columns(x_avoid, spec) if x_avoid is not None else None
+        restart_points = snap_discrete_columns(candidates[:, 0, :], spec)
+        eligible = ~_matches_avoided_points(restart_points, avoid_canonical)
+        if _spec_has_numeric_discrete(spec):
+            # Snapping moved the restarts onto their grids, so the optimizer's
+            # values describe coordinates that will never be executed —
+            # selection must rank the canonical points on the acquisition
+            # surface, and the returned value must describe the returned point.
+            # Snapping also happens after the optimizer's feasibility
+            # handling, so a feasible relaxed restart can land on a grid
+            # value outside the campaign domain or across a linear
+            # constraint — canonical points must be re-validated. Validation
+            # uses the campaign domain, not the (possibly narrower) trust
+            # region: a snapped grid point just outside a shrunken region is
+            # still an executable experiment.
+            with torch.no_grad():
+                acq_values = acqf(restart_points.unsqueeze(-2)).reshape(-1)
+            eligible &= _domain_feasible_mask(
+                restart_points, domain, inequality_constraints, equality_constraints
+            )
+        eligible_indices = eligible.nonzero(as_tuple=True)[0]
+        if eligible_indices.numel() > 0:
+            best_idx = _select_best_restart_index(
+                restart_points, acq_values, eligible, eligible_indices, bounds
+            )
+            candidates = restart_points[best_idx : best_idx + 1]
+            acq_values = acq_values[best_idx : best_idx + 1]
+        else:
+            candidates, acq_values = _continuous_unseen_fallback(
+                acqf,
+                bounds,
+                spec=spec,
+                x_avoid=avoid_canonical,
+                sample_count=max(raw_samples, ACQF_FALLBACK_MIN_SAMPLES),
+                random_seed=random_seed,
+                domain_bounds=domain,
+                inequality_constraints=inequality_constraints,
+                equality_constraints=equality_constraints,
+            )
+    elif x_avoid is not None and x_avoid.numel() > 0:
+        logger.debug(
+            "x_avoid is not enforced for continuous acquisition optimization with "
+            "batch_size=%d; %d avoided point(s) are ignored.",
+            batch_size,
+            int(x_avoid.shape[0]),
+        )
     return candidates, acq_values
+
+
+def _select_best_restart_index(
+    restart_points: Tensor,
+    acq_values: Tensor,
+    eligible: Tensor,
+    eligible_indices: Tensor,
+    local_bounds: Tensor,
+) -> int:
+    """Pick the highest-valued eligible restart, preferring the local region.
+
+    One locality policy everywhere: prefer candidates inside the local
+    optimization region, then widen to the domain with a warning. Pure
+    continuous restarts always lie inside ``local_bounds``, so this only
+    bites when snapping moved a grid point outside a trust region.
+    """
+    local_indices = (eligible & _rows_within_bounds(restart_points, local_bounds)).nonzero(
+        as_tuple=True
+    )[0]
+    if local_indices.numel() > 0:
+        selection_pool = local_indices
+    else:
+        logger.warning(_LOCAL_REGION_FALLBACK_WARNING, int(eligible_indices.numel()))
+        selection_pool = eligible_indices
+    return int(selection_pool[acq_values[selection_pool].argmax()].item())
+
+
+def _spec_has_numeric_discrete(spec: OptimizationSpec | None) -> bool:
+    """True when the spec contains at least one numeric-discrete parameter."""
+    return spec is not None and any(p.type == ParameterType.DISCRETE for p in spec.parameters)
+
+
+def _linear_constraint_mask(
+    points: Tensor,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+) -> Tensor:
+    """Return one boolean per point marking feasibility under linear constraints.
+
+    Uses BoTorch's constraint convention (``coefficients @ X[indices] >= rhs``
+    for inequalities, ``= rhs`` for equalities) with ``NUMERICAL_EPSILON``
+    slack so boundary points are not rejected by rounding noise.
+    """
+    mask = torch.ones(points.shape[0], dtype=torch.bool, device=points.device)
+    for indices, coefficients, rhs in inequality_constraints or []:
+        lhs = (points[:, indices] * coefficients).sum(dim=-1)
+        mask &= lhs >= rhs - NUMERICAL_EPSILON
+    for indices, coefficients, rhs in equality_constraints or []:
+        lhs = (points[:, indices] * coefficients).sum(dim=-1)
+        mask &= (lhs - rhs).abs() <= NUMERICAL_EPSILON
+    return mask
+
+
+# Shared warning for the one locality policy: candidates inside the local
+# optimization region are preferred; when none exist, selection widens to the
+# full campaign domain instead of failing or terminating the campaign.
+_LOCAL_REGION_FALLBACK_WARNING = (
+    "No unseen executable candidate lies inside the current optimization "
+    "region; selecting among %d candidate(s) from the full campaign domain."
+)
+
+
+def _rows_within_bounds(points: Tensor, bounds: Tensor) -> Tensor:
+    """Return one boolean per row marking containment in ``bounds`` (with slack)."""
+    within = (points >= bounds[0] - NUMERICAL_EPSILON) & (points <= bounds[1] + NUMERICAL_EPSILON)
+    return within.all(dim=-1)
+
+
+def _prefer_local_rows(choices: Tensor, local_bounds: Tensor) -> Tensor:
+    """Restrict candidates to the local optimization region when possible.
+
+    Locality (a TuRBO trust region) is a soft preference, not a validity
+    requirement: candidates outside it are still executable experiments, so
+    when no candidate lies inside, the domain-wide set is used with a
+    warning instead of failing.
+    """
+    within_local = _rows_within_bounds(choices, local_bounds).nonzero(as_tuple=True)[0]
+    if within_local.numel() > 0:
+        return choices[within_local]
+    logger.warning(_LOCAL_REGION_FALLBACK_WARNING, int(choices.shape[0]))
+    return choices
+
+
+def _domain_feasible_mask(
+    points: Tensor,
+    bounds: Tensor,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+) -> Tensor:
+    """Return one boolean per point marking bounds and constraint feasibility.
+
+    Canonical (grid-snapped or enumerated) coordinates are produced *after*
+    the optimizer's own feasibility handling, so they must be re-validated:
+    snapping can move a feasible relaxed point onto a grid value outside the
+    campaign domain or across a linear constraint. ``NUMERICAL_EPSILON``
+    slack keeps boundary points feasible.
+    """
+    return _rows_within_bounds(points, bounds) & _linear_constraint_mask(
+        points, inequality_constraints, equality_constraints
+    )
+
+
+def _matches_avoided_points(points: Tensor, x_avoid: Tensor | None) -> Tensor:
+    """Return one boolean per point marking duplicates of avoided points.
+
+    Delegates to :func:`bo_engine.result_validation.duplicate_row_mask` so
+    acquisition-level exclusion shares the engine's single definition of
+    "same experiment" (``DUPLICATE_DETECTION_TOLERANCE``, dimension-scaled
+    Euclidean distance). Callers pass canonical (grid-snapped) coordinates.
+    """
+    flat_points = points.reshape(-1, points.shape[-1])
+    if x_avoid is None or x_avoid.numel() == 0:
+        return torch.zeros(flat_points.shape[0], dtype=torch.bool, device=flat_points.device)
+    avoided = x_avoid.to(device=flat_points.device, dtype=flat_points.dtype).reshape(
+        -1, flat_points.shape[-1]
+    )
+    return duplicate_row_mask(flat_points, avoided)
+
+
+def _enumerated_unseen_choices(
+    grid: Tensor,
+    bounds: Tensor,
+    domain_bounds: Tensor,
+    x_avoid: Tensor | None,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+) -> Tensor:
+    """Filter a fully enumerated grid down to feasible unseen points.
+
+    Eligibility — and therefore exhaustion — is judged against the campaign
+    ``domain_bounds``: a narrowed optimization region (TuRBO trust region)
+    that happens to contain no grid point must never masquerade as global
+    exhaustion. Among the eligible points, those inside the local ``bounds``
+    are preferred so trust-region locality is kept whenever possible.
+
+    Raises:
+        SearchSpaceExhaustedError: If nothing remains anywhere in the
+            campaign domain — the grid covers the entire space, so an empty
+            result proves exhaustion.
+    """
+    choices = grid.to(device=domain_bounds.device, dtype=domain_bounds.dtype)
+    eligible = _domain_feasible_mask(
+        choices, domain_bounds, inequality_constraints, equality_constraints
+    ) & ~_matches_avoided_points(choices, x_avoid)
+    choices = choices[eligible]
+    if choices.shape[0] == 0:
+        raise SearchSpaceExhaustedError(
+            n_requested=1,
+            n_available=0,
+            n_total_combinations=int(grid.shape[0]),
+        )
+    return _prefer_local_rows(choices, bounds)
+
+
+def _constrained_discrete_columns(
+    axes: list[tuple[int, list[float]]],
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+) -> bool:
+    """True when any linear constraint references a numeric-discrete column."""
+    discrete_columns = {column for column, _ in axes}
+    for indices, _, _ in itertools.chain(inequality_constraints or [], equality_constraints or []):
+        if any(int(i) in discrete_columns for i in indices.tolist()):
+            return True
+    return False
+
+
+def _reduce_constraints_for_assignment(
+    assignment: dict[int, float],
+    continuous_columns: list[int],
+    constraints: list[tuple[Tensor, Tensor, float]] | None,
+    is_equality: bool,
+) -> list[tuple[Tensor, Tensor, float]] | None:
+    """Substitute a discrete assignment into linear constraints.
+
+    Each constraint's discrete terms are folded into the right-hand side and
+    the remaining indices are remapped into the continuous-only column space.
+    Returns ``None`` when a constraint with no continuous terms left is
+    violated by the assignment — the assignment is infeasible outright.
+    """
+    reduced: list[tuple[Tensor, Tensor, float]] = []
+    for indices, coefficients, rhs in constraints or []:
+        index_list = [int(i) for i in indices.tolist()]
+        kept = [pos for pos, column in enumerate(index_list) if column not in assignment]
+        new_rhs = float(rhs) - sum(
+            float(coefficients[pos]) * assignment[column]
+            for pos, column in enumerate(index_list)
+            if column in assignment
+        )
+        if not kept:
+            equality_violated = is_equality and abs(new_rhs) > NUMERICAL_EPSILON
+            inequality_violated = not is_equality and new_rhs > NUMERICAL_EPSILON
+            if equality_violated or inequality_violated:
+                return None
+            continue
+        reduced.append(
+            (
+                torch.tensor(
+                    [continuous_columns.index(index_list[pos]) for pos in kept],
+                    dtype=torch.long,
+                    device=indices.device,
+                ),
+                coefficients[kept],
+                new_rhs,
+            )
+        )
+    return reduced
+
+
+def _select_assignments(
+    axes: list[tuple[int, list[float]]],
+    budget: int,
+    seed: int,
+) -> list[tuple[float, ...]]:
+    """Choose the discrete assignments to condition on, within a fixed budget.
+
+    The assignment cardinality is computed from axis sizes *before* anything
+    is materialized — a Cartesian product over large grids must never be
+    built just to count it. Within the budget the full product is used; above
+    it, exactly ``budget`` distinct assignments are drawn by sampling flat
+    indices without replacement (``random.sample`` over an index range stays
+    O(budget) for budget << cardinality) and decoding them mixed-radix into
+    axis coordinates. Drawing with replacement and deduplicating would
+    silently underfill the budget and raise the odds of missing the only
+    feasible assignment. Large constraint-coupled spaces thus stay supported
+    (never a reversion to snap-and-filter, which destroys discrete-coupled
+    equalities) at bounded cost.
+    """
+    axis_values = [axis for _, axis in axes]
+    cardinality = math.prod(len(axis) for axis in axis_values)
+    if cardinality <= budget:
+        return list(itertools.product(*axis_values))
+    logger.info(
+        "Constraint-coupled discrete space has %d assignments; conditioning "
+        "on a seeded subsample of %d.",
+        cardinality,
+        budget,
+    )
+    # Not a security context: this is reproducibility-seeded numerical
+    # subsampling, and ``random.sample`` over an index range is the only
+    # stdlib O(budget) without-replacement draw that supports cardinalities
+    # beyond int64 (unlike ``torch.randint``).
+    flat_indices = random.Random(seed).sample(range(cardinality), budget)  # noqa: S311
+    assignments: list[tuple[float, ...]] = []
+    for flat_index in flat_indices:
+        coordinates: list[float] = []
+        remainder = flat_index
+        for axis in reversed(axis_values):
+            coordinates.append(axis[remainder % len(axis)])
+            remainder //= len(axis)
+        assignments.append(tuple(reversed(coordinates)))
+    return assignments
+
+
+def _assignment_conditioned_cloud(
+    domain_bounds: Tensor,
+    axes: list[tuple[int, list[float]]],
+    sample_count: int,
+    seed: int,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+) -> Tensor:
+    """Build a canonical candidate cloud conditioned on discrete assignments.
+
+    Constraints that couple discrete and continuous columns break under
+    post-hoc snapping (a relaxed sample satisfying ``d + c = 1`` almost never
+    still does once ``d`` snaps to its grid), so feasible candidates must be
+    generated per canonical assignment: substitute each discrete assignment
+    into the constraints and sample the reduced continuous subproblem
+    directly. Assignments whose reduced subproblem is infeasible are skipped;
+    the assignment set itself is budgeted by :func:`_select_assignments`.
+    """
+    assignments = _select_assignments(axes, ACQF_FALLBACK_MAX_ASSIGNMENTS, seed)
+    n_dims = int(domain_bounds.shape[-1])
+    discrete_columns = [column for column, _ in axes]
+    continuous_columns = [i for i in range(n_dims) if i not in discrete_columns]
+    continuous_bounds = domain_bounds[:, continuous_columns]
+    samples_per_assignment = max(1, sample_count // len(assignments))
+
+    clouds: list[Tensor] = []
+    for offset, values in enumerate(assignments):
+        assignment = dict(zip(discrete_columns, [float(v) for v in values], strict=True))
+        reduced_ineq = _reduce_constraints_for_assignment(
+            assignment, continuous_columns, inequality_constraints, is_equality=False
+        )
+        reduced_eq = _reduce_constraints_for_assignment(
+            assignment, continuous_columns, equality_constraints, is_equality=True
+        )
+        if reduced_ineq is None or reduced_eq is None:
+            continue
+        try:
+            if reduced_ineq or reduced_eq:
+                continuous = get_polytope_samples(
+                    n=samples_per_assignment,
+                    bounds=continuous_bounds,
+                    inequality_constraints=reduced_ineq or None,
+                    equality_constraints=reduced_eq or None,
+                    seed=seed + offset,
+                )
+            else:
+                continuous = create_reproducible_sobol(
+                    len(continuous_columns),
+                    samples_per_assignment,
+                    seed + offset,
+                    continuous_bounds,
+                )
+        except InfeasibilityError:
+            # The assignment leaves an empty continuous polytope (e.g. an
+            # equality forcing a value outside the continuous bounds).
+            continue
+        cloud = torch.empty(
+            samples_per_assignment, n_dims, dtype=domain_bounds.dtype, device=domain_bounds.device
+        )
+        cloud[:, continuous_columns] = continuous
+        for column, value in assignment.items():
+            cloud[:, column] = value
+        clouds.append(cloud)
+    if not clouds:
+        return torch.empty(0, n_dims, dtype=domain_bounds.dtype, device=domain_bounds.device)
+    return torch.cat(clouds, dim=0)
+
+
+def _sampled_unseen_choices(
+    bounds: Tensor,
+    *,
+    domain_bounds: Tensor,
+    spec: OptimizationSpec | None,
+    x_avoid: Tensor | None,
+    sample_count: int,
+    random_seed: int | None,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+) -> Tensor:
+    """Draw a seeded candidate cloud and filter it to feasible unseen points.
+
+    Constraints that reference numeric-discrete columns are handled by
+    per-assignment conditional generation over the full campaign domain (see
+    :func:`_assignment_conditioned_cloud`); everything else samples the local
+    ``bounds`` and canonicalizes afterwards. The final selection prefers
+    candidates inside the local region (see :func:`_prefer_local_rows`).
+
+    Raises:
+        RuntimeError: If nothing remains. A sampled cloud cannot prove
+            exhaustion, so the error explicitly leaves that open.
+    """
+    seed = ACQF_FALLBACK_SAMPLE_SEED if random_seed is None else random_seed
+    axes = numeric_discrete_axes(spec) if spec is not None else None
+    if axes and _constrained_discrete_columns(axes, inequality_constraints, equality_constraints):
+        choices = _assignment_conditioned_cloud(
+            domain_bounds, axes, sample_count, seed, inequality_constraints, equality_constraints
+        )
+    else:
+        if inequality_constraints or equality_constraints:
+            choices = get_polytope_samples(
+                n=sample_count,
+                bounds=bounds,
+                inequality_constraints=inequality_constraints or None,
+                equality_constraints=equality_constraints or None,
+                seed=seed,
+            )
+        else:
+            choices = create_reproducible_sobol(int(bounds.shape[-1]), sample_count, seed, bounds)
+        # The executed experiment is the canonical coordinate, so eligibility,
+        # ranking, and the returned candidate all use the snapped cloud.
+        choices = snap_discrete_columns(choices, spec)
+    eligible = ~_matches_avoided_points(choices, x_avoid)
+    if _spec_has_numeric_discrete(spec):
+        # Snapping (or assignment substitution) happens after the sampler's
+        # feasibility handling, so canonical points are re-validated against
+        # the campaign domain.
+        eligible &= _domain_feasible_mask(
+            choices, domain_bounds, inequality_constraints, equality_constraints
+        )
+    choices = choices[eligible]
+    if choices.shape[0] == 0:
+        msg = (
+            "All continuous acquisition restarts matched avoided points, and "
+            "no unseen alternative was found among the sampled fallback "
+            "candidates. The space may still contain unseen points."
+        )
+        raise RuntimeError(msg)
+    return _prefer_local_rows(choices, bounds)
+
+
+def _continuous_unseen_fallback(
+    acqf: AcquisitionFunction,
+    bounds: Tensor,
+    *,
+    spec: OptimizationSpec | None,
+    x_avoid: Tensor | None,
+    sample_count: int,
+    random_seed: int | None,
+    domain_bounds: Tensor | None = None,
+    inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+    equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
+) -> tuple[Tensor, Tensor]:
+    """Choose the best unseen point from a feasible candidate cloud.
+
+    This path is used only when every L-BFGS-B restart converges to an already
+    evaluated point. A finite alternative set is built without perturbing or
+    silently resubmitting that maximizer: an all-numeric-discrete spec
+    enumerates its full Cartesian grid (which proves exhaustion when nothing
+    unseen remains), unconstrained spaces draw a seeded Sobol design, and
+    constrained spaces draw feasible points from the polytope directly
+    (hit-and-run), so linear inequality *and* equality constraints are
+    honored by construction. Sampled candidates are canonicalized (grid
+    columns snapped) before ranking so the returned coordinate is the one
+    that will be executed, and canonical points are re-validated against
+    bounds and native linear constraints because snapping happens after the
+    sampler's own feasibility handling.
+
+    Args:
+        acqf: Acquisition function used to rank the candidate cloud
+        bounds: Optimization-region bounds of shape (2, n_dims)
+        spec: Supplies numeric-discrete grids for canonical matching
+        x_avoid: Canonical (grid-snapped) avoided points
+        sample_count: Number of candidates to draw
+        random_seed: Sampler seed; ``None`` uses the fixed default seed
+        domain_bounds: Full campaign bounds used for canonical validation
+            and exhaustion judgement; defaults to ``bounds``
+        inequality_constraints: BoTorch linear inequality constraints
+        equality_constraints: BoTorch linear equality constraints
+
+    Returns:
+        Tuple of (candidates, acquisition_values), each of length one.
+
+    Raises:
+        SearchSpaceExhaustedError: If the spec is a fully enumerable
+            numeric-discrete grid and every grid point is avoided or
+            infeasible — proven exhaustion of a finite space.
+        RuntimeError: If every *sampled* candidate matches an avoided point.
+            The space may still contain unseen points; the sample simply
+            failed to cover one.
+    """
+    domain = domain_bounds if domain_bounds is not None else bounds
+    grid = enumerate_numeric_discrete_grid(spec)
+    if grid is not None:
+        choices = _enumerated_unseen_choices(
+            grid, bounds, domain, x_avoid, inequality_constraints, equality_constraints
+        )
+    else:
+        choices = _sampled_unseen_choices(
+            bounds,
+            domain_bounds=domain,
+            spec=spec,
+            x_avoid=x_avoid,
+            sample_count=sample_count,
+            random_seed=random_seed,
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
+        )
+
+    with torch.no_grad():
+        values = acqf(choices.unsqueeze(-2)).reshape(-1)
+    best_idx = int(values.argmax().item())
+    logger.warning(
+        "All continuous acquisition restarts matched previously evaluated or "
+        "pending points; selected the best of %d unseen fallback candidates.",
+        int(choices.shape[0]),
+    )
+    return choices[best_idx : best_idx + 1], values[best_idx : best_idx + 1]
 
 
 def _log_restart_diagnostics(acq_values: Tensor, candidates: Tensor) -> None:

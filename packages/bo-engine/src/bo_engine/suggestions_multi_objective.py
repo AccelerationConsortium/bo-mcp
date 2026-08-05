@@ -340,6 +340,7 @@ def _generate_multi_objective_batch(
         inequality_constraints=ineq_constraints or None,
         equality_constraints=eq_constraints or None,
         X_pending=ctx.pending_x,
+        random_seed=ctx.random_seed,
     )
 
     # Post-hoc projection only for constraints that couldn't be handled natively

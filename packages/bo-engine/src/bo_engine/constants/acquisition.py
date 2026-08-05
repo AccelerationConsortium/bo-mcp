@@ -1,6 +1,9 @@
 """Acquisition-function optimization: restart/sample budgets, multi-fidelity, cost-awareness."""
 
 __all__ = [
+    "ACQF_FALLBACK_MAX_ASSIGNMENTS",
+    "ACQF_FALLBACK_MIN_SAMPLES",
+    "ACQF_FALLBACK_SAMPLE_SEED",
     "ACQF_LBFGS_BATCH_LIMIT",
     "ACQF_LBFGS_MAXITER",
     "COST_AWARE_MIN_EXPECTED_COST",
@@ -60,6 +63,24 @@ RESTART_WARN_TOLERANCE = 0.05
 # and mixed acquisition paths cannot drift.
 ACQF_LBFGS_BATCH_LIMIT = 5
 ACQF_LBFGS_MAXITER = 200
+
+# Unseen-candidate fallback for continuous q=1 optimization: when every
+# L-BFGS-B restart collapses onto an already-evaluated (avoided) point, a
+# finite candidate cloud is sampled and ranked by acquisition value instead.
+# ``ACQF_FALLBACK_MIN_SAMPLES`` floors the cloud size so a caller-supplied
+# small ``raw_samples`` budget still yields a meaningful candidate set.
+# ``ACQF_FALLBACK_SAMPLE_SEED`` seeds the sampler when the caller supplies no
+# campaign seed, keeping suggestions reproducible run-to-run by default.
+ACQF_FALLBACK_MIN_SAMPLES = 64
+ACQF_FALLBACK_SAMPLE_SEED = 0
+
+# Cap on discrete assignments the constraint-coupled fallback conditions on.
+# Each assignment triggers its own reduced continuous sampling subproblem, so
+# this must stay far below DISCRETE_ENUMERATION_MAX_POINTS (a cap on cheap
+# grid rows, not on sampler invocations). Above the cap a seeded subsample of
+# assignments is conditioned instead — never a reversion to snap-and-filter,
+# which is known to destroy discrete-coupled equalities.
+ACQF_FALLBACK_MAX_ASSIGNMENTS = 64
 
 # Floor applied to the cost model's predicted expected cost before inverse-cost
 # weighting (EIpu maximizes EI / cost, computed in log space as

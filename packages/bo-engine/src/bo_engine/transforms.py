@@ -517,6 +517,131 @@ def _decode_param_value(
     return param.categories[best_cat_idx], idx + n_cats
 
 
+def snap_discrete_columns(points: Tensor, spec: OptimizationSpec | None) -> Tensor:
+    """Snap the numeric-discrete columns of encoded points onto their grids.
+
+    Mirrors :func:`_decode_param_value` in tensor form: discrete parameters
+    with an explicit ``values`` grid snap to the nearest declared value
+    (``argmin`` resolves equidistant ties to the earlier entry, matching the
+    decoder), bounds-only discrete parameters round to the nearest integer.
+    Continuous and categorical columns pass through unchanged.  With no spec
+    the points are returned as-is.
+
+    Args:
+        points: Encoded points of shape ``(..., n_dims)``.
+        spec: Optimization specification defining the column layout, or None.
+
+    Returns:
+        Tensor of the same shape with discrete columns canonicalized.
+    """
+    if spec is None or not any(p.type == ParameterType.DISCRETE for p in spec.parameters):
+        return points
+    snapped = points.clone()
+    idx = 0
+    for param in spec.parameters:
+        if param.type == ParameterType.CATEGORICAL:
+            idx += len(param.categories or [])
+            continue
+        if param.type == ParameterType.DISCRETE:
+            column = snapped[..., idx]
+            if param.values:
+                grid = torch.tensor(param.values, dtype=points.dtype, device=points.device)
+                nearest = (column.unsqueeze(-1) - grid).abs().argmin(dim=-1)
+                snapped[..., idx] = grid[nearest]
+            else:
+                snapped[..., idx] = column.round()
+        idx += 1
+    return snapped
+
+
+def _numeric_discrete_axis(param: ParameterSpec) -> list[float] | None:
+    """Return the finite value axis of one numeric-discrete parameter.
+
+    ``values`` grids are intersected with the declared bounds (a spec may
+    carry both, and only in-bounds values are executable candidates);
+    bounds-only discrete parameters span the integers inside their bounds
+    (the same set decode rounding can produce). ``None`` marks an axis that
+    cannot be enumerated. A bounds-only axis wider than
+    ``DISCRETE_ENUMERATION_MAX_POINTS`` is reported unenumerable *before*
+    the value list is materialized — no consumer may use such an axis
+    anyway, so building a huge list first would be pure waste.
+    """
+    if param.values:
+        axis = [float(v) for v in param.values]
+        if param.bounds is not None:
+            lower, upper = param.bounds
+            axis = [v for v in axis if lower <= v <= upper]
+        return axis or None
+    if param.bounds is not None:
+        lower, upper = param.bounds
+        axis_size = math.floor(upper) - math.ceil(lower) + 1
+        if axis_size <= 0 or axis_size > DISCRETE_ENUMERATION_MAX_POINTS:
+            return None
+        return [float(v) for v in range(math.ceil(lower), math.floor(upper) + 1)]
+    return None
+
+
+def numeric_discrete_axes(spec: OptimizationSpec) -> list[tuple[int, list[float]]] | None:
+    """Return ``(encoded column index, finite axis)`` per numeric-discrete parameter.
+
+    Column indices account for one-hot categorical blocks so they are valid
+    for any encoded tensor layout. Returns ``None`` when any discrete
+    parameter has no enumerable axis (see :func:`_numeric_discrete_axis`).
+
+    Args:
+        spec: Optimization specification.
+
+    Returns:
+        List of (column index, axis values) pairs, or None.
+    """
+    axes: list[tuple[int, list[float]]] = []
+    idx = 0
+    for param in spec.parameters:
+        if param.type == ParameterType.CATEGORICAL:
+            idx += len(param.categories or [])
+            continue
+        if param.type == ParameterType.DISCRETE:
+            axis = _numeric_discrete_axis(param)
+            if axis is None:
+                return None
+            axes.append((idx, axis))
+        idx += 1
+    return axes
+
+
+def enumerate_numeric_discrete_grid(spec: OptimizationSpec | None) -> Tensor | None:
+    """Enumerate the full Cartesian grid of an all-numeric-discrete spec.
+
+    Returns ``None`` when the grid cannot be enumerated — no spec, any
+    non-discrete parameter, an axis without a finite value set, or a product
+    larger than ``DISCRETE_ENUMERATION_MAX_POINTS`` — so callers fall back to
+    sampling. A returned tensor enumerates the *entire* space, which lets
+    callers prove exhaustion instead of inferring it from sample coverage.
+
+    Args:
+        spec: Optimization specification, or None.
+
+    Returns:
+        Tensor of shape (n_grid_points, n_params), or None.
+    """
+    if spec is None or not spec.parameters:
+        return None
+    if any(p.type != ParameterType.DISCRETE for p in spec.parameters):
+        return None
+    axes: list[list[float]] = []
+    total = 1
+    for param in spec.parameters:
+        axis = _numeric_discrete_axis(param)
+        if axis is None:
+            return None
+        total *= len(axis)
+        if total > DISCRETE_ENUMERATION_MAX_POINTS:
+            return None
+        axes.append(axis)
+    rows = list(itertools.product(*axes))
+    return torch.tensor(rows, dtype=get_dtype(), device=get_device())
+
+
 def decode_categorical(tensor: Tensor, spec: OptimizationSpec) -> dict[str, Any]:
     """Decode tensor back to parameter values.
 

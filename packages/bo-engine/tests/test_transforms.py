@@ -12,6 +12,7 @@ from bo_engine.transforms import (
     get_bounds_tensor,
     get_n_dims,
     normalize_inputs,
+    numeric_discrete_axes,
     unnormalize_inputs,
 )
 from bo_engine.types import ObjectiveSpec, OptimizationSpec, ParameterSpec, ParameterType
@@ -336,3 +337,29 @@ class TestUnknownCategoryRejected:
 
         encoded = encode_categorical({"solvent": "meoh"}, spec)
         assert encoded.tolist() == [0.0, 1.0]
+
+
+class TestNumericDiscreteAxes:
+    """Axis enumeration guards against materializing huge integer ranges."""
+
+    def test_bounds_only_axis_beyond_cap_is_unenumerable(self) -> None:
+        """A billion-integer bounds-only axis returns None without building it.
+
+        The size check must run before the value list is materialized —
+        consumers fall back to sampling for unenumerable axes, so building a
+        10^9-element list first would be pure waste (and a memory hazard for
+        the Cartesian products layered on top).
+        """
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="n", type=ParameterType.DISCRETE, bounds=(0.0, 1e9))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        assert numeric_discrete_axes(spec) is None
+
+    def test_small_bounds_only_axis_spans_contained_integers(self) -> None:
+        spec = OptimizationSpec(
+            parameters=[ParameterSpec(name="n", type=ParameterType.DISCRETE, bounds=(0.5, 3.4))],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        axes = numeric_discrete_axes(spec)
+        assert axes == [(0, [1.0, 2.0, 3.0])]

@@ -161,6 +161,49 @@ def _compare_parameter_rows(
     return is_exact, total_distance_sq**0.5
 
 
+def _pairwise_distances_below_tolerance(
+    new_x: Tensor,
+    existing_x: Tensor,
+    tolerance: float,
+) -> tuple[Tensor, Tensor]:
+    """Return pairwise distances and the ``(n_new, n_existing)`` duplicate matrix.
+
+    Distances are computed in ``new_x``'s dtype — casting to float32 would
+    collapse distinct large-magnitude float64 coordinates onto each other.
+    The tolerance is scaled by ``sqrt(n_dims)`` so the per-dimension meaning
+    of ``DUPLICATE_DETECTION_TOLERANCE`` is preserved across dimensionality.
+    """
+    distances = torch.cdist(new_x, existing_x.to(dtype=new_x.dtype, device=new_x.device), p=2)
+    scaled_tolerance = tolerance * (new_x.shape[1] ** 0.5)
+    return distances, distances < scaled_tolerance
+
+
+def duplicate_row_mask(
+    new_x: Tensor,
+    existing_x: Tensor,
+    tolerance: float = DUPLICATE_DETECTION_TOLERANCE,
+) -> Tensor:
+    """Return one boolean per ``new_x`` row marking duplicates of ``existing_x`` rows.
+
+    Fully vectorized (no per-pair Python loop or ``.item()`` synchronization)
+    for callers that only need membership, e.g. acquisition-level exclusion
+    of already-evaluated points.
+
+    Args:
+        new_x: New parameter values of shape (n_new, n_dims)
+        existing_x: Existing parameter values of shape (n_existing, n_dims)
+        tolerance: Tolerance for considering parameters as duplicates
+
+    Returns:
+        Boolean tensor of shape (n_new,); True where a row duplicates any
+        existing row.
+    """
+    if existing_x.shape[0] == 0 or new_x.shape[0] == 0:
+        return torch.zeros(new_x.shape[0], dtype=torch.bool, device=new_x.device)
+    _, below = _pairwise_distances_below_tolerance(new_x, existing_x, tolerance)
+    return below.any(dim=1)
+
+
 def detect_duplicates_batch(
     new_x: Tensor,
     existing_x: Tensor,
@@ -178,24 +221,11 @@ def detect_duplicates_batch(
     """
     if existing_x.shape[0] == 0 or new_x.shape[0] == 0:
         return []
-
-    duplicates: list[tuple[int, int, float]] = []
-
-    # Compute pairwise distances
-    # Shape: (n_new, n_existing)
-    distances = torch.cdist(new_x.float(), existing_x.float(), p=2)
-
-    # Find pairs within tolerance (scaled by sqrt(n_dims))
-    n_dims = new_x.shape[1]
-    scaled_tolerance = tolerance * (n_dims**0.5)
-
-    for i in range(new_x.shape[0]):
-        for j in range(existing_x.shape[0]):
-            dist = distances[i, j].item()
-            if dist < scaled_tolerance:
-                duplicates.append((i, j, dist))
-
-    return duplicates
+    distances, below = _pairwise_distances_below_tolerance(new_x, existing_x, tolerance)
+    return [
+        (new_idx, existing_idx, float(distances[new_idx, existing_idx]))
+        for new_idx, existing_idx in below.nonzero(as_tuple=False).tolist()
+    ]
 
 
 def detect_outliers(

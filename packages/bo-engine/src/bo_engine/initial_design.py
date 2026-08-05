@@ -74,12 +74,13 @@ SOBOL_FILTER_MAX_DRAWS = 1 << 16  # 65536
 class SearchSpaceExhaustedError(RuntimeError):
     """Raised when the finite search space cannot yield more unique points.
 
-    Triggered when the caller asks for ``n_points`` initial-design draws
-    but every candidate is already in the supplied exclusion set *and*
+    Triggered when every candidate is already in the exclusion set *and*
     the space is small/finite enough that no further fresh combinations
-    exist.  Only applicable to purely-categorical spaces today; continuous
-    spaces have effectively infinite cardinality and fall back to Sobol
-    continuation instead.
+    exist — either during initial-design generation over a purely
+    categorical space, or during acquisition optimization over a fully
+    enumerated numeric-discrete grid. Continuous spaces have effectively
+    infinite cardinality and never raise this; only finite enumeration may
+    prove exhaustion.
     """
 
     def __init__(
@@ -103,7 +104,7 @@ class SearchSpaceExhaustedError(RuntimeError):
         whose real space is far from exhausted.
         """
         msg = (
-            f"Cannot generate {n_requested} unique initial-design points: "
+            f"Cannot generate {n_requested} unique unseen points: "
             f"only {n_available} unseen combinations remain"
         )
         if n_total_combinations is not None:

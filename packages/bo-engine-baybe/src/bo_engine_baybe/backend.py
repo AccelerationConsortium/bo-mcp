@@ -49,6 +49,7 @@ from baybe import __version__ as baybe_version
 from baybe.campaign import _EXCLUDED, _MEASURED, _RECOMMENDED
 from baybe.exceptions import NotEnoughPointsLeftError
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
+from baybe.searchspace import SearchSpaceType
 from baybe.settings import Settings
 
 from bo_engine.backend import (
@@ -64,6 +65,7 @@ from bo_engine.backend_base import (
     single_objective_family_acquisition_report,
     wrap_backend_exception,
 )
+from bo_engine.constants import DUPLICATE_DETECTION_TOLERANCE
 from bo_engine.diagnostics import (
     compute_best_value,
     compute_improvement_history,
@@ -78,6 +80,9 @@ from bo_engine.diagnostics import (
 from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
+from bo_engine.result_validation import (
+    detect_duplicates as engine_detect_duplicates,
+)
 from bo_engine.result_validation import (
     detect_outliers,
 )
@@ -168,6 +173,80 @@ _MIN_OBSERVATIONS_FOR_CONFIDENCE = 5
 # Minimum observations before fitting a model for diagnostics
 _MIN_DATA_ABSOLUTE = 3
 _MIN_DATA_PARAM_MULTIPLIER = 2
+
+_UNSEEN_FALLBACK_MIN_SAMPLES = 64
+
+
+def _replace_duplicate_continuous_recommendation(
+    campaign: Campaign,
+    spec: OptimizationSpec,
+    rec_df: pd.DataFrame,
+    observations: list[ObservationData],
+    pending_points: list[dict[str, Any]] | None,
+) -> tuple[pd.DataFrame, str | None]:
+    """Replace a duplicate q=1 continuous recommendation with an unseen point.
+
+    BayBE cannot disable re-recommendation through its campaign flags when a
+    search space has a continuous component.  Match the native BoTorch
+    backend's q=1 protection at the adapter boundary: normal recommendations
+    pass through unchanged, while a duplicate falls back to the best feasible
+    unseen point in a BayBE-native random candidate cloud.
+    """
+    if campaign.searchspace.type is not SearchSpaceType.CONTINUOUS or len(rec_df) != 1:
+        return rec_df, None
+
+    parameter_names = [parameter.name for parameter in spec.parameters]
+    existing = [observation.parameter_values for observation in observations]
+    existing.extend(
+        {name: point[name] for name in parameter_names}
+        for point in pending_points or []
+        if all(name in point for name in parameter_names)
+    )
+    recommendation = cast("dict[str, Any]", rec_df.iloc[0][parameter_names].to_dict())
+    if not engine_detect_duplicates(
+        recommendation,
+        existing,
+        DUPLICATE_DETECTION_TOLERANCE,
+    ):
+        return rec_df, None
+
+    recommender = _active_recommender(campaign)
+    sample_count = max(
+        int(getattr(recommender, "n_raw_samples", 0) or 0),
+        _UNSEEN_FALLBACK_MIN_SAMPLES,
+    )
+    candidates = campaign.searchspace.continuous.sample_uniform(sample_count)
+    candidate_dicts = cast(
+        "list[dict[str, Any]]", candidates[parameter_names].to_dict(orient="records")
+    )
+    eligible = [
+        not engine_detect_duplicates(candidate, existing, DUPLICATE_DETECTION_TOLERANCE)
+        for candidate in candidate_dicts
+    ]
+    candidates = candidates.loc[eligible].reset_index(drop=True)
+    if candidates.empty:
+        message = (
+            "BayBE returned an already evaluated or pending point, and no "
+            "feasible unseen fallback candidate was found."
+        )
+        raise RuntimeError(message)
+
+    acqf = getattr(recommender, "_botorch_acqf", None)
+    if acqf is not None:
+        points = torch.from_numpy(candidates[parameter_names].to_numpy(copy=True))
+        with torch.no_grad():
+            values = acqf(points.unsqueeze(-2)).reshape(-1)
+        candidates = candidates.iloc[[int(values.argmax().item())]]
+    else:
+        candidates = candidates.iloc[[0]]
+
+    campaign.clear_cache()
+    warning = (
+        "BayBE recommended an already evaluated or pending point; replaced it "
+        "with a feasible unseen candidate."
+    )
+    logger.warning(warning)
+    return candidates.reset_index(drop=True), warning
 
 
 def _named_lengthscales(
@@ -1058,6 +1137,13 @@ class BayBEBackend(BaseBackend):
             # emits the same structured SEARCH_SPACE_EXHAUSTED envelope
             # (counts + terminate recommendation) as the BoTorch path.
             raise _search_space_exhausted_error(spec, campaign, batch_size, pending_df) from exc
+        rec_df, duplicate_warning = _replace_duplicate_continuous_recommendation(
+            campaign,
+            spec,
+            rec_df,
+            observations,
+            pending_points,
+        )
         param_dicts = dataframe_to_suggestions(rec_df, spec)
 
         predictions, posterior_warning = _extract_posterior_stats(campaign, rec_df, spec)
@@ -1085,6 +1171,8 @@ class BayBEBackend(BaseBackend):
 
         warnings_out = self.validate_spec(spec)
         warnings_out.extend(pending_warnings)
+        if duplicate_warning is not None:
+            warnings_out.append(duplicate_warning)
         subsample_note = _subsample_warning_for_spec(spec)
         if subsample_note is not None:
             warnings_out.append(subsample_note)

@@ -9,8 +9,12 @@ Reference: BOBackend protocol definition in bo_engine/backend.py
 """
 
 import math
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
+import torch
+from baybe.searchspace import SearchSpaceType
 
 from bo_engine.backend import (
     BatchDiversityMetrics,
@@ -26,7 +30,80 @@ from bo_engine.types import (
     ParameterType,
     TargetMode,
 )
-from bo_engine_baybe.backend import BayBEBackend, _named_lengthscales
+from bo_engine_baybe.backend import (
+    BayBEBackend,
+    _named_lengthscales,
+    _replace_duplicate_continuous_recommendation,
+)
+
+
+class _SumAcquisition(torch.nn.Module):
+    def forward(self, points: torch.Tensor) -> torch.Tensor:
+        return points.sum(dim=(-1, -2))
+
+
+class TestContinuousDuplicateRecommendation:
+    def test_normal_recommendation_is_unchanged(self, simple_spec: OptimizationSpec) -> None:
+        campaign = SimpleNamespace(
+            searchspace=SimpleNamespace(type=SearchSpaceType.CONTINUOUS),
+        )
+        recommendation = pd.DataFrame([{"x1": 0.8, "x2": 0.8}])
+        observations = [
+            ObservationData(
+                parameter_values={"x1": 0.2, "x2": 0.2},
+                objective_values={"y": 1.0},
+            )
+        ]
+
+        actual, warning = _replace_duplicate_continuous_recommendation(
+            campaign, simple_spec, recommendation, observations, None
+        )
+
+        assert actual is recommendation
+        assert warning is None
+
+    def test_duplicate_uses_best_unseen_fallback(
+        self,
+        simple_spec: OptimizationSpec,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sample_pool = pd.DataFrame(
+            [
+                {"x1": 0.2, "x2": 0.2},
+                {"x1": 0.3, "x2": 0.4},
+                {"x1": 0.8, "x2": 0.9},
+            ]
+        )
+        continuous = SimpleNamespace(sample_uniform=lambda _count: sample_pool)
+        campaign = SimpleNamespace(
+            searchspace=SimpleNamespace(
+                type=SearchSpaceType.CONTINUOUS,
+                continuous=continuous,
+            ),
+            clear_cache=lambda: None,
+        )
+        recommender = SimpleNamespace(n_raw_samples=3, _botorch_acqf=_SumAcquisition())
+        monkeypatch.setattr(
+            "bo_engine_baybe.backend._active_recommender",
+            lambda _campaign: recommender,
+        )
+        observations = [
+            ObservationData(
+                parameter_values={"x1": 0.2, "x2": 0.2},
+                objective_values={"y": 1.0},
+            )
+        ]
+
+        actual, warning = _replace_duplicate_continuous_recommendation(
+            campaign,
+            simple_spec,
+            pd.DataFrame([{"x1": 0.2, "x2": 0.2}]),
+            observations,
+            None,
+        )
+
+        assert actual.to_dict(orient="records") == [{"x1": 0.8, "x2": 0.9}]
+        assert warning is not None
 
 
 class TestProtocolCompliance:

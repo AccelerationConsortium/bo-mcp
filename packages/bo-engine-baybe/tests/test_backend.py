@@ -14,7 +14,6 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import torch
-from baybe.searchspace import SearchSpaceType
 
 from bo_engine.backend import (
     BatchDiversityMetrics,
@@ -35,6 +34,7 @@ from bo_engine_baybe.backend import (
     _named_lengthscales,
     _replace_duplicate_continuous_recommendation,
 )
+from bo_engine_baybe.state import _build_campaign
 
 
 class _SumAcquisition(torch.nn.Module):
@@ -44,9 +44,7 @@ class _SumAcquisition(torch.nn.Module):
 
 class TestContinuousDuplicateRecommendation:
     def test_normal_recommendation_is_unchanged(self, simple_spec: OptimizationSpec) -> None:
-        campaign = SimpleNamespace(
-            searchspace=SimpleNamespace(type=SearchSpaceType.CONTINUOUS),
-        )
+        campaign = _build_campaign(simple_spec)
         recommendation = pd.DataFrame([{"x1": 0.8, "x2": 0.8}])
         observations = [
             ObservationData(
@@ -74,13 +72,11 @@ class TestContinuousDuplicateRecommendation:
                 {"x1": 0.8, "x2": 0.9},
             ]
         )
-        continuous = SimpleNamespace(sample_uniform=lambda _count: sample_pool)
-        campaign = SimpleNamespace(
-            searchspace=SimpleNamespace(
-                type=SearchSpaceType.CONTINUOUS,
-                continuous=continuous,
-            ),
-            clear_cache=lambda: None,
+        campaign = _build_campaign(simple_spec)
+        monkeypatch.setattr(
+            type(campaign.searchspace.continuous),
+            "sample_uniform",
+            lambda _self, _count: sample_pool,
         )
         recommender = SimpleNamespace(n_raw_samples=3, _botorch_acqf=_SumAcquisition())
         monkeypatch.setattr(

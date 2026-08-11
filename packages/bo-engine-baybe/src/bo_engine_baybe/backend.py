@@ -71,7 +71,10 @@ from bo_engine.backend_base import (
     single_objective_family_acquisition_report,
     wrap_backend_exception,
 )
-from bo_engine.constants import ACQF_FALLBACK_MIN_SAMPLES
+from bo_engine.constants import (
+    ACQF_FALLBACK_MIN_SAMPLES,
+    DUPLICATE_DETECTION_TOLERANCE,
+)
 from bo_engine.diagnostics import (
     compute_best_value,
     compute_improvement_history,
@@ -87,9 +90,9 @@ from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 from bo_engine.result_validation import (
-    detect_outliers,
-    duplicate_row_mask,
+    detect_duplicates as engine_detect_duplicates,
 )
+from bo_engine.result_validation import detect_outliers, duplicate_row_mask
 from bo_engine.types import (
     SINGLE_OBJECTIVE_ONLY_ACQUISITION,
     UCB_FAMILY_ACQUISITION,
@@ -192,6 +195,15 @@ _ACQUISITION_UNAVAILABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
 )
 
 
+def _fallback_sample_count(campaign: Campaign) -> int:
+    """Return the shared minimum candidate-cloud size for duplicate fallbacks."""
+    recommender = _active_recommender(campaign)
+    return max(
+        int(getattr(recommender, "n_raw_samples", 0) or 0),
+        ACQF_FALLBACK_MIN_SAMPLES,
+    )
+
+
 def _existing_continuous_rows(
     parameter_names: list[str],
     observations: list[ObservationData],
@@ -223,11 +235,7 @@ def _sample_unseen_continuous_candidates(
     drawn as single-point batches, making each one satisfy the constraint
     on its own.
     """
-    recommender = _active_recommender(campaign)
-    sample_count = max(
-        int(getattr(recommender, "n_raw_samples", 0) or 0),
-        ACQF_FALLBACK_MIN_SAMPLES,
-    )
+    sample_count = _fallback_sample_count(campaign)
     subspace = campaign.searchspace.continuous
     if subspace.has_interpoint_constraints:
         candidates = pd.concat(
@@ -241,6 +249,104 @@ def _sample_unseen_continuous_candidates(
     )
     seen = duplicate_row_mask(candidate_rows, existing_rows)
     return candidates.loc[~seen.numpy()].reset_index(drop=True)
+
+
+def _existing_hybrid_records(
+    parameter_names: list[str],
+    observations: list[ObservationData],
+    pending_df: pd.DataFrame | None,
+) -> list[dict[str, Any]]:
+    """Collect evaluated and pending hybrid points in experimental form."""
+    records = [
+        {name: observation.parameter_values[name] for name in parameter_names}
+        for observation in observations
+        if all(name in observation.parameter_values for name in parameter_names)
+    ]
+    if pending_df is not None and not pending_df.empty:
+        records.extend(
+            cast(
+                "list[dict[str, Any]]",
+                pending_df[parameter_names].to_dict(orient="records"),
+            )
+        )
+    return records
+
+
+def _sample_hybrid_candidates(campaign: Campaign, sample_count: int) -> pd.DataFrame:
+    """Draw a bounded cloud spanning BayBE's feasible hybrid subspaces.
+
+    BayBE represents a hybrid space as an enumerated, constraint-filtered
+    discrete subspace plus a continuous subspace with its own native sampler.
+    Every discrete configuration is represented when the bounded cloud is
+    large enough; otherwise a reproducible random subset is used. Pairing
+    those rows with native continuous samples yields complete experimental-
+    representation candidates suitable for ``Campaign.acquisition_values``.
+    """
+    discrete_pool = campaign.searchspace.discrete.exp_rep
+    if discrete_pool.empty:
+        message = "BayBE hybrid fallback has no feasible discrete configurations."
+        raise RuntimeError(message)
+
+    if len(discrete_pool) >= sample_count:
+        discrete_candidates = discrete_pool.sample(n=sample_count, replace=False)
+    else:
+        repetitions, remainder = divmod(sample_count, len(discrete_pool))
+        parts = [discrete_pool] * repetitions
+        if remainder:
+            parts.append(discrete_pool.sample(n=remainder, replace=False))
+        discrete_candidates = pd.concat(parts, ignore_index=True)
+
+    continuous_candidates = campaign.searchspace.continuous.sample_uniform(sample_count)
+    return pd.concat(
+        [
+            discrete_candidates.reset_index(drop=True),
+            continuous_candidates.reset_index(drop=True),
+        ],
+        axis=1,
+    )
+
+
+def _sample_unseen_hybrid_candidates(
+    campaign: Campaign,
+    parameter_names: list[str],
+    categorical_names: list[str],
+    existing_records: list[dict[str, Any]],
+) -> pd.DataFrame:
+    """Draw feasible full hybrid candidates and remove already-seen rows."""
+    candidates = _sample_hybrid_candidates(campaign, _fallback_sample_count(campaign))
+    candidate_records = cast(
+        "list[dict[str, Any]]",
+        candidates[parameter_names].to_dict(orient="records"),
+    )
+    seen = [
+        _hybrid_record_is_duplicate(
+            candidate,
+            existing_records,
+            categorical_names,
+        )
+        for candidate in candidate_records
+    ]
+    return candidates.loc[[not is_seen for is_seen in seen]].reset_index(drop=True)
+
+
+def _hybrid_record_is_duplicate(
+    candidate: dict[str, Any],
+    existing_records: list[dict[str, Any]],
+    categorical_names: list[str],
+) -> bool:
+    """Match categorical labels exactly before applying numeric tolerance."""
+    category_matches = [
+        existing
+        for existing in existing_records
+        if all(candidate.get(name) == existing.get(name) for name in categorical_names)
+    ]
+    return bool(
+        engine_detect_duplicates(
+            candidate,
+            category_matches,
+            DUPLICATE_DETECTION_TOLERANCE,
+        )
+    )
 
 
 def _best_unseen_candidate(
@@ -289,8 +395,8 @@ def _replace_duplicate_continuous_recommendation(
 
     Scope: enforced only for purely continuous spaces with
     ``batch_size == 1``, mirroring the native backend's documented q=1
-    limitation. Hybrid spaces share the campaign-flag limitation but are
-    not yet protected; both skips are logged at debug level.
+    limitation. Hybrid spaces are handled by the companion adapter-level
+    fallback below.
 
     Raises:
         RuntimeError: If every sampled fallback candidate matches an
@@ -300,11 +406,6 @@ def _replace_duplicate_continuous_recommendation(
             a ``SearchSpaceExhaustedError``).
     """
     if campaign.searchspace.type is not SearchSpaceType.CONTINUOUS:
-        if campaign.searchspace.type is SearchSpaceType.HYBRID:
-            logger.debug(
-                "Duplicate protection is not enforced for hybrid search "
-                "spaces; returning BayBE's recommendation unchanged."
-            )
         return rec_df, None
     if len(rec_df) != 1:
         logger.debug(
@@ -337,6 +438,97 @@ def _replace_duplicate_continuous_recommendation(
     )
     logger.warning(warning)
     return best, warning
+
+
+def _replace_duplicate_hybrid_recommendation(
+    campaign: Campaign,
+    spec: OptimizationSpec,
+    rec_df: pd.DataFrame,
+    observations: list[ObservationData],
+    pending_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, str | None]:
+    """Replace a duplicate q=1 BayBE hybrid recommendation.
+
+    Numeric coordinates use the engine's shared near-duplicate tolerance;
+    categorical coordinates must match exactly. The fallback samples complete
+    feasible hybrid candidates, filters evaluated and pending experiments, and
+    ranks the remaining rows through BayBE's public acquisition API.
+    """
+    if campaign.searchspace.type is not SearchSpaceType.HYBRID:
+        return rec_df, None
+    if len(rec_df) != 1:
+        logger.debug(
+            "Duplicate protection is not enforced for hybrid batch_size=%d; "
+            "returning BayBE's recommendation unchanged.",
+            len(rec_df),
+        )
+        return rec_df, None
+
+    parameter_names = [parameter.name for parameter in spec.parameters]
+    categorical_names = [
+        parameter.name
+        for parameter in spec.parameters
+        if parameter.type == ParameterType.CATEGORICAL
+    ]
+    existing_records = _existing_hybrid_records(parameter_names, observations, pending_df)
+    recommendation = cast(
+        "dict[str, Any]",
+        rec_df.iloc[0][parameter_names].to_dict(),
+    )
+    if not _hybrid_record_is_duplicate(
+        recommendation,
+        existing_records,
+        categorical_names,
+    ):
+        return rec_df, None
+
+    candidates = _sample_unseen_hybrid_candidates(
+        campaign,
+        parameter_names,
+        categorical_names,
+        existing_records,
+    )
+    if candidates.empty:
+        message = (
+            "BayBE returned an already evaluated or pending hybrid point, and no "
+            "unseen fallback candidate was found in the sampled cloud. "
+            "The space may still contain unseen points."
+        )
+        raise RuntimeError(message)
+
+    best = _best_unseen_candidate(campaign, candidates, pending_df)
+    campaign.clear_cache()
+    warning = (
+        "BayBE recommended an already evaluated or pending hybrid point; "
+        "replaced it with a feasible unseen candidate."
+    )
+    logger.warning(warning)
+    return best, warning
+
+
+def _replace_duplicate_recommendation(
+    campaign: Campaign,
+    spec: OptimizationSpec,
+    rec_df: pd.DataFrame,
+    observations: list[ObservationData],
+    pending_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, str | None]:
+    """Apply the q=1 duplicate safeguard for continuous-component spaces."""
+    if campaign.searchspace.type is SearchSpaceType.HYBRID:
+        return _replace_duplicate_hybrid_recommendation(
+            campaign,
+            spec,
+            rec_df,
+            observations,
+            pending_df,
+        )
+    return _replace_duplicate_continuous_recommendation(
+        campaign,
+        spec,
+        rec_df,
+        observations,
+        pending_df,
+    )
 
 
 def _named_lengthscales(
@@ -1227,7 +1419,7 @@ class BayBEBackend(BaseBackend):
             # emits the same structured SEARCH_SPACE_EXHAUSTED envelope
             # (counts + terminate recommendation) as the BoTorch path.
             raise _search_space_exhausted_error(spec, campaign, batch_size, pending_df) from exc
-        rec_df, duplicate_warning = _replace_duplicate_continuous_recommendation(
+        rec_df, duplicate_warning = _replace_duplicate_recommendation(
             campaign,
             spec,
             rec_df,

@@ -8,9 +8,12 @@ multi-objective).
 Reference: BOBackend protocol definition in bo_engine/backend.py
 """
 
+import logging
 import math
 
+import pandas as pd
 import pytest
+from baybe import Campaign
 
 from bo_engine.backend import (
     BatchDiversityMetrics,
@@ -19,6 +22,8 @@ from bo_engine.backend import (
     SuggestionBatch,
 )
 from bo_engine.types import (
+    ConstraintSpec,
+    ConstraintType,
     ObjectiveSpec,
     ObservationData,
     OptimizationSpec,
@@ -26,7 +31,419 @@ from bo_engine.types import (
     ParameterType,
     TargetMode,
 )
-from bo_engine_baybe.backend import BayBEBackend, _named_lengthscales
+from bo_engine_baybe.backend import (
+    BayBEBackend,
+    _named_lengthscales,
+    _replace_duplicate_continuous_recommendation,
+)
+from bo_engine_baybe.state import _build_campaign
+
+_DUPLICATE_WARNING_FRAGMENT = "already evaluated or pending point"
+
+
+def _observations_from_frame(measurements: pd.DataFrame, objective: str) -> list[ObservationData]:
+    """Mirror a BayBE measurement frame as engine-neutral observations."""
+    return [
+        ObservationData(
+            parameter_values={
+                str(name): float(value) for name, value in row.items() if name != objective
+            },
+            objective_values={objective: float(row[objective])},
+        )
+        for row in measurements.to_dict(orient="records")
+    ]
+
+
+class TestContinuousDuplicateRecommendation:
+    """q=1 duplicate protection for purely continuous BayBE campaigns.
+
+    BayBE cannot disable re-recommendation via ``allow_recommending_*``
+    for search spaces with a continuous component (the flags raise
+    ``IncompatibilityError``), so the adapter replaces a duplicated q=1
+    recommendation with the best unseen point from a BayBE-native
+    candidate cloud. Reference: BayBE campaign userguide, "Candidate
+    control in continuous spaces" limitation
+    (https://emdgroup.github.io/baybe/stable/userguide/campaigns.html).
+    """
+
+    def test_normal_recommendation_is_unchanged(self, simple_spec: OptimizationSpec) -> None:
+        campaign = _build_campaign(simple_spec)
+        recommendation = pd.DataFrame([{"x1": 0.8, "x2": 0.8}])
+        observations = [
+            ObservationData(
+                parameter_values={"x1": 0.2, "x2": 0.2},
+                objective_values={"y": 1.0},
+            )
+        ]
+
+        actual, warning = _replace_duplicate_continuous_recommendation(
+            campaign, simple_spec, recommendation, observations, None
+        )
+
+        assert actual is recommendation
+        assert warning is None
+
+    def test_duplicate_uses_best_unseen_fallback(
+        self,
+        simple_spec: OptimizationSpec,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The duplicated pool entry is filtered; the acqf argmax wins.
+
+        Ranking must agree with BayBE's public ``Campaign.acquisition_values``
+        on the same fitted campaign — the same API a client would use to
+        audit the choice.
+        """
+        measurements = pd.DataFrame(
+            [
+                {"x1": 0.2, "x2": 0.2, "y": 1.0},
+                {"x1": 0.6, "x2": 0.4, "y": 3.0},
+                {"x1": 0.9, "x2": 0.8, "y": 2.0},
+                {"x1": 0.4, "x2": 0.7, "y": 4.0},
+            ]
+        )
+        campaign = _build_campaign(simple_spec)
+        campaign.add_measurements(measurements)
+        sample_pool = pd.DataFrame(
+            [
+                {"x1": 0.2, "x2": 0.2},  # duplicate of an observation
+                {"x1": 0.3, "x2": 0.4},
+                {"x1": 0.8, "x2": 0.9},
+                {"x1": 0.1, "x2": 0.6},
+            ]
+        )
+        monkeypatch.setattr(
+            type(campaign.searchspace.continuous),
+            "sample_uniform",
+            lambda _self, _count: sample_pool,
+        )
+        observations = _observations_from_frame(measurements, "y")
+
+        actual, warning = _replace_duplicate_continuous_recommendation(
+            campaign,
+            simple_spec,
+            pd.DataFrame([{"x1": 0.2, "x2": 0.2}]),
+            observations,
+            None,
+        )
+
+        unseen_pool = sample_pool.iloc[1:].reset_index(drop=True)
+        acq = campaign.acquisition_values(candidates=unseen_pool)
+        expected = unseen_pool.iloc[int(acq.to_numpy().argmax())].to_dict()
+        assert actual.to_dict(orient="records") == [expected]
+        assert warning is not None
+        assert _DUPLICATE_WARNING_FRAGMENT in warning
+
+    def test_fallback_ranking_is_column_order_independent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression: acqf ranking must not depend on spec parameter order.
+
+        BayBE stores subspace parameters alphabetically in its computational
+        representation, while the spec lists them in user order. Feeding the
+        raw BoTorch acquisition function spec-ordered columns permutes the
+        inputs (here it would swap ``zeta``∈[0,1] with ``alpha``∈[0,10]) and
+        silently mis-ranks the fallback pool. Ranking through the public
+        ``Campaign.acquisition_values`` transforms by column name and is
+        immune to the permutation.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="zeta", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="alpha", type=ParameterType.CONTINUOUS, bounds=(0.0, 10.0)),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+        measurements = pd.DataFrame(
+            [
+                {"zeta": 0.1, "alpha": 1.0, "y": 5.0},
+                {"zeta": 0.5, "alpha": 6.0, "y": 1.0},
+                {"zeta": 0.9, "alpha": 9.0, "y": 3.0},
+                {"zeta": 0.3, "alpha": 2.0, "y": 4.0},
+            ]
+        )
+        campaign = _build_campaign(spec)
+        campaign.add_measurements(measurements)
+        sample_pool = pd.DataFrame(
+            [
+                {"zeta": 0.5, "alpha": 6.0},  # duplicate of an observation
+                {"zeta": 0.45, "alpha": 5.5},
+                {"zeta": 0.05, "alpha": 9.5},
+                {"zeta": 0.55, "alpha": 6.5},
+            ]
+        )
+        monkeypatch.setattr(
+            type(campaign.searchspace.continuous),
+            "sample_uniform",
+            lambda _self, _count: sample_pool,
+        )
+        observations = _observations_from_frame(measurements, "y")
+
+        actual, warning = _replace_duplicate_continuous_recommendation(
+            campaign,
+            spec,
+            pd.DataFrame([{"zeta": 0.5, "alpha": 6.0}]),
+            observations,
+            None,
+        )
+
+        unseen_pool = sample_pool.iloc[1:].reset_index(drop=True)
+        acq = campaign.acquisition_values(candidates=unseen_pool)
+        expected = unseen_pool.iloc[int(acq.to_numpy().argmax())].to_dict()
+        assert actual.to_dict(orient="records") == [expected]
+        assert warning is not None
+
+    def test_interpoint_duplicate_fallback_satisfies_q1_constraint(self) -> None:
+        """Each fallback candidate must satisfy interpoint constraints alone.
+
+        BayBE's ``sample_uniform(n)`` applies interpoint constraints across
+        the n sampled rows as if they formed one recommendation batch; a
+        q=1 fallback candidate must instead satisfy the constraint by
+        itself. Reference: BayBE constraints userguide, interpoint section
+        (https://emdgroup.github.io/baybe/stable/userguide/constraints.html).
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            constraints=[
+                ConstraintSpec(
+                    type=ConstraintType.SUM_EQUALS,
+                    parameters=["x1"],
+                    value=1.0,
+                    is_interpoint=True,
+                )
+            ],
+        )
+        campaign = _build_campaign(spec)
+        assert campaign.searchspace.continuous.has_interpoint_constraints
+        measurements = pd.DataFrame(
+            [
+                {"x1": 1.0, "x2": 0.3, "y": 2.0},
+                {"x1": 1.0, "x2": 0.7, "y": 1.0},
+            ]
+        )
+        campaign.add_measurements(measurements)
+        observations = _observations_from_frame(measurements, "y")
+
+        actual, warning = _replace_duplicate_continuous_recommendation(
+            campaign,
+            spec,
+            pd.DataFrame([{"x1": 1.0, "x2": 0.3}]),
+            observations,
+            None,
+        )
+
+        row = actual.iloc[0]
+        assert row["x1"] == pytest.approx(1.0, abs=1e-9)
+        assert row["x2"] != pytest.approx(0.3, abs=1e-6)
+        assert warning is not None
+
+    def test_pending_duplicate_triggers_replacement(self, simple_spec: OptimizationSpec) -> None:
+        """A recommendation matching a pending point is replaced too.
+
+        With no measurements the campaign is in its random phase, so the
+        acquisition ranking is unavailable and the first unseen candidate
+        is returned — still a valid, non-duplicate suggestion.
+        """
+        campaign = _build_campaign(simple_spec)
+        pending_df = pd.DataFrame([{"x1": 0.4, "x2": 0.4}])
+
+        actual, warning = _replace_duplicate_continuous_recommendation(
+            campaign,
+            simple_spec,
+            pd.DataFrame([{"x1": 0.4, "x2": 0.4}]),
+            [],
+            pending_df,
+        )
+
+        row = actual.iloc[0]
+        assert (row["x1"], row["x2"]) != pytest.approx((0.4, 0.4))
+        assert warning is not None
+
+    def test_bayesian_ranking_failure_propagates(
+        self,
+        simple_spec: OptimizationSpec,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A Bayesian-phase ranking failure must not degrade silently.
+
+        Only BayBE's "acquisition structurally unavailable" exceptions
+        (random phase, untrained surrogate) may fall back to the first
+        unseen candidate. A genuine numerical failure — e.g. a Cholesky
+        breakdown surfacing as ``RuntimeError`` — must propagate to the
+        backend exception wrapper instead of silently replacing the
+        highest-acquisition candidate with an unranked one under a
+        success warning.
+        """
+        measurements = pd.DataFrame(
+            [
+                {"x1": 0.2, "x2": 0.2, "y": 1.0},
+                {"x1": 0.6, "x2": 0.4, "y": 3.0},
+                {"x1": 0.9, "x2": 0.8, "y": 2.0},
+                {"x1": 0.4, "x2": 0.7, "y": 4.0},
+            ]
+        )
+        campaign = _build_campaign(simple_spec)
+        campaign.add_measurements(measurements)
+        observations = _observations_from_frame(measurements, "y")
+
+        def _raise_numerical_failure(*_args: object, **_kwargs: object) -> None:
+            message = "Cholesky decomposition failed"
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(Campaign, "acquisition_values", _raise_numerical_failure)
+        duplicate_recommendation = pd.DataFrame([{"x1": 0.2, "x2": 0.2}])
+
+        with (
+            caplog.at_level(logging.WARNING, logger="bo_engine_baybe.backend"),
+            pytest.raises(RuntimeError, match="Cholesky"),
+        ):
+            _replace_duplicate_continuous_recommendation(
+                campaign,
+                simple_spec,
+                duplicate_recommendation,
+                observations,
+                None,
+            )
+
+        assert not any(_DUPLICATE_WARNING_FRAGMENT in record.message for record in caplog.records)
+
+    def test_exhausted_fallback_cloud_raises_runtime_error(
+        self,
+        simple_spec: OptimizationSpec,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An all-duplicate cloud fails honestly, not as proven exhaustion.
+
+        Sampling cannot prove a continuous space is exhausted, so this must
+        stay a plain ``RuntimeError`` — mirroring the native backend's
+        sampled-fallback contract — and never masquerade as
+        ``SearchSpaceExhaustedError``.
+        """
+        campaign = _build_campaign(simple_spec)
+        duplicate_pool = pd.DataFrame([{"x1": 0.2, "x2": 0.2}] * 3)
+        monkeypatch.setattr(
+            type(campaign.searchspace.continuous),
+            "sample_uniform",
+            lambda _self, _count: duplicate_pool,
+        )
+        observations = [
+            ObservationData(
+                parameter_values={"x1": 0.2, "x2": 0.2},
+                objective_values={"y": 1.0},
+            )
+        ]
+
+        duplicate_recommendation = pd.DataFrame([{"x1": 0.2, "x2": 0.2}])
+        with pytest.raises(RuntimeError, match="unseen fallback candidate") as excinfo:
+            _replace_duplicate_continuous_recommendation(
+                campaign,
+                simple_spec,
+                duplicate_recommendation,
+                observations,
+                None,
+            )
+        assert type(excinfo.value) is RuntimeError
+
+    def test_hybrid_recommendation_passes_through(
+        self,
+        categorical_spec: OptimizationSpec,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Hybrid spaces are documented as unprotected; the skip is logged."""
+        campaign = _build_campaign(categorical_spec)
+        recommendation = pd.DataFrame([{"temp": 250.0, "solvent": "Water"}])
+        observations = [
+            ObservationData(
+                parameter_values={"temp": 250.0, "solvent": "Water"},
+                objective_values={"yield": 1.0},
+            )
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="bo_engine_baybe.backend"):
+            actual, warning = _replace_duplicate_continuous_recommendation(
+                campaign, categorical_spec, recommendation, observations, None
+            )
+
+        assert actual is recommendation
+        assert warning is None
+        assert any("hybrid" in record.message for record in caplog.records)
+
+    def test_batch_recommendation_passes_through(
+        self,
+        simple_spec: OptimizationSpec,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """q>1 duplicates are documented as unenforced; the skip is logged."""
+        campaign = _build_campaign(simple_spec)
+        recommendation = pd.DataFrame([{"x1": 0.2, "x2": 0.2}, {"x1": 0.2, "x2": 0.2}])
+        observations = [
+            ObservationData(
+                parameter_values={"x1": 0.2, "x2": 0.2},
+                objective_values={"y": 1.0},
+            )
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="bo_engine_baybe.backend"):
+            actual, warning = _replace_duplicate_continuous_recommendation(
+                campaign, simple_spec, recommendation, observations, None
+            )
+
+        assert actual is recommendation
+        assert warning is None
+        assert any("batch_size=2" in record.message for record in caplog.records)
+
+    def test_generate_suggestions_surfaces_duplicate_replacement(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end: a duplicated BayBE recommendation is replaced and warned.
+
+        Only ``Campaign.recommend`` is forced to return an evaluated point;
+        everything else (campaign build, measurement reconciliation, the
+        replacement, warning propagation, provenance assembly) runs for real.
+        """
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            batch_size=1,
+        )
+        measurements = pd.DataFrame(
+            [
+                {"x1": 0.2, "x2": 0.2, "y": 1.0},
+                {"x1": 0.6, "x2": 0.4, "y": 3.0},
+                {"x1": 0.9, "x2": 0.8, "y": 2.0},
+                {"x1": 0.4, "x2": 0.7, "y": 4.0},
+            ]
+        )
+        observations = _observations_from_frame(measurements, "y")
+        duplicate = {"x1": 0.2, "x2": 0.2}
+        monkeypatch.setattr(
+            Campaign,
+            "recommend",
+            lambda _self, **_kwargs: pd.DataFrame([duplicate]),
+        )
+
+        batch = BayBEBackend().generate_suggestions(
+            spec=spec,
+            observations=observations,
+            batch_size=1,
+            iteration=1,
+        )
+
+        assert any(_DUPLICATE_WARNING_FRAGMENT in warning for warning in batch.warnings)
+        suggested = batch.suggestions[0]["parameter_values"]
+        assert (suggested["x1"], suggested["x2"]) != pytest.approx(
+            (duplicate["x1"], duplicate["x2"])
+        )
 
 
 class TestProtocolCompliance:

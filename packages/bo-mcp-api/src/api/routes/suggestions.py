@@ -75,6 +75,7 @@ async def generate_campaign_suggestions(
     idempotency_key: IdempotencyKey,
     response: Response,
     batch_size: Annotated[int | None, Query(ge=1, le=MAX_GENERATION_BATCH_SIZE)] = None,
+    dry_run: Annotated[bool, Query()] = False,
 ) -> SuggestionsGenerateResponse:
     """Generate new suggestions for a campaign.
 
@@ -82,6 +83,12 @@ async def generate_campaign_suggestions(
     query endpoint emits and result submission consumes, so its value
     can be copied into a ``POST /api/v1/results/{campaign_id}`` request
     without renaming.
+
+    ``dry_run=true`` runs the generation preflight (campaign state,
+    stopping criteria, budget, pending-suggestion classification) and
+    returns a preview without running the BO algorithm or persisting
+    anything — same semantics as the MCP tool. Dry runs bypass the
+    idempotency cache.
 
     Returns ``201 Created`` with a ``Location`` header pointing at
     :func:`list_campaign_suggestions_route` for the freshly-created
@@ -98,6 +105,24 @@ async def generate_campaign_suggestions(
     budget.
     """
     await get_authorized_campaign(campaign_id, current_user)
+
+    if dry_run:
+        result = await generate_suggestions_operation(
+            campaign_id=campaign_id,
+            batch_size=batch_size,
+            dry_run=True,
+        )
+        # Nothing was persisted, so 201 would mislead clients.
+        response.status_code = status.HTTP_200_OK
+        return SuggestionsGenerateResponse(
+            success=result.get("success", False),
+            suggestions=[],
+            iteration=result.get("iteration"),
+            errors=result.get("errors", []),
+            error=result.get("error"),
+            dry_run=True,
+            preview=result.get("preview"),
+        )
 
     async def run(session: AsyncSession) -> dict:
         return await generate_suggestions_operation(
@@ -140,6 +165,7 @@ async def generate_campaign_suggestions(
             iteration=result.get("iteration"),
             errors=result["errors"],
             idempotency_replay=idempotency_replay,
+            error=result.get("error"),
         )
 
     suggestions = [
@@ -224,12 +250,16 @@ async def update_suggestion_status(
 
     Rejecting declines this suggestion instance only; the parameter
     values are not excluded from future recommendations.
+
+    ``dry_run`` validates the transition and returns a preview without
+    committing — same semantics as the MCP tool.
     """
     await get_authorized_suggestion(suggestion_id, current_user)
 
     result = await update_suggestion_status_operation(
         suggestion_id=suggestion_id,
         status=request.status,
+        dry_run=request.dry_run,
     )
     return SuggestionStatusUpdateResponse(
         success=result["success"],
@@ -237,6 +267,9 @@ async def update_suggestion_status(
         status=result.get("status"),
         previous_status=result.get("previous_status"),
         errors=result.get("errors", []),
+        error=result.get("error"),
+        dry_run=bool(result.get("dry_run", False)),
+        preview=result.get("preview"),
     )
 
 

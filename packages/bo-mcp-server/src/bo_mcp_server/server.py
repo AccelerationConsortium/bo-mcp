@@ -22,9 +22,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ContentBlock
 from pydantic import AnyUrl
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 from bo_mcp_server.backend_context import campaign_backend_scope
+from bo_mcp_server.docs import load_manpage_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,11 @@ class _ScopedFastMCP(FastMCP):
 # For all other uses, call create_mcp_server().
 mcp = _ScopedFastMCP(
     "bo-mcp",
+    instructions=(
+        "Read the docs://manpage resource before operating campaigns — it is "
+        "the canonical BO-MCP operating manual (call order, state ownership, "
+        "continuation, and error recovery)."
+    ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=_build_allowed_hosts(),
@@ -118,6 +124,25 @@ async def _health_endpoint(request: Request) -> Response:
     return JSONResponse({"status": "ok"})
 
 
+@mcp.custom_route("/manpage", methods=["GET"])
+async def _manpage_endpoint(request: Request) -> Response:
+    """Serve the canonical operating manual over plain HTTP.
+
+    HTTP-transported MCP deployments that do not front the REST API
+    still expose the manual this way — same Markdown as the REST
+    ``/manpage.md`` route and the ``docs://manpage`` resource, all
+    loaded via :func:`bo_mcp_server.docs.load_manpage_markdown`.
+
+    Registered at module level for the same single-registration reason
+    as ``/health`` above.
+    """
+    del request  # Starlette handler signature requires it; we do not read it.
+    return PlainTextResponse(
+        load_manpage_markdown(),
+        media_type="text/markdown; charset=utf-8",
+    )
+
+
 def create_mcp_server() -> FastMCP:
     """Create and return the fully-configured MCP server.
 
@@ -148,6 +173,7 @@ def create_mcp_server() -> FastMCP:
     from bo_mcp_server.resources import (  # noqa: F401
         campaign_resource,
         events_resource,
+        manpage_resource,
         suggestion_resource,
     )
 

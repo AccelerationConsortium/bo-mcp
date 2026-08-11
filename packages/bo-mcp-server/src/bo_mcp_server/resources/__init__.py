@@ -35,6 +35,16 @@ layer remains process-scoped and the REST API is the multi-tenant
 boundary.
 """
 
-from bo_mcp_server.resources import campaign_resource, events_resource, suggestion_resource
+from bo_mcp_server.resources import (
+    campaign_resource,
+    events_resource,
+    manpage_resource,
+    suggestion_resource,
+)
 
-__all__ = ["campaign_resource", "events_resource", "suggestion_resource"]
+__all__ = [
+    "campaign_resource",
+    "events_resource",
+    "manpage_resource",
+    "suggestion_resource",
+]

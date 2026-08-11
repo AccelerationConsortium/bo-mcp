@@ -55,6 +55,7 @@ from bo_mcp_server.client.lifecycle import (
     ping_database_detailed,
 )
 from bo_mcp_server.constants import MAX_GENERATION_BATCH_SIZE
+from bo_mcp_server.docs import load_manpage_markdown
 from bo_mcp_server.domain import (
     AcquisitionMethod,
     AcquisitionOptimizationConfig,
@@ -245,6 +246,8 @@ __all__ = [
     "list_owner_campaigns_with_specs",
     "list_results_operation",
     "list_suggestions_operation",
+    # Documentation (canonical operating manual)
+    "load_manpage_markdown",
     "make_corrupted_json_response",
     "make_error_response",
     "manage_campaign_lifecycle_operation",

@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_CAMPAIGN_IDS, MAX_COMPARE_CAMPAIGN_IDS
-from api.schemas.common import ResponseEnvelope, VerbosityLevel
+from api.schemas.common import MutationEnvelope, ResponseEnvelope, VerbosityLevel
 from api.schemas.intake import IntakeData
 from bo_mcp_server.client import ValidateIntakeSpecSummary
 
@@ -30,11 +30,18 @@ LifecycleAction = Literal["pause", "resume", "terminate", "reopen"]
 
 
 class CampaignCreate(BaseModel):
-    """Campaign creation request."""
+    """Campaign creation request.
+
+    ``dry_run`` mirrors the MCP ``bo_create_campaign`` parameter: the
+    intake runs full validation (schema, capability, backend checks)
+    and the response reports the outcome without persisting a campaign.
+    Dry runs bypass the idempotency cache.
+    """
 
     model_config = _FORBID_EXTRA
 
     intake: IntakeData
+    dry_run: bool = False
 
 
 class CampaignResponse(BaseModel):
@@ -103,7 +110,7 @@ class CampaignConfigResponse(BaseModel):
     acknowledge_degradations: list[str] = Field(default_factory=list)
 
 
-class CampaignCreateResponse(ResponseEnvelope):
+class CampaignCreateResponse(MutationEnvelope):
     """Campaign creation response.
 
     ``idempotency_replay`` is ``True`` when the response was served
@@ -222,6 +229,13 @@ class CampaignLifecycleRequest(BaseModel):
 
     model_config = _FORBID_EXTRA
 
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Validate the transition and return a preview (from/to status) "
+            "without committing — same semantics as the MCP lifecycle tools."
+        ),
+    )
     action: LifecycleAction = Field(
         description=(
             'Lifecycle action to apply. Use "terminate" to end or complete a '
@@ -233,7 +247,7 @@ class CampaignLifecycleRequest(BaseModel):
     )
 
 
-class CampaignLifecycleResponse(ResponseEnvelope):
+class CampaignLifecycleResponse(MutationEnvelope):
     """Lifecycle action response."""
 
     success: bool

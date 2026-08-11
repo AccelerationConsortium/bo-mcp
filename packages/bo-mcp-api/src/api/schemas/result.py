@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.limits import MAX_BATCH_RESULTS
-from api.schemas.common import ResponseEnvelope, VerbosityLevel
+from api.schemas.common import MutationEnvelope, ResponseEnvelope, VerbosityLevel
 from bo_mcp_server.client import FiniteFloat, ResultMetadata
 
 # ``extra="forbid"`` is applied to request schemas so typos / not-yet-supported
@@ -47,9 +47,13 @@ class ResultBatchCreate(BaseModel):
     single POST cannot pin a worker behind validating tens of
     thousands of rows.
 
-    ``force`` mirrors the MCP ``bo_submit_results`` tool's override:
-    when ``True`` it bypasses the exact-duplicate-coordinate check so
-    an optimizer-requested replicate can be submitted without first
+    ``force`` / ``atomic`` / ``continue_on_error`` / ``dry_run``
+    mirror the MCP ``bo_submit_results`` tool parameters one-to-one —
+    both transports call the same
+    :func:`bo_mcp_server.operations.submit_results.submit_results_operation`.
+
+    ``force`` bypasses the exact-duplicate-coordinate check so an
+    optimizer-requested replicate can be submitted without first
     rejecting the suggestion (which would not exclude the coordinates
     from future generation).
 
@@ -75,6 +79,27 @@ class ResultBatchCreate(BaseModel):
             "cached, so a forced retry of a rejected submission must use a "
             "new Idempotency-Key; reusing the rejected key returns a 409 "
             "idempotency conflict."
+        ),
+    )
+    atomic: bool = Field(
+        default=True,
+        description=(
+            "When true (default) the whole batch succeeds or fails together: "
+            "any invalid row rejects the batch before anything is persisted."
+        ),
+    )
+    continue_on_error: bool = Field(
+        default=False,
+        description=(
+            "With atomic=false, process rows independently and report a "
+            "per-row partial_results mapping instead of failing the batch."
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Validate the batch and return a preview of what would persist "
+            "without writing anything. Dry runs bypass the idempotency cache."
         ),
     )
 
@@ -118,7 +143,7 @@ class ResultQueryResponse(ResponseEnvelope):
     errors: list[str] = Field(default_factory=list)
 
 
-class ResultSubmitResponse(ResponseEnvelope):
+class ResultSubmitResponse(MutationEnvelope):
     """Response for result submission.
 
     ``field_errors`` mirrors the MCP envelope so REST callers can
@@ -131,6 +156,10 @@ class ResultSubmitResponse(ResponseEnvelope):
     used an Idempotency-Key on a retry could not tell the cached
     reply from a brand-new insert and would have no way to surface
     that distinction to their users.
+
+    ``partial_results`` is populated for ``atomic=false`` +
+    ``continue_on_error=true`` submissions: a per-row mapping of input
+    index to the persisted result id or the row's error.
 
     ``error_code`` carries the structured
     :class:`bo_mcp_server.errors.ErrorCode` value (e.g. ``"E004"`` for
@@ -151,5 +180,6 @@ class ResultSubmitResponse(ResponseEnvelope):
     warnings: list[str]
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
     idempotency_replay: bool = False
+    partial_results: dict[int, str | dict[str, str]] | None = None
     error_code: str | None = None
     duplicates_detected: list[dict[str, Any]] = Field(default_factory=list)

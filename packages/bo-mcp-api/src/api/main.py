@@ -29,7 +29,14 @@ from api.error_handlers import (  # noqa: E402
 from api.limits import MAX_JSON_REQUEST_BODY_BYTES  # noqa: E402
 from api.metrics import install_metrics  # noqa: E402
 from api.request_context import install_request_id_log_filter, request_id_var  # noqa: E402
-from api.routes import campaigns, capabilities, diagnostics, results, suggestions  # noqa: E402
+from api.routes import (  # noqa: E402
+    campaigns,
+    capabilities,
+    diagnostics,
+    manpage,
+    results,
+    suggestions,
+)
 from api.settings import WILDCARD_ORIGIN, ApiSettings, get_api_settings  # noqa: E402
 from bo_mcp_server.client import (  # noqa: E402
     CorruptedJsonColumnError,
@@ -135,7 +142,11 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="BO MCP API",
-        description="REST API proxy for Bayesian Optimization MCP Service",
+        description=(
+            "Start with the [operating manual](/manpage); this page is the "
+            "field-level schema reference.\n\n"
+            "REST API proxy for Bayesian Optimization MCP Service"
+        ),
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -232,6 +243,10 @@ def create_app() -> FastAPI:
     _include_versioned_router(app, diagnostics.router, name="diagnostics", prefix=api_prefix)
     _include_versioned_router(app, capabilities.router, name="capabilities", prefix=api_prefix)
 
+    # Top-level (like /health, not under /api/v1): the operating manual is
+    # a stable human/agent-facing document alongside /docs and /redoc.
+    app.include_router(manpage.router)
+
     @app.get("/health")
     async def health_check() -> dict[str, str | bool | int | None]:
         """Health check endpoint for API readiness.
@@ -296,6 +311,12 @@ def _install_backend_options_openapi(app: FastAPI) -> None:
             description=app.description,
             routes=app.routes,
         )
+        # Relative URL on purpose: Swagger UI / ReDoc are served from the
+        # same origin and resolve it; no public-base-url setting exists yet.
+        openapi_schema["externalDocs"] = {
+            "description": "BO-MCP operating manual (manpage)",
+            "url": "/manpage",
+        }
         augment_parameter_options(openapi_schema)
         augment_backend_options(openapi_schema)
         app.openapi_schema = openapi_schema

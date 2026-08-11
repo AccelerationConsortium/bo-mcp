@@ -227,10 +227,21 @@ async def create_new_campaign(
     creating a duplicate campaign — same semantics as the MCP
     ``bo_create_campaign`` tool's ``idempotency_key`` parameter,
     sharing the same cache namespace so a retry on either transport
-    sees the other's prior response.
+    sees the other's prior response. ``dry_run`` requests bypass the
+    idempotency cache and persist nothing — mirroring the MCP tool.
     """
     intake = _coerce_intake(request.intake)
     owner_id = str(current_user.id)
+
+    if request.dry_run:
+        result = await create_campaign_operation(
+            intake_data=intake,
+            owner_id=owner_id,
+            dry_run=True,
+        )
+        # Nothing was persisted, so 201 would mislead clients.
+        response.status_code = status.HTTP_200_OK
+        return _build_create_response(result)
 
     async def run(session: AsyncSession) -> dict:
         return await create_campaign_operation(
@@ -268,17 +279,28 @@ async def create_new_campaign(
         # ``success=False`` envelope intact.
         response.status_code = status.HTTP_200_OK
 
+    return _build_create_response(result)
+
+
+def _build_create_response(result: dict) -> CampaignCreateResponse:
+    """Map a create-campaign operation envelope onto the REST model.
+
+    Forwards the structured ``error`` object on rejection, the
+    dry-run marker/preview, and the idempotency replay marker (added
+    by ``apply_idempotency`` on cached responses, absent on the
+    original write) so REST clients see the same outcome fields the
+    MCP tool exposes.
+    """
     return CampaignCreateResponse(
         success=result["success"],
-        campaign_id=result["campaign_id"],
-        spec_id=result["spec_id"],
+        campaign_id=result.get("campaign_id"),
+        spec_id=result.get("spec_id"),
         warnings=result.get("warnings", []),
-        errors=result["errors"],
-        # Forward the wrapper's replay marker so REST clients can
-        # distinguish a cached replay from a fresh mutation. The
-        # marker is added by ``apply_idempotency`` on the cached
-        # response and is absent on the original write.
+        errors=result.get("errors", []),
         idempotency_replay=bool(result.get("idempotency_replay", False)),
+        error=result.get("error"),
+        dry_run=bool(result.get("dry_run", False)),
+        preview=result.get("preview"),
     )
 
 
@@ -464,6 +486,7 @@ async def manage_campaign(
     result = await manage_campaign_lifecycle_operation(
         campaign_id=campaign_id,
         action=request.action,  # pyright: ignore[reportArgumentType]
+        dry_run=request.dry_run,
     )
     if not result.get("success", False):
         raise HTTPException(

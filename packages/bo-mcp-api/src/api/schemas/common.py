@@ -1,6 +1,6 @@
 """Shared API schema primitives."""
 
-from typing import Final
+from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -63,6 +63,28 @@ class ResponseEnvelope(BaseModel):
     schema_version: int = Field(default=API_RESPONSE_SCHEMA_VERSION)
 
 
+class MutationEnvelope(ResponseEnvelope):
+    """Envelope base for state-mutating operations.
+
+    Extends :class:`ResponseEnvelope` with the mutation-outcome fields
+    the shared operation layer emits, so REST responses carry the same
+    contract the MCP tools already expose:
+
+    * ``error`` — the structured error object
+      (:class:`bo_mcp_server.errors.StructuredError` shape: ``code``,
+      ``message``, ``recovery_action``, ``retryable``, ``retry_after``)
+      on operation-level rejection; ``None`` on success. Always present
+      as a key so clients can address it unconditionally.
+    * ``dry_run`` / ``preview`` — set when the request asked for a
+      dry run: the operation validated everything and reports what
+      *would* change without persisting anything.
+    """
+
+    error: dict[str, Any] | None = None
+    dry_run: bool = False
+    preview: dict[str, Any] | None = None
+
+
 # Per-route response models that are intentionally NOT envelope-shaped
 # (resource representations or bare-list collection views). The
 # regression test ``test_rest_schema_version.test_resource_models_are_envelope_exempt``
@@ -87,6 +109,7 @@ RESOURCE_VIEW_MODEL_NAMES: Final[frozenset[str]] = frozenset(
 __all__ = [
     "API_RESPONSE_SCHEMA_VERSION",
     "RESOURCE_VIEW_MODEL_NAMES",
+    "MutationEnvelope",
     "ResponseEnvelope",
     "VerbosityLevel",
 ]

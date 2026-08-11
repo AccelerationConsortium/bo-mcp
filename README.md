@@ -231,9 +231,9 @@ migration window.
 | | `bo_reopen_campaign` | Reopen a completed/terminated campaign |
 | **Transfer** | `bo_discover_transfer_candidates` | Find campaigns suitable for transfer learning |
 
-8 MCP resources: `campaign://{campaign_id}`, `campaigns://recent`, `campaigns://recent/{filters}`, `campaigns://list`, `campaigns://list/{filters}`, `suggestions://{campaign_id}`, `suggestion://{suggestion_id}`, `events://{campaign_id}`.
+9 MCP resources: `campaign://{campaign_id}`, `campaigns://recent`, `campaigns://recent/{filters}`, `campaigns://list`, `campaigns://list/{filters}`, `suggestions://{campaign_id}`, `suggestion://{suggestion_id}`, `events://{campaign_id}`, `docs://manpage` (the operating manual).
 
-See [TOOL_SCHEMAS.md](packages/bo-mcp-server/TOOL_SCHEMAS.md) for full input/output schemas.
+See [TOOL_SCHEMAS.md](packages/bo-mcp-server/TOOL_SCHEMAS.md) for a narrative per-tool schema reference; the authoritative machine-readable contract is the live `inputSchema`/`outputSchema` each tool advertises over MCP (`tools/list`).
 
 ## Multi-Backend Architecture
 
@@ -380,11 +380,24 @@ proxies. Remember the server binds `127.0.0.1` unless started with an explicit
 MPS is not auto-enabled. Force it with `BO_ENGINE_DEVICE=mps` if you accept
 float32 precision. CUDA OOM errors trigger automatic CPU fallback.
 
+## Documentation
+
+The canonical narrative manual — call order, state ownership, continuation,
+error recovery — is served by the running API itself:
+
+- `/manpage` — the BO-MCP operating manual (HTML; append `.md` or send
+  `Accept: text/markdown` for the raw Markdown agents should fetch)
+- `/docs`, `/redoc`, `/openapi.json` — field-level request/response schemas
+- `docs://manpage` — the same manual as an MCP resource for MCP-native agents
+
+Source of the manual:
+[packages/bo-mcp-server/src/bo_mcp_server/docs/MANPAGE.md](packages/bo-mcp-server/src/bo_mcp_server/docs/MANPAGE.md).
+
 ## Package READMEs
 
 - [bo-engine](packages/bo-engine/README.md)
 - [bo-engine-baybe](packages/bo-engine-baybe/README.md)
-- [bo-mcp-server](packages/bo-mcp-server/README.md) (includes [AGENT_COOKBOOK.md](packages/bo-mcp-server/AGENT_COOKBOOK.md))
+- [bo-mcp-server](packages/bo-mcp-server/README.md) (tool schemas in [TOOL_SCHEMAS.md](packages/bo-mcp-server/TOOL_SCHEMAS.md))
 - [bo-mcp-api](packages/bo-mcp-api/README.md)
 
 ## License

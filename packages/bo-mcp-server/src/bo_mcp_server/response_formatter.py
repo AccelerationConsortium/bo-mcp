@@ -446,7 +446,15 @@ class SubmitResultsMinimalResponse(_StrictResponse):
 
 
 class SubmitResultsStandardResponse(_StrictResponse):
-    """STANDARD projection of the submit-results response."""
+    """STANDARD projection of the submit-results response.
+
+    ``partial_results`` (index → result id or per-row error) is the
+    whole point of a ``continue_on_error`` submission — without it the
+    caller cannot tell which rows persisted — so the default
+    projection must carry it, not just DETAILED. ``None`` for atomic
+    submissions (the key stays present, matching ``_dump``'s
+    stable-shape convention).
+    """
 
     success: bool | None = None
     result_ids: list[str] = Field(default_factory=list)
@@ -454,6 +462,7 @@ class SubmitResultsStandardResponse(_StrictResponse):
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     n_duplicates_detected: int = 0
+    partial_results: dict[int, str | dict[str, str]] | None = None
 
 
 class SubmitResultsDetailedResponse(_PassthroughResponse):
@@ -755,6 +764,7 @@ def format_submit_results_response(
                 field_errors=full_response.get("field_errors", {}),
                 warnings=full_response.get("warnings", []),
                 n_duplicates_detected=len(full_response.get("duplicates_detected", [])),
+                partial_results=full_response.get("partial_results"),
             )
         )
 

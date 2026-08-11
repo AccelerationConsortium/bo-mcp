@@ -61,6 +61,104 @@ EXPECTED_RANDOM_HYPERVOLUME = 0.64
 # Reference point for hypervolume calculation (from tutorial)
 TUTORIAL_REFERENCE_POINT = [1.1, 1.1]
 
+# =============================================================================
+# Seeded-campaign and hypervolume-panel configuration
+# =============================================================================
+
+# Branin-Currin input dimensionality (x1, x2).
+BRANIN_CURRIN_N_PARAMS = 2
+
+# Seed panel for the hypervolume-improvement-vs-Sobol comparison: each seed
+# drives one fully reproducible paired trial (campaign seeded via
+# ``OptimizationSpec.random_seed``, baseline via ``SobolEngine(seed=...)``).
+HVI_VS_SOBOL_SEEDS: tuple[int, ...] = (0, 1, 2, 3, 4)
+# Wins required of the panel. Trials are deterministic per environment, so the
+# gate must catch a regression in one shot (repetition across nights re-runs
+# the same fixed trajectories and adds no evidence): 4-of-5 stops a
+# degraded-to-random pipeline (per-trial win prob 0.5) with ~81% one-shot
+# probability, while the one seed of slack keeps a single hardware-sensitive
+# trajectory from turning the nightly permanently red (5-of-5 would).
+HVI_VS_SOBOL_MIN_WINS = 4
+HVI_VS_SOBOL_ITERATIONS = 12
+
+# Shared by every seeded Branin-Currin campaign in this module.
+CAMPAIGN_BATCH_SIZE = 2
+
+# Seed for the single-trajectory BO-vs-Sobol nightly test. Kept distinct from
+# the panel seeds: the engine derives per-iteration seeds from ``random_seed``
+# alone, so sharing a seed would replay a prefix of a panel campaign.
+BO_VS_RANDOM_SEED = 7
+
+# Slack factor for the single-trajectory BO-vs-Sobol comparison; the strict
+# per-seed comparison lives in the panel test.
+BO_VS_RANDOM_SLACK = 0.5
+
+# The seed panel runs several ~50 s campaigns inside one test node; the
+# project-default 120 s timeout (pyproject.toml) would cut it off outside the
+# nightly job's ``--timeout=600``. The marker pins the nightly budget everywhere.
+HVI_VS_SOBOL_TIMEOUT_SECONDS = 600
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+
+def _seeded_branin_currin_spec(seed: int) -> OptimizationSpec:
+    """Two-parameter Branin-Currin minimization spec seeded for reproducibility.
+
+    ``OptimizationSpec.random_seed`` is the engine's reproducibility contract:
+    ``generate_next_batch`` seeds a ``fork_rng``-isolated scope from it, so a
+    bare ``torch.manual_seed`` in a test never reaches the BO loop (unseeded
+    specs draw fresh OS-entropy seeds by design).
+    """
+    return OptimizationSpec(
+        parameters=[
+            ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+            ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+        ],
+        objectives=[
+            ObjectiveSpec(name="f1", minimize=True),
+            ObjectiveSpec(name="f2", minimize=True),
+        ],
+        batch_size=CAMPAIGN_BATCH_SIZE,
+        random_seed=seed,
+    )
+
+
+def _run_seeded_branin_currin_campaign(seed: int, *, n_iterations: int) -> torch.Tensor:
+    """Run one seeded hypervolume-improvement campaign; return observed objectives.
+
+    ``AcquisitionMethod.AUTO`` resolves multi-objective specs to the engine's
+    default ``hypervolume_improvement`` method, which builds qLogNEHVI (the
+    numerically stable formulation of qNEHVI; see ``create_acquisition``).
+    """
+    spec = _seeded_branin_currin_spec(seed)
+    observations: list[ObservationData] = []
+    for iteration in range(n_iterations):
+        suggestions, _ = generate_next_batch(spec, observations, iteration=iteration)
+        for sugg in suggestions:
+            x1 = sugg.parameter_values["x1"]
+            x2 = sugg.parameter_values["x2"]
+            y = branin_currin(torch.tensor([[x1, x2]], dtype=torch.float64))
+            observations.append(
+                ObservationData(
+                    parameter_values={"x1": x1, "x2": x2},
+                    objective_values={"f1": y[0, 0].item(), "f2": y[0, 1].item()},
+                )
+            )
+    return torch.tensor(
+        [[obs.objective_values["f1"], obs.objective_values["f2"]] for obs in observations],
+        dtype=torch.float64,
+    )
+
+
+def _sobol_baseline_objectives(seed: int, n_points: int) -> torch.Tensor:
+    """Evaluate a seeded scrambled-Sobol random-search baseline."""
+    sobol = SobolEngine(dimension=BRANIN_CURRIN_N_PARAMS, scramble=True, seed=seed)
+    random_x = sobol.draw(n_points).to(torch.float64)
+    return branin_currin(random_x)
+
 
 # =============================================================================
 # Test Classes
@@ -163,128 +261,73 @@ class TestBraninCurrinMultiObjective:
             assert "f1" in obs.objective_values
             assert "f2" in obs.objective_values
 
+    # NOTE: an absolute-hypervolume floor test (``hv > 0.1`` on one campaign)
+    # was removed here: the Sobol warm-up alone clears any such floor (seed
+    # 42's four warm-up points reach hv 0.34, and hypervolume is monotone in
+    # added points), so the assertion could not detect a broken acquisition.
+    # Inversion/degradation detection lives in the seed-panel test below;
+    # magnitude tracking lives in the nightly calibration-drift gate.
+
     @pytest.mark.slow
     @pytest.mark.nightly
-    def test_qnehvi_hypervolume_improvement(self) -> None:
-        """qNEHVI should achieve significant hypervolume improvement over random.
+    @pytest.mark.timeout(HVI_VS_SOBOL_TIMEOUT_SECONDS)
+    def test_hypervolume_improvement_beats_sobol(self) -> None:
+        """Seeded hypervolume-improvement campaigns must beat Sobol on most seeds.
 
-        Reference: Tutorial shows qNEHVI achieves ~57.77 vs random ~0.64
+        ``AcquisitionMethod.AUTO`` resolves these specs to the engine default
+        ``hypervolume_improvement``, i.e. qLogNEHVI — the numerically stable
+        formulation of the tutorial's qNEHVI with the same acquisition
+        semantics. Reference: the BoTorch multi-objective tutorial reports
+        qNEHVI at ~57.77 hypervolume vs ~0.64 for quasi-random (Sobol)
+        sampling with the same budget
+        (https://botorch.org/docs/tutorials/multi_objective_bo/). An
+        anti-optimizing hypervolume-improvement loop performs *worse* than
+        random search, so BO-above-Sobol separates a working pipeline from an
+        inverted one regardless of absolute hypervolume values. Both runs are
+        measured against the benchmark-pinned ``TUTORIAL_REFERENCE_POINT``,
+        deliberately independent of either run's data so no outlier
+        observation can reshape the comparison box; a zero-hypervolume tie
+        counts against BO.
 
-        Due to stochasticity, we use a relaxed threshold: hypervolume > 20.
-        The hypervolume threshold is sensitive to the seed, so this test is
-        marked ``nightly`` (multi-seed) in addition to ``slow``.
+        Each trial is reproducible end to end: ``OptimizationSpec.random_seed``
+        seeds the campaign (a bare ``torch.manual_seed`` never reaches the
+        engine's ``fork_rng``-isolated loop, so the earlier single-trial
+        version of this test re-rolled a fresh trajectory every run and
+        eventually lost one nightly) and ``SobolEngine(seed=...)`` seeds the
+        paired baseline. The panel is a paired-comparison design in the
+        spirit of the sign test (Dixon & Mood 1946, "The Statistical Sign
+        Test", JASA 41(236):557-566), but the threshold is chosen for
+        one-shot regression gating rather than significance under a
+        no-better-than-random null: an inverted acquisition (win prob ~0)
+        fails at any threshold, and a degraded-to-random pipeline (win prob
+        0.5) slips past 4-of-5 only with probability 6/32. For a healthy
+        pipeline the false-red rate is an order-of-magnitude estimate, not a
+        calibrated one: the pre-rewrite record (~1 loss in ~35 nightly
+        trials) was measured under a different baseline and reference-point
+        design, and extrapolating it with approximately independent seeds
+        suggests roughly 1% per benign dependency reroll. A systemic
+        regression instead correlates every seed downward — exactly the
+        signal the gate exists to catch.
         """
-        torch.manual_seed(42)
-
-        spec = OptimizationSpec(
-            parameters=[
-                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-            ],
-            objectives=[
-                ObjectiveSpec(name="f1", minimize=True),
-                ObjectiveSpec(name="f2", minimize=True),
-            ],
-            batch_size=2,
-        )
-
-        observations: list[ObservationData] = []
-        n_iterations = 15
-
-        for iteration in range(n_iterations):
-            suggestions, _ = generate_next_batch(spec, observations, iteration=iteration)
-
-            for sugg in suggestions:
-                x1 = sugg.parameter_values["x1"]
-                x2 = sugg.parameter_values["x2"]
-                x = torch.tensor([[x1, x2]], dtype=torch.float64)
-                y = branin_currin(x)
-                observations.append(
-                    ObservationData(
-                        parameter_values={"x1": x1, "x2": x2},
-                        objective_values={"f1": y[0, 0].item(), "f2": y[0, 1].item()},
-                    )
-                )
-
-        # Compute hypervolume
-        objectives = torch.tensor(
-            [[obs.objective_values["f1"], obs.objective_values["f2"]] for obs in observations],
-            dtype=torch.float64,
-        )
         ref_point = torch.tensor(TUTORIAL_REFERENCE_POINT, dtype=torch.float64)
+        outcomes: list[tuple[int, float, float]] = []
+        for seed in HVI_VS_SOBOL_SEEDS:
+            bo_y = _run_seeded_branin_currin_campaign(seed, n_iterations=HVI_VS_SOBOL_ITERATIONS)
+            random_y = _sobol_baseline_objectives(seed, n_points=bo_y.shape[0])
+            hv_bo = compute_hypervolume(bo_y, ref_point)
+            hv_random = compute_hypervolume(random_y, ref_point)
+            outcomes.append((seed, hv_bo, hv_random))
 
-        hypervolume = compute_hypervolume(objectives, ref_point)
-
-        # Relaxed threshold due to stochasticity
-        assert hypervolume > 0.1, (
-            f"Hypervolume ({hypervolume:.2f}) should be positive "
-            f"(tutorial reference: {EXPECTED_QNEHVI_HYPERVOLUME})"
+        wins = sum(1 for _, hv_bo, hv_random in outcomes if hv_bo > hv_random)
+        trials = "; ".join(
+            f"seed {seed}: BO {hv_bo:.3f} vs Sobol {hv_random:.3f}"
+            for seed, hv_bo, hv_random in outcomes
         )
-
-    @pytest.mark.slow
-    @pytest.mark.nightly
-    def test_qnehvi_hypervolume_beats_random_search(self) -> None:
-        """Model-guided MO suggestions must dominate random search on hypervolume.
-
-        Reference: the BoTorch multi-objective tutorial reports qNEHVI at
-        ~57.77 hypervolume vs ~0.64 for random (Sobol) sampling with the
-        same budget (https://botorch.org/docs/tutorials/multi_objective_bo/).
-        An anti-optimizing hypervolume-improvement loop performs *worse*
-        than random search, so a strict BO-above-random comparison with a
-        shared reference point separates a working pipeline from an
-        inverted one regardless of absolute hypervolume values.
-        """
-        torch.manual_seed(7)
-
-        spec = OptimizationSpec(
-            parameters=[
-                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-            ],
-            objectives=[
-                ObjectiveSpec(name="f1", minimize=True),
-                ObjectiveSpec(name="f2", minimize=True),
-            ],
-            batch_size=2,
-        )
-
-        observations: list[ObservationData] = []
-        for iteration in range(12):
-            suggestions, _ = generate_next_batch(spec, observations, iteration=iteration)
-            for sugg in suggestions:
-                x1 = sugg.parameter_values["x1"]
-                x2 = sugg.parameter_values["x2"]
-                y = branin_currin(torch.tensor([[x1, x2]], dtype=torch.float64))
-                observations.append(
-                    ObservationData(
-                        parameter_values={"x1": x1, "x2": x2},
-                        objective_values={"f1": y[0, 0].item(), "f2": y[0, 1].item()},
-                    )
-                )
-
-        bo_y = torch.tensor(
-            [[obs.objective_values["f1"], obs.objective_values["f2"]] for obs in observations],
-            dtype=torch.float64,
-        )
-
-        # Random-search baseline with the identical evaluation budget.
-        random_x = torch.rand(bo_y.shape[0], 2, dtype=torch.float64)
-        random_y = branin_currin(random_x)
-
-        # Shared reference point: component-wise worst over both runs plus a
-        # margin, so both hypervolumes are measured against the same box.
-        combined = torch.cat([bo_y, random_y], dim=0)
-        worst = combined.max(dim=0).values
-        ranges = worst - combined.min(dim=0).values
-        ref_point = worst + 0.1 * ranges
-
-        hv_bo = compute_hypervolume(bo_y, ref_point)
-        hv_random = compute_hypervolume(random_y, ref_point)
-
-        assert hv_bo > hv_random, (
-            f"Model-guided hypervolume ({hv_bo:.2f}) must strictly exceed "
-            f"random search ({hv_random:.2f}) with the same budget; an "
-            "inverted acquisition lands below random."
+        assert wins >= HVI_VS_SOBOL_MIN_WINS, (
+            f"Hypervolume-improvement optimization beat the Sobol baseline in "
+            f"only {wins} of {len(HVI_VS_SOBOL_SEEDS)} seeded trials "
+            f"(required: {HVI_VS_SOBOL_MIN_WINS}); an inverted acquisition "
+            f"loses essentially every trial. Trials: {trials}"
         )
 
 
@@ -620,63 +663,32 @@ class TestRandomVsBO:
     def test_bo_outperforms_random(self) -> None:
         """BO should achieve better hypervolume than random sampling.
 
-        This is the key result from the multi-objective BO tutorial. The
-        comparison ``hv_bo >= 0.5 * hv_random`` is inherently single-seed and
-        statistical, so the test is marked ``nightly`` in addition to ``slow``
-        and runs against the multi-seed nightly gate.
+        This is the key result from the multi-objective BO tutorial
+        (https://botorch.org/docs/tutorials/multi_objective_bo/). The
+        comparison keeps a ``BO_VS_RANDOM_SLACK`` factor so only a grossly
+        underperforming campaign fails; the strict per-seed comparison is
+        ``test_hypervolume_improvement_beats_sobol``. Both sides are fully
+        seeded (the baseline via ``SobolEngine(seed=...)``, the campaign via
+        ``OptimizationSpec.random_seed`` — a bare ``torch.manual_seed`` never
+        reaches the engine's ``fork_rng``-isolated loop), so the trial is
+        deterministic per environment.
         """
-        torch.manual_seed(42)
         n_total_points = 20
 
         # Random baseline
-        sobol = SobolEngine(dimension=2, scramble=True, seed=42)
-        random_x = sobol.draw(n_total_points).to(torch.float64)
-        random_y = branin_currin(random_x)
+        random_y = _sobol_baseline_objectives(BO_VS_RANDOM_SEED, n_points=n_total_points)
 
         ref_point = torch.tensor(TUTORIAL_REFERENCE_POINT, dtype=torch.float64)
         hv_random = compute_hypervolume(random_y, ref_point)
 
-        # BO optimization
-        torch.manual_seed(42)
-        spec = OptimizationSpec(
-            parameters=[
-                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-                ParameterSpec(name="x2", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-            ],
-            objectives=[
-                ObjectiveSpec(name="f1", minimize=True),
-                ObjectiveSpec(name="f2", minimize=True),
-            ],
-            batch_size=2,
-        )
-
-        observations: list[ObservationData] = []
-        n_iterations = n_total_points // 2
-
-        for iteration in range(n_iterations):
-            suggestions, _ = generate_next_batch(spec, observations, iteration=iteration)
-
-            for sugg in suggestions:
-                x1 = sugg.parameter_values["x1"]
-                x2 = sugg.parameter_values["x2"]
-                x = torch.tensor([[x1, x2]], dtype=torch.float64)
-                y = branin_currin(x)
-                observations.append(
-                    ObservationData(
-                        parameter_values={"x1": x1, "x2": x2},
-                        objective_values={"f1": y[0, 0].item(), "f2": y[0, 1].item()},
-                    )
-                )
-
-        bo_objectives = torch.tensor(
-            [[obs.objective_values["f1"], obs.objective_values["f2"]] for obs in observations],
-            dtype=torch.float64,
+        # BO optimization with the identical evaluation budget
+        n_iterations = n_total_points // CAMPAIGN_BATCH_SIZE
+        bo_objectives = _run_seeded_branin_currin_campaign(
+            BO_VS_RANDOM_SEED, n_iterations=n_iterations
         )
         hv_bo = compute_hypervolume(bo_objectives, ref_point)
 
-        # BO should achieve at least as good (usually better) hypervolume
-        # Allow small tolerance for stochasticity
-        assert hv_bo >= hv_random * 0.5, (
+        assert hv_bo >= hv_random * BO_VS_RANDOM_SLACK, (
             f"BO hypervolume ({hv_bo:.4f}) should be comparable or better than "
             f"random ({hv_random:.4f})"
         )

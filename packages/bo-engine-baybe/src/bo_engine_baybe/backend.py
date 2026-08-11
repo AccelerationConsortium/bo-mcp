@@ -47,7 +47,13 @@ import torch
 from baybe import Campaign
 from baybe import __version__ as baybe_version
 from baybe.campaign import _EXCLUDED, _MEASURED, _RECOMMENDED
-from baybe.exceptions import NotEnoughPointsLeftError
+from baybe.exceptions import (
+    IncompatibilityError,
+    IncompleteMeasurementsError,
+    ModelNotTrainedError,
+    NoMeasurementsError,
+    NotEnoughPointsLeftError,
+)
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
 from baybe.searchspace import SearchSpaceType
 from baybe.settings import Settings
@@ -65,7 +71,7 @@ from bo_engine.backend_base import (
     single_objective_family_acquisition_report,
     wrap_backend_exception,
 )
-from bo_engine.constants import DUPLICATE_DETECTION_TOLERANCE
+from bo_engine.constants import ACQF_FALLBACK_MIN_SAMPLES
 from bo_engine.diagnostics import (
     compute_best_value,
     compute_improvement_history,
@@ -81,10 +87,8 @@ from bo_engine.initial_design import SearchSpaceExhaustedError
 from bo_engine.progress import ProgressCallback, ProgressEvent, emit
 from bo_engine.reproducibility import GLOBAL_RNG_LOCK, derive_seed, draw_fallback_seed
 from bo_engine.result_validation import (
-    detect_duplicates as engine_detect_duplicates,
-)
-from bo_engine.result_validation import (
     detect_outliers,
+    duplicate_row_mask,
 )
 from bo_engine.types import (
     SINGLE_OBJECTIVE_ONLY_ACQUISITION,
@@ -174,7 +178,97 @@ _MIN_OBSERVATIONS_FOR_CONFIDENCE = 5
 _MIN_DATA_ABSOLUTE = 3
 _MIN_DATA_PARAM_MULTIPLIER = 2
 
-_UNSEEN_FALLBACK_MIN_SAMPLES = 64
+# Exceptions BayBE raises when acquisition values are *structurally*
+# unavailable (nonpredictive recommender phase, untrained or incomplete
+# surrogate). Only these may degrade the unseen-fallback ranking to "first
+# candidate" — a genuine Bayesian-phase failure must propagate so the
+# backend exception wrapper surfaces it instead of silently returning an
+# unranked point under a success warning.
+_ACQUISITION_UNAVAILABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    IncompatibilityError,
+    IncompleteMeasurementsError,
+    ModelNotTrainedError,
+    NoMeasurementsError,
+)
+
+
+def _existing_continuous_rows(
+    parameter_names: list[str],
+    observations: list[ObservationData],
+    pending_df: pd.DataFrame | None,
+) -> torch.Tensor:
+    """Collect evaluated and pending points as one float64 row tensor."""
+    rows = [
+        [float(observation.parameter_values[name]) for name in parameter_names]
+        for observation in observations
+        if all(name in observation.parameter_values for name in parameter_names)
+    ]
+    if pending_df is not None and not pending_df.empty:
+        rows.extend(pending_df[parameter_names].astype(float).to_numpy().tolist())
+    if not rows:
+        return torch.empty((0, len(parameter_names)), dtype=torch.float64)
+    return torch.tensor(rows, dtype=torch.float64)
+
+
+def _sample_unseen_continuous_candidates(
+    campaign: Campaign,
+    parameter_names: list[str],
+    existing_rows: torch.Tensor,
+) -> pd.DataFrame:
+    """Draw a q=1-feasible candidate cloud and drop already-seen points.
+
+    Interpoint constraints bind across the rows of one sampled batch, but
+    every fallback candidate stands in for an independent q=1
+    recommendation — so with interpoint constraints present, candidates are
+    drawn as single-point batches, making each one satisfy the constraint
+    on its own.
+    """
+    recommender = _active_recommender(campaign)
+    sample_count = max(
+        int(getattr(recommender, "n_raw_samples", 0) or 0),
+        ACQF_FALLBACK_MIN_SAMPLES,
+    )
+    subspace = campaign.searchspace.continuous
+    if subspace.has_interpoint_constraints:
+        candidates = pd.concat(
+            [subspace.sample_uniform(1) for _ in range(sample_count)],
+            ignore_index=True,
+        )
+    else:
+        candidates = subspace.sample_uniform(sample_count)
+    candidate_rows = torch.from_numpy(
+        candidates[parameter_names].to_numpy(dtype="float64", copy=True)
+    )
+    seen = duplicate_row_mask(candidate_rows, existing_rows)
+    return candidates.loc[~seen.numpy()].reset_index(drop=True)
+
+
+def _best_unseen_candidate(
+    campaign: Campaign,
+    candidates: pd.DataFrame,
+    pending_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Pick the highest-acquisition candidate via BayBE's public API.
+
+    ``Campaign.acquisition_values`` transforms candidates by column name,
+    so the ranking is independent of both the dataframe's column order and
+    BayBE's internal (alphabetical) computational-representation order.
+    When acquisition values are structurally unavailable — the
+    nonpredictive recommender phase, where any unseen sample is as good as
+    another — the first candidate is returned. Any other ranking failure
+    propagates so the backend exception wrapper reports it instead of
+    silently substituting an unranked point.
+    """
+    try:
+        acq_series = campaign.acquisition_values(
+            candidates=candidates,
+            pending_experiments=pending_df,
+        )
+        best_idx = int(acq_series.to_numpy().argmax())
+    except _ACQUISITION_UNAVAILABLE_EXCEPTIONS as e:
+        logger.debug("Unseen-fallback acquisition ranking unavailable: %s", e)
+        best_idx = 0
+    return candidates.iloc[[best_idx]].reset_index(drop=True)
 
 
 def _replace_duplicate_continuous_recommendation(
@@ -182,71 +276,67 @@ def _replace_duplicate_continuous_recommendation(
     spec: OptimizationSpec,
     rec_df: pd.DataFrame,
     observations: list[ObservationData],
-    pending_points: list[dict[str, Any]] | None,
+    pending_df: pd.DataFrame | None,
 ) -> tuple[pd.DataFrame, str | None]:
     """Replace a duplicate q=1 continuous recommendation with an unseen point.
 
     BayBE cannot disable re-recommendation through its campaign flags when a
     search space has a continuous component.  Match the native BoTorch
     backend's q=1 protection at the adapter boundary: normal recommendations
-    pass through unchanged, while a duplicate falls back to the best feasible
-    unseen point in a BayBE-native random candidate cloud.
+    pass through unchanged, while a duplicate falls back to the highest-
+    acquisition feasible unseen point in a BayBE-native random candidate
+    cloud (interpoint constraints are honored per candidate).
+
+    Scope: enforced only for purely continuous spaces with
+    ``batch_size == 1``, mirroring the native backend's documented q=1
+    limitation. Hybrid spaces share the campaign-flag limitation but are
+    not yet protected; both skips are logged at debug level.
+
+    Raises:
+        RuntimeError: If every sampled fallback candidate matches an
+            evaluated or pending point. A sampled cloud cannot prove
+            exhaustion of a continuous space, so this mirrors the native
+            backend's sampled-fallback contract (an honest failure, not
+            a ``SearchSpaceExhaustedError``).
     """
-    if campaign.searchspace.type is not SearchSpaceType.CONTINUOUS or len(rec_df) != 1:
+    if campaign.searchspace.type is not SearchSpaceType.CONTINUOUS:
+        if campaign.searchspace.type is SearchSpaceType.HYBRID:
+            logger.debug(
+                "Duplicate protection is not enforced for hybrid search "
+                "spaces; returning BayBE's recommendation unchanged."
+            )
+        return rec_df, None
+    if len(rec_df) != 1:
+        logger.debug(
+            "Duplicate protection is not enforced for batch_size=%d; "
+            "returning BayBE's recommendation unchanged.",
+            len(rec_df),
+        )
         return rec_df, None
 
     parameter_names = [parameter.name for parameter in spec.parameters]
-    existing = [observation.parameter_values for observation in observations]
-    existing.extend(
-        {name: point[name] for name in parameter_names}
-        for point in pending_points or []
-        if all(name in point for name in parameter_names)
-    )
-    recommendation = cast("dict[str, Any]", rec_df.iloc[0][parameter_names].to_dict())
-    if not engine_detect_duplicates(
-        recommendation,
-        existing,
-        DUPLICATE_DETECTION_TOLERANCE,
-    ):
+    existing_rows = _existing_continuous_rows(parameter_names, observations, pending_df)
+    recommended_row = torch.from_numpy(rec_df[parameter_names].to_numpy(dtype="float64", copy=True))
+    if not bool(duplicate_row_mask(recommended_row, existing_rows).any()):
         return rec_df, None
 
-    recommender = _active_recommender(campaign)
-    sample_count = max(
-        int(getattr(recommender, "n_raw_samples", 0) or 0),
-        _UNSEEN_FALLBACK_MIN_SAMPLES,
-    )
-    candidates = campaign.searchspace.continuous.sample_uniform(sample_count)
-    candidate_dicts = cast(
-        "list[dict[str, Any]]", candidates[parameter_names].to_dict(orient="records")
-    )
-    eligible = [
-        not engine_detect_duplicates(candidate, existing, DUPLICATE_DETECTION_TOLERANCE)
-        for candidate in candidate_dicts
-    ]
-    candidates = candidates.loc[eligible].reset_index(drop=True)
+    candidates = _sample_unseen_continuous_candidates(campaign, parameter_names, existing_rows)
     if candidates.empty:
         message = (
             "BayBE returned an already evaluated or pending point, and no "
-            "feasible unseen fallback candidate was found."
+            "unseen fallback candidate was found in the sampled cloud. "
+            "The space may still contain unseen points."
         )
         raise RuntimeError(message)
 
-    acqf = getattr(recommender, "_botorch_acqf", None)
-    if acqf is not None:
-        points = torch.from_numpy(candidates[parameter_names].to_numpy(copy=True))
-        with torch.no_grad():
-            values = acqf(points.unsqueeze(-2)).reshape(-1)
-        candidates = candidates.iloc[[int(values.argmax().item())]]
-    else:
-        candidates = candidates.iloc[[0]]
-
+    best = _best_unseen_candidate(campaign, candidates, pending_df)
     campaign.clear_cache()
     warning = (
         "BayBE recommended an already evaluated or pending point; replaced it "
         "with a feasible unseen candidate."
     )
     logger.warning(warning)
-    return candidates.reset_index(drop=True), warning
+    return best, warning
 
 
 def _named_lengthscales(
@@ -1142,7 +1232,7 @@ class BayBEBackend(BaseBackend):
             spec,
             rec_df,
             observations,
-            pending_points,
+            pending_df,
         )
         param_dicts = dataframe_to_suggestions(rec_df, spec)
 

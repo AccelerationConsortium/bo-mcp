@@ -54,7 +54,10 @@ class BoMcpClient:
           report finite objective values as measurements.
        e. ``update_suggestion_status(suggestion_id, status)`` — reject
           unexecutable suggestions.
-       f. ``get_diagnostics(campaign_id)`` — expensive: server recomputes
+       f. ``get_results(campaign_id)`` — read the persisted result rows, for
+          reporting or cross-checks. Not a progress source: ``next_action``
+          owns the continue/stop decision.
+       g. ``get_diagnostics(campaign_id)`` — expensive: server recomputes
           from all results, so it slows down as the campaign grows. Call
           once at the end of an invocation, not per iteration, and give
           that call a very forgiving timeout (minutes on a grown campaign
@@ -239,6 +242,23 @@ class BoMcpClient:
             headers={"Idempotency-Key": idempotency_key},
         )
 
+    def get_results(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Return the campaign's server-persisted result rows.
+
+        For reporting and cross-checks. Progress and budget authority remain
+        with :meth:`next_action` and its ``n_results`` field — do not re-derive
+        loop position from these rows. A row matching a new suggestion is not
+        grounds for rejecting it either; see the replicate policy above.
+        """
+        response = self._json_request("GET", f"/api/v1/results/{campaign_id}")
+        if not isinstance(response, list):
+            message = f"BO-MCP returned a non-list result payload for campaign {campaign_id}"
+            raise BoMcpOperationError(
+                message,
+                response if isinstance(response, dict) else {"response": response},
+            )
+        return response
+
     def update_suggestion_status(self, suggestion_id: str, status: str) -> dict[str, Any]:
         """Set the lifecycle status for one suggestion."""
         return self._json_request(
@@ -328,7 +348,7 @@ class BoMcpClient:
         method: str,
         path: str,
         **kwargs: Any,  # noqa: ANN401 - Requests accepts endpoint-specific keyword arguments.
-    ) -> dict[str, Any]:
+    ) -> Any:  # noqa: ANN401 - BO-MCP JSON endpoints return objects or result-row lists.
         response = self._request(method, path, **kwargs)
         try:
             payload = response.json()
@@ -338,10 +358,7 @@ class BoMcpClient:
                 f"{response.text[:_ERROR_DETAIL_LIMIT]}"
             )
             raise BoMcpClientError(message) from exc
-        if not isinstance(payload, dict):
-            message = f"BO-MCP {method} {path} returned a JSON value instead of an object."
-            raise BoMcpClientError(message)
-        if payload.get("success") is False:
+        if isinstance(payload, dict) and payload.get("success") is False:
             errors = payload.get("errors") or payload.get("error") or payload
             message = f"BO-MCP {method} {path} rejected the operation: {errors}"
             raise BoMcpOperationError(message, payload)

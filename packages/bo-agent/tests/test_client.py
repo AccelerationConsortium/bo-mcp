@@ -47,19 +47,19 @@ class _PreForceResultBatchCreate(BaseModel):
 class _RecordedResponse:
     """Minimal stand-in for :class:`requests.Response`."""
 
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any] | list[dict[str, Any]]) -> None:
         self.status_code = _HTTP_OK
         self.text = ""
         self._payload = payload
 
-    def json(self) -> dict[str, Any]:
+    def json(self) -> dict[str, Any] | list[dict[str, Any]]:
         return self._payload
 
 
 class _RecordingSession:
     """Records every request and answers with a canned JSON payload."""
 
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any] | list[dict[str, Any]]) -> None:
         self.headers: dict[str, str] = {}
         self.calls: list[dict[str, Any]] = []
         self._payload = payload
@@ -70,7 +70,8 @@ class _RecordingSession:
 
 
 def _client_with_session(
-    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, Any] | list[dict[str, Any]],
 ) -> tuple[BoMcpClient, _RecordingSession]:
     client = BoMcpClient(base_url="http://bo-mcp.test", api_key="test-key")
     session = _RecordingSession(payload)
@@ -105,6 +106,26 @@ def test_generate_suggestions_honors_explicit_timeout(
     client.generate_suggestions("campaign-1", timeout_s=1800.0)
 
     assert session.calls[0]["timeout"] == 1800.0
+
+
+def test_get_results_reads_campaign_scoped_result_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session = _client_with_session(monkeypatch, [{"id": "result-1"}])
+
+    assert client.get_results("campaign-1") == [{"id": "result-1"}]
+    call = session.calls[0]
+    assert call["method"] == "GET"
+    assert call["url"] == "http://bo-mcp.test/api/v1/results/campaign-1"
+
+
+def test_get_results_rejects_non_list_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client_with_session(monkeypatch, {"results": []})
+
+    with pytest.raises(BoMcpOperationError, match="non-list result payload"):
+        client.get_results("campaign-1")
 
 
 def test_submit_results_default_payload_keeps_legacy_shape(

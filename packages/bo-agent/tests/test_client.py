@@ -78,6 +78,35 @@ def _client_with_session(
     return client, session
 
 
+def test_client_guidance_distinguishes_replicates_from_rejections() -> None:
+    guidance = " ".join((BoMcpClient.__doc__ or "").split())
+
+    assert "Do not reject a suggestion solely because" in guidance
+    assert "may intentionally recommend a replicate" in guidance
+    assert "force=True" in guidance
+    assert "does not exclude" in guidance
+
+
+def test_generate_suggestions_uses_own_generous_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session = _client_with_session(monkeypatch, {"success": True, "suggestions": []})
+
+    client.generate_suggestions("campaign-1")
+
+    assert session.calls[0]["timeout"] == 900.0
+
+
+def test_generate_suggestions_honors_explicit_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session = _client_with_session(monkeypatch, {"success": True, "suggestions": []})
+
+    client.generate_suggestions("campaign-1", timeout_s=1800.0)
+
+    assert session.calls[0]["timeout"] == 1800.0
+
+
 def test_submit_results_default_payload_keeps_legacy_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

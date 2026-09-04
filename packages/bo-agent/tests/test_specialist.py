@@ -8,6 +8,11 @@ from pydantic_ai.models.test import TestModel
 from specialist import build_bo_specialist_agent, build_bo_specialist_subagent
 
 
+def test_specialist_does_not_penalize_isolated_failures() -> None:
+    assert "Do not assign strong penalties to failed experiments" in BO_SPECIALIST_INSTRUCTIONS
+    assert "isolated failures may be random" in BO_SPECIALIST_INSTRUCTIONS
+
+
 def test_specialist_factory_does_not_prepend_default_instructions() -> None:
     """The specialist receives only its domain instructions as the base prompt."""
     model = TestModel()

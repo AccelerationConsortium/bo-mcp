@@ -35,6 +35,8 @@ from bo_engine_baybe.backend import (
     BayBEBackend,
     _named_lengthscales,
     _replace_duplicate_continuous_recommendation,
+    _replace_duplicate_recommendation,
+    _sample_hybrid_candidates,
 )
 from bo_engine_baybe.state import _build_campaign
 
@@ -45,9 +47,7 @@ def _observations_from_frame(measurements: pd.DataFrame, objective: str) -> list
     """Mirror a BayBE measurement frame as engine-neutral observations."""
     return [
         ObservationData(
-            parameter_values={
-                str(name): float(value) for name, value in row.items() if name != objective
-            },
+            parameter_values={str(name): value for name, value in row.items() if name != objective},
             objective_values={objective: float(row[objective])},
         )
         for row in measurements.to_dict(orient="records")
@@ -350,30 +350,6 @@ class TestContinuousDuplicateRecommendation:
             )
         assert type(excinfo.value) is RuntimeError
 
-    def test_hybrid_recommendation_passes_through(
-        self,
-        categorical_spec: OptimizationSpec,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Hybrid spaces are documented as unprotected; the skip is logged."""
-        campaign = _build_campaign(categorical_spec)
-        recommendation = pd.DataFrame([{"temp": 250.0, "solvent": "Water"}])
-        observations = [
-            ObservationData(
-                parameter_values={"temp": 250.0, "solvent": "Water"},
-                objective_values={"yield": 1.0},
-            )
-        ]
-
-        with caplog.at_level(logging.DEBUG, logger="bo_engine_baybe.backend"):
-            actual, warning = _replace_duplicate_continuous_recommendation(
-                campaign, categorical_spec, recommendation, observations, None
-            )
-
-        assert actual is recommendation
-        assert warning is None
-        assert any("hybrid" in record.message for record in caplog.records)
-
     def test_batch_recommendation_passes_through(
         self,
         simple_spec: OptimizationSpec,
@@ -444,6 +420,359 @@ class TestContinuousDuplicateRecommendation:
         assert (suggested["x1"], suggested["x2"]) != pytest.approx(
             (duplicate["x1"], duplicate["x2"])
         )
+
+
+class TestHybridDuplicateRecommendation:
+    """q=1 duplicate protection across BayBE's full hybrid candidate."""
+
+    @staticmethod
+    def _categorical_spec() -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="temperature",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(20.0, 100.0),
+                ),
+                ParameterSpec(
+                    name="solvent",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["Water", "Ethanol", "DMF"],
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="yield", minimize=False)],
+            batch_size=1,
+        )
+
+    @staticmethod
+    def _numerical_discrete_spec() -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="temperature",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(20.0, 100.0),
+                ),
+                ParameterSpec(
+                    name="equivalents",
+                    type=ParameterType.DISCRETE,
+                    values=[1.0, 2.0, 3.0],
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="yield", minimize=False)],
+            batch_size=1,
+        )
+
+    def test_normal_hybrid_recommendation_is_unchanged(self) -> None:
+        spec = self._categorical_spec()
+        campaign = _build_campaign(spec)
+        recommendation = pd.DataFrame([{"temperature": 80.0, "solvent": "DMF"}])
+        observations = [
+            ObservationData(
+                parameter_values={"temperature": 40.0, "solvent": "Water"},
+                objective_values={"yield": 10.0},
+            )
+        ]
+
+        actual, warning = _replace_duplicate_recommendation(
+            campaign,
+            spec,
+            recommendation,
+            observations,
+            None,
+        )
+
+        assert actual is recommendation
+        assert warning is None
+
+    def test_numeric_looking_categorical_labels_match_exactly(self) -> None:
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="temperature",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(20.0, 100.0),
+                ),
+                ParameterSpec(
+                    name="catalyst",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["1", "1.0000001"],
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="yield", minimize=False)],
+        )
+        campaign = _build_campaign(spec)
+        recommendation = pd.DataFrame([{"temperature": 40.0, "catalyst": "1.0000001"}])
+        observations = [
+            ObservationData(
+                parameter_values={"temperature": 40.0, "catalyst": "1"},
+                objective_values={"yield": 10.0},
+            )
+        ]
+
+        actual, warning = _replace_duplicate_recommendation(
+            campaign,
+            spec,
+            recommendation,
+            observations,
+            None,
+        )
+
+        assert actual is recommendation
+        assert warning is None
+
+    def test_continuous_categorical_duplicate_uses_best_full_candidate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Categorical equality is part of filtering and BayBE ranks full rows."""
+        spec = self._categorical_spec()
+        measurements = pd.DataFrame(
+            [
+                {"temperature": 30.0, "solvent": "Water", "yield": 10.0},
+                {"temperature": 45.0, "solvent": "Ethanol", "yield": 25.0},
+                {"temperature": 65.0, "solvent": "DMF", "yield": 50.0},
+                {"temperature": 85.0, "solvent": "Water", "yield": 35.0},
+            ]
+        )
+        campaign = _build_campaign(spec)
+        campaign.add_measurements(measurements)
+        sample_pool = pd.DataFrame(
+            [
+                {"temperature": 30.0, "solvent": "Water"},
+                {"temperature": 30.0, "solvent": "DMF"},
+                {"temperature": 55.0, "solvent": "Ethanol"},
+                {"temperature": 90.0, "solvent": "DMF"},
+            ]
+        )
+        monkeypatch.setattr(
+            "bo_engine_baybe.backend._sample_hybrid_candidates",
+            lambda _campaign, _count: sample_pool,
+        )
+        observations = _observations_from_frame(measurements, "yield")
+
+        actual, warning = _replace_duplicate_recommendation(
+            campaign,
+            spec,
+            pd.DataFrame([{"temperature": 30.0, "solvent": "Water"}]),
+            observations,
+            None,
+        )
+
+        unseen_pool = sample_pool.iloc[1:].reset_index(drop=True)
+        acquisition = campaign.acquisition_values(candidates=unseen_pool)
+        expected = unseen_pool.iloc[int(acquisition.to_numpy().argmax())].to_dict()
+        assert actual.to_dict(orient="records") == [expected]
+        assert {"temperature": 30.0, "solvent": "DMF"} in unseen_pool.to_dict(orient="records")
+        assert warning is not None
+        assert "hybrid point" in warning
+
+    def test_continuous_discrete_pending_duplicate_is_replaced(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A numerical-discrete coordinate participates in full-row matching."""
+        spec = self._numerical_discrete_spec()
+        campaign = _build_campaign(spec)
+        pending_df = pd.DataFrame([{"temperature": 40.0, "equivalents": 2.0}])
+        sample_pool = pd.DataFrame(
+            [
+                {"temperature": 40.0, "equivalents": 2.0},
+                {"temperature": 40.0, "equivalents": 3.0},
+                {"temperature": 75.0, "equivalents": 2.0},
+            ]
+        )
+        monkeypatch.setattr(
+            "bo_engine_baybe.backend._sample_hybrid_candidates",
+            lambda _campaign, _count: sample_pool,
+        )
+
+        actual, warning = _replace_duplicate_recommendation(
+            campaign,
+            spec,
+            pd.DataFrame([{"temperature": 40.0, "equivalents": 2.0}]),
+            [],
+            pending_df,
+        )
+
+        assert actual.to_dict(orient="records") == [{"temperature": 40.0, "equivalents": 3.0}]
+        assert warning is not None
+
+    def test_hybrid_sampler_preserves_discrete_values_and_continuous_constraint(self) -> None:
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(
+                    name="x1",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, 1.0),
+                ),
+                ParameterSpec(
+                    name="x2",
+                    type=ParameterType.CONTINUOUS,
+                    bounds=(0.0, 1.0),
+                ),
+                ParameterSpec(
+                    name="solvent",
+                    type=ParameterType.CATEGORICAL,
+                    categories=["Water", "DMF"],
+                ),
+            ],
+            objectives=[ObjectiveSpec(name="yield", minimize=False)],
+            constraints=[
+                ConstraintSpec(
+                    type=ConstraintType.SUM_EQUALS,
+                    parameters=["x1", "x2"],
+                    value=1.0,
+                )
+            ],
+        )
+        campaign = _build_campaign(spec)
+
+        candidates = _sample_hybrid_candidates(campaign, 16)
+
+        assert len(candidates) == 16
+        assert set(candidates["solvent"]) == {"Water", "DMF"}
+        assert (candidates["x1"] + candidates["x2"]).to_numpy() == pytest.approx(
+            [1.0] * 16,
+            abs=1e-7,
+        )
+
+    def test_hybrid_fallback_ranking_is_column_order_independent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BayBE receives names, not internal discrete-first column positions."""
+        spec = self._categorical_spec()
+        campaign = _build_campaign(spec)
+        measurements = pd.DataFrame(
+            [
+                {"temperature": 30.0, "solvent": "Water", "yield": 10.0},
+                {"temperature": 45.0, "solvent": "Ethanol", "yield": 25.0},
+                {"temperature": 65.0, "solvent": "DMF", "yield": 50.0},
+                {"temperature": 85.0, "solvent": "Water", "yield": 35.0},
+            ]
+        )
+        campaign.add_measurements(measurements)
+        sample_pool = pd.DataFrame(
+            [
+                {"temperature": 30.0, "solvent": "Water"},
+                {"temperature": 50.0, "solvent": "DMF"},
+                {"temperature": 90.0, "solvent": "Ethanol"},
+            ]
+        )
+        monkeypatch.setattr(
+            "bo_engine_baybe.backend._sample_hybrid_candidates",
+            lambda _campaign, _count: sample_pool,
+        )
+        observations = _observations_from_frame(measurements, "yield")
+
+        actual, _ = _replace_duplicate_recommendation(
+            campaign,
+            spec,
+            sample_pool.iloc[[0]],
+            observations,
+            None,
+        )
+
+        unseen_pool = sample_pool.iloc[1:].reset_index(drop=True)
+        acquisition = campaign.acquisition_values(candidates=unseen_pool)
+        expected = unseen_pool.iloc[int(acquisition.to_numpy().argmax())].to_dict()
+        assert actual.to_dict(orient="records") == [expected]
+
+    def test_all_duplicate_hybrid_cloud_raises_honest_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        spec = self._categorical_spec()
+        campaign = _build_campaign(spec)
+        duplicate = {"temperature": 30.0, "solvent": "Water"}
+        monkeypatch.setattr(
+            "bo_engine_baybe.backend._sample_hybrid_candidates",
+            lambda _campaign, _count: pd.DataFrame([duplicate] * 3),
+        )
+        observations = [
+            ObservationData(
+                parameter_values=duplicate,
+                objective_values={"yield": 10.0},
+            )
+        ]
+
+        with pytest.raises(RuntimeError, match=r"hybrid point.*unseen fallback candidate"):
+            _replace_duplicate_recommendation(
+                campaign,
+                spec,
+                pd.DataFrame([duplicate]),
+                observations,
+                None,
+            )
+
+    def test_hybrid_batch_recommendation_passes_through(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        spec = self._categorical_spec()
+        campaign = _build_campaign(spec)
+        recommendation = pd.DataFrame(
+            [
+                {"temperature": 30.0, "solvent": "Water"},
+                {"temperature": 30.0, "solvent": "Water"},
+            ]
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="bo_engine_baybe.backend"):
+            actual, warning = _replace_duplicate_recommendation(
+                campaign,
+                spec,
+                recommendation,
+                [],
+                None,
+            )
+
+        assert actual is recommendation
+        assert warning is None
+        assert any("hybrid batch_size=2" in record.message for record in caplog.records)
+
+    def test_generate_suggestions_surfaces_hybrid_duplicate_replacement(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        spec = self._categorical_spec()
+        measurements = pd.DataFrame(
+            [
+                {"temperature": 30.0, "solvent": "Water", "yield": 10.0},
+                {"temperature": 45.0, "solvent": "Ethanol", "yield": 25.0},
+                {"temperature": 65.0, "solvent": "DMF", "yield": 50.0},
+                {"temperature": 85.0, "solvent": "Water", "yield": 35.0},
+            ]
+        )
+        observations = _observations_from_frame(measurements, "yield")
+        duplicate = {"temperature": 30.0, "solvent": "Water"}
+        sample_pool = pd.DataFrame(
+            [
+                duplicate,
+                {"temperature": 55.0, "solvent": "DMF"},
+                {"temperature": 90.0, "solvent": "Ethanol"},
+            ]
+        )
+        monkeypatch.setattr(
+            Campaign,
+            "recommend",
+            lambda _self, **_kwargs: pd.DataFrame([duplicate]),
+        )
+        monkeypatch.setattr(
+            "bo_engine_baybe.backend._sample_hybrid_candidates",
+            lambda _campaign, _count: sample_pool,
+        )
+
+        batch = BayBEBackend().generate_suggestions(
+            spec=spec,
+            observations=observations,
+            batch_size=1,
+            iteration=1,
+        )
+
+        assert any("hybrid point" in warning for warning in batch.warnings)
+        assert batch.suggestions[0]["parameter_values"] != duplicate
 
 
 class TestProtocolCompliance:

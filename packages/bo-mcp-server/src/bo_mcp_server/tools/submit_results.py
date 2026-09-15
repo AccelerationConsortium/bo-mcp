@@ -159,7 +159,6 @@ async def _submit_results_for_user(
     results: ResultsPayload,
     submitted_by: str,
     source: str = "api",
-    force: bool = False,
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -192,7 +191,6 @@ async def _submit_results_for_user(
                 results=validated_results,
                 submitted_by=submitted_by,
                 source=source,
-                force=force,
                 atomic=atomic,
                 continue_on_error=continue_on_error,
                 verbosity=verbosity,
@@ -207,7 +205,6 @@ async def _submit_results_for_user(
             results=validated_results,
             submitted_by=submitted_by,
             source=source,
-            force=force,
             atomic=atomic,
             continue_on_error=continue_on_error,
             verbosity=verbosity,
@@ -219,7 +216,6 @@ async def _submit_results_for_user(
                 results=validated_results,
                 submitted_by=submitted_by,
                 source=source,
-                force=force,
                 atomic=atomic,
                 continue_on_error=continue_on_error,
                 verbosity=verbosity,
@@ -239,7 +235,6 @@ async def submit_results(
     results: ResultsPayload,
     submitted_by: str,
     source: str = "api",
-    force: bool = False,
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -253,7 +248,6 @@ async def submit_results(
         results=results,
         submitted_by=submitted_by,
         source=source,
-        force=force,
         atomic=atomic,
         continue_on_error=continue_on_error,
         verbosity=verbosity,
@@ -268,7 +262,6 @@ async def _submit_results_tool(
     campaign_id: str,
     results: ResultsPayload,
     source: str = "api",
-    force: bool = False,
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -296,9 +289,6 @@ async def _submit_results_tool(
     unlinked results — especially for bulk uploads — if a retry after a
     timeout must not double-count.
 
-    ``force`` is accepted for backward compatibility and no longer does
-    anything. It never bypassed identity checks and still cannot.
-
     The MCP transport resolves ``submitted_by`` internally from the current
     BO-MCP user identity. Agents must not provide database user ids.
     """
@@ -321,7 +311,6 @@ async def _submit_results_tool(
             results=results,
             submitted_by=str(user.id),
             source=source,
-            force=force,
             atomic=atomic,
             continue_on_error=continue_on_error,
             verbosity=verbosity,

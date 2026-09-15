@@ -15,7 +15,6 @@ from bo_mcp_server.response_formatter import (
     format_compare_campaigns_response,
     format_create_campaign_response,
     format_diagnostics_response,
-    format_submit_results_response,
     format_suggestions_response,
     format_transfer_candidates_response,
     format_validate_intake_response,
@@ -574,19 +573,6 @@ class TestResponseContractValidation:
         assert summary["n_objectives"] == 1
         assert summary["n_constraints"] == 0
         assert summary["batch_size"] == 4
-
-    def test_submit_results_standard_does_not_leak_duplicates_detail(self) -> None:
-        """STANDARD submit_results exposes count, never the full duplicates list."""
-        full = {
-            "success": True,
-            "result_ids": ["r1", "r2"],
-            "errors": [],
-            "warnings": [],
-            "duplicates_detected": [{"index": 1, "matches_existing": "abc"}],
-        }
-        result = format_submit_results_response(full, VerbosityLevel.STANDARD)
-        assert result["n_duplicates_detected"] == 1
-        assert "duplicates_detected" not in result
 
 
 class TestSchemaVersionContract:

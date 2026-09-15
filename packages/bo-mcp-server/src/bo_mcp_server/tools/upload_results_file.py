@@ -50,7 +50,6 @@ def _build_upload_response(
     result_ids = submit_result.get("result_ids", [])
     errors = parse_errors + submit_result.get("errors", [])
     warnings = submit_result.get("warnings", [])
-    duplicates_detected = submit_result.get("duplicates_detected", [])
     response: dict[str, Any] = {
         "success": submit_result.get("success", False) and not parse_errors,
         "results_created": len(result_ids),
@@ -58,8 +57,6 @@ def _build_upload_response(
     }
     if warnings:
         response["warnings"] = warnings
-    if duplicates_detected:
-        response["duplicates_detected"] = duplicates_detected
     if dry_run:
         response["dry_run"] = True
         if "preview" in submit_result:

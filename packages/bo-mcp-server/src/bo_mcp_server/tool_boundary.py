@@ -92,7 +92,6 @@ CREATE_CAMPAIGN_ENVELOPE_EXTRA: dict[str, Any] = {
 SUBMIT_RESULTS_ENVELOPE_EXTRA: dict[str, Any] = {
     "result_ids": [],
     "warnings": [],
-    "duplicates_detected": [],
 }
 # ``bo_validate_intake`` is part of the same validation / localization
 # workflow as ``bo_create_campaign``: agents use it as a dry-run before

@@ -122,7 +122,7 @@ class TestConcurrentModificationEnvelope:
         assert "version" in recovery
         # Submit-specific response shape is preserved even on the error path.
         assert result["result_ids"] == []
-        assert "duplicates_detected" in result
+        assert "warnings" in result
 
     @pytest.mark.asyncio
     async def test_campaign_lifecycle_lost_race_returns_structured_error(

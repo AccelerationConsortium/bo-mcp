@@ -741,7 +741,7 @@ class TestDuplicateAndConflictingData:
             submitted_by=owner_id,
         )
 
-        # Submit near-duplicate result
+        # Submit a near-identical replicate.
         result = await submit_results(
             campaign_id=campaign_id,
             results=_to_result_inputs(
@@ -755,11 +755,10 @@ class TestDuplicateAndConflictingData:
             submitted_by=owner_id,
         )
 
-        # Should either detect duplicate or accept with warning
-        # The exact behavior depends on implementation
-        if result["success"]:
-            # If accepted, should flag as potential duplicate
-            assert "duplicates_detected" in result or "warnings" in result
+        # Two experiments a hair apart are two experiments. Both are
+        # stored, and neither is flagged as a mistake.
+        assert result["success"] is True
+        assert not any("duplicate" in w.lower() for w in result.get("warnings", []))
 
 
 @pytest.mark.usefixtures("setup_database")

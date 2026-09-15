@@ -42,7 +42,6 @@ bo_create_campaign → [bo_generate_suggestions → bo_submit_results]* → bo_g
 |-------|-------|----------|
 | "Campaign not found" | Invalid UUID or deleted campaign | Verify `campaign_id` format (UUID v4), check `campaigns://list` |
 | "Invalid state transition" | Wrong campaign status | Check status with `campaign://{id}`, use appropriate lifecycle tool |
-| "Duplicate result detected" | Same parameters submitted twice | Use `force: true` parameter to override, or skip |
 | "Validation failed" | Invalid intake configuration | Review `errors` array, fix the intake, and retry `bo_create_campaign` |
 
 ---
@@ -178,7 +177,6 @@ Tools return structured errors with recovery guidance:
 | E001 | Invalid campaign_id format | Verify UUID v4 format. Use campaigns://list for valid IDs. |
 | E002 | Campaign not found | Use campaigns://list to verify campaign exists. |
 | E003 | Invalid state transition | Check status with campaign://{id}. See valid transitions. |
-| E004 | Duplicate result detected | Use force=True to override, or skip result. |
 | E005 | Validation failed | Review errors array, fix issues, retry. |
 | E006 | Missing parameters | Add at least one parameter to intake_data.parameters. |
 | E007 | Missing objectives | Add at least one objective to intake_data.objectives. |
@@ -586,8 +584,7 @@ Submits experimental results for a campaign.
       "metadata": "object (optional)"
     }
   ],
-  "source": "gui | file_upload | api (default: api)",
-  "force": "boolean (default: false) - Override duplicate detection"
+  "source": "gui | file_upload | api (default: api)"
 }
 ```
 
@@ -956,7 +953,7 @@ Example error response:
   - Workflow `trace_id` propagation: REST middleware honors `X-Trace-Id`
     and echoes it on every audit event + `_metadata` envelope
 - **v3.1**: Added `bo_health_check` tool, response verbosity parameter, structured error codes with recovery actions, and AGENT_COOKBOOK.md reference
-- **v2.5**: Added batch diversity metrics, pending points tracking, outlier detection, convergence analysis, duplicate detection with `force` override, and agent quick reference
+- **v2.5**: Added batch diversity metrics, pending points tracking, outlier detection, convergence analysis, and agent quick reference
 - **v2.4**: Added agent usability tools (`bo_compare_campaigns`, `bo_discover_transfer_candidates`) and enhanced diagnostics
 - **v2.0**: Added transfer learning, multi-fidelity, and outcome constraints
 - **v1.1**: Added LOO-CV metrics and feature importance

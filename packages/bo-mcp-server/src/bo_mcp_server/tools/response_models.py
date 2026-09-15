@@ -243,7 +243,6 @@ class UploadResultsResponse(_PermissiveResponse):
     results_created: int | None = None
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    duplicates_detected: list[dict[str, Any]] = Field(default_factory=list)
     dry_run: bool | None = None
     preview: dict[str, Any] | None = None
 
@@ -292,8 +291,7 @@ class SubmitResultsResponse(_PermissiveResponse):
     """Response shape for ``bo_submit_results``.
 
     Covers the MINIMAL projection (``n_submitted``), the STANDARD/
-    DETAILED projections (``result_ids``, ``duplicates_detected`` /
-    ``n_duplicates_detected``), and the ``dry_run`` preview.
+    DETAILED projections (``result_ids``), and the ``dry_run`` preview.
     """
 
     success: bool | None = None
@@ -302,8 +300,6 @@ class SubmitResultsResponse(_PermissiveResponse):
     errors: list[str] = Field(default_factory=list)
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
-    n_duplicates_detected: int | None = None
-    duplicates_detected: list[dict[str, Any]] = Field(default_factory=list)
     dry_run: bool | None = None
     preview: dict[str, Any] | None = None
 

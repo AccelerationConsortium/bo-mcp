@@ -1,10 +1,9 @@
 """Results routes."""
 
 import logging
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, HTTPException, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import CurrentUser, IdempotencyKey, get_authorized_campaign
@@ -127,12 +126,6 @@ async def submit_campaign_results(
     namespace as the MCP ``bo_submit_results`` tool) so a retry
     replays the cached response instead of persisting the batch
     twice.
-
-    A duplicate rejection is terminal and cached under the submitted
-    key, and ``force`` is part of the request hash — so a client that
-    follows the rejection's "Use force=True" recovery hint must send
-    the forced retry under a fresh ``Idempotency-Key``; reusing the
-    rejected key yields a 409 idempotency conflict.
     """
     await get_authorized_campaign(campaign_id, current_user)
 
@@ -154,7 +147,6 @@ async def submit_campaign_results(
             results=results_data,
             submitted_by=submitted_by,
             source=request.source,
-            force=request.force,
             session=session,
         )
 
@@ -169,7 +161,6 @@ async def submit_campaign_results(
             results=results_data,
             submitted_by=submitted_by,
             source=request.source,
-            force=request.force,
         ),
         executor=run,
     )
@@ -197,7 +188,6 @@ async def submit_campaign_results(
         # distinguish a cached batch from a fresh insert.
         idempotency_replay=bool(result.get("idempotency_replay", False)),
         error_code=(result.get("error") or {}).get("code"),
-        duplicates_detected=result.get("duplicates_detected", []),
     )
 
 
@@ -259,24 +249,13 @@ async def upload_results_file(
     file: UploadFile,
     current_user: CurrentUser,
     response: Response,
-    force: Annotated[
-        bool,
-        Query(
-            description=(
-                "Bypass the exact-duplicate-coordinate check so a file "
-                "containing an optimizer-requested replicate can be "
-                "uploaded — same semantics as the JSON submission body's "
-                "force field."
-            ),
-        ),
-    ] = False,
 ) -> ResultSubmitResponse:
     """Upload results from CSV or Excel file.
 
-    ``force`` matches the JSON route's override: without it a file
-    carrying an intentional replicate is rejected with a "Use
-    force=True" hint that would otherwise be unactionable on this
-    transport.
+    A file carrying repeated parameter settings uploads as-is; each row
+    is stored as its own replicate. Uploaded rows are normally unlinked,
+    so re-uploading the same file stores the rows again — send an
+    ``Idempotency-Key`` if a retry after a timeout must not double-count.
 
     Streams the upload through :func:`_read_upload_bounded` (refusing
     over :data:`api.limits.MAX_UPLOAD_FILE_SIZE_BYTES`) and parses
@@ -361,7 +340,6 @@ async def upload_results_file(
         results=results_data,
         submitted_by=str(current_user.id),
         source="file_upload",
-        force=force,
     )
 
     if result.get("success"):
@@ -376,7 +354,6 @@ async def upload_results_file(
         warnings=result["warnings"],
         field_errors=result.get("field_errors", {}),
         error_code=(result.get("error") or {}).get("code"),
-        duplicates_detected=result.get("duplicates_detected", []),
     )
 
 

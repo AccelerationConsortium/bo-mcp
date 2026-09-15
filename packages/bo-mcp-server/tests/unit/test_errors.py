@@ -32,7 +32,6 @@ class TestErrorCode:
             ErrorCode.INVALID_CAMPAIGN_ID,
             ErrorCode.CAMPAIGN_NOT_FOUND,
             ErrorCode.INVALID_STATE_TRANSITION,
-            ErrorCode.DUPLICATE_RESULT,
             ErrorCode.VALIDATION_FAILED,
             ErrorCode.MISSING_PARAMETERS,
             ErrorCode.MISSING_OBJECTIVES,
@@ -338,24 +337,6 @@ class TestErrorResponseIntegration:
         assert "UUID" in response["error"]["recovery_action"]
         assert "campaigns://list" in response["error"]["recovery_action"]
 
-    def test_typical_duplicate_result_response(self) -> None:
-        """Test typical usage for the suggestion-identity duplicate.
-
-        The code no longer fires for matching parameter values — replicates
-        are accepted — so its recovery advice must not offer ``force=True``
-        as an override. What remains is one result per suggestion.
-        """
-        response = make_error_response(
-            ErrorCode.DUPLICATE_RESULT,
-            message="A result already exists for this suggestion",
-            details={"result_index": 2, "suggestion_id": "b0b0b0b0"},
-        )
-
-        recovery = response["error"]["recovery_action"]
-        assert "force" not in recovery
-        assert "suggestion_id" in recovery
-        assert response["error"]["details"]["result_index"] == 2
-
     def test_typical_model_fitting_failure(self) -> None:
         """Test typical usage for model fitting failure.
 
@@ -384,7 +365,6 @@ class TestErrorCodeCoverage:
             "invalid campaign_id format": ErrorCode.INVALID_CAMPAIGN_ID,
             "campaign does not exist": ErrorCode.CAMPAIGN_NOT_FOUND,
             "campaign in wrong state": ErrorCode.INVALID_STATE_TRANSITION,
-            "duplicate data submission": ErrorCode.DUPLICATE_RESULT,
             "intake data invalid": ErrorCode.VALIDATION_FAILED,
             "no parameters provided": ErrorCode.MISSING_PARAMETERS,
             "no objectives provided": ErrorCode.MISSING_OBJECTIVES,

@@ -396,7 +396,6 @@ class TestSubmitResultsReplicates:
         )
 
         assert second["success"] is True
-        assert second.get("duplicates_detected", []) == []
         assert not any("duplicate" in w.lower() for w in second.get("warnings", []))
 
         stored = await list_results_operation(campaign_id=campaign_id)
@@ -528,14 +527,11 @@ class TestSubmitResultsReplicates:
         assert "max_observations" in result["partial_results"][2]["error"]
 
     @pytest.mark.asyncio
-    async def test_identity_duplicate_is_still_rejected_and_force_cannot_bypass(
-        self,
-    ) -> None:
-        """One result per suggestion, with or without ``force``.
+    async def test_second_result_for_one_suggestion_is_rejected(self) -> None:
+        """One result per suggestion: identity, not parameter values.
 
-        ``force`` is a compatibility no-op. It never bypassed identity
-        checks and must not start doing so now that parameter-equality
-        rejection is gone.
+        This is what actually prevents repeated ingestion now that
+        parameter equality no longer rejects anything.
         """
         from bo_mcp_server.operations.list_results import list_results_operation
         from bo_mcp_server.operations.submit_results import submit_results_operation
@@ -574,7 +570,6 @@ class TestSubmitResultsReplicates:
             ),
             submitted_by=owner_id,
             atomic=True,
-            force=True,
         )
 
         assert repeat["success"] is False

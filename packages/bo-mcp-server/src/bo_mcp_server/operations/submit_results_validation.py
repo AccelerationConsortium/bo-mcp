@@ -47,7 +47,6 @@ class _SubmitTracking:
 
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    duplicates_detected: list[dict[str, Any]] = field(default_factory=list)
     partial_results: dict[int, str | dict[str, str]] = field(default_factory=dict)
     field_errors: dict[str, list[str]] = field(default_factory=dict)
 

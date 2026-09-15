@@ -75,7 +75,6 @@ def _make_submit_error(
     message: str | None = None,
     details: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
-    duplicates: list[dict[str, Any]] | None = None,
     field_errors: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Build a standardized error response for submit_results."""
@@ -84,7 +83,6 @@ def _make_submit_error(
         {
             "result_ids": [],
             "warnings": warnings or [],
-            "duplicates_detected": duplicates or [],
             "field_errors": field_errors or {},
         }
     )
@@ -110,7 +108,6 @@ def _build_submit_dry_run_response(
         "errors": tracking.errors,
         "field_errors": tracking.field_errors,
         "warnings": tracking.warnings,
-        "duplicates_detected": tracking.duplicates_detected,
         "preview": {
             "rows_submitted": submitted_rows,
             "rows_would_persist": persisted_rows,
@@ -145,7 +142,6 @@ def _short_circuit_submit(
             "errors": (tracking.errors if tracking.errors else ["No valid results to submit"]),
             "field_errors": tracking.field_errors,
             "warnings": tracking.warnings,
-            "duplicates_detected": tracking.duplicates_detected,
         }
         if not atomic and continue_on_error:
             response_data["partial_results"] = tracking.partial_results
@@ -183,7 +179,6 @@ def _validate_submit_inputs(
             {
                 "result_ids": [],
                 "warnings": [],
-                "duplicates_detected": [],
                 "field_errors": {"campaign_id": ["invalid UUID format"]},
             }
         )
@@ -323,10 +318,6 @@ def _check_atomic_failures(
     ``continue_on_error=True`` — without that opt-in we must not commit
     rows while returning ``success=False``.
 
-    Parameter-equality duplicates no longer reach this function:
-    replicates are accepted, so there is no ``DUPLICATE_RESULT``
-    envelope to emit ahead of the generic-errors branch.
-
     Returns error response dict or None.
     """
     all_or_nothing = atomic or not continue_on_error
@@ -339,7 +330,6 @@ def _check_atomic_failures(
             "errors": tracking.errors,
             "field_errors": tracking.field_errors,
             "warnings": tracking.warnings,
-            "duplicates_detected": tracking.duplicates_detected,
         }
 
     return None
@@ -362,7 +352,6 @@ def _build_submit_response(
         "errors": tracking.errors,
         "field_errors": tracking.field_errors,
         "warnings": tracking.warnings,
-        "duplicates_detected": tracking.duplicates_detected,
     }
     if not atomic and continue_on_error:
         response_data["partial_results"] = tracking.partial_results
@@ -399,7 +388,6 @@ async def _handle_submit_results_cm_error(
         {
             "result_ids": [],
             "warnings": tracking.warnings,
-            "duplicates_detected": tracking.duplicates_detected,
             "field_errors": tracking.field_errors,
         }
     )
@@ -412,7 +400,6 @@ async def submit_results_operation(
     results: list[ResultSubmissionInput],
     submitted_by: str,
     source: str = "api",
-    force: bool = False,  # noqa: ARG001 - accepted for API compatibility; now a no-op
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -445,11 +432,6 @@ async def submit_results_operation(
         results: List of result payloads
         submitted_by: UUID of the user submitting results
         source: Result source ("gui", "file_upload", or "api")
-        force: Accepted for backward compatibility; no longer has any
-            effect. Results that share parameter values with an existing
-            result are replicates and are always accepted. ``force`` never
-            bypassed, and still cannot bypass, identity checks such as
-            suggestion ownership or the one-result-per-suggestion index.
         atomic: If True, reject the entire batch on any validation error;
             no partial writes occur. If False, invalid rows are skipped and
             valid rows are persisted (subject to ``continue_on_error``).
@@ -462,7 +444,7 @@ async def submit_results_operation(
             without persisting anything.
 
     Returns:
-        Dictionary with success, result_ids, errors, warnings, duplicates_detected.
+        Dictionary with success, result_ids, errors and warnings.
     """
     logger.info(
         "Submitting %d results for campaign_id=%s by user=%s, verbosity=%s",

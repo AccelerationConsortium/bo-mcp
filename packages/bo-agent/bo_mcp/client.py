@@ -73,8 +73,8 @@ class BoMcpClient:
 
     Replicate policy: Do not reject a suggestion solely because it matches an
     existing result; under noise, BO may intentionally recommend a replicate.
-    If allowed, submit it with ``force=True``. Rejection retires the suggestion;
-    it does not exclude its coordinates from future generation.
+    Run it and submit the result like any other. Rejection retires the
+    suggestion; it does not exclude its coordinates from future generation.
 
     Loop-state ownership: the BO-MCP server is the single source of truth
     for campaign progress (results, iteration, status, and the next-action
@@ -210,31 +210,18 @@ class BoMcpClient:
         *,
         results: list[dict[str, Any]],
         idempotency_key: str,
-        force: bool = False,
     ) -> dict[str, Any]:
         """Submit externally evaluated candidate results to BO-MCP.
 
-        ``force=True`` bypasses the exact-duplicate-coordinate check so an
-        optimizer-requested replicate can be submitted -- rejecting the
-        suggestion instead only retires that suggestion record and does not
-        exclude the coordinates from future generation.
+        Results that repeat an existing setting are replicates and are
+        accepted like any other row, so a batch never needs an override.
 
-        A duplicate rejection is cached by the server under the submitted
-        ``idempotency_key``, and ``force`` is part of the request hash: a
-        forced retry of a rejected submission MUST use a fresh
-        ``idempotency_key`` (see ``make_idempotency_key``) — reusing the
-        rejected key raises ``BoMcpClientError`` from the server's 409
-        idempotency-conflict response instead of submitting the replicate.
+        ``idempotency_key`` is what makes a retry safe: an unlinked result
+        carries no identity, so without a key a resend is indistinguishable
+        from a genuine repeat experiment and is stored again (see
+        ``make_idempotency_key``).
         """
         payload: dict[str, Any] = {"results": results, "source": "api"}
-        # Only sent when requested: API servers that predate the ``force``
-        # field reject unknown keys (``extra="forbid"``), so an
-        # unconditional ``"force": false`` would 422 every ordinary
-        # submission during a client/server version skew. Omission and
-        # ``false`` are equivalent on current servers, including in the
-        # idempotency request hash.
-        if force:
-            payload["force"] = True
         return self._json_request(
             "POST",
             f"/api/v1/results/{campaign_id}",

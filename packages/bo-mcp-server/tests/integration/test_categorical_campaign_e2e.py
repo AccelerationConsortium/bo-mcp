@@ -111,7 +111,6 @@ class TestCategoricalCampaignLifecycle:
                 results=_to_result_inputs(results_to_submit),
                 submitted_by=owner_id,
                 source="api",
-                force=True,  # Categorical spaces may produce duplicate combos across cycles
             )
             assert submit_result["success"], (
                 f"Submit failed cycle {cycle}: {submit_result.get('errors')}"

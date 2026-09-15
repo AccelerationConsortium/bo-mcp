@@ -236,7 +236,8 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "CREATED/RUNNING/PAUSED->COMPLETED (terminate)."
     ),
     ErrorCode.DUPLICATE_RESULT: (
-        "Use force=True parameter to override duplicate detection, or skip this result."
+        "A result already exists for this suggestion_id. Submit the repeat measurement "
+        "without a suggestion_id, or against the suggestion it was actually run for."
     ),
     ErrorCode.VALIDATION_FAILED: (
         "Review the errors array, fix the issues, and retry bo_create_campaign."

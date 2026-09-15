@@ -1,14 +1,14 @@
-"""Synchronous per-row / per-section compute runs off the event loop.
+"""Synchronous per-section compute runs off the event loop.
 
-Two operations promised (module docstrings) that engine-touching work is
-offloaded via ``asyncio.to_thread`` but ran parts of it inline:
+``get_diagnostics`` promised (module docstring) that engine-touching
+work is offloaded via ``asyncio.to_thread`` but ran parts of it inline:
+the outcome-constraint calibration (per-constraint feasibility-GP fits)
+and the constraint-satisfaction section.
 
-* ``submit_results`` ran ``detect_duplicates`` synchronously once (later
-  twice) per submitted row — O(batch x n_results) distance computations
-  on the loop, stalling every concurrent session during bulk uploads.
-* ``get_diagnostics`` ran the outcome-constraint calibration (per-
-  constraint feasibility-GP fits) and the constraint-satisfaction
-  section inline.
+``submit_results`` used to be covered here too, for its per-row
+``detect_duplicates`` scan. That scan is gone — parameter equality no
+longer rejects a submission — so there is no longer any engine-touching
+per-row compute on that path to pin.
 
 These tests pin the offload by recording the thread each computation
 runs on: under ``asyncio.to_thread`` it must never be the thread that
@@ -22,21 +22,12 @@ from __future__ import annotations
 
 import threading
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
-from bo_mcp_server.domain import ResultSubmissionInput
 from bo_mcp_server.operations import get_diagnostics as get_diagnostics_module
-from bo_mcp_server.operations import submit_results_pipeline
 from bo_mcp_server.operations.get_diagnostics import get_diagnostics_operation
-from bo_mcp_server.operations.submit_results import submit_results_operation
 from tests.factories import seed_owner
-
-
-def _row(x: float, y: float) -> ResultSubmissionInput:
-    return ResultSubmissionInput(parameter_values={"x": x}, objective_values={"y": y})
-
 
 pytestmark = pytest.mark.usefixtures("setup_database")
 
@@ -52,44 +43,6 @@ async def _create_campaign() -> str:
     created = await create_campaign(intake, await seed_owner())
     assert created["success"] is True
     return created["campaign_id"]
-
-
-@pytest.mark.asyncio
-async def test_detect_duplicates_passes_run_off_the_loop_thread(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Both duplicate passes (stored + in-batch) run on worker threads."""
-    loop_thread = threading.current_thread()
-    seen_threads: list[threading.Thread] = []
-    original = submit_results_pipeline._check_duplicates_for_result
-
-    def _recording_check(*args: Any, **kwargs: Any) -> Any:
-        seen_threads.append(threading.current_thread())
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(submit_results_pipeline, "_check_duplicates_for_result", _recording_check)
-
-    campaign_id = await _create_campaign()
-    # First submit seeds the stored baseline; the second exercises the
-    # stored-duplicate pass per row plus the in-batch pass.
-    first = await submit_results_operation(
-        campaign_id=campaign_id,
-        results=[_row(0.1, 1.0)],
-        submitted_by=str(uuid4()),
-    )
-    assert first["success"] is True
-    second = await submit_results_operation(
-        campaign_id=campaign_id,
-        results=[_row(0.4, 2.0), _row(0.7, 3.0)],
-        submitted_by=str(uuid4()),
-    )
-    assert second["success"] is True
-
-    assert seen_threads, "duplicate detection never ran"
-    on_loop = [t for t in seen_threads if t is loop_thread]
-    assert not on_loop, (
-        f"{len(on_loop)}/{len(seen_threads)} duplicate scans ran on the event-loop thread"
-    )
 
 
 @pytest.mark.asyncio

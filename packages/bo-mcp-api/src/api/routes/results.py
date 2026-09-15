@@ -248,14 +248,18 @@ async def upload_results_file(
     campaign_id: str,
     file: UploadFile,
     current_user: CurrentUser,
+    idempotency_key: IdempotencyKey,
     response: Response,
 ) -> ResultSubmitResponse:
     """Upload results from CSV or Excel file.
 
     A file carrying repeated parameter settings uploads as-is; each row
-    is stored as its own replicate. Uploaded rows are normally unlinked,
-    so re-uploading the same file stores the rows again — send an
-    ``Idempotency-Key`` if a retry after a timeout must not double-count.
+    is stored as its own replicate. Uploaded rows are unlinked, so
+    nothing in the payload distinguishes a re-uploaded file from a
+    genuine set of repeat experiments — the ``Idempotency-Key`` header
+    is what makes a retry after a timeout safe. Honoured here in the
+    same cache namespace as the JSON route, which is what lets the
+    advice in the tool documentation actually hold.
 
     Streams the upload through :func:`_read_upload_bounded` (refusing
     over :data:`api.limits.MAX_UPLOAD_FILE_SIZE_BYTES`) and parses
@@ -335,12 +339,35 @@ async def upload_results_file(
             detail=parse_errors,
         )
 
-    result = await submit_results_operation(
-        campaign_id=campaign_id,
-        results=results_data,
-        submitted_by=str(current_user.id),
-        source="file_upload",
+    submitted_by = str(current_user.id)
+
+    async def run(session: AsyncSession) -> dict:
+        return await submit_results_operation(
+            campaign_id=campaign_id,
+            results=results_data,
+            submitted_by=submitted_by,
+            source="file_upload",
+            session=session,
+        )
+
+    result = await run_idempotent_operation(
+        operation_name="bo_submit_results",
+        idempotency_key=idempotency_key,
+        request_payload=canonical_submit_results_payload(
+            campaign_id=campaign_id,
+            results=results_data,
+            submitted_by=submitted_by,
+            source="file_upload",
+        ),
+        executor=run,
     )
+    # Same promotion as the JSON route: an idempotency-layer envelope
+    # carries no ``result_ids``, so unpacking it below would 500.
+    if "result_ids" not in result:
+        raise HTTPException(
+            status_code=http_status_for_error(result),
+            detail=result.get("error", {"message": "Idempotency error"}),
+        )
 
     if result.get("success"):
         response.headers["Location"] = _results_location(campaign_id)

@@ -129,6 +129,38 @@ async def test_idempotency_key_is_what_stops_a_retry_double_counting(
 
 
 @pytest.mark.asyncio
+async def test_repeated_upload_under_one_key_replays(
+    api_client, auth_headers, persisted_user
+) -> None:
+    """The upload transport honours the key its documentation recommends.
+
+    File upload is the transport where a human retries after a timeout,
+    and its rows are unlinked, so without this the retry silently becomes
+    a fake replicate. Regression for exactly that.
+    """
+    owner_id = str(persisted_user.id)
+    campaign_id = await _create_campaign(owner_id)
+    key_headers = {**auth_headers, "Idempotency-Key": "replicate-upload-retry"}
+
+    def _csv() -> dict:
+        return {"file": ("replicate.csv", b"x,y\n0.4,1.0\n", "text/csv")}
+
+    first = await api_client.post(
+        f"/api/results/{campaign_id}/upload", files=_csv(), headers=key_headers
+    )
+    retry = await api_client.post(
+        f"/api/results/{campaign_id}/upload", files=_csv(), headers=key_headers
+    )
+
+    assert first.status_code == 201, first.text
+    assert retry.status_code in (200, 201), retry.text
+    assert retry.json()["result_ids"] == first.json()["result_ids"]
+
+    listed = await api_client.get(f"/api/results/{campaign_id}", headers=auth_headers)
+    assert len(listed.json()) == 1
+
+
+@pytest.mark.asyncio
 async def test_without_a_key_a_resend_is_stored_again(
     api_client, auth_headers, persisted_user
 ) -> None:

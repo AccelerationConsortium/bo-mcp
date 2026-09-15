@@ -150,6 +150,13 @@ async def _upload_results_file_tool(
     - param_<name>: Parameter values (e.g., param_temperature, param_pressure)
     - obj_<name>: Objective values (e.g., obj_yield, obj_cost)
 
+    Rows that repeat a parameter setting are accepted as replicates; each
+    one is stored and consumes its own observation budget. Uploaded rows
+    are normally unlinked (no ``suggestion_id``), so nothing distinguishes
+    a re-uploaded file from a genuine set of repeat experiments. Pass
+    ``idempotency_key`` if re-sending the same file after a timeout must
+    not double-count.
+
     The MCP transport resolves ``submitted_by`` internally from the current
     BO-MCP user identity. Agents must not provide database user ids.
     """

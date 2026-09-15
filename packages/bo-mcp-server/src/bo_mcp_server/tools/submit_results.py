@@ -281,6 +281,24 @@ async def _submit_results_tool(
     Workflow: Call after running experiments from bo_generate_suggestions.
     Follow up with bo_get_diagnostics to check progress and convergence.
 
+    Replicates are expected and accepted. Two experiments may share
+    parameter values — that is a repeated measurement, and both are stored
+    and passed to the optimizer. Repeating a setting is not evidence of an
+    error, and it is not evidence of convergence either. Each replicate
+    consumes its own observation budget.
+
+    Retry protection comes from identity, not from parameter values. A
+    result carrying a ``suggestion_id`` can be submitted once: the second
+    attempt is refused because that suggestion is already answered. A
+    result *without* a ``suggestion_id`` has no such anchor, so a retried
+    submission cannot be told apart from a genuinely repeated experiment
+    and will be stored twice. Pass ``idempotency_key`` when submitting
+    unlinked results — especially for bulk uploads — if a retry after a
+    timeout must not double-count.
+
+    ``force`` is accepted for backward compatibility and no longer does
+    anything. It never bypassed identity checks and still cannot.
+
     The MCP transport resolves ``submitted_by`` internally from the current
     BO-MCP user identity. Agents must not provide database user ids.
     """

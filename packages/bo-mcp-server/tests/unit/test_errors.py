@@ -339,22 +339,21 @@ class TestErrorResponseIntegration:
         assert "campaigns://list" in response["error"]["recovery_action"]
 
     def test_typical_duplicate_result_response(self) -> None:
-        """Test typical usage for duplicate result detection.
+        """Test typical usage for the suggestion-identity duplicate.
 
-        Reference: submit_results.py duplicate detection pattern
+        The code no longer fires for matching parameter values — replicates
+        are accepted — so its recovery advice must not offer ``force=True``
+        as an override. What remains is one result per suggestion.
         """
         response = make_error_response(
             ErrorCode.DUPLICATE_RESULT,
-            message="Result at index 2 is a duplicate of existing result",
-            details={
-                "result_index": 2,
-                "duplicate_of_index": 5,
-                "parameter_distance": 0.0,
-            },
+            message="A result already exists for this suggestion",
+            details={"result_index": 2, "suggestion_id": "b0b0b0b0"},
         )
 
-        # Verify response tells agent how to proceed
-        assert "force=True" in response["error"]["recovery_action"]
+        recovery = response["error"]["recovery_action"]
+        assert "force" not in recovery
+        assert "suggestion_id" in recovery
         assert response["error"]["details"]["result_index"] == 2
 
     def test_typical_model_fitting_failure(self) -> None:

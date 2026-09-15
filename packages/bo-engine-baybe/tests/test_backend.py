@@ -987,3 +987,127 @@ class TestComputeDiagnostics:
             assert "count" in outliers
             assert "outlier_results" in outliers
             assert isinstance(outliers["outlier_results"], list)
+
+
+class TestContinuousRecommendationPassThrough:
+    """BayBE's recommendation is returned as given, repeats included.
+
+    BayBE cannot disable re-recommendation through its campaign flags once a
+    search space has a continuous component, and a continuous space cannot
+    be exhausted, so a recommendation that repeats a measured point is a
+    replicate rather than a fault. The adapter must not substitute a
+    different point behind BayBE's back: doing so detaches the returned
+    suggestion from the posterior and acquisition values reported with it.
+    """
+
+    def _hybrid_spec(self) -> OptimizationSpec:
+        return OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="c1", type=ParameterType.CATEGORICAL, categories=["a", "b"]),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            batch_size=1,
+        )
+
+    def test_continuous_q1_recommendation_is_not_replaced(
+        self, simple_spec: OptimizationSpec
+    ) -> None:
+        """A q=1 continuous suggestion comes back exactly as BayBE produced it."""
+        backend = BayBEBackend()
+        observations = [
+            ObservationData(parameter_values={"x1": 0.2, "x2": 0.3}, objective_values={"y": 1.5}),
+            ObservationData(parameter_values={"x1": 0.8, "x2": 0.7}, objective_values={"y": 0.3}),
+            ObservationData(parameter_values={"x1": 0.5, "x2": 0.5}, objective_values={"y": 0.8}),
+        ]
+
+        result = backend.generate_suggestions(
+            spec=simple_spec,
+            observations=observations,
+            batch_size=1,
+            iteration=4,
+        )
+
+        assert len(result.suggestions) == 1
+        # No warning may claim a recommendation was swapped out.
+        assert not any("replaced" in w.lower() for w in result.warnings)
+
+    def test_repeated_continuous_recommendation_is_returned(
+        self, simple_spec: OptimizationSpec
+    ) -> None:
+        """Observing a point many times must not block recommending it again.
+
+        Every observation sits on one setting, which is the situation that
+        previously forced a substituted "unseen" point. The adapter must now
+        simply return whatever BayBE recommends, without raising.
+        """
+        backend = BayBEBackend()
+        repeated = {"x1": 0.5, "x2": 0.5}
+        observations = [
+            ObservationData(parameter_values=dict(repeated), objective_values={"y": 0.8}),
+            ObservationData(parameter_values=dict(repeated), objective_values={"y": 0.9}),
+            ObservationData(parameter_values=dict(repeated), objective_values={"y": 0.7}),
+        ]
+
+        result = backend.generate_suggestions(
+            spec=simple_spec,
+            observations=observations,
+            batch_size=1,
+            iteration=5,
+        )
+
+        assert len(result.suggestions) == 1
+        assert not any("replaced" in w.lower() for w in result.warnings)
+
+    def test_hybrid_recommendation_is_not_replaced(self) -> None:
+        """Hybrid spaces share the flag limitation and are equally untouched."""
+        backend = BayBEBackend()
+        spec = self._hybrid_spec()
+        observations = [
+            ObservationData(parameter_values={"x1": 0.2, "c1": "a"}, objective_values={"y": 1.5}),
+            ObservationData(parameter_values={"x1": 0.8, "c1": "b"}, objective_values={"y": 0.3}),
+            ObservationData(parameter_values={"x1": 0.5, "c1": "a"}, objective_values={"y": 0.8}),
+        ]
+
+        result = backend.generate_suggestions(
+            spec=spec,
+            observations=observations,
+            batch_size=1,
+            iteration=4,
+        )
+
+        assert len(result.suggestions) == 1
+        assert not any("replaced" in w.lower() for w in result.warnings)
+
+    def test_explicit_allow_repeat_settings_are_honored(
+        self, simple_spec: OptimizationSpec
+    ) -> None:
+        """Explicitly allowing repeats must not be second-guessed by the adapter."""
+        backend = BayBEBackend()
+        spec = OptimizationSpec(
+            parameters=list(simple_spec.parameters),
+            objectives=list(simple_spec.objectives),
+            batch_size=1,
+            backend_options={
+                "baybe": {
+                    "allow_recommending_already_measured": True,
+                    "allow_recommending_already_recommended": True,
+                }
+            },
+        )
+        repeated = {"x1": 0.5, "x2": 0.5}
+        observations = [
+            ObservationData(parameter_values=dict(repeated), objective_values={"y": 0.8}),
+            ObservationData(parameter_values={"x1": 0.2, "x2": 0.3}, objective_values={"y": 1.5}),
+            ObservationData(parameter_values={"x1": 0.8, "x2": 0.7}, objective_values={"y": 0.3}),
+        ]
+
+        result = backend.generate_suggestions(
+            spec=spec,
+            observations=observations,
+            batch_size=1,
+            iteration=6,
+        )
+
+        assert len(result.suggestions) == 1
+        assert not any("replaced" in w.lower() for w in result.warnings)

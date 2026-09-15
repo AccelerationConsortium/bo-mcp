@@ -29,6 +29,7 @@ from bo_engine.acquisition import (
 )
 from bo_engine.constants import DUPLICATE_DETECTION_TOLERANCE, RESTART_WARN_TOLERANCE
 from bo_engine.initial_design import SearchSpaceExhaustedError
+from bo_engine.transforms import enumerate_numeric_discrete_grid
 from bo_engine.types import ObjectiveSpec, OptimizationSpec, ParameterSpec, ParameterType
 
 
@@ -199,11 +200,17 @@ class TestOptimizeAcquisitionExposesDiagnostics:
         restart_logs = [r for r in caplog.records if "Acquisition restart rank" in r.message]
         assert restart_logs == []
 
-    def test_q1_skips_best_restart_when_it_matches_x_avoid(
+    def test_q1_keeps_best_restart_on_a_continuous_domain_when_it_repeats(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The highest-valued restart is ineligible after it was evaluated."""
+        """A continuous domain cannot be exhausted, so a repeat still wins.
+
+        Repeating a measured setting on a continuous domain is a replicate,
+        not a failure to explore. The caller passes ``x_avoid=None`` for such
+        domains, so the highest-valued restart is returned even though it is
+        the point that was already evaluated.
+        """
         restart_candidates = torch.tensor(
             [
                 [[0.0, 1.0]],
@@ -228,21 +235,24 @@ class TestOptimizeAcquisitionExposesDiagnostics:
             x_avoid=restart_candidates[0],
         )
 
-        assert torch.equal(candidates, restart_candidates[1])
-        assert torch.equal(values, restart_values[1:2])
+        assert torch.equal(candidates, restart_candidates[0])
+        assert torch.equal(values, restart_values[0:1])
 
-    def test_q1_falls_back_to_an_unseen_point_when_all_restarts_match(
+    def test_q1_returns_the_collapsed_optimum_on_a_continuous_domain(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Collapsed restarts must not send the evaluated maximizer again."""
+        """Every restart on the measured optimum: return it, do not resample.
+
+        The sampling fallback exists for candidates that are *invalid*, not
+        for candidates that merely repeat. On a continuous domain there is
+        nothing to recover from, so the optimizer's answer is returned as-is.
+        """
         duplicate = torch.tensor([[[1.0, 1.0]]], dtype=torch.float64)
 
-        def fake_optimize_acqf(**kwargs):
-            repeats = kwargs["num_restarts"]
-            return duplicate.repeat(repeats, 1, 1), torch.ones(repeats, dtype=torch.float64)
-
-        monkeypatch.setattr("bo_engine.acquisition.optimize_acqf", fake_optimize_acqf)
+        monkeypatch.setattr(
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+        )
         torch.manual_seed(7)
 
         candidates, values = optimize_acquisition(
@@ -256,9 +266,7 @@ class TestOptimizeAcquisitionExposesDiagnostics:
 
         assert candidates.shape == (1, 2)
         assert values.shape == (1,)
-        assert not torch.equal(candidates, duplicate[0])
-        assert torch.all(candidates >= 0.0)
-        assert torch.all(candidates <= 1.0)
+        assert torch.equal(candidates, duplicate[0])
 
 
 class _PeakAcquisition(AcquisitionFunction):
@@ -280,6 +288,34 @@ def _one_discrete_param_spec(
     return OptimizationSpec(
         parameters=[
             ParameterSpec(name="x0", type=ParameterType.DISCRETE, values=values, bounds=bounds)
+        ],
+        objectives=[ObjectiveSpec(name="y", minimize=True)],
+    )
+
+
+def _two_discrete_param_spec(
+    x0_values: list[float],
+    x1_values: list[float],
+) -> OptimizationSpec:
+    """An entirely finite domain: every parameter is numeric-discrete."""
+    return OptimizationSpec(
+        parameters=[
+            ParameterSpec(name="x0", type=ParameterType.DISCRETE, values=x0_values),
+            ParameterSpec(name="x1", type=ParameterType.DISCRETE, values=x1_values),
+        ],
+        objectives=[ObjectiveSpec(name="y", minimize=True)],
+    )
+
+
+def _hybrid_spec(
+    discrete_values: list[float],
+    continuous_bounds: tuple[float, float] = (0.0, 1.0),
+) -> OptimizationSpec:
+    """A continuous-containing domain that still needs grid snapping."""
+    return OptimizationSpec(
+        parameters=[
+            ParameterSpec(name="d", type=ParameterType.DISCRETE, values=discrete_values),
+            ParameterSpec(name="c", type=ParameterType.CONTINUOUS, bounds=continuous_bounds),
         ],
         objectives=[ObjectiveSpec(name="y", minimize=True)],
     )
@@ -309,10 +345,15 @@ class TestAvoidedRestartMatching:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A restart a hair away from an evaluated point is still a duplicate."""
+        """A restart a hair away from an evaluated point is still a duplicate.
+
+        Exercised on a finite grid, the only domain where exclusion applies.
+        A stored measurement rarely lands bit-exactly on its grid value, so
+        the avoided point is offset by less than the duplicate tolerance.
+        """
         restart_candidates = torch.tensor(
             [
-                [[5e-8, 1.0]],
+                [[0.0, 1.0]],
                 [[0.25, 0.75]],
             ],
             dtype=torch.float64,
@@ -330,11 +371,15 @@ class TestAvoidedRestartMatching:
             batch_size=1,
             num_restarts=2,
             raw_samples=16,
-            x_avoid=torch.tensor([[0.0, 1.0]], dtype=torch.float64),
+            spec=_two_discrete_param_spec([0.0, 0.25], [0.75, 1.0]),
+            x_avoid=torch.tensor([[5e-8, 1.0]], dtype=torch.float64),
         )
 
         assert torch.equal(candidates, restart_candidates[1])
-        assert torch.equal(values, restart_values[1:2])
+        # A numeric-discrete spec re-evaluates acquisition at the snapped
+        # coordinate, so the reported value describes the executed point
+        # (sum of [0.25, 0.75]) rather than the optimizer's relaxed value.
+        assert torch.equal(values, torch.tensor([1.0], dtype=torch.float64))
 
     def test_q1_snaps_value_grid_before_filtering(
         self,
@@ -482,16 +527,19 @@ class TestAvoidedRestartMatching:
         assert torch.equal(values, torch.tensor([0.0], dtype=torch.float64))
 
     def test_real_optimizer_never_returns_avoided_maximizer(self) -> None:
-        """End-to-end invariant: the suggestion is never a duplicate experiment.
+        """End-to-end invariant on a finite grid: no duplicate experiment.
 
         Uses the real ``optimize_acqf`` on a concave acquisition whose global
         maximizer is the avoided point, so every restart converges (within
-        L-BFGS-B tolerance, not bit-exactly) onto it. Whichever path selects
-        the candidate — unseen restart or sampling fallback — the result must
-        stay at least the duplicate tolerance away from the evaluated point.
+        L-BFGS-B tolerance, not bit-exactly) onto it. The domain is an
+        entirely finite grid, so it can be exhausted and exclusion applies:
+        whichever path selects the candidate — eligible restart or
+        enumerated fallback — the result must stay at least the duplicate
+        tolerance away from the evaluated point.
         """
         torch.manual_seed(0)
         avoided = torch.tensor([[0.5, 0.5]], dtype=torch.float64)
+        grid = [0.0, 0.25, 0.5, 0.75, 1.0]
 
         candidates, values = optimize_acquisition(
             acqf=_PeakAcquisition(),
@@ -499,6 +547,7 @@ class TestAvoidedRestartMatching:
             batch_size=1,
             num_restarts=4,
             raw_samples=32,
+            spec=_two_discrete_param_spec(grid, grid),
             x_avoid=avoided,
         )
 
@@ -510,8 +559,15 @@ class TestAvoidedRestartMatching:
         assert distance >= DUPLICATE_DETECTION_TOLERANCE
 
 
-class TestContinuousUnseenFallback:
-    """The all-restarts-avoided fallback is seeded and constraint-aware.
+class TestNoUsableRestartFallback:
+    """The no-usable-restart fallback is seeded and constraint-aware.
+
+    On a continuous-containing domain this path is reached when snapping
+    invalidates every restart, not when a restart repeats a measurement —
+    snapping runs after the optimizer's feasibility handling, so a feasible
+    relaxed point can land on an infeasible grid value. The hybrid specs
+    below trigger exactly that: the collapsed restart snaps its discrete
+    column onto a value the constraint forbids.
 
     Reference: BoTorch's ``get_polytope_samples`` (botorch.org, sampling
     utilities) draws feasible points under linear inequality and equality
@@ -524,9 +580,10 @@ class TestContinuousUnseenFallback:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Two runs with one campaign seed return the identical candidate."""
-        duplicate = torch.tensor([[[0.6, 0.6]]], dtype=torch.float64)
+        # Snaps to d=0.0, which the constraint ``d >= 0.5`` forbids.
+        unusable = torch.tensor([[[0.4, 0.6]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
         results = [
@@ -536,7 +593,14 @@ class TestContinuousUnseenFallback:
                 batch_size=1,
                 num_restarts=3,
                 raw_samples=16,
-                x_avoid=duplicate[0],
+                spec=_hybrid_spec([0.0, 1.0]),
+                inequality_constraints=[
+                    (
+                        torch.tensor([0]),
+                        torch.tensor([1.0], dtype=torch.float64),
+                        0.5,
+                    )
+                ],
                 random_seed=123,
             )
             for _ in range(2)
@@ -544,16 +608,17 @@ class TestContinuousUnseenFallback:
 
         assert torch.equal(results[0][0], results[1][0])
         assert torch.equal(results[0][1], results[1][1])
-        assert not torch.equal(results[0][0], duplicate[0])
+        assert float(results[0][0][0, 0]) == 1.0
 
     def test_fallback_honors_equality_constraints(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The fallback samples the zero-volume equality manifold directly."""
-        duplicate = torch.tensor([[[0.5, 0.5]]], dtype=torch.float64)
+        # Snaps to d=0.0, c=0.4, violating ``d + c = 1``.
+        unusable = torch.tensor([[[0.4, 0.4]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
         candidates, values = optimize_acquisition(
@@ -562,7 +627,7 @@ class TestContinuousUnseenFallback:
             batch_size=1,
             num_restarts=3,
             raw_samples=16,
-            x_avoid=duplicate[0],
+            spec=_hybrid_spec([0.0, 1.0]),
             equality_constraints=[
                 (
                     torch.tensor([0, 1]),
@@ -576,17 +641,21 @@ class TestContinuousUnseenFallback:
         assert candidates.shape == (1, 2)
         assert values.shape == (1,)
         assert math.isclose(float(candidates.sum()), 1.0, abs_tol=1e-6)
-        distance = torch.linalg.vector_norm(candidates - duplicate[0]).item()
-        assert distance >= DUPLICATE_DETECTION_TOLERANCE
 
     def test_fallback_samples_thin_inequality_region(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A feasible region far smaller than the box still yields a candidate."""
-        duplicate = torch.tensor([[[0.0005, 0.5]]], dtype=torch.float64)
+        """A feasible region far smaller than the box still yields a candidate.
+
+        The discrete column has a grid value inside the thin region (0.0) and
+        one far outside it (1.0). The collapsed restart snaps onto 1.0, which
+        the constraint forbids, so the sampler must find the sliver at 0.0.
+        """
+        # Snaps to d=1.0, violating ``d <= 0.001``.
+        unusable = torch.tensor([[[0.6, 0.5]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
         candidates, _values = optimize_acquisition(
@@ -595,7 +664,7 @@ class TestContinuousUnseenFallback:
             batch_size=1,
             num_restarts=3,
             raw_samples=16,
-            x_avoid=duplicate[0],
+            spec=_hybrid_spec([0.0, 1.0]),
             inequality_constraints=[
                 (
                     torch.tensor([0]),
@@ -608,8 +677,6 @@ class TestContinuousUnseenFallback:
 
         assert candidates.shape == (1, 2)
         assert float(candidates[0, 0]) <= 0.001 + 1e-9
-        distance = torch.linalg.vector_norm(candidates - duplicate[0]).item()
-        assert distance >= DUPLICATE_DETECTION_TOLERANCE
 
     def test_fallback_raises_exhausted_when_grid_is_fully_evaluated(
         self,
@@ -776,16 +843,11 @@ class TestContinuousUnseenFallback:
         point 1.0; those rows must be filtered so the returned canonical
         candidate still satisfies the constraint.
         """
-        duplicate = torch.tensor([[[0.0, 0.5]]], dtype=torch.float64)
+        # Snaps to x0=1.0, violating ``x0 <= 0.6``: the restart is invalid,
+        # which is the trigger, rather than a repeated measurement.
+        unusable = torch.tensor([[[0.7, 0.5]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
-        )
-        spec = OptimizationSpec(
-            parameters=[
-                ParameterSpec(name="x0", type=ParameterType.DISCRETE, values=[0.0, 1.0]),
-                ParameterSpec(name="x1", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
-            ],
-            objectives=[ObjectiveSpec(name="y", minimize=True)],
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
         candidates, _values = optimize_acquisition(
@@ -794,8 +856,7 @@ class TestContinuousUnseenFallback:
             batch_size=1,
             num_restarts=3,
             raw_samples=16,
-            spec=spec,
-            x_avoid=duplicate[0],
+            spec=_hybrid_spec([0.0, 1.0]),
             inequality_constraints=[
                 (
                     torch.tensor([0]),
@@ -810,39 +871,224 @@ class TestContinuousUnseenFallback:
         assert float(candidates[0, 0]) == 0.0
         assert torch.all(candidates >= 0.0)
         assert torch.all(candidates <= 1.0)
-        distance = torch.linalg.vector_norm(candidates - duplicate[0]).item()
-        assert distance >= DUPLICATE_DETECTION_TOLERANCE
 
     def test_fallback_error_without_exhaustion_claim_when_samples_all_seen(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When the sampled cloud covers nothing unseen, the error says so.
+        """When the sampled cloud holds nothing usable, the error says so.
 
-        A continuous space can never be proven exhausted, so the sampled
-        branch must not raise the campaign-terminating exhaustion signal —
-        only a ``RuntimeError`` stating the sample found no unseen point.
+        A domain with a continuous parameter can never be proven exhausted,
+        so the sampled branch must not raise the campaign-terminating
+        exhaustion signal — only a ``RuntimeError`` reporting that the sample
+        found no usable point. The failure here is validity, not repetition:
+        every sample snaps onto the grid value the constraint forbids.
         """
-        duplicate = torch.tensor([[[0.3, 0.3]]], dtype=torch.float64)
+        # The constraint binds the *continuous* column, so candidate
+        # generation goes through the polytope sampler rather than
+        # per-assignment substitution. Every restart and every sample sits
+        # at c=0.5, which ``c >= 0.9`` forbids.
+        unusable = torch.tensor([[[0.4, 0.5]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
-        def seen_only_sobol(d: int, n: int, _seed: int, bounds: torch.Tensor) -> torch.Tensor:
-            return torch.full((n, d), 0.3, dtype=bounds.dtype, device=bounds.device)
+        def infeasible_only_polytope(*, n: int, **_kwargs: object) -> torch.Tensor:
+            return torch.tensor([[0.4, 0.5]], dtype=torch.float64).repeat(n, 1)
 
-        monkeypatch.setattr("bo_engine.acquisition.create_reproducible_sobol", seen_only_sobol)
+        monkeypatch.setattr("bo_engine.acquisition.get_polytope_samples", infeasible_only_polytope)
 
-        with pytest.raises(RuntimeError, match="unseen alternative") as excinfo:
+        with pytest.raises(RuntimeError, match="no usable alternative") as excinfo:
             optimize_acquisition(
                 acqf=_SumAcquisition(),
                 bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
                 batch_size=1,
                 num_restarts=3,
                 raw_samples=16,
-                x_avoid=duplicate[0],
+                spec=_hybrid_spec([0.0, 1.0]),
+                inequality_constraints=[
+                    (
+                        torch.tensor([1]),
+                        torch.tensor([1.0], dtype=torch.float64),
+                        0.9,
+                    )
+                ],
             )
         assert not isinstance(excinfo.value, SearchSpaceExhaustedError)
+
+
+class TestFiniteDomainBeyondEnumerationBudget:
+    """Exclusion follows domain type; enumeration follows a size budget.
+
+    ``enumerate_numeric_discrete_grid`` returns ``None`` once a grid exceeds
+    ``DISCRETE_ENUMERATION_MAX_POINTS`` (or has a bounds-only axis wider than
+    it). That is a statement about enumeration cost, not about whether the
+    domain is finite. Using it to decide exclusion would silently drop the
+    protection for exactly the large grids that most need it, so these
+    regressions pin the two concepts apart.
+    """
+
+    def test_large_value_grid_still_excludes_measured_points(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A 200x200 grid is finite: the avoided optimum must not be returned."""
+        axis = [i / 199 for i in range(200)]
+        assert enumerate_numeric_discrete_grid(_two_discrete_param_spec(axis, axis)) is None
+
+        avoided = torch.tensor([[0.0, 0.0]], dtype=torch.float64)
+        monkeypatch.setattr(
+            "bo_engine.acquisition.optimize_acqf",
+            _collapsing_optimize_acqf(torch.tensor([[[0.0, 0.0]]], dtype=torch.float64)),
+        )
+
+        candidates, _values = optimize_acquisition(
+            acqf=_SumAcquisition(),
+            bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+            batch_size=1,
+            num_restarts=3,
+            raw_samples=16,
+            spec=_two_discrete_param_spec(axis, axis),
+            x_avoid=avoided,
+            random_seed=3,
+        )
+
+        distance = torch.linalg.vector_norm(candidates - avoided).item()
+        assert distance >= DUPLICATE_DETECTION_TOLERANCE
+
+    def test_bounds_only_axis_over_cap_still_excludes_measured_points(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A bounds-only integer axis wider than the cap is still finite."""
+        spec = _one_discrete_param_spec(values=None, bounds=(0.0, 20000.0))
+        assert enumerate_numeric_discrete_grid(spec) is None
+
+        avoided = torch.tensor([[10000.0]], dtype=torch.float64)
+        monkeypatch.setattr(
+            "bo_engine.acquisition.optimize_acqf",
+            _collapsing_optimize_acqf(torch.tensor([[[10000.0]]], dtype=torch.float64)),
+        )
+
+        candidates, _values = optimize_acquisition(
+            acqf=_SumAcquisition(),
+            bounds=torch.tensor([[0.0], [20000.0]], dtype=torch.float64),
+            batch_size=1,
+            num_restarts=3,
+            raw_samples=32,
+            spec=spec,
+            x_avoid=avoided,
+            random_seed=3,
+        )
+
+        distance = torch.linalg.vector_norm(candidates - avoided).item()
+        assert distance >= DUPLICATE_DETECTION_TOLERANCE
+
+    def test_unenumerable_grid_never_claims_exhaustion(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sampling failure on a large grid is a RuntimeError, not exhaustion.
+
+        Only full enumeration can prove a finite domain is used up. When the
+        grid is too large to enumerate, an unsuccessful sample means the
+        sample missed, so the campaign must not be terminated.
+        """
+        axis = [i / 199 for i in range(200)]
+        spec = _two_discrete_param_spec(axis, axis)
+        avoided = torch.tensor([[0.0, 0.0]], dtype=torch.float64)
+        monkeypatch.setattr(
+            "bo_engine.acquisition.optimize_acqf",
+            _collapsing_optimize_acqf(torch.tensor([[[0.0, 0.0]]], dtype=torch.float64)),
+        )
+
+        def avoided_only_sobol(d: int, n: int, _seed: int, bounds: torch.Tensor) -> torch.Tensor:
+            return torch.zeros((n, d), dtype=bounds.dtype, device=bounds.device)
+
+        monkeypatch.setattr("bo_engine.acquisition.create_reproducible_sobol", avoided_only_sobol)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            optimize_acquisition(
+                acqf=_SumAcquisition(),
+                bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+                batch_size=1,
+                num_restarts=3,
+                raw_samples=16,
+                spec=spec,
+                x_avoid=avoided,
+                random_seed=3,
+            )
+        assert not isinstance(excinfo.value, SearchSpaceExhaustedError)
+
+
+class TestContinuousContainingDomainsAllowRepeats:
+    """A domain with a continuous parameter may return a repeated optimum."""
+
+    def test_continuous_plus_numeric_discrete_returns_the_repeat(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Hybrid domains are infinite, so the measured optimum can win again.
+
+        This is the case the whole-domain rule exists for: the spec has a
+        grid column, so it needs snapping, but it is not a finite domain and
+        must not be treated as one.
+        """
+        repeated = torch.tensor([[[1.0, 0.5]]], dtype=torch.float64)
+        monkeypatch.setattr(
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(repeated)
+        )
+
+        candidates, _values = optimize_acquisition(
+            acqf=_SumAcquisition(),
+            bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+            batch_size=1,
+            num_restarts=3,
+            raw_samples=16,
+            spec=_hybrid_spec([0.0, 1.0]),
+            x_avoid=repeated[0],
+            random_seed=3,
+        )
+
+        assert torch.equal(candidates, repeated[0])
+
+    def test_finite_mixed_space_gains_no_new_enforcement(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Categorical + numeric-discrete is finite but keeps MIXED's behaviour.
+
+        This cleanup does not extend exclusion to the mixed dispatch. The
+        domain is finite, but ``_optimize_mixed`` has never enforced
+        ``x_avoid`` and still does not.
+        """
+        mixed_result = (
+            torch.zeros(1, 2, dtype=torch.float64),
+            torch.zeros(1, dtype=torch.float64),
+        )
+        monkeypatch.setattr(
+            "bo_engine.acquisition._optimize_mixed", lambda *_args, **_kwargs: mixed_result
+        )
+        spec = OptimizationSpec(
+            parameters=[
+                ParameterSpec(name="d", type=ParameterType.DISCRETE, values=[0.0, 1.0]),
+                ParameterSpec(name="c0", type=ParameterType.CATEGORICAL, categories=["a", "b"]),
+            ],
+            objectives=[ObjectiveSpec(name="y", minimize=True)],
+        )
+
+        caplog.set_level(logging.DEBUG, logger="bo_engine.acquisition")
+        candidates, _values = optimize_acquisition(
+            acqf=_SumAcquisition(),
+            bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+            batch_size=1,
+            spec=spec,
+            x_avoid=torch.zeros(1, 2, dtype=torch.float64),
+        )
+
+        assert torch.equal(candidates, mixed_result[0])
+        assert any("mixed-space" in r.message for r in caplog.records)
 
 
 class TestDomainBoundsSeparation:
@@ -1042,33 +1288,41 @@ class TestConstraintCoupledDiscreteFallback:
     reduced continuous subproblem (BoTorch ``get_polytope_samples``).
     """
 
-    def _hybrid_spec(self, discrete_values: list[float]) -> OptimizationSpec:
+    def _hybrid_spec(
+        self,
+        discrete_values: list[float],
+        continuous_bounds: tuple[float, float] = (0.0, 1.0),
+    ) -> OptimizationSpec:
         return OptimizationSpec(
             parameters=[
                 ParameterSpec(name="d", type=ParameterType.DISCRETE, values=discrete_values),
-                ParameterSpec(name="c", type=ParameterType.CONTINUOUS, bounds=(0.0, 1.0)),
+                ParameterSpec(name="c", type=ParameterType.CONTINUOUS, bounds=continuous_bounds),
             ],
             objectives=[ObjectiveSpec(name="y", minimize=True)],
         )
 
-    def test_equality_coupled_fallback_finds_the_unseen_assignment(
+    def test_equality_coupled_fallback_finds_the_feasible_assignment(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """``d + c = 1`` with (0, 1) avoided must yield exactly (1, 0)."""
-        duplicate = torch.tensor([[[0.0, 1.0]]], dtype=torch.float64)
+        """``d + c = 1`` with ``c <= 0.5`` must yield exactly (1, 0).
+
+        The collapsed restart snaps to d=0, where the equality would need
+        c=1 — outside the continuous bounds. Only the d=1 assignment has a
+        non-empty reduced subproblem.
+        """
+        unusable = torch.tensor([[[0.4, 0.3]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
         candidates, _values = optimize_acquisition(
             acqf=_SumAcquisition(),
-            bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+            bounds=torch.tensor([[0.0, 0.0], [1.0, 0.5]], dtype=torch.float64),
             batch_size=1,
             num_restarts=3,
             raw_samples=16,
-            spec=self._hybrid_spec([0.0, 1.0]),
-            x_avoid=duplicate[0],
+            spec=self._hybrid_spec([0.0, 1.0], (0.0, 0.5)),
             equality_constraints=[
                 (
                     torch.tensor([0, 1]),
@@ -1089,23 +1343,22 @@ class TestConstraintCoupledDiscreteFallback:
     ) -> None:
         """Assignments whose reduced continuous subproblem is empty are skipped.
 
-        Under ``d + c = 2`` with ``c`` in [0, 1], the assignment d=0 needs
-        c=2 (infeasible) and d=1 needs the evaluated c=1 — only d=2 with c=0
+        Under ``d + c = 2`` with ``c`` in [0, 0.5], the assignment d=0 needs
+        c=2 and d=1 needs c=1, both outside the bounds — only d=2 with c=0
         remains.
         """
-        duplicate = torch.tensor([[[1.0, 1.0]]], dtype=torch.float64)
+        unusable = torch.tensor([[[0.4, 0.3]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
         candidates, _values = optimize_acquisition(
             acqf=_SumAcquisition(),
-            bounds=torch.tensor([[0.0, 0.0], [2.0, 1.0]], dtype=torch.float64),
+            bounds=torch.tensor([[0.0, 0.0], [2.0, 0.5]], dtype=torch.float64),
             batch_size=1,
             num_restarts=3,
             raw_samples=16,
-            spec=self._hybrid_spec([0.0, 1.0, 2.0]),
-            x_avoid=duplicate[0],
+            spec=self._hybrid_spec([0.0, 1.0, 2.0], (0.0, 0.5)),
             equality_constraints=[
                 (
                     torch.tensor([0, 1]),
@@ -1135,9 +1388,11 @@ class TestConstraintCoupledDiscreteFallback:
         from bo_engine.constants import ACQF_FALLBACK_MAX_ASSIGNMENTS
 
         grid = [i / 10000 for i in range(10001)]
-        duplicate = torch.tensor([[[0.0, 1.0]]], dtype=torch.float64)
+        # Snaps to d=0.5, where ``d + c = 1`` needs c=0.5 — but the restart
+        # carries c=0.9, so the canonical point violates the equality.
+        unusable = torch.tensor([[[0.5, 0.9]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
         sampler_calls = {"count": 0}
@@ -1158,7 +1413,6 @@ class TestConstraintCoupledDiscreteFallback:
             num_restarts=3,
             raw_samples=16,
             spec=self._hybrid_spec(grid),
-            x_avoid=duplicate[0],
             equality_constraints=[
                 (
                     torch.tensor([0, 1]),
@@ -1175,34 +1429,36 @@ class TestConstraintCoupledDiscreteFallback:
         assert abs(d_value * 10000 - round(d_value * 10000)) < 1e-6
         # Feasible: the coupled equality holds at the executable coordinate.
         assert abs(d_value + c_value - 1.0) < 1e-6
-        # Unseen: not the avoided (0, 1).
-        distance = torch.linalg.vector_norm(candidates - duplicate[0]).item()
-        assert distance >= DUPLICATE_DETECTION_TOLERANCE
 
-    def test_all_feasible_assignments_avoided_raises_without_exhaustion_claim(
+    def test_no_feasible_assignment_raises_without_exhaustion_claim(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A hybrid space cannot prove exhaustion — plain RuntimeError only."""
-        duplicate = torch.tensor([[[0.0, 1.0]]], dtype=torch.float64)
+        """A hybrid space cannot prove exhaustion — plain RuntimeError only.
+
+        ``d + c = 1.9`` with ``d`` in {0, 1} and ``c`` in [0, 0.5] has no
+        feasible assignment at all, so generation yields nothing. That is a
+        failure to find a usable point, never a proof that the campaign has
+        run out of experiments.
+        """
+        unusable = torch.tensor([[[0.4, 0.3]]], dtype=torch.float64)
         monkeypatch.setattr(
-            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(duplicate)
+            "bo_engine.acquisition.optimize_acqf", _collapsing_optimize_acqf(unusable)
         )
 
-        with pytest.raises(RuntimeError, match="unseen alternative") as excinfo:
+        with pytest.raises(RuntimeError, match="no usable alternative") as excinfo:
             optimize_acquisition(
                 acqf=_SumAcquisition(),
-                bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+                bounds=torch.tensor([[0.0, 0.0], [1.0, 0.5]], dtype=torch.float64),
                 batch_size=1,
                 num_restarts=3,
                 raw_samples=16,
-                spec=self._hybrid_spec([0.0, 1.0]),
-                x_avoid=torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float64),
+                spec=self._hybrid_spec([0.0, 1.0], (0.0, 0.5)),
                 equality_constraints=[
                     (
                         torch.tensor([0, 1]),
                         torch.tensor([1.0, 1.0], dtype=torch.float64),
-                        1.0,
+                        1.9,
                     )
                 ],
                 random_seed=5,
@@ -1251,12 +1507,49 @@ class TestSelectAssignments:
 class TestUnenforcedAvoidancePathsLogDebug:
     """``batch_size > 1`` and mixed spaces document dropped ``x_avoid``."""
 
-    def test_q2_continuous_logs_unenforced_x_avoid(
+    def test_q2_grid_logs_unenforced_x_avoid(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Sequential-greedy batches state at DEBUG that x_avoid is ignored."""
+        """Sequential-greedy batches state at DEBUG that x_avoid is ignored.
+
+        Uses a finite grid, the only domain that still supplies ``x_avoid``
+        to the numeric optimizer. Sequential greedy optimization exposes no
+        per-restart selection point, so exclusion cannot be applied there.
+        """
+        batch = torch.tensor([[0.0, 0.75], [0.25, 1.0]], dtype=torch.float64)
+
+        def fake_optimize_acqf(**_kwargs):
+            return batch, torch.ones(2, dtype=torch.float64)
+
+        monkeypatch.setattr("bo_engine.acquisition.optimize_acqf", fake_optimize_acqf)
+
+        caplog.set_level(logging.DEBUG, logger="bo_engine.acquisition")
+        candidates, _values = optimize_acquisition(
+            acqf=_SumAcquisition(),
+            bounds=torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64),
+            batch_size=2,
+            num_restarts=2,
+            raw_samples=16,
+            spec=_two_discrete_param_spec([0.0, 0.25], [0.75, 1.0]),
+            x_avoid=torch.tensor([[0.0, 0.75]], dtype=torch.float64),
+        )
+
+        assert torch.equal(candidates, batch)
+        assert any("not enforced for grid acquisition" in r.message for r in caplog.records)
+
+    def test_q2_continuous_domain_passes_no_x_avoid_at_all(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A continuous domain drops x_avoid at dispatch, so nothing is logged.
+
+        The "ignored" debug line describes a batch-size limitation. On a
+        continuous domain exclusion does not apply at any batch size, so
+        there is no dropped enforcement to report.
+        """
         batch = torch.tensor([[0.2, 0.4], [0.6, 0.8]], dtype=torch.float64)
 
         def fake_optimize_acqf(**_kwargs):
@@ -1275,7 +1568,7 @@ class TestUnenforcedAvoidancePathsLogDebug:
         )
 
         assert torch.equal(candidates, batch)
-        assert any("not enforced for continuous acquisition" in r.message for r in caplog.records)
+        assert not any("not enforced for grid acquisition" in r.message for r in caplog.records)
 
     def test_mixed_space_logs_unenforced_x_avoid(
         self,

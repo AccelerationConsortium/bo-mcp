@@ -380,6 +380,10 @@ async def upload_results_file(
         errors=result["errors"],
         warnings=result["warnings"],
         field_errors=result.get("field_errors", {}),
+        # Forward the wrapper's replay marker, as the JSON route does.
+        # Without it a retried upload looks like a fresh insert, which is
+        # the exact confusion the key exists to remove.
+        idempotency_replay=bool(result.get("idempotency_replay", False)),
         error_code=(result.get("error") or {}).get("code"),
     )
 

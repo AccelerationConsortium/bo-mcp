@@ -155,6 +155,11 @@ async def test_repeated_upload_under_one_key_replays(
     assert first.status_code == 201, first.text
     assert retry.status_code in (200, 201), retry.text
     assert retry.json()["result_ids"] == first.json()["result_ids"]
+    # The replay must be visible, not just silent: a client that cannot
+    # tell a cached batch from a fresh insert has no way to report what
+    # its retry actually did.
+    assert first.json()["idempotency_replay"] is False
+    assert retry.json()["idempotency_replay"] is True
 
     listed = await api_client.get(f"/api/results/{campaign_id}", headers=auth_headers)
     assert len(listed.json()) == 1

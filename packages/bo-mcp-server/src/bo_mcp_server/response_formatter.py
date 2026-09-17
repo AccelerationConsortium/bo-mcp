@@ -453,7 +453,6 @@ class SubmitResultsStandardResponse(_StrictResponse):
     errors: list[str] = Field(default_factory=list)
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
-    n_duplicates_detected: int = 0
 
 
 class SubmitResultsDetailedResponse(_PassthroughResponse):
@@ -464,7 +463,6 @@ class SubmitResultsDetailedResponse(_PassthroughResponse):
     errors: list[str] = Field(default_factory=list)
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
-    duplicates_detected: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------- Validate intake ----------
@@ -754,7 +752,6 @@ def format_submit_results_response(
                 errors=full_response.get("errors", []),
                 field_errors=full_response.get("field_errors", {}),
                 warnings=full_response.get("warnings", []),
-                n_duplicates_detected=len(full_response.get("duplicates_detected", [])),
             )
         )
 

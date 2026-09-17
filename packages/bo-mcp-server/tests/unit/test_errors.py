@@ -32,7 +32,6 @@ class TestErrorCode:
             ErrorCode.INVALID_CAMPAIGN_ID,
             ErrorCode.CAMPAIGN_NOT_FOUND,
             ErrorCode.INVALID_STATE_TRANSITION,
-            ErrorCode.DUPLICATE_RESULT,
             ErrorCode.VALIDATION_FAILED,
             ErrorCode.MISSING_PARAMETERS,
             ErrorCode.MISSING_OBJECTIVES,
@@ -338,25 +337,6 @@ class TestErrorResponseIntegration:
         assert "UUID" in response["error"]["recovery_action"]
         assert "campaigns://list" in response["error"]["recovery_action"]
 
-    def test_typical_duplicate_result_response(self) -> None:
-        """Test typical usage for duplicate result detection.
-
-        Reference: submit_results.py duplicate detection pattern
-        """
-        response = make_error_response(
-            ErrorCode.DUPLICATE_RESULT,
-            message="Result at index 2 is a duplicate of existing result",
-            details={
-                "result_index": 2,
-                "duplicate_of_index": 5,
-                "parameter_distance": 0.0,
-            },
-        )
-
-        # Verify response tells agent how to proceed
-        assert "force=True" in response["error"]["recovery_action"]
-        assert response["error"]["details"]["result_index"] == 2
-
     def test_typical_model_fitting_failure(self) -> None:
         """Test typical usage for model fitting failure.
 
@@ -385,7 +365,6 @@ class TestErrorCodeCoverage:
             "invalid campaign_id format": ErrorCode.INVALID_CAMPAIGN_ID,
             "campaign does not exist": ErrorCode.CAMPAIGN_NOT_FOUND,
             "campaign in wrong state": ErrorCode.INVALID_STATE_TRANSITION,
-            "duplicate data submission": ErrorCode.DUPLICATE_RESULT,
             "intake data invalid": ErrorCode.VALIDATION_FAILED,
             "no parameters provided": ErrorCode.MISSING_PARAMETERS,
             "no objectives provided": ErrorCode.MISSING_OBJECTIVES,

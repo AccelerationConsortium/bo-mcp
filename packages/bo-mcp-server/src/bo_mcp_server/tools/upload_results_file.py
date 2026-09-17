@@ -50,7 +50,6 @@ def _build_upload_response(
     result_ids = submit_result.get("result_ids", [])
     errors = parse_errors + submit_result.get("errors", [])
     warnings = submit_result.get("warnings", [])
-    duplicates_detected = submit_result.get("duplicates_detected", [])
     response: dict[str, Any] = {
         "success": submit_result.get("success", False) and not parse_errors,
         "results_created": len(result_ids),
@@ -58,8 +57,6 @@ def _build_upload_response(
     }
     if warnings:
         response["warnings"] = warnings
-    if duplicates_detected:
-        response["duplicates_detected"] = duplicates_detected
     if dry_run:
         response["dry_run"] = True
         if "preview" in submit_result:
@@ -149,6 +146,13 @@ async def _upload_results_file_tool(
     CSV format should have columns:
     - param_<name>: Parameter values (e.g., param_temperature, param_pressure)
     - obj_<name>: Objective values (e.g., obj_yield, obj_cost)
+
+    Rows that repeat a parameter setting are accepted as replicates; each
+    one is stored and consumes its own observation budget. Uploaded rows
+    are normally unlinked (no ``suggestion_id``), so nothing distinguishes
+    a re-uploaded file from a genuine set of repeat experiments. Pass
+    ``idempotency_key`` if re-sending the same file after a timeout must
+    not double-count.
 
     The MCP transport resolves ``submitted_by`` internally from the current
     BO-MCP user identity. Agents must not provide database user ids.

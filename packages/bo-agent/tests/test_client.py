@@ -9,14 +9,9 @@ https://requests.readthedocs.io/en/latest/api/#requests.Session.request,
 and the test-double taxonomy in
 https://martinfowler.com/articles/mocksArentStubs.html).
 
-The ``force`` assertions guard the REST/MCP parity contract in both
-directions: a client that silently dropped ``force`` from a forced
-submission would regress REST users back to the generate-and-reject
-loop the flag exists to break, while a client that always sent the key
-would 422 every ordinary submission against an API server that
-predates the field (the server request schema uses ``extra="forbid"``,
-so unknown keys are rejected rather than ignored). ``force`` must
-therefore appear exactly when requested and never otherwise.
+The submit payload is pinned by exact equality because the server
+request schema uses ``extra="forbid"``: any stray top-level key fails
+validation with a 422 rather than being ignored.
 """
 
 from typing import Any
@@ -28,14 +23,11 @@ from pydantic import BaseModel, ConfigDict
 _HTTP_OK = 200
 
 
-class _PreForceResultBatchCreate(BaseModel):
-    """Top-level request shape of servers that predate the ``force`` field.
+class _ResultBatchCreate(BaseModel):
+    """Top-level request shape accepted by the API.
 
-    Mirrors the API's ``ResultBatchCreate`` contract before ``force``
-    existed: ``extra="forbid"`` means any unknown top-level key fails
-    validation with a 422. Default submissions must stay valid against
-    this shape so a newer client works during client/server version
-    skew.
+    Mirrors the API's ``ResultBatchCreate`` contract: ``extra="forbid"``
+    means any unknown top-level key fails validation with a 422.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -84,7 +76,7 @@ def test_client_guidance_distinguishes_replicates_from_rejections() -> None:
 
     assert "Do not reject a suggestion solely because" in guidance
     assert "may intentionally recommend a replicate" in guidance
-    assert "force=True" in guidance
+    assert "Run it and submit the result" in guidance
     assert "does not exclude" in guidance
 
 
@@ -128,7 +120,7 @@ def test_get_results_rejects_non_list_payload(
         client.get_results("campaign-1")
 
 
-def test_submit_results_default_payload_keeps_legacy_shape(
+def test_submit_results_payload_carries_no_extra_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, session = _client_with_session(monkeypatch, {"success": True, "result_ids": ["r1"]})
@@ -138,24 +130,10 @@ def test_submit_results_default_payload_keeps_legacy_shape(
 
     call = session.calls[0]
     assert call["url"] == "http://bo-mcp.test/api/v1/results/campaign-1"
-    # Exact payload equality: ``force`` must be absent (not merely falsy)
-    # so pre-``force`` servers with ``extra="forbid"`` accept the request.
+    # Exact payload equality: an unknown top-level key would 422.
     assert call["json"] == {"results": results, "source": "api"}
     assert call["headers"]["Idempotency-Key"] == "submit-1"
-    _PreForceResultBatchCreate.model_validate(call["json"])
-
-
-def test_submit_results_sends_force_true_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, session = _client_with_session(monkeypatch, {"success": True, "result_ids": ["r2"]})
-
-    client.submit_results(
-        "campaign-1",
-        results=[{"parameter_values": {"x": 0.4}, "objective_values": {"y": 1.0}}],
-        idempotency_key="submit-2",
-        force=True,
-    )
-
-    assert session.calls[0]["json"]["force"] is True
+    _ResultBatchCreate.model_validate(call["json"])
 
 
 def test_submit_results_surfaces_operation_rejection_payload(
@@ -164,7 +142,7 @@ def test_submit_results_surfaces_operation_rejection_payload(
     rejection = {
         "success": False,
         "result_ids": [],
-        "errors": ["Exact duplicate results detected. Use force=True to override."],
+        "errors": ["A result already exists for this suggestion"],
     }
     client, _ = _client_with_session(monkeypatch, rejection)
 

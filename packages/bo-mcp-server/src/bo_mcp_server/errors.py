@@ -99,7 +99,6 @@ class ErrorCode(StrEnum):
     INVALID_CAMPAIGN_ID = "E001"
     CAMPAIGN_NOT_FOUND = "E002"
     INVALID_STATE_TRANSITION = "E003"
-    DUPLICATE_RESULT = "E004"
     VALIDATION_FAILED = "E005"
     MISSING_PARAMETERS = "E006"
     MISSING_OBJECTIVES = "E007"
@@ -235,9 +234,6 @@ ERROR_RECOVERY: dict[ErrorCode, str] = {
         "RUNNING->PAUSED (pause), PAUSED->RUNNING (resume), "
         "CREATED/RUNNING/PAUSED->COMPLETED (terminate)."
     ),
-    ErrorCode.DUPLICATE_RESULT: (
-        "Use force=True parameter to override duplicate detection, or skip this result."
-    ),
     ErrorCode.VALIDATION_FAILED: (
         "Review the errors array, fix the issues, and retry bo_create_campaign."
     ),
@@ -342,7 +338,6 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.INVALID_CAMPAIGN_ID: "Invalid campaign_id format",
     ErrorCode.CAMPAIGN_NOT_FOUND: "Campaign not found",
     ErrorCode.INVALID_STATE_TRANSITION: "Invalid campaign state for this operation",
-    ErrorCode.DUPLICATE_RESULT: "Duplicate result detected",
     ErrorCode.VALIDATION_FAILED: "Intake validation failed",
     ErrorCode.MISSING_PARAMETERS: "At least one parameter is required",
     ErrorCode.MISSING_OBJECTIVES: "At least one objective is required",
@@ -444,7 +439,6 @@ ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.INVALID_CAMPAIGN_ID: 400,
     ErrorCode.CAMPAIGN_NOT_FOUND: 404,
     ErrorCode.INVALID_STATE_TRANSITION: 409,
-    ErrorCode.DUPLICATE_RESULT: 409,
     ErrorCode.VALIDATION_FAILED: 400,
     ErrorCode.MISSING_PARAMETERS: 400,
     ErrorCode.MISSING_OBJECTIVES: 400,
@@ -487,7 +481,6 @@ ERROR_CODE_RETRY_HINTS: dict[ErrorCode, tuple[bool, float | None]] = {
     ErrorCode.INVALID_CAMPAIGN_ID: (False, None),
     ErrorCode.CAMPAIGN_NOT_FOUND: (False, None),
     ErrorCode.INVALID_STATE_TRANSITION: (False, None),
-    ErrorCode.DUPLICATE_RESULT: (False, None),
     ErrorCode.VALIDATION_FAILED: (False, None),
     ErrorCode.MISSING_PARAMETERS: (False, None),
     ErrorCode.MISSING_OBJECTIVES: (False, None),

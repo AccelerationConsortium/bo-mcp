@@ -75,7 +75,6 @@ def _make_submit_error(
     message: str | None = None,
     details: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
-    duplicates: list[dict[str, Any]] | None = None,
     field_errors: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Build a standardized error response for submit_results."""
@@ -84,7 +83,6 @@ def _make_submit_error(
         {
             "result_ids": [],
             "warnings": warnings or [],
-            "duplicates_detected": duplicates or [],
             "field_errors": field_errors or {},
         }
     )
@@ -110,7 +108,6 @@ def _build_submit_dry_run_response(
         "errors": tracking.errors,
         "field_errors": tracking.field_errors,
         "warnings": tracking.warnings,
-        "duplicates_detected": tracking.duplicates_detected,
         "preview": {
             "rows_submitted": submitted_rows,
             "rows_would_persist": persisted_rows,
@@ -122,7 +119,6 @@ def _build_submit_dry_run_response(
 def _short_circuit_submit(
     campaign_id: str,
     atomic: bool,
-    force: bool,
     continue_on_error: bool,
     dry_run: bool,
     result_entities: list[Result],
@@ -135,7 +131,7 @@ def _short_circuit_submit(
     can stay below ruff's 6-return ceiling: atomic-batch validation
     failure, an empty result set after filtering, and ``dry_run=True``.
     """
-    atomic_error = _check_atomic_failures(atomic, force, continue_on_error, campaign_id, tracking)
+    atomic_error = _check_atomic_failures(atomic, continue_on_error, tracking)
     if atomic_error is not None:
         return atomic_error
 
@@ -146,7 +142,6 @@ def _short_circuit_submit(
             "errors": (tracking.errors if tracking.errors else ["No valid results to submit"]),
             "field_errors": tracking.field_errors,
             "warnings": tracking.warnings,
-            "duplicates_detected": tracking.duplicates_detected,
         }
         if not atomic and continue_on_error:
             response_data["partial_results"] = tracking.partial_results
@@ -184,7 +179,6 @@ def _validate_submit_inputs(
             {
                 "result_ids": [],
                 "warnings": [],
-                "duplicates_detected": [],
                 "field_errors": {"campaign_id": ["invalid UUID format"]},
             }
         )
@@ -314,12 +308,10 @@ async def _fetch_campaign_and_spec(
 
 def _check_atomic_failures(
     atomic: bool,
-    force: bool,
     continue_on_error: bool,
-    campaign_id: str,
     tracking: _SubmitTracking,
 ) -> dict[str, Any] | None:
-    """Check for all-or-nothing failures (validation errors, exact duplicates).
+    """Check for all-or-nothing validation failures.
 
     Atomic mode is always all-or-nothing. Non-atomic mode is also all-or-
     nothing unless the caller opted into partial writes by passing
@@ -328,29 +320,6 @@ def _check_atomic_failures(
 
     Returns error response dict or None.
     """
-    # Exact duplicates get the standardized ``ErrorCode.DUPLICATE_RESULT``
-    # envelope (with recovery_action) before the generic-errors branch
-    # fires. Without this ordering, atomic mode would return a plain
-    # ``success=False / errors=[...]`` shape because
-    # ``_check_duplicates_for_result`` also appends a row-level error to
-    # ``tracking.errors`` -- clients would lose the duplicate-specific
-    # response shape and the ``Use force=True`` recovery hint.
-    exact_duplicates = [d for d in tracking.duplicates_detected if d.get("is_exact")]
-    if atomic and exact_duplicates and not force:
-        logger.warning(
-            "Exact duplicates detected for campaign %s: %s",
-            campaign_id,
-            exact_duplicates,
-        )
-        return _make_submit_error(
-            ErrorCode.DUPLICATE_RESULT,
-            message="Exact duplicate results detected. Use force=True to override.",
-            details={"duplicate_count": len(exact_duplicates)},
-            warnings=tracking.warnings,
-            duplicates=tracking.duplicates_detected,
-            field_errors=tracking.field_errors,
-        )
-
     all_or_nothing = atomic or not continue_on_error
     if all_or_nothing and tracking.errors:
         mode = "atomic mode" if atomic else "non-atomic, continue_on_error=False"
@@ -361,7 +330,6 @@ def _check_atomic_failures(
             "errors": tracking.errors,
             "field_errors": tracking.field_errors,
             "warnings": tracking.warnings,
-            "duplicates_detected": tracking.duplicates_detected,
         }
 
     return None
@@ -384,7 +352,6 @@ def _build_submit_response(
         "errors": tracking.errors,
         "field_errors": tracking.field_errors,
         "warnings": tracking.warnings,
-        "duplicates_detected": tracking.duplicates_detected,
     }
     if not atomic and continue_on_error:
         response_data["partial_results"] = tracking.partial_results
@@ -421,7 +388,6 @@ async def _handle_submit_results_cm_error(
         {
             "result_ids": [],
             "warnings": tracking.warnings,
-            "duplicates_detected": tracking.duplicates_detected,
             "field_errors": tracking.field_errors,
         }
     )
@@ -434,7 +400,6 @@ async def submit_results_operation(
     results: list[ResultSubmissionInput],
     submitted_by: str,
     source: str = "api",
-    force: bool = False,
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -456,8 +421,8 @@ async def submit_results_operation(
     ``partial_results`` to see which indices succeeded.
 
     When ``dry_run`` is true the operation runs full validation
-    (parameter bounds, duplicate detection, suggestion-id resolution,
-    atomic-failure gates) but returns before persisting any row or
+    (parameter bounds, suggestion-id resolution, atomic-failure gates)
+    but returns before persisting any row or
     advancing campaign / backend state. The response carries
     ``dry_run: True`` plus a ``preview`` block summarizing how many
     rows would persist and how many were filtered.
@@ -467,7 +432,6 @@ async def submit_results_operation(
         results: List of result payloads
         submitted_by: UUID of the user submitting results
         source: Result source ("gui", "file_upload", or "api")
-        force: If True, skip duplicate detection
         atomic: If True, reject the entire batch on any validation error;
             no partial writes occur. If False, invalid rows are skipped and
             valid rows are persisted (subject to ``continue_on_error``).
@@ -480,7 +444,7 @@ async def submit_results_operation(
             without persisting anything.
 
     Returns:
-        Dictionary with success, result_ids, errors, warnings, duplicates_detected.
+        Dictionary with success, result_ids, errors and warnings.
     """
     logger.info(
         "Submitting %d results for campaign_id=%s by user=%s, verbosity=%s",
@@ -516,7 +480,6 @@ async def submit_results_operation(
             backend = await get_backend_async(spec.backend)
 
             existing_results = await result_repo.list_by_campaign(campaign_uuid)
-            existing_params = [r.parameter_values for r in existing_results]
 
             result_entities, entity_to_input_index = await _validate_and_create_results(
                 results,
@@ -524,10 +487,8 @@ async def submit_results_operation(
                 campaign_uuid,
                 submitter_uuid,
                 result_source,
-                backend,
-                existing_params,
+                len(existing_results),
                 suggestion_repo,
-                force,
                 atomic,
                 continue_on_error,
                 tracking,
@@ -537,7 +498,6 @@ async def submit_results_operation(
             short_circuit = _short_circuit_submit(
                 campaign_id,
                 atomic,
-                force,
                 continue_on_error,
                 dry_run,
                 result_entities,

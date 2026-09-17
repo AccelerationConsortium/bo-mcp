@@ -1,11 +1,9 @@
 """Two-phase row pipeline for ``submit_results``.
 
 Split from :mod:`bo_mcp_server.operations.submit_results` so the
-phase-1 / phase-2 orchestration plus its supporting helpers (duplicate
-detection against stored + in-flight baselines, suggestion-id
-classification and atomic resolution, reservation partitioning, and the
-combined in-batch-duplicate / observation-budget filter) live in one
-module.
+phase-1 / phase-2 orchestration plus its supporting helpers
+(suggestion-id classification and atomic resolution, reservation
+partitioning, and the observation-budget filter) live in one module.
 
 The public operation entry point in :mod:`.submit_results` calls into
 :func:`_validate_and_create_results` after shape-validating its inputs;
@@ -15,13 +13,9 @@ repositories handed in by the caller's ``session_scope`` block.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
-from bo_engine.backend import BOBackend
-from bo_engine.constants import DUPLICATE_DETECTION_TOLERANCE
 from bo_mcp_server.domain import (
     CampaignSpec,
     Result,
@@ -42,91 +36,6 @@ from bo_mcp_server.storage import (
     ConcurrentModificationError,
     SuggestionRepository,
 )
-
-
-def _check_duplicates_for_result(
-    index: int,
-    params: dict[str, Any],
-    existing_params: list[dict[str, Any]],
-    batch_so_far_params: list[dict[str, Any]],
-    backend: BOBackend,
-    warnings: list[str],
-    duplicates_detected: list[dict[str, Any]],
-) -> _RowError | None:
-    """Run duplicate detection for a single result. Returns error string or None.
-
-    Detection runs against two baselines so a duplicate cannot slip
-    through by hiding inside the same submission:
-
-    * ``existing_params`` — parameter dicts of already-stored results
-      (captured before phase 1 began).
-    * ``batch_so_far_params`` — parameter dicts of rows in this same
-      submission that have already cleared validation. Without this
-      list, two new rows with identical ``parameter_values`` and distinct
-      ``suggestion_id``s would both be accepted in a single request.
-
-    Exact duplicates are always treated as a hard row error when the
-    caller has not passed ``force=True`` — the row is excluded from
-    ``valid_submissions`` and therefore never written. The atomic mode
-    decides only the *envelope shape* (standardized
-    ``ErrorCode.DUPLICATE_RESULT`` envelope vs. generic
-    ``success=False / errors=[...]`` shape, see
-    :func:`_check_atomic_failures`); both modes refuse to persist the
-    duplicate without an explicit override. Near-duplicates remain
-    advisory warnings in every mode.
-
-    Each entry in ``duplicates_detected`` carries a ``duplicate_source``
-    of either ``"stored_result"`` or ``"in_flight_batch"`` so clients can
-    tell whether the duplicate is against a persisted observation or an
-    earlier row in the same request.
-    """
-    if not existing_params and not batch_so_far_params:
-        return None
-    combined_baseline = list(existing_params) + list(batch_so_far_params)
-    n_stored = len(existing_params)
-    duplicates = backend.detect_duplicates(
-        new_params=params,
-        existing_params=combined_baseline,
-        tolerance=DUPLICATE_DETECTION_TOLERANCE,
-    )
-    if not duplicates:
-        return None
-
-    result_error: _RowError | None = None
-    for dup in duplicates:
-        is_in_batch = dup.index >= n_stored
-        relative_index = dup.index - n_stored if is_in_batch else dup.index
-        source_key = "in_flight_batch" if is_in_batch else "stored_result"
-        duplicates_detected.append(
-            {
-                "result_index": index,
-                "duplicate_of_index": relative_index,
-                "duplicate_source": source_key,
-                "is_exact": dup.is_exact,
-                "parameter_distance": dup.parameter_distance,
-            }
-        )
-        target_descr = (
-            f"earlier row at batch index {relative_index} in this submission"
-            if is_in_batch
-            else f"existing result at index {relative_index}"
-        )
-        if dup.is_exact:
-            warnings.append(
-                f"Result {index} appears to be an exact duplicate of "
-                f"{target_descr}. Use force=True to submit anyway."
-            )
-            result_error = _RowError(
-                field_path="parameter_values",
-                message=f"Result {index} is exact duplicate. Use force=True to override.",
-            )
-        else:
-            warnings.append(
-                f"Result {index} is very close to {target_descr} "
-                f"(distance={dup.parameter_distance:.6f}). "
-                "This may indicate a duplicate measurement."
-            )
-    return result_error
 
 
 async def _resolve_suggestion_id(
@@ -297,22 +206,16 @@ class _Phase1Context:
 
     Keeps :func:`_validate_and_create_results` short enough to stay under
     the cognitive-complexity budget while still letting each helper see
-    the running set of consumed ``suggestion_id``s. The in-batch
-    duplicate baseline is *not* tracked here: that check now runs
-    post-budget so a row dropped by the budget guard cannot pollute the
-    baseline.
+    the running set of consumed ``suggestion_id``s.
     """
 
     param_names: set[str]
     objective_names: set[str]
     parameters: list[InputParameter]
-    existing_params: list[dict[str, Any]]
     seen_suggestion_ids: set[str]
     actionable_ids: set[str]
     campaign_uuid: UUID
     suggestion_repo: SuggestionRepository
-    backend: BOBackend
-    force: bool
     tracking: _SubmitTracking
 
 
@@ -321,15 +224,14 @@ async def _phase1_row_error(
     r: ResultSubmissionInput,
     ctx: _Phase1Context,
 ) -> _RowError | None:
-    """Run phase-1 row checks: shape, suggestion-ref, stored-duplicate.
+    """Run phase-1 row checks: shape and suggestion-reference.
 
-    The *stored*-duplicate check stays in phase 1 because it depends only
-    on data that is fixed for the entire request -- there is no benefit
-    to deferring it. The *in-batch* duplicate check is deferred to
-    :func:`_apply_in_batch_duplicate_filter` so it can run after the
-    observation-budget guard has trimmed rows that will not persist;
-    otherwise a free-floating row that ends up dropped by budget could
-    pollute the baseline and shadow a later reservation-consuming row.
+    Parameter equality is deliberately *not* a check here. Distinct
+    experiments may legitimately share parameter settings (replicates),
+    so repeated ingestion is prevented by experiment identity — the
+    suggestion-reference checks below plus the
+    ``ix_results_suggestion_id_unique`` partial index — never by
+    comparing parameter values.
     """
     shape_error = _validate_single_result(
         index,
@@ -352,23 +254,6 @@ async def _phase1_row_error(
     )
     if ref_error is not None:
         return ref_error
-
-    if not ctx.force:
-        # Offloaded: the scan is O(len(existing_params)) distance
-        # computations and must not run on the event loop (see the
-        # ``asyncio.to_thread`` contract in ``submit_results``).
-        dup_error = await asyncio.to_thread(
-            _check_duplicates_for_result,
-            index,
-            r.parameter_values,
-            ctx.existing_params,
-            [],  # in-batch baseline deferred to post-budget pass
-            ctx.backend,
-            ctx.tracking.warnings,
-            ctx.tracking.duplicates_detected,
-        )
-        if dup_error is not None:
-            return dup_error
 
     return None
 
@@ -402,59 +287,6 @@ def _partition_reserved(
     return reserved, free_floating
 
 
-@dataclass
-class _FilterState:
-    """Mutable per-batch accumulators for the dup + budget filter."""
-
-    accepted_params: list[dict[str, Any]]
-    kept: list[tuple[int, ResultSubmissionInput]]
-
-
-def _check_in_batch_duplicate(
-    idx: int,
-    row: ResultSubmissionInput,
-    state: _FilterState,
-    backend: BOBackend,
-    force: bool,
-    atomic: bool,
-    continue_on_error: bool,
-    tracking: _SubmitTracking,
-) -> bool:
-    """Return True iff the row clears the in-batch duplicate check.
-
-    On failure the row error is recorded on ``tracking`` (both the
-    legacy ``errors`` list and the keyed ``field_errors`` map) and, in
-    non-atomic + continue mode, on ``partial_results``.
-    """
-    if force:
-        return True
-    dup_error = _check_duplicates_for_result(
-        idx,
-        row.parameter_values,
-        [],  # stored already checked in phase 1
-        state.accepted_params,
-        backend,
-        tracking.warnings,
-        tracking.duplicates_detected,
-    )
-    if dup_error is None:
-        return True
-    _record_row_error(tracking, idx, dup_error.field_path, dup_error.message)
-    if not atomic and continue_on_error:
-        tracking.partial_results[idx] = {"error": dup_error.message}
-    return False
-
-
-def _accept_row(
-    idx: int,
-    row: ResultSubmissionInput,
-    state: _FilterState,
-) -> None:
-    """Add a passing row to the kept list and the duplicate baseline."""
-    state.kept.append((idx, row))
-    state.accepted_params.append(row.parameter_values)
-
-
 def _reject_free_floating(
     idx: int,
     spec: CampaignSpec,
@@ -477,41 +309,32 @@ def _reject_free_floating(
         tracking.partial_results[idx] = {"error": err}
 
 
-def _apply_dup_and_budget_filter(
+def _apply_budget_filter(
     valid_submissions: list[tuple[int, ResultSubmissionInput]],
     spec: CampaignSpec,
     *,
     existing_count: int,
     actionable_ids: set[str],
     budget_reserved_ids: set[str],
-    backend: BOBackend,
-    force: bool,
     atomic: bool,
     continue_on_error: bool,
     tracking: _SubmitTracking,
 ) -> list[tuple[int, ResultSubmissionInput]]:
-    """Combined in-batch duplicate + observation-budget filter.
+    """Observation-budget filter.
 
     Order of operations:
 
     1. **Partition** rows into reservation-consuming (``suggestion_id``
        matches an actionable PENDING/ACCEPTED suggestion, first claim
        wins) vs free-floating.
-    2. **Pass A — reserved rows first.** Reservation rows are processed
-       in input order. They are accepted unless they duplicate an
-       earlier accepted reservation. This guarantees a reservation
-       always wins a duplicate tie against a later or earlier
-       free-floating row — committing the reserved result transitions
-       the suggestion to ``COMPLETED`` and closes the user's commitment
-       cleanly. (Letting a manual duplicate win would orphan the
-       reservation in PENDING/ACCEPTED forever.)
-    3. **Pass B — free-floating rows.** Walked in input order. Each
-       row is rejected when it duplicates an already-accepted row
-       (reserved or earlier free-floating) and otherwise competes for
-       the unreserved slack ``cap - existing - n_reserved_slots``;
-       overflow rows fail with the budget error. A duplicate row never
-       consumes slack, so a free-floating duplicate cannot starve a
-       later unique free-floating row.
+    2. **Pass A — reserved rows.** Accepted unconditionally: their
+       reservation *is* the budget slot, so they are not slack-
+       constrained. Committing them transitions the suggestion to
+       ``COMPLETED`` rather than orphaning it in PENDING/ACCEPTED.
+    3. **Pass B — free-floating rows.** Walked in input order,
+       competing for the unreserved slack
+       ``cap - existing - n_reserved_slots``; overflow rows fail with
+       the budget error.
 
     ``budget_reserved_ids`` is the subset of ``actionable_ids`` that
     still holds a budget slot under the same staleness classification
@@ -520,32 +343,16 @@ def _apply_dup_and_budget_filter(
     becomes an observation now instead of expiring, so claimed ids are
     unioned back in before the slack is computed.
 
-    Notes:
-    * The stored-duplicate check happens earlier, per-row, in
-      :func:`_phase1_row_error`. This function only handles in-batch
-      duplicates so a row that is itself going to be dropped by the
-      budget cannot pollute the duplicate baseline.
-    * ``force=True`` skips the duplicate check entirely (the documented
-      override) but the budget guard still applies.
-    * When ``spec.max_observations`` is ``None`` the budget guard is a
-      no-op; only the duplicate check runs.
+    Rows are never filtered for sharing parameter values with a stored
+    or in-batch row: replicates are distinct experiments and each one
+    consumes its own slot. When ``spec.max_observations`` is ``None``
+    this filter keeps every row.
     """
     reserved, free_floating = _partition_reserved(valid_submissions, actionable_ids)
     claimed_ids = {row.suggestion_id for _, row in reserved if row.suggestion_id is not None}
     n_reserved_slots = len(budget_reserved_ids | claimed_ids)
     has_cap = spec.max_observations is not None
-    state = _FilterState(accepted_params=[], kept=[])
-
-    # Pass A: reservation-consuming rows. They are not slack-constrained
-    # (their reservation is the slot) and they get priority over
-    # free-floating rows on duplicate ties so committing them
-    # transitions their suggestion to COMPLETED rather than orphaning
-    # the reservation.
-    for idx, row in reserved:
-        if _check_in_batch_duplicate(
-            idx, row, state, backend, force, atomic, continue_on_error, tracking
-        ):
-            _accept_row(idx, row, state)
+    kept = list(reserved)
 
     # Pass B: free-floating rows compete for the unreserved slack.
     if spec.max_observations is None:
@@ -553,10 +360,6 @@ def _apply_dup_and_budget_filter(
     else:
         slack = max(int(spec.max_observations) - existing_count - n_reserved_slots, 0)
     for idx, row in free_floating:
-        if not _check_in_batch_duplicate(
-            idx, row, state, backend, force, atomic, continue_on_error, tracking
-        ):
-            continue
         if has_cap and slack <= 0:
             _reject_free_floating(
                 idx, spec, existing_count, n_reserved_slots, atomic, continue_on_error, tracking
@@ -564,11 +367,11 @@ def _apply_dup_and_budget_filter(
             continue
         if has_cap:
             slack -= 1
-        _accept_row(idx, row, state)
+        kept.append((idx, row))
 
     # Output in input order so downstream ``entity_to_input_index``
     # mapping stays consistent with the caller's view.
-    return sorted(state.kept, key=lambda pair: pair[0])
+    return sorted(kept, key=lambda pair: pair[0])
 
 
 def _warn_unlinked_rows(
@@ -606,10 +409,8 @@ async def _validate_and_create_results(
     campaign_uuid: UUID,
     submitter_uuid: UUID,
     result_source: ResultSource,
-    backend: BOBackend,
-    existing_params: list[dict[str, Any]],
+    existing_count: int,
     suggestion_repo: SuggestionRepository,
-    force: bool,
     atomic: bool,
     continue_on_error: bool,
     tracking: _SubmitTracking,
@@ -620,11 +421,11 @@ async def _validate_and_create_results(
 
     The function runs in two phases so that the ``atomic`` flag can honor its
     all-or-nothing contract. Phase 1 is purely read-only: it inspects each
-    submission against the spec and the existing parameter set, collecting
-    errors, warnings and duplicate findings on ``tracking`` without issuing
-    any DB writes. In atomic mode, a non-empty error list after phase 1 skips
-    phase 2 entirely — the surrounding session therefore has nothing to commit
-    and the campaign state is unchanged. Phase 2 only runs for submissions
+    submission against the spec, collecting errors and warnings on
+    ``tracking`` without issuing any DB writes. In atomic mode, a non-empty
+    error list after phase 1 skips phase 2 entirely — the surrounding
+    session therefore has nothing to commit and the campaign state is
+    unchanged. Phase 2 only runs for submissions
     that passed phase 1 and is where suggestion-status updates (a write) and
     ``Result`` entity construction happen.
 
@@ -656,24 +457,19 @@ async def _validate_and_create_results(
     #      within batch, stale status). Only actionable IDs are tracked
     #      in ``seen_suggestion_ids`` so two rows sharing a missing or
     #      foreign-campaign id both fall through as free-floating.
-    #   3. Stored-result duplicate detection against ``existing_params``.
     #
-    # In-batch duplicate detection and budget filtering run later in
-    # ``_apply_dup_and_budget_filter`` so a row dropped by either check
-    # cannot pollute the cross-row baselines used by the other.
+    # Budget filtering runs later, in ``_apply_budget_filter``, once the
+    # full set of surviving rows is known.
     valid_submissions: list[tuple[int, ResultSubmissionInput]] = []
     seen_suggestion_ids: set[str] = set()
     ctx = _Phase1Context(
         param_names=param_names,
         objective_names=objective_names,
         parameters=parameters,
-        existing_params=existing_params,
         seen_suggestion_ids=seen_suggestion_ids,
         actionable_ids=actionable_ids,
         campaign_uuid=campaign_uuid,
         suggestion_repo=suggestion_repo,
-        backend=backend,
-        force=force,
         tracking=tracking,
     )
 
@@ -690,32 +486,21 @@ async def _validate_and_create_results(
         # warning-only branch in ``_classify_suggestion_reference`` and
         # must NOT trip the duplicate-id check on the next row sharing
         # the same bogus value; two rows with the same typo are both
-        # free-floating and should commit (subject to budget +
-        # parameter-duplicate rules).
+        # free-floating and should commit (subject to budget).
         if r.suggestion_id is not None and r.suggestion_id in actionable_ids:
             seen_suggestion_ids.add(r.suggestion_id)
 
-    # Combined in-batch duplicate + observation-budget filter. Running
-    # both checks in a single input-order walk avoids two phantom-shadow
-    # failure modes:
-    #   * a budget-dropped row polluting the duplicate baseline (which
-    #     would shadow a later reserved row with the same params);
-    #   * a duplicate row consuming free-floating slack before being
-    #     filtered out (which would force-reject a later unique row that
-    #     could otherwise fit).
-    # See :func:`_apply_dup_and_budget_filter`. The filter is pure
-    # computation (per-row duplicate scans against the in-batch
-    # baseline), so the whole pass runs in one worker thread instead
-    # of blocking the event loop once per row.
-    valid_submissions = await asyncio.to_thread(
-        _apply_dup_and_budget_filter,
+    # Observation-budget filter. Reservation rows keep their slot;
+    # free-floating rows compete for the remaining slack in input order.
+    # ponytail: plain call, not ``asyncio.to_thread`` — this is now a
+    # couple of list walks over the batch, not the O(stored) distance
+    # scan that justified offloading it.
+    valid_submissions = _apply_budget_filter(
         valid_submissions,
         spec,
-        existing_count=len(existing_params),
+        existing_count=existing_count,
         actionable_ids=actionable_ids,
         budget_reserved_ids=budget_reserved_ids,
-        backend=backend,
-        force=force,
         atomic=atomic,
         continue_on_error=continue_on_error,
         tracking=tracking,

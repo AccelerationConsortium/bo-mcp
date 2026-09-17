@@ -1146,19 +1146,27 @@ def optimize_acquisition(
         x_avoid: Points to avoid (e.g., already-evaluated training data).
             Matching uses the engine's duplicate-detection tolerance on
             canonical coordinates (numeric-discrete columns snapped to their
-            grids first). Enforcement is per space type:
+            grids first).
 
-            - Continuous, ``batch_size == 1``: the highest-valued unseen
-              restart is selected, with a seeded, acquisition-ranked sampling
-              fallback if every restart collapses onto an avoided point.
-              When the spec has numeric-discrete parameters, candidates are
-              returned in canonical (grid-snapped) coordinates and ranked by
-              the acquisition value at those coordinates, so the reported
-              value describes the experiment that will actually run.
-            - Continuous, ``batch_size > 1``: not enforced (logged at debug
-              level); sequential greedy optimization has no per-restart
-              selection point to filter.
+            Enforcement follows the *whole domain*, not the optimizer that
+            happens to run. A domain containing a genuinely continuous
+            parameter is never exhausted by measuring it, so repeating a
+            point there is a replicate, not an error, and the highest-
+            acquisition candidate wins whether or not it repeats. A finite
+            domain can be used up, so exclusion still applies there:
+
+            - Entirely numeric-discrete (a finite grid, even when it is
+              routed through the continuous L-BFGS-B path): enforced for
+              ``batch_size == 1``. Candidates are returned in canonical
+              (grid-snapped) coordinates and ranked by the acquisition
+              value at those coordinates, so the reported value describes
+              the experiment that will actually run.
             - Purely categorical: excluded from the enumerated choice set.
+            - Any domain with a continuous parameter: not enforced. This
+              includes continuous + numeric-discrete domains.
+            - ``batch_size > 1`` on the continuous path: not enforced
+              (logged at debug level); sequential greedy optimization has
+              no per-restart selection point to filter.
             - Mixed: not enforced (logged at debug level).
         inequality_constraints: BoTorch linear inequality constraints. Each
             tuple is (indices, coefficients, rhs) enforcing
@@ -1177,12 +1185,13 @@ def optimize_acquisition(
             is forwarded to the acquisition via ``set_X_pending`` (consumed
             by the MC acquisition's joint optimization).  For purely
             categorical spaces the pending rows are concatenated into
-            ``x_avoid`` so the discrete optimizer excludes them; the
-            continuous path merges them into ``x_avoid`` as well, so the
-            ``batch_size == 1`` selection cannot return a pending point.
-        random_seed: Seed for the continuous unseen-candidate fallback
-            sampler. ``None`` falls back to a fixed default seed so
-            suggestions stay reproducible run-to-run.
+            ``x_avoid`` so the discrete optimizer excludes them, as they
+            are on the all-numeric-discrete path. Where ``x_avoid`` is not
+            enforced, pending points condition the acquisition but are not
+            hard-excluded, so a recommendation may repeat a pending point.
+        random_seed: Seed for the continuous fallback-candidate sampler.
+            ``None`` falls back to a fixed default seed so suggestions stay
+            reproducible run-to-run.
         domain_bounds: Full campaign bounds of shape ``(2, n_dims)`` when
             ``bounds`` is a narrowed optimization region (e.g. a TuRBO trust
             region). Canonical candidates are validated — and search-space
@@ -1228,7 +1237,9 @@ def optimize_acquisition(
             effective_restarts,
             effective_samples,
             spec=None,
-            x_avoid=_merge_avoid_tensors(x_avoid, X_pending),
+            # No spec means no finite grid to exhaust: treat it as a
+            # continuous domain and let a repeated optimum win.
+            x_avoid=None,
             random_seed=random_seed,
             domain_bounds=domain_bounds,
             inequality_constraints=inequality_constraints,
@@ -1262,6 +1273,16 @@ def optimize_acquisition(
             equality_constraints=equality_constraints,
         )
     _apply_pending_to_acqf(acqf, X_pending)
+    # Exclusion is decided by the whole domain, not by which optimizer
+    # runs. An all-numeric-discrete spec is a finite grid that can be
+    # exhausted, so measured and pending points stay excluded even though
+    # it is optimized through the continuous path. Any domain with a
+    # genuinely continuous parameter — including continuous plus
+    # numeric-discrete — cannot be exhausted, so a repeated optimum is a
+    # legitimate replicate and nothing is excluded.
+    avoid_for_continuous = (
+        _merge_avoid_tensors(x_avoid, X_pending) if _spec_is_all_numeric_discrete(spec) else None
+    )
     return _optimize_continuous(
         acqf,
         bounds,
@@ -1269,7 +1290,7 @@ def optimize_acquisition(
         effective_restarts,
         effective_samples,
         spec=spec,
-        x_avoid=_merge_avoid_tensors(x_avoid, X_pending),
+        x_avoid=avoid_for_continuous,
         random_seed=random_seed,
         domain_bounds=domain_bounds,
         inequality_constraints=inequality_constraints,
@@ -1357,10 +1378,16 @@ def _optimize_continuous(
         raw_samples: Number of raw samples for initialization
         spec: Optimization specification; supplies the numeric-discrete grids
             used to canonicalize coordinates before avoided-point matching
-        x_avoid: Previously evaluated or pending points. Enforced only for
-            ``batch_size == 1`` (see ``optimize_acquisition``); larger batches
-            log the dropped points at debug level
-        random_seed: Seed for the unseen-candidate fallback sampler
+        x_avoid: Previously evaluated or pending points, or ``None`` when
+            the domain contains a continuous parameter and therefore cannot
+            be exhausted — the caller decides this (see
+            ``optimize_acquisition``). When supplied, enforced only for
+            ``batch_size == 1``; larger batches log the dropped points at
+            debug level. Note the ``batch_size == 1`` block still runs with
+            ``x_avoid=None``: grid snapping, acquisition re-evaluation at
+            executable coordinates, and domain/constraint re-validation are
+            validity requirements, independent of exclusion.
+        random_seed: Seed for the fallback-candidate sampler
         domain_bounds: Full campaign bounds used to validate canonical
             candidates and judge exhaustion; defaults to ``bounds``
         inequality_constraints: BoTorch linear inequality constraints
@@ -1427,7 +1454,7 @@ def _optimize_continuous(
             candidates = restart_points[best_idx : best_idx + 1]
             acq_values = acq_values[best_idx : best_idx + 1]
         else:
-            candidates, acq_values = _continuous_unseen_fallback(
+            candidates, acq_values = _no_usable_restart_fallback(
                 acqf,
                 bounds,
                 spec=spec,
@@ -1439,8 +1466,10 @@ def _optimize_continuous(
                 equality_constraints=equality_constraints,
             )
     elif x_avoid is not None and x_avoid.numel() > 0:
+        # Only reachable for an all-numeric-discrete spec: continuous
+        # domains are dispatched with ``x_avoid=None``.
         logger.debug(
-            "x_avoid is not enforced for continuous acquisition optimization with "
+            "x_avoid is not enforced for grid acquisition optimization with "
             "batch_size=%d; %d avoided point(s) are ignored.",
             batch_size,
             int(x_avoid.shape[0]),
@@ -1474,8 +1503,38 @@ def _select_best_restart_index(
 
 
 def _spec_has_numeric_discrete(spec: OptimizationSpec | None) -> bool:
-    """True when the spec contains at least one numeric-discrete parameter."""
+    """True when the spec contains at least one numeric-discrete parameter.
+
+    Answers "do coordinates need snapping?". It is deliberately ``any``:
+    one grid column is enough to make the optimizer's relaxed output
+    unexecutable. It must not be used to decide whether avoided-point
+    exclusion applies — see :func:`_spec_is_all_numeric_discrete`.
+    """
     return spec is not None and any(p.type == ParameterType.DISCRETE for p in spec.parameters)
+
+
+def _spec_is_all_numeric_discrete(spec: OptimizationSpec | None) -> bool:
+    """True when every parameter is numeric-discrete, i.e. a finite grid.
+
+    Answers "can this domain be exhausted?", which is what decides whether
+    measured and pending points are excluded from the selection. A single
+    continuous parameter makes the domain infinite, so a recommendation
+    that repeats a measurement there is a replicate rather than a failure
+    to find something new.
+
+    Distinct from ``enumerate_numeric_discrete_grid(spec) is not None``,
+    which additionally requires the grid to fit inside
+    ``DISCRETE_ENUMERATION_MAX_POINTS``. A 200x200 integer grid is finite
+    and still excludes avoided points; it simply cannot be enumerated to
+    *prove* exhaustion, so it falls back to sampling. Deciding exclusion
+    with the enumeration helper would silently drop that protection for
+    large grids.
+    """
+    return (
+        spec is not None
+        and bool(spec.parameters)
+        and all(p.type == ParameterType.DISCRETE for p in spec.parameters)
+    )
 
 
 def _linear_constraint_mask(
@@ -1503,7 +1562,7 @@ def _linear_constraint_mask(
 # optimization region are preferred; when none exist, selection widens to the
 # full campaign domain instead of failing or terminating the campaign.
 _LOCAL_REGION_FALLBACK_WARNING = (
-    "No unseen executable candidate lies inside the current optimization "
+    "No usable executable candidate lies inside the current optimization "
     "region; selecting among %d candidate(s) from the full campaign domain."
 )
 
@@ -1822,15 +1881,16 @@ def _sampled_unseen_choices(
     choices = choices[eligible]
     if choices.shape[0] == 0:
         msg = (
-            "All continuous acquisition restarts matched avoided points, and "
-            "no unseen alternative was found among the sampled fallback "
-            "candidates. The space may still contain unseen points."
+            "No acquisition restart was usable, and no usable alternative was "
+            "found among the sampled fallback candidates — every sample was "
+            "infeasible in canonical coordinates, or already avoided on a "
+            "finite domain. The space may still contain a usable point."
         )
         raise RuntimeError(msg)
     return _prefer_local_rows(choices, bounds)
 
 
-def _continuous_unseen_fallback(
+def _no_usable_restart_fallback(
     acqf: AcquisitionFunction,
     bounds: Tensor,
     *,
@@ -1842,10 +1902,20 @@ def _continuous_unseen_fallback(
     inequality_constraints: list[tuple[Tensor, Tensor, float]] | None,
     equality_constraints: list[tuple[Tensor, Tensor, float]] | None,
 ) -> tuple[Tensor, Tensor]:
-    """Choose the best unseen point from a feasible candidate cloud.
+    """Choose the best valid point from a feasible candidate cloud.
 
-    This path is used only when every L-BFGS-B restart converges to an already
-    evaluated point. A finite alternative set is built without perturbing or
+    This path is the recovery for "no restart is usable", which happens for
+    two different reasons:
+
+    * On a finite (all-numeric-discrete) domain, every restart converged
+      onto an already evaluated or pending point, and those are excluded.
+    * On any domain, snapping every restart onto its grid moved all of them
+      out of the campaign domain or across a linear constraint. Snapping
+      runs after the optimizer's own feasibility handling, so a feasible
+      relaxed restart can land on an infeasible grid value. Continuous
+      domains pass ``x_avoid=None`` and reach this path only this way.
+
+    A finite alternative set is built without perturbing or
     silently resubmitting that maximizer: an all-numeric-discrete spec
     enumerates its full Cartesian grid (which proves exhaustion when nothing
     unseen remains), unconstrained spaces draw a seeded Sobol design, and
@@ -1861,7 +1931,8 @@ def _continuous_unseen_fallback(
         acqf: Acquisition function used to rank the candidate cloud
         bounds: Optimization-region bounds of shape (2, n_dims)
         spec: Supplies numeric-discrete grids for canonical matching
-        x_avoid: Canonical (grid-snapped) avoided points
+        x_avoid: Canonical (grid-snapped) avoided points, or ``None`` on a
+            domain with a continuous parameter, where nothing is excluded
         sample_count: Number of candidates to draw
         random_seed: Sampler seed; ``None`` uses the fixed default seed
         domain_bounds: Full campaign bounds used for canonical validation
@@ -1876,9 +1947,10 @@ def _continuous_unseen_fallback(
         SearchSpaceExhaustedError: If the spec is a fully enumerable
             numeric-discrete grid and every grid point is avoided or
             infeasible — proven exhaustion of a finite space.
-        RuntimeError: If every *sampled* candidate matches an avoided point.
-            The space may still contain unseen points; the sample simply
-            failed to cover one.
+        RuntimeError: If no *sampled* candidate is usable — every one was
+            either infeasible in canonical coordinates or (on a finite
+            domain) already avoided. The space may still contain a usable
+            point; the sample simply failed to cover one.
     """
     domain = domain_bounds if domain_bounds is not None else bounds
     grid = enumerate_numeric_discrete_grid(spec)
@@ -1902,8 +1974,9 @@ def _continuous_unseen_fallback(
         values = acqf(choices.unsqueeze(-2)).reshape(-1)
     best_idx = int(values.argmax().item())
     logger.warning(
-        "All continuous acquisition restarts matched previously evaluated or "
-        "pending points; selected the best of %d unseen fallback candidates.",
+        "No acquisition restart was usable (avoided on a finite domain, or "
+        "infeasible once snapped to the grid); selected the best of %d "
+        "fallback candidates.",
         int(choices.shape[0]),
     )
     return choices[best_idx : best_idx + 1], values[best_idx : best_idx + 1]

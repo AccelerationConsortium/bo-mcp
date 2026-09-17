@@ -159,7 +159,6 @@ async def _submit_results_for_user(
     results: ResultsPayload,
     submitted_by: str,
     source: str = "api",
-    force: bool = False,
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -192,7 +191,6 @@ async def _submit_results_for_user(
                 results=validated_results,
                 submitted_by=submitted_by,
                 source=source,
-                force=force,
                 atomic=atomic,
                 continue_on_error=continue_on_error,
                 verbosity=verbosity,
@@ -207,7 +205,6 @@ async def _submit_results_for_user(
             results=validated_results,
             submitted_by=submitted_by,
             source=source,
-            force=force,
             atomic=atomic,
             continue_on_error=continue_on_error,
             verbosity=verbosity,
@@ -219,7 +216,6 @@ async def _submit_results_for_user(
                 results=validated_results,
                 submitted_by=submitted_by,
                 source=source,
-                force=force,
                 atomic=atomic,
                 continue_on_error=continue_on_error,
                 verbosity=verbosity,
@@ -239,7 +235,6 @@ async def submit_results(
     results: ResultsPayload,
     submitted_by: str,
     source: str = "api",
-    force: bool = False,
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -253,7 +248,6 @@ async def submit_results(
         results=results,
         submitted_by=submitted_by,
         source=source,
-        force=force,
         atomic=atomic,
         continue_on_error=continue_on_error,
         verbosity=verbosity,
@@ -268,7 +262,6 @@ async def _submit_results_tool(
     campaign_id: str,
     results: ResultsPayload,
     source: str = "api",
-    force: bool = False,
     atomic: bool = True,
     continue_on_error: bool = False,
     verbosity: Literal["minimal", "standard", "detailed"] = "standard",
@@ -280,6 +273,21 @@ async def _submit_results_tool(
 
     Workflow: Call after running experiments from bo_generate_suggestions.
     Follow up with bo_get_diagnostics to check progress and convergence.
+
+    Replicates are expected and accepted. Two experiments may share
+    parameter values — that is a repeated measurement, and both are stored
+    and passed to the optimizer. Repeating a setting is not evidence of an
+    error, and it is not evidence of convergence either. Each replicate
+    consumes its own observation budget.
+
+    Retry protection comes from identity, not from parameter values. A
+    result carrying a ``suggestion_id`` can be submitted once: the second
+    attempt is refused because that suggestion is already answered. A
+    result *without* a ``suggestion_id`` has no such anchor, so a retried
+    submission cannot be told apart from a genuinely repeated experiment
+    and will be stored twice. Pass ``idempotency_key`` when submitting
+    unlinked results — especially for bulk uploads — if a retry after a
+    timeout must not double-count.
 
     The MCP transport resolves ``submitted_by`` internally from the current
     BO-MCP user identity. Agents must not provide database user ids.
@@ -303,7 +311,6 @@ async def _submit_results_tool(
             results=results,
             submitted_by=str(user.id),
             source=source,
-            force=force,
             atomic=atomic,
             continue_on_error=continue_on_error,
             verbosity=verbosity,

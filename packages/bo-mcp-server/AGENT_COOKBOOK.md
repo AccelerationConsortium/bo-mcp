@@ -109,9 +109,6 @@ Error Code E002 "Campaign not found"
 Error Code E003 "Invalid state transition"
 → Action: Check campaign status with campaign://{id}, use appropriate lifecycle tool
 
-Error Code E004 "Duplicate result detected"
-→ Action: Use force=True to override, or skip this result
-
 Error Code E101 "Model fitting failed"
 → Action: Check data quality, may need more observations (minimum 2)
 ```
@@ -123,7 +120,6 @@ Error Code E101 "Model fitting failed"
 | E001 (`VALIDATION_FAILED`) | Payload rejected by Pydantic | Inspect `field_errors` for dotted-path location; resend with the field corrected. |
 | E002 (`CAMPAIGN_NOT_FOUND`) | Campaign UUID unknown | Call `bo_list_campaigns` (or read `campaigns://list`) to recover the real id. |
 | E003 (`INVALID_STATE_TRANSITION`) | Wrong lifecycle action for current status | Read `campaign://{id}` for the current status; use the matrix in *Suggestion-Status Lifecycle* below for the legal next move. |
-| E004 (`DUPLICATE_RESULT_DETECTED`) | Same parameter row already submitted | Re-submit with `force=true` if the duplicate is intentional; otherwise drop the row from the batch. |
 | E005 (`CONCURRENT_MODIFICATION`) | Optimistic-lock conflict | Re-read the campaign, rebuild your write against the new `version`, and retry. |
 | E006 (`IDEMPOTENCY_CONFLICT`) | Same idempotency key reused with a different payload | Generate a fresh UUIDv7 idempotency key for the new payload. |
 | E101 (`MODEL_FITTING_FAILED`) | GP fit blew up on noisy / extreme data | Drop NaN/Inf rows, dampen outliers, or submit more clean observations before retrying. |
@@ -530,7 +526,7 @@ Check bo_get_diagnostics output for health_status:
 ├── "Numerical issues"
 │   ├── Check for NaN/Inf in submitted results
 │   ├── Check for extreme outliers (>10 std from mean)
-│   └── Action: Use force=true to resubmit clean data
+│   └── Action: Drop the bad rows and resubmit clean data
 ├── "Constraint conflict"
 │   ├── Verify constraint parameters exist in spec
 │   └── Verify constraint bounds allow feasible region
@@ -538,14 +534,18 @@ Check bo_get_diagnostics output for health_status:
     └── Action: Review outliers in diagnostics, consider restart
 ```
 
-### "Duplicate result detected" (Error E004)
+### Repeated parameter values
 
 ```
 Same parameter values submitted twice?
-├── Intentional (re-run experiment) → Use force=true to override
-├── Accidental duplicate → Skip this result
-└── Similar but not identical → Check duplicate similarity threshold
-    └── If similarity < 1.0, values are slightly different; submit normally
+└── Submit normally. Two experiments at the same settings are
+    replicates: both measurements are stored and both reach the
+    optimizer. Repetition is not an error, and not a sign of
+    convergence either.
+    ├── Each replicate consumes its own observation budget slot.
+    └── Worried a failed request was retried rather than repeated?
+        Send an Idempotency-Key. An unlinked result has no identity,
+        so nothing else can tell a resend from a real repeat.
 ```
 
 ### "Invalid state transition" (Error E003)

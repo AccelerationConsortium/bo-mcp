@@ -130,7 +130,6 @@ Some response fields only appear under certain conditions. This section document
 
 | Field | Appears When | Description |
 |-------|--------------|-------------|
-| `duplicates_detected` | Near-duplicate found | Details of detected duplicates |
 | `warnings` | Non-blocking issues | Array of warning messages |
 
 ---
@@ -594,14 +593,7 @@ Submits experimental results for a campaign.
   "success": "boolean",
   "result_ids": ["string (UUID)"],
   "errors": ["string"],
-  "warnings": ["string"],
-  "duplicates_detected": [
-    {
-      "result_index": "integer",
-      "existing_result_id": "string (UUID)",
-      "similarity": "number (0-1)"
-    }
-  ] | null
+  "warnings": ["string"]
 }
 ```
 
